@@ -1,0 +1,13 @@
+{
+  "manifest_version": 3,
+  "name": "LumaGet Browser Companion",
+  "short_name": "LumaGet",
+  "version": "0.1.0",
+  "description": "Send downloads and detected media to LumaGet.",
+  "permissions": ["contextMenus", "downloads", "storage", "tabs", "notifications"],
+  "host_permissions": ["http://127.0.0.1:17433/*", "http://*/*", "https://*/*"],
+  "background": { "service_worker": "background.js", "type": "module" },
+  "action": { "default_popup": "popup.html", "default_title": "LumaGet" },
+  "content_scripts": [{ "matches": ["http://*/*", "https://*/*"], "js": ["content.js"], "run_at": "document_idle" }]
+}
+

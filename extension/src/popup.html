@@ -1,0 +1,10 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="popup.css"><title>LumaGet</title></head><body>
+  <div class="aurora"></div><main>
+    <header><div class="logo"><svg viewBox="0 0 32 32"><path d="M16 4v16m0 0 7-7m-7 7-7-7M7 25h18"/></svg></div><div><b>LumaGet</b><span>Browser Companion</span></div><i id="status"></i></header>
+    <section class="card add"><label>快速下载</label><div><input id="url" placeholder="粘贴下载链接"><button id="send">发送</button></div><p id="message">桌面端连接状态检测中…</p></section>
+    <section class="card"><div class="section-title"><b>页面媒体</b><span id="count">0</span></div><div id="media" class="media"><div class="empty">此页面暂未发现可下载媒体</div></div></section>
+    <section class="card settings"><label><span><b>接管浏览器下载</b><small>自动发送大型文件到桌面端</small></span><input id="intercept" type="checkbox"><i></i></label><label><span><b>最小文件大小</b><small>小文件仍由浏览器下载</small></span><select id="minSize"><option value="0">不限</option><option value="1">1 MB</option><option value="5">5 MB</option><option value="20">20 MB</option></select></label></section>
+    <footer>本地通信 · 不收集任何数据</footer>
+  </main><script type="module" src="popup.js"></script>
+</body></html>
+
