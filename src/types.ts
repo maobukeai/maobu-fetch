@@ -81,7 +81,17 @@ export interface AppSettings {
 }
 
 export interface PairingInfo { code: string; expires_at: number; paired_extension?: string; }
-export interface ToolStatus { name: string; available: boolean; version?: string; path?: string; }
+export type ToolPhase = "missing" | "downloading" | "verifying" | "extracting" | "ready" | "failed";
+export interface ToolStatus {
+  state: ToolPhase;
+  version: string;
+  downloaded_bytes: number;
+  total_bytes: number;
+  installed_bytes: number;
+  error?: string;
+  yt_dlp_available: boolean;
+  ffmpeg_available: boolean;
+}
 export interface MediaFormat { id: string; label: string; extension?: string; width?: number; height?: number; file_size?: number; has_video: boolean; has_audio: boolean; }
 export interface MediaProbeResult { title: string; thumbnail?: string; extractor?: string; duration?: number; formats: MediaFormat[]; subtitles: string[]; drm: boolean; }
 export interface TaskEvent { task: DownloadTask; event: string; }

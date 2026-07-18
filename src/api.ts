@@ -23,7 +23,12 @@ export const api = {
   rotatePairing: () => call<PairingInfo>("pairing_rotate"),
   revokePairing: () => call<void>("pairing_revoke"),
   probeMedia: (url: string) => call<MediaProbeResult>("media_probe", { url }),
-  toolStatus: () => call<ToolStatus[]>("media_tool_status"),
+  toolStatus: () => isDesktop() ? call<ToolStatus>("media_tool_status") : Promise.resolve({ state: "missing", version: "yt-dlp 2026.06.09 · FFmpeg 8.1.2", downloaded_bytes: 0, total_bytes: 127926272, installed_bytes: 0, yt_dlp_available: false, ffmpeg_available: false } as ToolStatus),
+  installMediaTools: () => call<void>("media_tools_install"),
+  cancelMediaTools: () => call<void>("media_tools_cancel"),
+  removeMediaTools: () => call<void>("media_tools_remove"),
+  checkMediaToolsUpdate: () => call<ToolStatus>("media_tools_check_update"),
+  subscribeMediaTools: async (handler: (status: ToolStatus) => void): Promise<UnlistenFn | undefined> => isDesktop() ? listen<ToolStatus>("media-tools-progress", event => handler(event.payload)) : undefined,
   subscribe: async (handler: (event: TaskEvent | { removed: string }) => void): Promise<UnlistenFn[]> => {
     if (!isDesktop()) return [];
     return Promise.all([

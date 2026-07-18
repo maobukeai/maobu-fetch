@@ -179,7 +179,7 @@ impl Default for AppSettings {
             proxy_url: String::new(),
             proxy_username: String::new(),
             proxy_password: String::new(),
-            user_agent: "LumaGet/0.2".into(),
+            user_agent: "LumaGet/0.3".into(),
             default_collision_policy: CollisionPolicy::Rename,
             max_retries: 3,
             retry_base_seconds: 2,
@@ -202,12 +202,27 @@ pub struct PairingInfo {
     pub paired_extension: Option<String>,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ToolPhase {
+    Missing,
+    Downloading,
+    Verifying,
+    Extracting,
+    Ready,
+    Failed,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ToolStatus {
-    pub name: String,
-    pub available: bool,
-    pub version: Option<String>,
-    pub path: Option<String>,
+    pub state: ToolPhase,
+    pub version: String,
+    pub downloaded_bytes: u64,
+    pub total_bytes: u64,
+    pub installed_bytes: u64,
+    pub error: Option<String>,
+    pub yt_dlp_available: bool,
+    pub ffmpeg_available: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

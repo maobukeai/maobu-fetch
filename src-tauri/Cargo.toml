@@ -1,6 +1,6 @@
 [package]
 name = "lumaget"
-version = "0.2.0"
+version = "0.3.0"
 description = "A clean-room open-source download manager"
 authors = ["LumaGet contributors"]
 license = "MIT"
@@ -37,5 +37,7 @@ hex = "0.4"
 rand = "0.9"
 base64 = "0.22"
 httpdate = "1"
+zip = { version = "4", default-features = false, features = ["deflate"] }
+fs2 = "0.4"
 tauri-plugin-dialog = "2"
 tauri-plugin-notification = "2"

@@ -1,27 +1,17 @@
-use crate::models::{DownloadTask, MediaFormat, MediaProbeResult, TaskStatus, ToolStatus};
+use crate::{media_tools::tool_path, models::{DownloadTask, MediaFormat, MediaProbeResult, TaskStatus}};
 use serde_json::Value;
 use std::path::PathBuf;
-use tauri::{AppHandle, Manager};
+use tauri::AppHandle;
 use tokio::process::Command;
 use tokio_util::sync::CancellationToken;
-
-pub async fn tool_status(app: &AppHandle) -> Vec<ToolStatus> {
-    let yt = locate_tool(app, "yt-dlp.exe").await;
-    let ffmpeg = locate_tool(app, "ffmpeg.exe").await;
-    vec![
-        status_for("yt-dlp", yt).await,
-        status_for("FFmpeg", ffmpeg).await,
-    ]
-}
 
 pub async fn probe(app: &AppHandle, url: &str) -> Result<MediaProbeResult, String> {
     let parsed = url::Url::parse(url).map_err(|_| "媒体地址无效".to_string())?;
     if !matches!(parsed.scheme(), "http" | "https") {
         return Err("媒体地址无效".into());
     }
-    let yt = locate_tool(app, "yt-dlp.exe")
-        .await
-        .ok_or("yt-dlp 尚未安装")?;
+    let yt = tool_path(app, "yt-dlp.exe")
+        .ok_or("MEDIA_TOOLS_MISSING: 需要先安装媒体工具")?;
     let output = Command::new(yt)
         .args(["--dump-single-json", "--no-playlist", "--no-warnings", url])
         .output()
@@ -105,10 +95,9 @@ pub async fn download(
     token: CancellationToken,
 ) -> Result<DownloadTask, String> {
     let media = task.media.clone().ok_or("缺少媒体格式")?;
-    let yt = locate_tool(app, "yt-dlp.exe")
-        .await
-        .ok_or("yt-dlp 尚未安装")?;
-    let ffmpeg = locate_tool(app, "ffmpeg.exe").await;
+    let yt = tool_path(app, "yt-dlp.exe")
+        .ok_or("MEDIA_TOOLS_MISSING: 需要先安装媒体工具")?;
+    let ffmpeg = tool_path(app, "ffmpeg.exe");
     let output = PathBuf::from(&task.destination).join(&task.file_name);
     if let Some(parent) = output.parent() {
         tokio::fs::create_dir_all(parent)
@@ -150,43 +139,4 @@ pub async fn download(
     task.downloaded_bytes = metadata.len();
     task.status = TaskStatus::Completed;
     Ok(task)
-}
-
-async fn locate_tool(app: &AppHandle, name: &str) -> Option<PathBuf> {
-    let mut candidates = Vec::new();
-    if let Ok(resource) = app.path().resource_dir() {
-        candidates.push(resource.join("tools").join(name));
-    }
-    if let Ok(data) = app.path().app_data_dir() {
-        candidates.push(data.join("tools").join(name));
-    }
-    for candidate in candidates {
-        if candidate.exists() {
-            return Some(candidate);
-        }
-    }
-    if Command::new(name).arg("--version").output().await.is_ok() {
-        Some(PathBuf::from(name))
-    } else {
-        None
-    }
-}
-async fn status_for(name: &str, path: Option<PathBuf>) -> ToolStatus {
-    let version = if let Some(path) = &path {
-        Command::new(path)
-            .arg("--version")
-            .output()
-            .await
-            .ok()
-            .and_then(|o| String::from_utf8(o.stdout).ok())
-            .map(|v| v.lines().next().unwrap_or_default().trim().to_string())
-    } else {
-        None
-    };
-    ToolStatus {
-        name: name.into(),
-        available: path.is_some(),
-        version,
-        path: path.map(|p| p.to_string_lossy().to_string()),
-    }
 }

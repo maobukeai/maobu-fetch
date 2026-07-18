@@ -1,11 +1,13 @@
 mod bridge;
 mod manager;
 mod media;
+mod media_tools;
 mod models;
 mod store;
 
 use bridge::PairingService;
 use manager::{DownloadManager, SharedManager};
+use media_tools::MediaTools;
 use models::{
     AppSettings, BatchTaskRequest, DownloadTask, MediaProbeResult, NewTaskRequest, PairingInfo,
     ToolStatus,
@@ -126,8 +128,36 @@ async fn media_probe(url: String, app: tauri::AppHandle) -> Result<MediaProbeRes
 }
 
 #[tauri::command]
-async fn media_tool_status(app: tauri::AppHandle) -> Result<Vec<ToolStatus>, String> {
-    Ok(media::tool_status(&app).await)
+async fn media_tool_status(tools: State<'_, MediaTools>) -> Result<ToolStatus, String> {
+    Ok(tools.status().await)
+}
+
+#[tauri::command]
+async fn media_tools_install(
+    app: tauri::AppHandle,
+    tools: State<'_, MediaTools>,
+    manager: State<'_, SharedManager>,
+) -> Result<(), String> {
+    tools.start_install(app, manager.settings().await).await
+}
+
+#[tauri::command]
+async fn media_tools_cancel(tools: State<'_, MediaTools>) -> Result<(), String> {
+    tools.cancel().await;
+    Ok(())
+}
+
+#[tauri::command]
+async fn media_tools_remove(
+    app: tauri::AppHandle,
+    tools: State<'_, MediaTools>,
+) -> Result<(), String> {
+    tools.uninstall(&app).await
+}
+
+#[tauri::command]
+async fn media_tools_check_update(tools: State<'_, MediaTools>) -> Result<ToolStatus, String> {
+    Ok(tools.status().await)
 }
 
 pub fn run() {
@@ -144,8 +174,10 @@ pub fn run() {
             let manager =
                 tauri::async_runtime::block_on(DownloadManager::new(store, app.handle().clone()))?;
             let pairing = PairingService::new(manager.clone());
+            let media_tools = MediaTools::new(app.handle());
             app.manage(manager.clone());
             app.manage(pairing.clone());
+            app.manage(media_tools);
             let bridge_app = app.handle().clone();
             tauri::async_runtime::spawn(bridge::run(manager, pairing, bridge_app));
             Ok(())
@@ -168,7 +200,11 @@ pub fn run() {
             pairing_rotate,
             pairing_revoke,
             media_probe,
-            media_tool_status
+            media_tool_status,
+            media_tools_install,
+            media_tools_cancel,
+            media_tools_remove,
+            media_tools_check_update
         ])
         .run(tauri::generate_context!())
         .expect("error while running LumaGet");
