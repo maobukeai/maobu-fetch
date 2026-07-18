@@ -1892,6 +1892,7 @@ name = "lumaget"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "embed-resource",
  "futures-util",
  "open",
  "reqwest 0.12.28",
