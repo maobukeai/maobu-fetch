@@ -1,8 +1,7 @@
 {
   "name": "lumaget-extension",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
-  "scripts": { "build": "node build.mjs", "check": "node --check src/background.js && node --check src/popup.js && node --check src/content.js" }
+  "scripts": { "build": "node build.mjs", "check": "node --check src/background.js && node --check src/protocol.js && node --check src/popup.js && node --check src/content.js && node --test src/protocol.test.js" }
 }
-

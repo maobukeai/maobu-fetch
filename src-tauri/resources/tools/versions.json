@@ -1,0 +1,12 @@
+﻿{
+    "ffmpeg":  {
+                   "source":  "https://www.gyan.dev/ffmpeg/builds/packages/ffmpeg-8.1.2-essentials_build.zip",
+                   "archive_sha256":  "db580001caa24ac104c8cb856cd113a87b0a443f7bdf47d8c12b1d740584a2ec",
+                   "version":  "8.1.2-essentials"
+               },
+    "yt_dlp":  {
+                   "source":  "https://github.com/yt-dlp/yt-dlp/releases/download/2026.06.09/yt-dlp.exe",
+                   "sha256":  "3a48cb955d55c8821b60ccbdbbc6f61bc958f2f3d3b7ad5eaf3d83a543293a27",
+                   "version":  "2026.06.09"
+               }
+}

@@ -1,6 +1,6 @@
 [package]
 name = "lumaget"
-version = "0.1.0"
+version = "0.2.0"
 description = "A clean-room open-source download manager"
 authors = ["LumaGet contributors"]
 license = "MIT"
@@ -14,6 +14,9 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 embed-resource = "3"
 
+[dev-dependencies]
+tempfile = "3"
+
 [dependencies]
 tauri = { version = "2", features = [] }
 tauri-plugin-shell = "2"
@@ -26,5 +29,13 @@ futures-util = "0.3"
 uuid = { version = "1", features = ["v4"] }
 url = "2"
 axum = "0.8"
-tower-http = { version = "0.6", features = ["cors"] }
 open = "5"
+rusqlite = { version = "0.32", features = ["bundled"] }
+sha2 = "0.10"
+hmac = "0.12"
+hex = "0.4"
+rand = "0.9"
+base64 = "0.22"
+httpdate = "1"
+tauri-plugin-dialog = "2"
+tauri-plugin-notification = "2"

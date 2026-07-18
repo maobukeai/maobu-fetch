@@ -1,0 +1,234 @@
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum TaskStatus {
+    Queued,
+    Downloading,
+    Paused,
+    Completed,
+    Failed,
+    Cancelled,
+    Scheduled,
+    Verifying,
+}
+
+impl TaskStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Queued => "queued",
+            Self::Downloading => "downloading",
+            Self::Paused => "paused",
+            Self::Completed => "completed",
+            Self::Failed => "failed",
+            Self::Cancelled => "cancelled",
+            Self::Scheduled => "scheduled",
+            Self::Verifying => "verifying",
+        }
+    }
+
+    pub fn from_db(value: &str) -> Self {
+        match value {
+            "downloading" => Self::Downloading,
+            "paused" => Self::Paused,
+            "completed" => Self::Completed,
+            "failed" => Self::Failed,
+            "cancelled" => Self::Cancelled,
+            "scheduled" => Self::Scheduled,
+            "verifying" => Self::Verifying,
+            _ => Self::Queued,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct DownloadTask {
+    pub id: String,
+    pub url: String,
+    pub file_name: String,
+    pub destination: String,
+    pub total_bytes: u64,
+    pub downloaded_bytes: u64,
+    pub speed: u64,
+    pub eta_seconds: Option<u64>,
+    pub status: TaskStatus,
+    pub error: Option<String>,
+    pub created_at: u64,
+    pub completed_at: Option<u64>,
+    pub scheduled_at: Option<u64>,
+    pub category: String,
+    pub queue_position: i64,
+    pub priority: i32,
+    pub retry_count: u32,
+    pub max_retries: u32,
+    pub checksum_sha256: Option<String>,
+    pub expected_checksum: Option<String>,
+    pub source: String,
+    pub etag: Option<String>,
+    pub last_modified: Option<String>,
+    pub headers: HashMap<String, String>,
+    pub media: Option<MediaSelection>,
+    pub per_task_speed_limit: u64,
+    pub collision_policy: CollisionPolicy,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct MediaSelection {
+    pub extractor: Option<String>,
+    pub format_id: Option<String>,
+    pub format_label: Option<String>,
+    pub subtitles: Vec<String>,
+    pub thumbnail: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum CollisionPolicy {
+    Overwrite,
+    Skip,
+    #[default]
+    Rename,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct NewTaskRequest {
+    pub url: String,
+    pub file_name: Option<String>,
+    pub destination: Option<String>,
+    #[serde(default)]
+    pub headers: HashMap<String, String>,
+    pub scheduled_at: Option<u64>,
+    #[serde(default)]
+    pub priority: i32,
+    pub expected_checksum: Option<String>,
+    #[serde(default)]
+    pub source: Option<String>,
+    #[serde(default)]
+    pub per_task_speed_limit: u64,
+    #[serde(default)]
+    pub collision_policy: CollisionPolicy,
+    pub media: Option<MediaSelection>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct BatchTaskRequest {
+    pub urls: Vec<String>,
+    pub destination: Option<String>,
+    #[serde(default)]
+    pub headers: HashMap<String, String>,
+    pub scheduled_at: Option<u64>,
+    #[serde(default)]
+    pub priority: i32,
+    #[serde(default)]
+    pub collision_policy: CollisionPolicy,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct AppSettings {
+    pub download_dir: String,
+    pub concurrent_downloads: u8,
+    pub connections_per_download: u8,
+    pub speed_limit_kbps: u64,
+    pub start_minimized: bool,
+    pub minimize_to_tray: bool,
+    pub close_to_tray: bool,
+    pub notifications: bool,
+    pub auto_start: bool,
+    pub theme: String,
+    pub language: String,
+    pub intercept_browser_downloads: bool,
+    pub min_file_size_mb: u64,
+    pub clipboard_monitor: bool,
+    pub proxy_mode: String,
+    pub proxy_url: String,
+    pub proxy_username: String,
+    pub proxy_password: String,
+    pub user_agent: String,
+    pub default_collision_policy: CollisionPolicy,
+    pub max_retries: u32,
+    pub retry_base_seconds: u64,
+    pub verify_after_download: bool,
+    pub media_tool_auto_update: bool,
+}
+
+impl Default for AppSettings {
+    fn default() -> Self {
+        let download_dir = std::env::var_os("USERPROFILE")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::path::PathBuf::from("."))
+            .join("Downloads")
+            .to_string_lossy()
+            .to_string();
+        Self {
+            download_dir,
+            concurrent_downloads: 3,
+            connections_per_download: 8,
+            speed_limit_kbps: 0,
+            start_minimized: false,
+            minimize_to_tray: true,
+            close_to_tray: false,
+            notifications: true,
+            auto_start: false,
+            theme: "system".into(),
+            language: "zh-CN".into(),
+            intercept_browser_downloads: true,
+            min_file_size_mb: 1,
+            clipboard_monitor: false,
+            proxy_mode: "system".into(),
+            proxy_url: String::new(),
+            proxy_username: String::new(),
+            proxy_password: String::new(),
+            user_agent: "LumaGet/0.2".into(),
+            default_collision_policy: CollisionPolicy::Rename,
+            max_retries: 3,
+            retry_base_seconds: 2,
+            verify_after_download: false,
+            media_tool_auto_update: true,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TaskProgressEvent {
+    pub task: DownloadTask,
+    pub event: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PairingInfo {
+    pub code: String,
+    pub expires_at: u64,
+    pub paired_extension: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ToolStatus {
+    pub name: String,
+    pub available: bool,
+    pub version: Option<String>,
+    pub path: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct MediaProbeResult {
+    pub title: String,
+    pub thumbnail: Option<String>,
+    pub extractor: Option<String>,
+    pub duration: Option<f64>,
+    pub formats: Vec<MediaFormat>,
+    pub subtitles: Vec<String>,
+    pub drm: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct MediaFormat {
+    pub id: String,
+    pub label: String,
+    pub extension: Option<String>,
+    pub width: Option<u64>,
+    pub height: Option<u64>,
+    pub file_size: Option<u64>,
+    pub has_video: bool,
+    pub has_audio: bool,
+}

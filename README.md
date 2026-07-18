@@ -1,30 +1,51 @@
 # LumaGet
 
-LumaGet is a clean-room, open-source download manager for Windows with a modern desktop UI and a Chromium browser extension.
+LumaGet 是面向 Windows 10/11 的开源效率型下载器。本版本采用紧凑的 Windows 11/Fluent 界面，不包含演示任务、在线字体、广告或云端服务。
 
-## Development
+## 已实现
 
-Requirements: Node.js 20+, pnpm 11+, Rust 1.80+, and Visual Studio 2022 Build Tools with the **Desktop development with C++** workload.
+- SQLite 任务与设置存储，并一次性迁移旧 `downloads.json`
+- 全局并发、优先级队列、计划任务、批量暂停/继续与指数退避重试
+- HTTP Range 分段下载、ETag/Last-Modified 变化检测、持久续传、原子合并与 SHA-256 校验
+- 全局及单任务限速、重名策略、自定义请求头、Referer、Cookie 与 Authorization
+- 可排序任务表、多选、快捷键、详情栏、真实速度与剩余时间、深浅色主题
+- Chrome/Edge Manifest V3 扩展：右键下载、下载接管、临时绕过、页面媒体发现
+- 本地 `/v1` 桥：一次性配对码、持久令牌、精确 Origin、HMAC 签名与速率限制
+- 固定并校验的 yt-dlp 2026.06.09 与 FFmpeg 8.1.2，支持媒体探测、格式选择、字幕及合并；拒绝 DRM
 
-```bash
+BT、磁力、账号同步、远程下载、DRM 绕过和 Firefox 不在本轮范围内。
+
+## 开发与构建
+
+需要 Node.js 20+、pnpm 11+、Rust 以及安装“使用 C++ 的桌面开发”组件的 Visual Studio 2022 Build Tools。
+
+```powershell
 pnpm install
-pnpm tauri dev
+pnpm desktop:dev
 ```
 
-Build the browser extension with `pnpm extension:build`. Load `extension/dist` as an unpacked extension in Chrome or Edge.
+更新固定媒体工具：
 
-## Scope
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\fetch-media-tools.ps1
+```
 
-- HTTP/HTTPS downloads with pause, resume, retry and cancellation
-- Parallel HTTP Range segments with persistent part-file resume and safe merging
-- Persistent queue, history, categories, search and bandwidth controls
-- Chromium Manifest V3 integration with context-menu sending and download interception
-- Original glass-style light/dark interface
+构建浏览器扩展后，在 Chrome/Edge 的扩展管理页加载 `extension/dist`：
 
-Basic media discovery recognizes direct video/audio resources and HLS/DASH manifest URLs exposed by a page. DRM-protected media and platform access-control bypasses are intentionally unsupported.
+```powershell
+pnpm extension:build
+```
 
-LumaGet is not affiliated with Neat Download Manager. It does not contain or reuse proprietary NDM source code or assets.
+桌面端启动后，在“设置 → 浏览器”查看一次性配对码，并在扩展弹窗输入。未连接或未配对时，浏览器下载不会被取消。
 
-## License
+## 验证
 
-MIT
+```powershell
+pnpm check
+cargo test --manifest-path src-tauri\Cargo.toml
+pnpm tauri build
+```
+
+## 许可
+
+MIT。LumaGet 与 Neat Download Manager 无隶属关系，也未使用其专有源码或素材。
