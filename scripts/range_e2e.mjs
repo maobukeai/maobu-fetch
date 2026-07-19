@@ -1,17 +1,20 @@
 import { createHash, createHmac } from "node:crypto";
 
 const destination = process.argv[2];
-if (!destination) throw new Error("Usage: node scripts/range_e2e.mjs <download-directory>");
+const connections = Number(process.argv[3] ?? 32);
+const sourceUrl = process.argv[4] ?? "http://127.0.0.1:18765/fixture.bin";
+const fileName = process.argv[5] ?? "fixture.bin";
+if (!destination) throw new Error("Usage: node scripts/range_e2e.mjs <download-directory> [connections] [url] [file-name]");
 
 const extension = "abcdefghijklmnopabcdefghijklmnop";
 const token = "lumaget-e2e-token";
 const key = createHash("sha256").update(token).digest();
 const body = JSON.stringify({
-  url: "http://127.0.0.1:18765/fixture.bin",
-  file_name: "fixture.bin",
+  url: sourceUrl,
+  file_name: fileName,
   destination,
   source: "e2e",
-  connection_count: 8,
+  connection_count: connections,
   collision_policy: "overwrite",
 });
 const timestamp = Date.now().toString();

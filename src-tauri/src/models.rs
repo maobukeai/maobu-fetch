@@ -94,6 +94,8 @@ pub struct MediaSelection {
     pub format_label: Option<String>,
     pub subtitles: Vec<String>,
     pub thumbnail: Option<String>,
+    #[serde(default)]
+    pub requires_ffmpeg: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Default, PartialEq, Eq)]
@@ -152,6 +154,8 @@ pub struct AppSettings {
     pub notifications: bool,
     pub auto_start: bool,
     pub theme: String,
+    #[serde(default)]
+    pub frosted_glass: bool,
     pub language: String,
     pub intercept_browser_downloads: bool,
     pub min_file_size_mb: u64,
@@ -166,6 +170,14 @@ pub struct AppSettings {
     pub retry_base_seconds: u64,
     pub verify_after_download: bool,
     pub media_tool_auto_update: bool,
+    #[serde(default)]
+    pub yt_dlp_path: String,
+    #[serde(default)]
+    pub ffmpeg_path: String,
+    #[serde(default)]
+    pub ffprobe_path: String,
+    #[serde(default)]
+    pub low_memory_mode: bool,
     pub window_width: Option<u32>,
     pub window_height: Option<u32>,
     pub auto_scale_ui: Option<bool>,
@@ -190,6 +202,7 @@ impl Default for AppSettings {
             notifications: true,
             auto_start: false,
             theme: "system".into(),
+            frosted_glass: false,
             language: "zh-CN".into(),
             intercept_browser_downloads: true,
             min_file_size_mb: 1,
@@ -204,6 +217,10 @@ impl Default for AppSettings {
             retry_base_seconds: 2,
             verify_after_download: false,
             media_tool_auto_update: true,
+            yt_dlp_path: String::new(),
+            ffmpeg_path: String::new(),
+            ffprobe_path: String::new(),
+            low_memory_mode: false,
             window_width: Some(1024),
             window_height: Some(720),
             auto_scale_ui: Some(false),
@@ -235,6 +252,13 @@ pub enum ToolPhase {
     Failed,
 }
 
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum ToolComponent {
+    YtDlp,
+    Ffmpeg,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ToolStatus {
     pub state: ToolPhase,
@@ -245,6 +269,24 @@ pub struct ToolStatus {
     pub error: Option<String>,
     pub yt_dlp_available: bool,
     pub ffmpeg_available: bool,
+    pub active_component: Option<ToolComponent>,
+    pub yt_dlp_version: String,
+    pub ffmpeg_version: String,
+    pub yt_dlp_download_bytes: u64,
+    pub ffmpeg_download_bytes: u64,
+    pub yt_dlp_installed_bytes: u64,
+    pub ffmpeg_installed_bytes: u64,
+    pub yt_dlp_source: String,
+    pub ffmpeg_source: String,
+    pub yt_dlp_resolved_path: Option<String>,
+    pub ffmpeg_resolved_path: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct DetectedMediaTools {
+    pub yt_dlp_path: Option<String>,
+    pub ffmpeg_path: Option<String>,
+    pub ffprobe_path: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -268,4 +310,46 @@ pub struct MediaFormat {
     pub file_size: Option<u64>,
     pub has_video: bool,
     pub has_audio: bool,
+    #[serde(default)]
+    pub requires_ffmpeg: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn old_settings_json_defaults_low_memory_mode_to_off() {
+        let mut value = serde_json::to_value(AppSettings::default()).unwrap();
+        let object = value.as_object_mut().unwrap();
+        object.remove("low_memory_mode");
+        object.remove("yt_dlp_path");
+        object.remove("ffmpeg_path");
+        object.remove("ffprobe_path");
+
+        let restored: AppSettings = serde_json::from_value(value).unwrap();
+        assert!(!restored.low_memory_mode);
+        assert!(restored.yt_dlp_path.is_empty());
+        assert!(restored.ffmpeg_path.is_empty());
+        assert!(restored.ffprobe_path.is_empty());
+    }
+
+    #[test]
+    fn old_settings_json_defaults_frosted_glass_to_off() {
+        let mut value = serde_json::to_value(AppSettings::default()).unwrap();
+        value.as_object_mut().unwrap().remove("frosted_glass");
+
+        let restored: AppSettings = serde_json::from_value(value).unwrap();
+        assert!(!restored.frosted_glass);
+    }
+
+    #[test]
+    fn old_browser_media_request_defaults_ffmpeg_requirement_to_off() {
+        let selection: MediaSelection = serde_json::from_value(serde_json::json!({
+            "format_id": "18",
+            "subtitles": []
+        }))
+        .unwrap();
+        assert!(!selection.requires_ffmpeg);
+    }
 }

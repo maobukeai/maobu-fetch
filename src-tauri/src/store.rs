@@ -382,10 +382,14 @@ mod tests {
             let mut settings = AppSettings::default();
             settings.concurrent_downloads = 7;
             settings.speed_limit_kbps = 2048;
+            settings.low_memory_mode = true;
+            settings.frosted_glass = true;
             store.save_settings(&settings).await.unwrap();
             let restored = store.get_settings().await.unwrap();
             assert_eq!(restored.concurrent_downloads, 7);
             assert_eq!(restored.speed_limit_kbps, 2048);
+            assert!(restored.low_memory_mode);
+            assert!(restored.frosted_glass);
         });
         assert!(directory.path().join("lumaget.db").exists());
     }

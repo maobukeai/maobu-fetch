@@ -1,5 +1,6 @@
 import { API, signedFetch } from "./protocol.js";
 import { interceptBrowserDownload } from "./interceptor.js";
+import { bridgeMediaTask } from "./media-selection.js";
 
 const defaults = { intercept: true, minSizeMb: 1, allowHosts: [], blockHosts: [], extensions: [], bypassUntil: 0 };
 const config = async () => ({ ...defaults, ...(await chrome.storage.local.get(Object.keys(defaults))) });
@@ -24,7 +25,17 @@ chrome.runtime.onInstalled.addListener(() => {
 chrome.contextMenus.onClicked.addListener(async (info, tab) => {
   const url = info.linkUrl || info.srcUrl || info.pageUrl;
   if (!url) return;
-  try { await sendTask(url); notify("已发送到猫步下载器", tab?.title || url); }
+  try {
+    if (info.menuItemId === "lumaget-page") {
+      const response = await signedFetch("/v1/media/probe", { url });
+      if (!response.ok) throw new Error(await response.text());
+      const task = bridgeMediaTask(await response.json(), tab?.title);
+      await sendTask(url, task.fileName, { media: task.media });
+    } else {
+      await sendTask(url);
+    }
+    notify("已发送到猫步下载器", tab?.title || url);
+  }
   catch (error) { notify("发送失败", String(error.message || error)); }
 });
 

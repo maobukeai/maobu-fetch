@@ -9,14 +9,20 @@ use bridge::PairingService;
 use manager::{DownloadManager, SharedManager};
 use media_tools::MediaTools;
 use models::{
-    AppSettings, BatchTaskRequest, DownloadTask, MediaProbeResult, NewTaskRequest, PairingInfo,
-    ToolStatus,
+    AppSettings, BatchTaskRequest, DetectedMediaTools, DownloadTask, MediaProbeResult,
+    NewTaskRequest, PairingInfo, ToolComponent, ToolStatus,
 };
 use std::{path::PathBuf, sync::Arc};
 use store::Store;
-use tauri::{Emitter, Manager, State};
 use tauri::menu::{CheckMenuItem, Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+use tauri::{Emitter, Manager, State};
+
+struct TrayMenuItems {
+    clipboard: CheckMenuItem<tauri::Wry>,
+    low_memory: CheckMenuItem<tauri::Wry>,
+    frosted_glass: CheckMenuItem<tauri::Wry>,
+}
 
 #[tauri::command]
 async fn tasks_list(manager: State<'_, SharedManager>) -> Result<Vec<DownloadTask>, String> {
@@ -80,10 +86,13 @@ async fn settings_get(manager: State<'_, SharedManager>) -> Result<AppSettings, 
 async fn settings_save(
     settings: AppSettings,
     manager: State<'_, SharedManager>,
-    clip_item: State<'_, CheckMenuItem<tauri::Wry>>,
+    tray_items: State<'_, TrayMenuItems>,
 ) -> Result<(), String> {
-    let _ = clip_item.set_checked(settings.clipboard_monitor);
-    manager.save_settings(settings).await
+    manager.save_settings(settings.clone()).await?;
+    let _ = tray_items.clipboard.set_checked(settings.clipboard_monitor);
+    let _ = tray_items.low_memory.set_checked(settings.low_memory_mode);
+    let _ = tray_items.frosted_glass.set_checked(settings.frosted_glass);
+    Ok(())
 }
 
 #[tauri::command]
@@ -127,13 +136,26 @@ async fn pairing_revoke(manager: State<'_, SharedManager>) -> Result<(), String>
 }
 
 #[tauri::command]
-async fn media_probe(url: String, app: tauri::AppHandle) -> Result<MediaProbeResult, String> {
-    media::probe(&app, &url).await
+async fn media_probe(
+    url: String,
+    app: tauri::AppHandle,
+    manager: State<'_, SharedManager>,
+) -> Result<MediaProbeResult, String> {
+    media::probe(&app, &manager.settings().await, &url).await
 }
 
 #[tauri::command]
-async fn media_tool_status(tools: State<'_, MediaTools>) -> Result<ToolStatus, String> {
-    Ok(tools.status().await)
+async fn media_tool_status(
+    app: tauri::AppHandle,
+    tools: State<'_, MediaTools>,
+    manager: State<'_, SharedManager>,
+) -> Result<ToolStatus, String> {
+    Ok(tools.status(&app, &manager.settings().await).await)
+}
+
+#[tauri::command]
+fn media_tools_detect_system() -> DetectedMediaTools {
+    media_tools::detect_system_tools()
 }
 
 #[tauri::command]
@@ -142,7 +164,26 @@ async fn media_tools_install(
     tools: State<'_, MediaTools>,
     manager: State<'_, SharedManager>,
 ) -> Result<(), String> {
-    tools.start_install(app, manager.settings().await).await
+    let settings = manager.settings().await;
+    let status = tools.status(&app, &settings).await;
+    let component = if !status.yt_dlp_available {
+        ToolComponent::YtDlp
+    } else {
+        ToolComponent::Ffmpeg
+    };
+    tools.start_install(app, settings, component).await
+}
+
+#[tauri::command]
+async fn media_tool_install(
+    component: ToolComponent,
+    app: tauri::AppHandle,
+    tools: State<'_, MediaTools>,
+    manager: State<'_, SharedManager>,
+) -> Result<(), String> {
+    tools
+        .start_install(app, manager.settings().await, component)
+        .await
 }
 
 #[tauri::command]
@@ -155,13 +196,34 @@ async fn media_tools_cancel(tools: State<'_, MediaTools>) -> Result<(), String> 
 async fn media_tools_remove(
     app: tauri::AppHandle,
     tools: State<'_, MediaTools>,
+    manager: State<'_, SharedManager>,
 ) -> Result<(), String> {
-    tools.uninstall(&app).await
+    let settings = manager.settings().await;
+    tools
+        .uninstall(&app, &settings, ToolComponent::Ffmpeg)
+        .await?;
+    tools.uninstall(&app, &settings, ToolComponent::YtDlp).await
 }
 
 #[tauri::command]
-async fn media_tools_check_update(tools: State<'_, MediaTools>) -> Result<ToolStatus, String> {
-    Ok(tools.status().await)
+async fn media_tool_remove(
+    component: ToolComponent,
+    app: tauri::AppHandle,
+    tools: State<'_, MediaTools>,
+    manager: State<'_, SharedManager>,
+) -> Result<(), String> {
+    tools
+        .uninstall(&app, &manager.settings().await, component)
+        .await
+}
+
+#[tauri::command]
+async fn media_tools_check_update(
+    app: tauri::AppHandle,
+    tools: State<'_, MediaTools>,
+    manager: State<'_, SharedManager>,
+) -> Result<ToolStatus, String> {
+    Ok(tools.status(&app, &manager.settings().await).await)
 }
 
 #[tauri::command]
@@ -188,7 +250,10 @@ pub fn run() {
             let manager =
                 tauri::async_runtime::block_on(DownloadManager::new(store, app.handle().clone()))?;
             let pairing = PairingService::new(manager.clone());
-            let media_tools = MediaTools::new(app.handle());
+            let media_tools = MediaTools::new(
+                app.handle(),
+                &tauri::async_runtime::block_on(manager.settings()),
+            );
             app.manage(manager.clone());
             app.manage(pairing.clone());
             app.manage(media_tools);
@@ -206,10 +271,39 @@ pub fn run() {
                     initial_settings.clipboard_monitor,
                     None::<&str>,
                 )?;
-                app.manage(clip_item.clone());
+                let low_memory_item = CheckMenuItem::with_id(
+                    app,
+                    "low-memory",
+                    "低内存模式",
+                    true,
+                    initial_settings.low_memory_mode,
+                    None::<&str>,
+                )?;
+                let frosted_glass_item = CheckMenuItem::with_id(
+                    app,
+                    "frosted-glass",
+                    "磨砂玻璃",
+                    true,
+                    initial_settings.frosted_glass,
+                    None::<&str>,
+                )?;
+                app.manage(TrayMenuItems {
+                    clipboard: clip_item.clone(),
+                    low_memory: low_memory_item.clone(),
+                    frosted_glass: frosted_glass_item.clone(),
+                });
 
                 let quit_item = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
-                let menu = Menu::with_items(app, &[&show_item, &clip_item, &quit_item])?;
+                let menu = Menu::with_items(
+                    app,
+                    &[
+                        &show_item,
+                        &clip_item,
+                        &low_memory_item,
+                        &frosted_glass_item,
+                        &quit_item,
+                    ],
+                )?;
 
                 let _tray = TrayIconBuilder::new()
                     .icon(icon.clone())
@@ -222,13 +316,48 @@ pub fn run() {
                                 let _ = window.set_focus();
                             }
                         } else if event.id.as_ref() == "clipboard" {
-                            let clip_item = app.state::<CheckMenuItem<tauri::Wry>>();
-                            if let Ok(checked) = clip_item.is_checked() {
+                            let tray_items = app.state::<TrayMenuItems>();
+                            if let Ok(checked) = tray_items.clipboard.is_checked() {
                                 let manager = app.state::<SharedManager>();
-                                let mut settings = tauri::async_runtime::block_on(manager.settings());
+                                let mut settings =
+                                    tauri::async_runtime::block_on(manager.settings());
                                 settings.clipboard_monitor = checked;
-                                let _ = tauri::async_runtime::block_on(manager.save_settings(settings.clone()));
+                                let _ = tauri::async_runtime::block_on(
+                                    manager.save_settings(settings.clone()),
+                                );
                                 let _ = app.emit("settings-changed", settings);
+                            }
+                        } else if event.id.as_ref() == "low-memory" {
+                            let tray_items = app.state::<TrayMenuItems>();
+                            if let Ok(checked) = tray_items.low_memory.is_checked() {
+                                let manager = app.state::<SharedManager>();
+                                let mut settings =
+                                    tauri::async_runtime::block_on(manager.settings());
+                                settings.low_memory_mode = checked;
+                                let saved = tauri::async_runtime::block_on(
+                                    manager.save_settings(settings.clone()),
+                                );
+                                if saved.is_ok() {
+                                    let _ = app.emit("settings-changed", settings);
+                                } else {
+                                    let _ = tray_items.low_memory.set_checked(!checked);
+                                }
+                            }
+                        } else if event.id.as_ref() == "frosted-glass" {
+                            let tray_items = app.state::<TrayMenuItems>();
+                            if let Ok(checked) = tray_items.frosted_glass.is_checked() {
+                                let manager = app.state::<SharedManager>();
+                                let mut settings =
+                                    tauri::async_runtime::block_on(manager.settings());
+                                settings.frosted_glass = checked;
+                                let saved = tauri::async_runtime::block_on(
+                                    manager.save_settings(settings.clone()),
+                                );
+                                if saved.is_ok() {
+                                    let _ = app.emit("settings-changed", settings);
+                                } else {
+                                    let _ = tray_items.frosted_glass.set_checked(!checked);
+                                }
                             }
                         } else if event.id.as_ref() == "quit" {
                             app.exit(0);
@@ -272,9 +401,12 @@ pub fn run() {
             pairing_revoke,
             media_probe,
             media_tool_status,
+            media_tools_detect_system,
             media_tools_install,
+            media_tool_install,
             media_tools_cancel,
             media_tools_remove,
+            media_tool_remove,
             media_tools_check_update,
             app_exit
         ])

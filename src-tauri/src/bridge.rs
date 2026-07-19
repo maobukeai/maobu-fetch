@@ -173,7 +173,8 @@ async fn probe_media(
     authorize(&state, &headers, &body).await?;
     let request: ProbeRequest = serde_json::from_slice(&body)
         .map_err(|_| (StatusCode::BAD_REQUEST, "媒体参数无效".into()))?;
-    media::probe(&state.app, &request.url)
+    let settings = state.manager.settings().await;
+    media::probe(&state.app, &settings, &request.url)
         .await
         .map(Json)
         .map_err(|e| (StatusCode::BAD_REQUEST, e))

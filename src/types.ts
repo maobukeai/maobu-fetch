@@ -7,6 +7,7 @@ export interface MediaSelection {
   format_label?: string;
   subtitles: string[];
   thumbnail?: string;
+  requires_ffmpeg?: boolean;
 }
 
 export interface DownloadTask {
@@ -70,6 +71,7 @@ export interface AppSettings {
   notifications: boolean;
   auto_start: boolean;
   theme: "system" | "light" | "dark";
+  frosted_glass: boolean;
   language: string;
   intercept_browser_downloads: boolean;
   min_file_size_mb: number;
@@ -84,6 +86,10 @@ export interface AppSettings {
   retry_base_seconds: number;
   verify_after_download: boolean;
   media_tool_auto_update: boolean;
+  yt_dlp_path: string;
+  ffmpeg_path: string;
+  ffprobe_path: string;
+  low_memory_mode: boolean;
   window_width?: number;
   window_height?: number;
   auto_scale_ui?: boolean;
@@ -91,6 +97,7 @@ export interface AppSettings {
 
 export interface PairingInfo { code: string; expires_at: number; paired_extension?: string; }
 export type ToolPhase = "missing" | "downloading" | "verifying" | "extracting" | "ready" | "failed";
+export type ToolComponent = "yt-dlp" | "ffmpeg";
 export interface ToolStatus {
   state: ToolPhase;
   version: string;
@@ -100,8 +107,24 @@ export interface ToolStatus {
   error?: string;
   yt_dlp_available: boolean;
   ffmpeg_available: boolean;
+  active_component?: ToolComponent;
+  yt_dlp_version: string;
+  ffmpeg_version: string;
+  yt_dlp_download_bytes: number;
+  ffmpeg_download_bytes: number;
+  yt_dlp_installed_bytes: number;
+  ffmpeg_installed_bytes: number;
+  yt_dlp_source: "missing" | "custom" | "bundled" | "system";
+  ffmpeg_source: "missing" | "custom" | "bundled" | "system";
+  yt_dlp_resolved_path?: string;
+  ffmpeg_resolved_path?: string;
 }
-export interface MediaFormat { id: string; label: string; extension?: string; width?: number; height?: number; file_size?: number; has_video: boolean; has_audio: boolean; }
+export interface DetectedMediaTools {
+  yt_dlp_path?: string;
+  ffmpeg_path?: string;
+  ffprobe_path?: string;
+}
+export interface MediaFormat { id: string; label: string; extension?: string; width?: number; height?: number; file_size?: number; has_video: boolean; has_audio: boolean; requires_ffmpeg: boolean; }
 export interface MediaProbeResult { title: string; thumbnail?: string; extractor?: string; duration?: number; formats: MediaFormat[]; subtitles: string[]; drm: boolean; }
 export interface TaskEvent { task: DownloadTask; event: string; }
 export type FilterKey = "all" | TaskStatus | "images" | "video" | "audio" | "documents" | "archives" | "apps";

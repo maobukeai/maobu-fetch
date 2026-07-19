@@ -1,5 +1,6 @@
 use crate::{
-    media_tools::tool_path,
+    media_tools::{resolve_ffmpeg, resolve_yt_dlp},
+    models::AppSettings,
     models::{DownloadTask, MediaFormat, MediaProbeResult, TaskStatus},
 };
 use serde_json::Value;
@@ -8,12 +9,17 @@ use tauri::AppHandle;
 use tokio::process::Command;
 use tokio_util::sync::CancellationToken;
 
-pub async fn probe(app: &AppHandle, url: &str) -> Result<MediaProbeResult, String> {
+pub async fn probe(
+    app: &AppHandle,
+    settings: &AppSettings,
+    url: &str,
+) -> Result<MediaProbeResult, String> {
     let parsed = url::Url::parse(url).map_err(|_| "媒体地址无效".to_string())?;
     if !matches!(parsed.scheme(), "http" | "https") {
         return Err("媒体地址无效".into());
     }
-    let yt = tool_path(app, "yt-dlp.exe").ok_or("MEDIA_TOOLS_MISSING: 需要先安装媒体工具")?;
+    let yt = resolve_yt_dlp(app, settings)
+        .ok_or("MEDIA_YT_DLP_MISSING: 分析媒体需要先安装 yt-dlp 基础组件")?;
     let output = Command::new(yt)
         .args(["--dump-single-json", "--no-playlist", "--no-warnings", url])
         .output()
@@ -27,7 +33,7 @@ pub async fn probe(app: &AppHandle, url: &str) -> Result<MediaProbeResult, Strin
         .get("_has_drm")
         .and_then(Value::as_bool)
         .unwrap_or(false);
-    let formats = value
+    let mut formats: Vec<MediaFormat> = value
         .get("formats")
         .and_then(Value::as_array)
         .into_iter()
@@ -61,9 +67,32 @@ pub async fn probe(app: &AppHandle, url: &str) -> Result<MediaProbeResult, Strin
                 file_size: size,
                 has_video: vcodec != "none",
                 has_audio: acodec != "none",
+                requires_ffmpeg: false,
             })
         })
         .collect();
+    let has_separate_video = formats
+        .iter()
+        .any(|format| format.has_video && !format.has_audio);
+    let has_separate_audio = formats
+        .iter()
+        .any(|format| !format.has_video && format.has_audio);
+    if has_separate_video && has_separate_audio {
+        formats.insert(
+            0,
+            MediaFormat {
+                id: "bestvideo*+bestaudio/best".into(),
+                label: "最高画质（需要 FFmpeg 合并音视频）".into(),
+                extension: Some("mp4".into()),
+                width: None,
+                height: None,
+                file_size: None,
+                has_video: true,
+                has_audio: true,
+                requires_ffmpeg: true,
+            },
+        );
+    }
     let subtitles = value
         .get("subtitles")
         .and_then(Value::as_object)
@@ -93,12 +122,14 @@ pub async fn probe(app: &AppHandle, url: &str) -> Result<MediaProbeResult, Strin
 
 pub async fn download(
     app: &AppHandle,
+    settings: &AppSettings,
     mut task: DownloadTask,
     token: CancellationToken,
 ) -> Result<DownloadTask, String> {
     let media = task.media.clone().ok_or("缺少媒体格式")?;
-    let yt = tool_path(app, "yt-dlp.exe").ok_or("MEDIA_TOOLS_MISSING: 需要先安装媒体工具")?;
-    let ffmpeg = tool_path(app, "ffmpeg.exe");
+    let yt = resolve_yt_dlp(app, settings)
+        .ok_or("MEDIA_YT_DLP_MISSING: 下载媒体需要先安装 yt-dlp 基础组件")?;
+    let ffmpeg = resolve_ffmpeg(app, settings).map(|tools| tools.ffmpeg);
     let output = PathBuf::from(&task.destination).join(&task.file_name);
     if let Some(parent) = output.parent() {
         tokio::fs::create_dir_all(parent)
@@ -109,18 +140,12 @@ pub async fn download(
     let format = media
         .format_id
         .unwrap_or_else(|| "bestvideo*+bestaudio/best".into());
+    let requires_ffmpeg = media.requires_ffmpeg || format.contains('+');
+    if requires_ffmpeg && ffmpeg.is_none() {
+        return Err("MEDIA_FFMPEG_MISSING: 当前格式需要 FFmpeg 合并组件".into());
+    }
     let mut command = Command::new(yt);
-    command.args([
-        "--newline",
-        "--no-playlist",
-        "--no-part",
-        "-f",
-        &format,
-        "--merge-output-format",
-        "mp4",
-        "-o",
-        &template,
-    ]);
+    command.args(media_arguments(&format, &template, ffmpeg.is_some()));
     if let Some(path) = ffmpeg {
         command.arg("--ffmpeg-location").arg(path);
     }
@@ -140,4 +165,41 @@ pub async fn download(
     task.downloaded_bytes = metadata.len();
     task.status = TaskStatus::Completed;
     Ok(task)
+}
+
+fn media_arguments(format: &str, template: &str, has_ffmpeg: bool) -> Vec<String> {
+    let mut arguments = vec![
+        "--newline".into(),
+        "--no-playlist".into(),
+        "--no-part".into(),
+        "-f".into(),
+        format.into(),
+    ];
+    if has_ffmpeg {
+        arguments.extend(["--merge-output-format".into(), "mp4".into()]);
+    }
+    arguments.extend(["-o".into(), template.into()]);
+    arguments
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lightweight_media_download_does_not_require_ffmpeg_arguments() {
+        let arguments = media_arguments("18", "video.mp4", false);
+        assert!(!arguments
+            .iter()
+            .any(|value| value == "--merge-output-format"));
+        assert!(arguments.windows(2).any(|pair| pair == ["-f", "18"]));
+    }
+
+    #[test]
+    fn merged_media_download_enables_ffmpeg_output_format() {
+        let arguments = media_arguments("bestvideo+bestaudio", "video.mp4", true);
+        assert!(arguments
+            .windows(2)
+            .any(|pair| pair == ["--merge-output-format", "mp4"]));
+    }
 }

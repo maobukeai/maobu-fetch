@@ -18,7 +18,7 @@
       "minHeight": 540,
       "center": true,
       "decorations": false,
-      "transparent": false,
+      "transparent": true,
       "resizable": true
     }],
     "security": { "csp": null }

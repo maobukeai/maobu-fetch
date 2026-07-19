@@ -9,13 +9,13 @@ import {
   ShieldCheck, SlidersHorizontal, Trash2, Unplug, Video, X,
 } from "lucide-react";
 import { api, isDesktop } from "./api";
-import { getCurrentWindow } from "@tauri-apps/api/window";
+import { Effect, getCurrentWindow } from "@tauri-apps/api/window";
 import { readText } from "@tauri-apps/plugin-clipboard-manager";
 import { invoke } from "@tauri-apps/api/core";
 import { LogicalSize } from "@tauri-apps/api/dpi";
 import type {
   AppSettings, CollisionPolicy, DownloadTask, FilterKey, MediaProbeResult,
-  NewTaskRequest, PairingInfo, TaskStatus, ToolStatus,
+  NewTaskRequest, PairingInfo, TaskStatus, ToolComponent, ToolStatus,
 } from "./types";
 
 const statusText: Record<TaskStatus, string> = {
@@ -36,15 +36,37 @@ const defaults: AppSettings = {
   download_dir: "", concurrent_downloads: 3, connections_per_download: 8,
   speed_limit_kbps: 0, start_minimized: false, minimize_to_tray: true,
   close_to_tray: false, notifications: true, auto_start: false, theme: "system",
+  frosted_glass: false,
   language: "zh-CN", intercept_browser_downloads: true, min_file_size_mb: 1,
   clipboard_monitor: false, proxy_mode: "system", proxy_url: "", proxy_username: "",
   proxy_password: "", user_agent: "MaobuFetch/0.5", default_collision_policy: "rename",
   max_retries: 3, retry_base_seconds: 2, verify_after_download: false,
   media_tool_auto_update: true,
+  yt_dlp_path: "", ffmpeg_path: "", ffprobe_path: "",
+  low_memory_mode: false,
   window_width: 1024,
   window_height: 720,
   auto_scale_ui: false,
 };
+
+function usesDarkTheme(theme: AppSettings["theme"]) {
+  return theme === "dark" || (theme === "system" && matchMedia("(prefers-color-scheme: dark)").matches);
+}
+
+async function applyWindowAppearance(frostedGlass: boolean, dark: boolean) {
+  document.documentElement.dataset.windowStyle = frostedGlass ? "frosted" : "solid";
+  if (!isDesktop()) return;
+
+  const appWindow = getCurrentWindow();
+  if (frostedGlass) {
+    await appWindow.setEffects({
+      effects: [Effect.Acrylic],
+      color: dark ? [24, 24, 27, 112] : [246, 248, 252, 104],
+    });
+  } else {
+    await appWindow.clearEffects();
+  }
+}
 
 function Titlebar() {
   const [isMaximized, setIsMaximized] = useState(false);
@@ -198,16 +220,23 @@ export default function App() {
           ? items.map((task) => task.id === event.task.id ? event.task : task)
           : [event.task, ...items]);
       }
-    }).then((items) => { unlisten = items; });
+    }).then((items) => { unlisten.push(...items); });
+    void api.subscribeSettings(setSettings).then((item) => {
+      if (item) unlisten.push(item);
+    });
     return () => {
       document.removeEventListener("contextmenu", handleContextMenu);
       unlisten.forEach((item) => item());
     };
   }, []);
   useEffect(() => {
-    const dark = settings.theme === "dark" || (settings.theme === "system" && matchMedia("(prefers-color-scheme: dark)").matches);
+    const dark = usesDarkTheme(settings.theme);
     document.documentElement.dataset.theme = dark ? "dark" : "light";
-  }, [settings.theme]);
+    void applyWindowAppearance(settings.frosted_glass, dark).catch((error) => {
+      document.documentElement.dataset.windowStyle = "solid";
+      setToast({ kind: "error", text: `无法应用磨砂玻璃效果：${String(error)}` });
+    });
+  }, [settings.theme, settings.frosted_glass]);
   useEffect(() => {
     if (!appWindow || !settings.window_width || !settings.window_height) return;
     void appWindow.setSize(new LogicalSize(settings.window_width, settings.window_height));
@@ -343,10 +372,10 @@ export default function App() {
   };
   const beginResize = (key: string, event: MouseEvent) => {
     event.preventDefault(); event.stopPropagation(); const start = event.clientX;
-    const defaultWidths: Record<string, number> = { size: 78, status: 82, connection: 64, progress: 130, speed: 78, eta: 82, created: 86 };
+    const defaultWidths: Record<string, number> = { size: 78, status: 82, connection: 64, progress: 130, speed: 78, eta: 82, created: 100 };
     const isSmallScreen = window.innerWidth <= 1180;
     const fallbackWidth = isSmallScreen 
-      ? { size: 70, status: 82, connection: 58, progress: 112, speed: 72, eta: 76, created: 78 }[key] ?? 70
+      ? { size: 70, status: 82, connection: 58, progress: 112, speed: 72, eta: 76, created: 92 }[key] ?? 70
       : defaultWidths[key] ?? 80;
     const width = columnWidths[key] ?? fallbackWidth;
     const move = (next: globalThis.MouseEvent) => setColumnWidths((value) => ({ ...value, [key]: Math.max(58, width + next.clientX - start) }));
@@ -504,7 +533,7 @@ function TaskRow({ task, selected, onSelect, onOpen, onContext }: { task: Downlo
     <div className="name-cell" onClick={onSelect}><FileIcon category={task.category} /><div><strong title={task.file_name}>{task.file_name}</strong><small title={task.url}>{hostOf(task.url)}</small></div></div>
     <span>{task.total_bytes ? formatBytes(task.total_bytes) : "—"}</span><span className={`task-status ${task.status}`}>{statusText[task.status]}</span><span className="connection-count">{task.status === "downloading" ? `${task.active_connections}/${task.connection_count}` : task.connection_count}<small> 路</small></span>
     <div className="progress-cell"><div><i style={{ width: `${progress}%` }} /></div><span>{task.status === "completed" ? "100%" : `${progress.toFixed(0)}%`}</span></div>
-    <span>{task.status === "downloading" ? `${formatBytes(task.speed)}/s` : "—"}</span><span>{task.eta_seconds ? formatDuration(task.eta_seconds) : "—"}</span><span>{formatDate(task.created_at)}</span><button className="row-menu"><MoreHorizontal size={15} /></button>
+    <span>{task.status === "downloading" ? `${formatBytes(task.speed)}/s` : "—"}</span><span>{task.eta_seconds ? formatDuration(task.eta_seconds) : "—"}</span><span>{formatDate(task.created_at)}</span><button className="row-menu" onClick={(event) => { event.stopPropagation(); onContext(event); }}><MoreHorizontal size={15} /></button>
   </div>;
 }
 function CatDownloadMark() { return <svg viewBox="0 0 1024 1024" aria-hidden="true"><rect x="48" y="48" width="928" height="928" rx="220" fill="#f5f5f7" /><path d="M302 360 358 230l112 78c28-9 56-14 86-14s58 5 86 14l112-78 56 130v214c0 151-113 254-254 254S302 725 302 574V360Z" fill="#1d1d1f" /><path d="M556 392v218m-86-82 86 86 86-86" fill="none" stroke="#f5f5f7" strokeWidth="58" strokeLinecap="round" strokeLinejoin="round" /><path d="M445 694h222" fill="none" stroke="#0a84ff" strokeWidth="58" strokeLinecap="round" /><circle cx="428" cy="430" r="19" fill="#f5f5f7" /><circle cx="684" cy="430" r="19" fill="#f5f5f7" /><path d="M755 700c86 15 119-50 76-103" fill="none" stroke="#1d1d1f" strokeWidth="48" strokeLinecap="round" /></svg>; }
@@ -557,13 +586,13 @@ function Details({ task, onClose, notify, selectedCount }: { task?: DownloadTask
 
       {task.segments.length > 0 && (
         <div className="segment-panel">
-          <dt style={{ fontSize: "10px", color: "var(--subtle)", marginBottom: "4px" }}>分段连接 ({task.active_connections} 活动 / {task.connection_count} 分段)</dt>
+          <div className="segment-title">并发连接（{task.active_connections} 活动 / 上限 {task.connection_count}） · {task.segments.length} 个分片</div>
           <div className="segment-list">
             {task.segments.map((segment) => {
               const size = segment.end_byte - segment.start_byte + 1;
               const value = size ? Math.min(100, (segment.downloaded_bytes / size) * 100) : 0;
               return (
-                <div className="segment-item" key={segment.index}>
+                <div className={`segment-item ${segment.status === "downloading" && task.status === "downloading" ? "active" : ""}`} key={segment.index}>
                   <span>#{segment.index + 1}</span>
                   <div><i style={{ width: `${value}%` }} /></div>
                   <em>{value.toFixed(0)}%</em>
@@ -640,13 +669,19 @@ function NewTaskDialog({ settings, onClose, onCreated, defaultUrl }: { settings:
   const [connections, setConnections] = useState(settings.connections_per_download);
   const [media, setMedia] = useState<MediaProbeResult>(); const [format, setFormat] = useState("");
   const [toolStatus, setToolStatus] = useState<ToolStatus>();
-  useEffect(() => { let unlisten: (() => void) | undefined; void api.subscribeMediaTools(setToolStatus).then((value) => { unlisten = value; }); return () => unlisten?.(); }, []);
+  useEffect(() => { let unlisten: (() => void) | undefined; void api.toolStatus().then(setToolStatus); void api.subscribeMediaTools(setToolStatus).then((value) => { unlisten = value; }); return () => unlisten?.(); }, []);
   const lines = urls.split(/\r?\n/).map((value) => value.trim()).filter(Boolean);
-  const probe = async () => { setBusy(true); setError(undefined); try { const result = await api.probeMedia(lines[0]); if (result.drm) throw new Error("检测到 DRM 保护，猫步下载器不处理此内容"); setMedia(result); const selected = result.formats.find((item) => item.has_video && item.has_audio) ?? result.formats.find((item) => item.has_video); setFormat(selected?.id ?? ""); if (!fileName) setFileName(`${safeDisplayName(result.title)}.mp4`); } catch (reason) { const text = String(reason); if (text.includes("MEDIA_TOOLS_MISSING")) setToolStatus(await api.toolStatus()); else setError(text); } finally { setBusy(false); } };
+  const probe = async () => { setBusy(true); setError(undefined); try { const result = await api.probeMedia(lines[0]); if (result.drm) throw new Error("检测到 DRM 保护，猫步下载器不处理此内容"); setMedia(result); const direct = result.formats.filter((item) => item.has_video && item.has_audio && !item.requires_ffmpeg).sort((a, b) => (b.height ?? 0) - (a.height ?? 0)); const video = result.formats.filter((item) => item.has_video && !item.requires_ffmpeg).sort((a, b) => (b.height ?? 0) - (a.height ?? 0)); const selected = direct[0] ?? video[0] ?? result.formats[0]; setFormat(selected?.id ?? ""); if (!fileName) setFileName(`${safeDisplayName(result.title)}.mp4`); } catch (reason) { const text = String(reason); if (text.includes("MEDIA_YT_DLP_MISSING")) setToolStatus(await api.toolStatus()); else setError(text); } finally { setBusy(false); } };
   const submit = async () => {
     if (!lines.length) return; setBusy(true); setError(undefined);
     const headers: Record<string, string> = {}; if (referer) headers.Referer = referer; if (cookie) headers.Cookie = cookie; if (authorization) headers.Authorization = authorization;
-    const template: Omit<NewTaskRequest, "url"> = { file_name: fileName || undefined, destination, headers, scheduled_at: schedule ? new Date(schedule).getTime() : undefined, priority: 0, expected_checksum: checksum || undefined, source: "desktop", per_task_speed_limit: limit * 1024, collision_policy: policy, connection_count: connections, media: media ? { extractor: media.extractor, format_id: format, format_label: media.formats.find((item) => item.id === format)?.label, subtitles: [], thumbnail: media.thumbnail } : undefined };
+    const selectedFormat = media?.formats.find((item) => item.id === format);
+    if (selectedFormat?.requires_ffmpeg && !toolStatus?.ffmpeg_available) {
+      setError("当前最高画质需要先安装 FFmpeg 高清合并组件");
+      setBusy(false);
+      return;
+    }
+    const template: Omit<NewTaskRequest, "url"> = { file_name: fileName || undefined, destination, headers, scheduled_at: schedule ? new Date(schedule).getTime() : undefined, priority: 0, expected_checksum: checksum || undefined, source: "desktop", per_task_speed_limit: limit * 1024, collision_policy: policy, connection_count: connections, media: media ? { extractor: media.extractor, format_id: format, format_label: selectedFormat?.label, subtitles: [], thumbnail: media.thumbnail, requires_ffmpeg: selectedFormat?.requires_ffmpeg } : undefined };
     try {
       if (lines.length === 1) {
         const task = await api.add({ url: lines[0], ...template });
@@ -728,11 +763,11 @@ function NewTaskDialog({ settings, onClose, onCreated, defaultUrl }: { settings:
               <input
                 type="range"
                 min="0"
-                max="4"
+                max="5"
                 step="1"
-                value={[1, 2, 4, 8, 16].indexOf(connections)}
+                value={[1, 2, 4, 8, 16, 32].indexOf(connections)}
                 onChange={(e) => {
-                  const values = [1, 2, 4, 8, 16];
+                  const values = [1, 2, 4, 8, 16, 32];
                   setConnections(values[+e.target.value]);
                 }}
                 className="fluent-slider"
@@ -743,6 +778,7 @@ function NewTaskDialog({ settings, onClose, onCreated, defaultUrl }: { settings:
                 <span>4</span>
                 <span>8</span>
                 <span>16</span>
+                <span>32</span>
               </div>
             </div>
           </div>
@@ -805,8 +841,8 @@ function NewTaskDialog({ settings, onClose, onCreated, defaultUrl }: { settings:
           </div>
         )}
 
-        {toolStatus && toolStatus.state !== "ready" && (
-          <MediaToolsCard status={toolStatus} compact onStatus={setToolStatus} />
+        {toolStatus && (!toolStatus.yt_dlp_available || (media?.formats.find((item) => item.id === format)?.requires_ffmpeg && !toolStatus.ffmpeg_available)) && (
+          <MediaToolsCard status={toolStatus} compact required={!toolStatus.yt_dlp_available ? "yt-dlp" : "ffmpeg"} onStatus={setToolStatus} />
         )}
 
         {media && (
@@ -823,6 +859,7 @@ function NewTaskDialog({ settings, onClose, onCreated, defaultUrl }: { settings:
                     <option key={item.id} value={item.id}>
                       {item.label}
                       {item.file_size ? ` (${formatBytes(item.file_size)})` : ""}
+                      {!item.requires_ffmpeg && item.has_video && item.has_audio ? " · 轻量单文件" : ""}
                     </option>
                   ))}
               </select>
@@ -967,9 +1004,13 @@ function SettingsPage({ value, onChange, onClose, notify }: { value: AppSettings
   };
   useEffect(() => { let unlisten: (() => void) | undefined; if (section === "browser") void api.pairing().then(setPair); if (section === "media") { void api.toolStatus().then(setTools); void api.subscribeMediaTools(setTools).then((value) => { unlisten = value; }); } return () => unlisten?.(); }, [section]);
   useEffect(() => {
-    const dark = draft.theme === "dark" || (draft.theme === "system" && matchMedia("(prefers-color-scheme: dark)").matches);
+    const dark = usesDarkTheme(draft.theme);
     document.documentElement.dataset.theme = dark ? "dark" : "light";
-  }, [draft.theme]);
+    void applyWindowAppearance(draft.frosted_glass, dark).catch((error) => {
+      document.documentElement.dataset.windowStyle = "solid";
+      notify(`无法预览磨砂玻璃效果：${String(error)}`, "error");
+    });
+  }, [draft.theme, draft.frosted_glass]);
   useEffect(() => {
     const applyDraftScale = () => {
       if (draft.auto_scale_ui) {
@@ -989,9 +1030,10 @@ function SettingsPage({ value, onChange, onClose, notify }: { value: AppSettings
   }, [draft.auto_scale_ui]);
   useEffect(() => {
     return () => {
-      const finalSettings = hasSaved.current ? draft : value;
-      const dark = finalSettings.theme === "dark" || (finalSettings.theme === "system" && matchMedia("(prefers-color-scheme: dark)").matches);
+      const finalSettings = hasSaved.current ? draftRef.current : value;
+      const dark = usesDarkTheme(finalSettings.theme);
       document.documentElement.dataset.theme = dark ? "dark" : "light";
+      void applyWindowAppearance(finalSettings.frosted_glass, dark);
       if (finalSettings.auto_scale_ui) {
         const scale = window.outerWidth / 1024;
         const clampedScale = Math.min(Math.max(scale, 0.75), 2.0);
@@ -1000,16 +1042,16 @@ function SettingsPage({ value, onChange, onClose, notify }: { value: AppSettings
         document.documentElement.style.zoom = "";
       }
     };
-  }, [value, draft]);
+  }, [value]);
   const save = async () => { try { await api.saveSettings(draft); hasSaved.current = true; onChange(draft); notify("设置已保存"); onClose(); } catch (error) { notify(String(error), "error"); } };
   const items: Array<[SettingsSection, string, typeof Settings]> = [["general","常规",Settings],["download","下载",Download],["network","网络",Network],["browser","浏览器",Globe2],["media","媒体",Video],["appearance","外观",SlidersHorizontal],["advanced","高级",Info],["about","关于",Info]];
-  return <div className="settings-page"><aside className="nav-pane"><div className="brand" data-tauri-drag-region>设置</div>{items.map(([key,label,Icon]) => <button key={key} className={section === key ? "nav-item active" : "nav-item"} onClick={() => setSection(key)}><Icon size={15} /><span>{label}</span></button>)}</aside><main className="settings-body"><div className="settings-title" data-tauri-drag-region><h1 data-tauri-drag-region>{items.find(([key]) => key === section)?.[1]}</h1></div><div className="settings-content">
+  return <div className="settings-page"><aside className="nav-pane"><div className="brand" data-tauri-drag-region>设置</div>{items.map(([key,label,Icon]) => <button key={key} className={section === key ? "nav-item active" : "nav-item"} onClick={() => setSection(key)}><Icon size={15} /><span>{label}</span></button>)}</aside><main className="settings-body" data-tauri-drag-region><div className="settings-title" data-tauri-drag-region><h1 data-tauri-drag-region>{items.find(([key]) => key === section)?.[1]}</h1></div><div className="settings-content">
     {section === "general" && <SettingsGroup title="应用行为"><div className="settings-group-content"><Toggle label="启动时最小化" checked={draft.start_minimized} onChange={(v) => set("start_minimized", v)} /><Toggle label="最小化到托盘" checked={draft.minimize_to_tray} onChange={(v) => set("minimize_to_tray", v)} /><Toggle label="关闭时驻留托盘" checked={draft.close_to_tray} onChange={(v) => set("close_to_tray", v)} /><Toggle label="下载完成通知" checked={draft.notifications} onChange={(v) => set("notifications", v)} /><Toggle label="监视剪贴板链接" checked={draft.clipboard_monitor} onChange={(v) => set("clipboard_monitor", v)} /></div></SettingsGroup>}
-    {section === "download" && <SettingsGroup title="保存与性能"><div className="settings-group-content"><SettingRow label="默认下载目录"><input value={draft.download_dir} onChange={(e) => set("download_dir", e.target.value)} /></SettingRow><SettingRow label="文件重名"><div className="fluent-segmented-control settings-segmented"><button type="button" className={draft.default_collision_policy === "rename" ? "active" : ""} onClick={() => set("default_collision_policy", "rename")}>自动重命名</button><button type="button" className={draft.default_collision_policy === "overwrite" ? "active" : ""} onClick={() => set("default_collision_policy", "overwrite")}>覆盖</button><button type="button" className={draft.default_collision_policy === "skip" ? "active" : ""} onClick={() => set("default_collision_policy", "skip")}>跳过</button></div></SettingRow><SettingRow label="同时下载任务"><input type="number" min="1" max="16" value={draft.concurrent_downloads} onChange={(e) => set("concurrent_downloads", +e.target.value)} /></SettingRow><SettingRow label={`每任务连接数 (${draft.connections_per_download} 路)`}><div className="settings-slider-wrapper"><input type="range" min="0" max="4" step="1" value={[1, 2, 4, 8, 16].indexOf(draft.connections_per_download)} onChange={(e) => { const values = [1, 2, 4, 8, 16]; set("connections_per_download", values[+e.target.value]); }} className="fluent-slider" /><div className="slider-ticks"><span>1</span><span>2</span><span>4</span><span>8</span><span>16</span></div></div></SettingRow><SettingRow label="全局限速（KB/s）"><input type="number" min="0" value={draft.speed_limit_kbps} onChange={(e) => set("speed_limit_kbps", +e.target.value)} /></SettingRow><Toggle label="完成后计算 SHA-256" checked={draft.verify_after_download} onChange={(v) => set("verify_after_download", v)} /></div></SettingsGroup>}
+    {section === "download" && <SettingsGroup title="保存与性能"><div className="settings-group-content"><SettingRow label="默认下载目录"><input value={draft.download_dir} onChange={(e) => set("download_dir", e.target.value)} /></SettingRow><SettingRow label="文件重名"><div className="fluent-segmented-control settings-segmented"><button type="button" className={draft.default_collision_policy === "rename" ? "active" : ""} onClick={() => set("default_collision_policy", "rename")}>自动重命名</button><button type="button" className={draft.default_collision_policy === "overwrite" ? "active" : ""} onClick={() => set("default_collision_policy", "overwrite")}>覆盖</button><button type="button" className={draft.default_collision_policy === "skip" ? "active" : ""} onClick={() => set("default_collision_policy", "skip")}>跳过</button></div></SettingRow><Toggle label="低内存模式（1 个任务、每任务最多 2 路连接）" checked={draft.low_memory_mode} onChange={(v) => set("low_memory_mode", v)} /><SettingRow label="同时下载任务"><input type="number" min="1" max="16" value={draft.concurrent_downloads} onChange={(e) => set("concurrent_downloads", +e.target.value)} /></SettingRow><SettingRow label={`每任务连接数 (${draft.connections_per_download} 路)`}><div className="settings-slider-wrapper"><input type="range" min="0" max="5" step="1" value={[1, 2, 4, 8, 16, 32].indexOf(draft.connections_per_download)} onChange={(e) => { const values = [1, 2, 4, 8, 16, 32]; set("connections_per_download", values[+e.target.value]); }} className="fluent-slider" /><div className="slider-ticks"><span>1</span><span>2</span><span>4</span><span>8</span><span>16</span><span>32</span></div></div></SettingRow><SettingRow label="全局限速（KB/s）"><input type="number" min="0" value={draft.speed_limit_kbps} onChange={(e) => set("speed_limit_kbps", +e.target.value)} /></SettingRow><Toggle label="完成后计算 SHA-256" checked={draft.verify_after_download} onChange={(v) => set("verify_after_download", v)} /></div><p className="settings-note">开启后使用更小的合并缓冲区和连接池；不会改写上述并发偏好，关闭后自动恢复。已建立的连接会安全完成。</p></SettingsGroup>}
     {section === "network" && <SettingsGroup title="代理与重试"><div className="settings-group-content"><SettingRow label="代理模式"><select value={draft.proxy_mode} onChange={(e) => set("proxy_mode", e.target.value as AppSettings["proxy_mode"])}><option value="system">跟随系统</option><option value="none">不使用代理</option><option value="manual">手动代理</option></select></SettingRow>{draft.proxy_mode === "manual" && <><SettingRow label="代理地址"><input value={draft.proxy_url} onChange={(e) => set("proxy_url", e.target.value)} /></SettingRow><SettingRow label="用户名"><input value={draft.proxy_username} onChange={(e) => set("proxy_username", e.target.value)} /></SettingRow><SettingRow label="密码"><input type="password" value={draft.proxy_password} onChange={(e) => set("proxy_password", e.target.value)} /></SettingRow></>}<SettingRow label="最大重试次数"><input type="number" min="0" max="10" value={draft.max_retries} onChange={(e) => set("max_retries", +e.target.value)} /></SettingRow></div></SettingsGroup>}
     {section === "browser" && <><SettingsGroup title="下载接管"><div className="settings-group-content"><Toggle label="允许浏览器扩展接管下载" checked={draft.intercept_browser_downloads} onChange={(v) => set("intercept_browser_downloads", v)} /><SettingRow label="最小文件大小（MB）"><input type="number" min="0" value={draft.min_file_size_mb} onChange={(e) => set("min_file_size_mb", +e.target.value)} /></SettingRow></div></SettingsGroup><SettingsGroup title="安全配对">{pair ? <div className="pair-card"><p>在扩展中输入一次性配对码（10 分钟有效）</p><div className="pair-code-wrapper"><code>{pair.code}</code><button className="copy-code-btn" onClick={() => { void navigator.clipboard.writeText(pair.code); notify("配对码已复制到剪贴板"); }} title="复制配对码"><Copy size={13} /><span>复制</span></button></div>{pair.paired_extension && <p>已配对：{pair.paired_extension.slice(0, 16)}…</p>}<div className="maintenance"><button onClick={() => void api.rotatePairing().then(setPair)}>更换配对码</button>{pair.paired_extension && <button onClick={() => void api.revokePairing().then(() => api.pairing().then(setPair))}>撤销配对</button>}</div></div> : <LoaderCircle className="spin" />}</SettingsGroup></>}
-    {section === "media" && <SettingsGroup title="媒体工具"><p className="settings-note">普通下载无需额外组件。媒体分析需要按需安装 yt-dlp 与 FFmpeg；DRM 内容不会处理。</p>{tools ? <MediaToolsCard status={tools} onStatus={setTools} /> : <LoaderCircle className="spin" />}<div className="settings-group-content"><Toggle label="自动检查媒体工具更新" checked={draft.media_tool_auto_update} onChange={(v) => set("media_tool_auto_update", v)} /></div></SettingsGroup>}
-    {section === "appearance" && <SettingsGroup title="主题与窗口"><div className="settings-group-content"><SettingRow label="应用主题"><select value={draft.theme} onChange={(e) => set("theme", e.target.value as AppSettings["theme"])}><option value="system">跟随系统</option><option value="light">浅色</option><option value="dark">深色</option></select></SettingRow><SettingRow label="窗口大小"><div className="window-size-setting-row"><input type="number" placeholder="宽度 (如 800)" value={draft.window_width || ""} onChange={(e) => changeWidth(e.target.value ? +e.target.value : undefined)} className="window-size-input" /><span>×</span><input type="number" placeholder="高度 (如 600)" value={draft.window_height || ""} onChange={(e) => changeHeight(e.target.value ? +e.target.value : undefined)} className="window-size-input" /><select value={draft.window_width && draft.window_height ? `${draft.window_width}x${draft.window_height}` : ""} onChange={(e) => { if (!e.target.value) return; const [w, h] = e.target.value.split("x").map(Number); set("window_width", w); set("window_height", h); applyTemporarySize(w, h); }} className="window-size-preset-select"><option value="">选择常用预设...</option><option value="800x600">800 × 600 (迷你紧凑)</option><option value="960x640">960 × 640 (精致比例)</option><option value="1024x720">1024 × 720 (默认标准)</option><option value="1120x760">1120 × 760 (舒适格局)</option><option value="1280x800">1280 × 800 (高效宽屏)</option><option value="1440x900">1440 × 900 (专业超宽)</option></select></div></SettingRow><Toggle label="自适应缩放" checked={draft.auto_scale_ui || false} onChange={(v) => set("auto_scale_ui", v)} /></div><p className="settings-note">使用 Windows 系统字体、中性色和单一强调色，不加载在线字体。</p></SettingsGroup>}
+    {section === "media" && <SettingsGroup title="媒体组件"><p className="settings-note">按“自定义路径 → 应用安装 → Windows PATH”顺序查找组件。外部组件只会被引用，猫步下载器不会复制、更新或删除它们。</p>{tools ? <MediaToolsCard status={tools} onStatus={setTools} /> : <LoaderCircle className="spin" />}<MediaPathSettings value={draft} onChange={(patch) => setDraft((current) => ({ ...current, ...patch }))} /><div className="settings-group-content"><Toggle label="自动检查媒体工具更新" checked={draft.media_tool_auto_update} onChange={(v) => set("media_tool_auto_update", v)} /></div></SettingsGroup>}
+    {section === "appearance" && <SettingsGroup title="主题与窗口"><div className="settings-group-content"><SettingRow label="应用主题"><select value={draft.theme} onChange={(e) => set("theme", e.target.value as AppSettings["theme"])}><option value="system">跟随系统</option><option value="light">浅色</option><option value="dark">深色</option></select></SettingRow><Toggle label="磨砂玻璃" checked={draft.frosted_glass} onChange={(v) => set("frosted_glass", v)} /><SettingRow label="窗口大小"><div className="window-size-setting-row"><input type="number" placeholder="宽度 (如 800)" value={draft.window_width || ""} onChange={(e) => changeWidth(e.target.value ? +e.target.value : undefined)} className="window-size-input" /><span>×</span><input type="number" placeholder="高度 (如 600)" value={draft.window_height || ""} onChange={(e) => changeHeight(e.target.value ? +e.target.value : undefined)} className="window-size-input" /><select value={draft.window_width && draft.window_height ? `${draft.window_width}x${draft.window_height}` : ""} onChange={(e) => { if (!e.target.value) return; const [w, h] = e.target.value.split("x").map(Number); set("window_width", w); set("window_height", h); applyTemporarySize(w, h); }} className="window-size-preset-select"><option value="">选择常用预设...</option><option value="800x600">800 × 600 (迷你紧凑)</option><option value="960x640">960 × 640 (精致比例)</option><option value="1024x720">1024 × 720 (默认标准)</option><option value="1120x760">1120 × 760 (舒适格局)</option><option value="1280x800">1280 × 800 (高效宽屏)</option><option value="1440x900">1440 × 900 (专业超宽)</option></select></div></SettingRow><Toggle label="自适应缩放" checked={draft.auto_scale_ui || false} onChange={(v) => set("auto_scale_ui", v)} /></div><p className="settings-note">磨砂玻璃使用 Windows 10/11 原生 Acrylic 材质；关闭后恢复为不透明窗口。</p></SettingsGroup>}
     {section === "advanced" && <SettingsGroup title="维护"><div className="maintenance"><button onClick={() => void api.clearHistory(false).then(() => notify("已清理取消的任务"))}>清理取消任务</button><button onClick={() => void api.clearHistory(true).then(() => notify("下载历史已清理"))}>清理完成和取消任务</button></div></SettingsGroup>}
     {section === "about" && (
       <SettingsGroup title="关于猫步下载器">
@@ -1090,49 +1132,115 @@ function SettingsGroup({ title, children }: { title: string; children: ReactNode
 function SettingRow({ label, children }: { label: string; children: ReactNode }) { return <label className="setting-row"><div><strong>{label}</strong></div>{children}</label>; }
 function Toggle({ label, checked, onChange }: { label: string; checked: boolean; onChange: (value: boolean) => void }) { return <label className="setting-row"><div><strong>{label}</strong></div><input className="toggle" type="checkbox" checked={checked} onChange={(e) => onChange(e.target.checked)} /></label>; }
 function Field({ label, children }: { label: string; children: ReactNode }) { return <label className="form-field"><span>{label}</span>{children}</label>; }
-function MediaToolsCard({ status, onStatus, compact = false }: { status: ToolStatus; onStatus: (value: ToolStatus) => void; compact?: boolean }) {
-  const active = ["downloading", "verifying", "extracting"].includes(status.state);
+function MediaPathSettings({ value, onChange }: { value: AppSettings; onChange: (patch: Partial<AppSettings>) => void }) {
+  const [detecting, setDetecting] = useState(false);
+  const [detectionMessage, setDetectionMessage] = useState("");
+  const chooseYtDlp = async () => {
+    const selected = await pickPath({ multiple: false, filters: [{ name: "yt-dlp", extensions: ["exe"] }] });
+    if (typeof selected === "string") onChange({ yt_dlp_path: selected });
+  };
+  const chooseFfmpeg = async () => {
+    const selected = await pickPath({ multiple: false, filters: [{ name: "FFmpeg", extensions: ["exe"] }] });
+    if (typeof selected !== "string") return;
+    onChange({ ffmpeg_path: selected, ffprobe_path: selected.replace(/[^\\/]+$/, "ffprobe.exe") });
+  };
+  const detectSystemTools = async () => {
+    setDetecting(true);
+    setDetectionMessage("");
+    try {
+      const detected = await api.detectSystemMediaTools();
+      const hasYtDlp = Boolean(detected.yt_dlp_path);
+      const hasFfmpegPair = Boolean(detected.ffmpeg_path && detected.ffprobe_path);
+      const patch: Partial<AppSettings> = {};
+      if (detected.yt_dlp_path) patch.yt_dlp_path = detected.yt_dlp_path;
+      if (hasFfmpegPair) {
+        patch.ffmpeg_path = detected.ffmpeg_path;
+        patch.ffprobe_path = detected.ffprobe_path;
+      }
+      if (Object.keys(patch).length) onChange(patch);
+      if (hasYtDlp && hasFfmpegPair) setDetectionMessage("已检测到 yt-dlp、FFmpeg 和 FFprobe，路径已填入下方");
+      else if (hasYtDlp) setDetectionMessage("已检测到 yt-dlp 并填入路径；未找到完整的 FFmpeg 与 FFprobe");
+      else if (hasFfmpegPair) setDetectionMessage("已检测到 FFmpeg 与 FFprobe 并填入路径；未找到 yt-dlp");
+      else if (detected.ffmpeg_path || detected.ffprobe_path) setDetectionMessage("只找到部分 FFmpeg 组件，需要同时存在 ffmpeg.exe 和 ffprobe.exe");
+      else setDetectionMessage("未在 PATH 或常见独立安装目录中找到媒体组件，可选择本地文件或按需下载");
+    } catch (error) {
+      setDetectionMessage(`检测失败：${String(error)}`);
+    } finally {
+      setDetecting(false);
+    }
+  };
+  return <div className="settings-group-content media-path-settings">
+    <div className="media-detect-row">
+      <div><strong>自动使用系统已有组件</strong><small>检查 PATH、Python、Scoop、WinGet 等常见位置，并将绝对路径填入下方</small></div>
+      <button className="input-button" disabled={detecting} onClick={() => void detectSystemTools()}>{detecting ? "检测中…" : "自动检测"}</button>
+    </div>
+    {detectionMessage && <p className="media-detect-result" role="status">{detectionMessage}</p>}
+    <SettingRow label="自定义 yt-dlp.exe"><div className="input-group"><input value={value.yt_dlp_path} onChange={(event) => onChange({ yt_dlp_path: event.target.value })} placeholder="留空则自动检测" /><button className="input-button" onClick={() => void chooseYtDlp()}>选择文件</button>{value.yt_dlp_path && <button className="input-button" onClick={() => onChange({ yt_dlp_path: "" })}>清除</button>}</div></SettingRow>
+    <SettingRow label="自定义 ffmpeg.exe"><div className="input-group"><input value={value.ffmpeg_path} onChange={(event) => onChange({ ffmpeg_path: event.target.value })} placeholder="留空则自动检测" /><button className="input-button" onClick={() => void chooseFfmpeg()}>选择文件</button>{value.ffmpeg_path && <button className="input-button" onClick={() => onChange({ ffmpeg_path: "", ffprobe_path: "" })}>清除</button>}</div></SettingRow>
+    {value.ffmpeg_path && <SettingRow label="配套 ffprobe.exe"><input value={value.ffprobe_path} onChange={(event) => onChange({ ffprobe_path: event.target.value })} /></SettingRow>}
+  </div>;
+}
+function MediaToolsCard({ status, onStatus, compact = false, required }: { status: ToolStatus; onStatus: (value: ToolStatus) => void; compact?: boolean; required?: ToolComponent }) {
+  const components: ToolComponent[] = required ? [required] : ["yt-dlp", "ffmpeg"];
+  return <div className={compact ? "media-tools-stack compact" : "media-tools-stack"}>
+    {components.map((component) => <MediaToolComponentCard key={component} component={component} status={status} onStatus={onStatus} compact={compact} />)}
+  </div>;
+}
+
+function MediaToolComponentCard({ component, status, onStatus, compact }: { component: ToolComponent; status: ToolStatus; onStatus: (value: ToolStatus) => void; compact: boolean }) {
+  const isYtDlp = component === "yt-dlp";
+  const available = isYtDlp ? status.yt_dlp_available : status.ffmpeg_available;
+  const operationForThis = status.active_component === component;
+  const active = operationForThis && ["downloading", "verifying", "extracting"].includes(status.state);
+  const someInstallActive = Boolean(status.active_component) && ["downloading", "verifying", "extracting"].includes(status.state);
+  const phase = operationForThis ? status.state : available ? "ready" : "missing";
+  const downloadBytes = isYtDlp ? status.yt_dlp_download_bytes : status.ffmpeg_download_bytes;
+  const installEstimate = isYtDlp ? status.yt_dlp_download_bytes : 199 * 1024 * 1024;
+  const installedBytes = isYtDlp ? status.yt_dlp_installed_bytes : status.ffmpeg_installed_bytes;
+  const version = isYtDlp ? status.yt_dlp_version : status.ffmpeg_version;
+  const source = isYtDlp ? status.yt_dlp_source : status.ffmpeg_source;
+  const sourceLabel = source === "custom" ? "自定义路径" : source === "system" ? "系统 PATH" : source === "bundled" ? "应用安装" : "未安装";
+  const title = isYtDlp ? "yt-dlp 基础媒体组件" : "FFmpeg 高清合并组件";
+  const description = isYtDlp ? "媒体分析、单文件视频和音频下载" : "最高画质音视频合并、转码与格式处理";
   const progress = status.total_bytes ? Math.min(100, status.downloaded_bytes / status.total_bytes * 100) : 0;
-  const install = async () => { try { await api.installMediaTools(); onStatus(await api.toolStatus()); } catch (error) { onStatus({ ...status, state: "failed", error: String(error) }); } };
-  return (
-    <div className={compact ? "media-tools-card compact" : "media-tools-card"}>
-      <div className="media-tools-card-main">
-        <div className="tool-summary">
-          <span className={`tool-state ${status.state}`}>
-            {status.state === "ready" ? <Check size={14} /> : active ? <LoaderCircle className="spin" size={14} /> : <Video size={14} />}
-          </span>
-          <div>
-            <strong>{status.state === "ready" ? "媒体工具已就绪" : active ? "正在安装媒体工具" : "安装媒体工具"}</strong>
-            <small>
-              {status.version}
-              {status.state !== "ready" && !active && ` · 下载约 122 MB · 安装约 216 MB`}
-            </small>
-          </div>
-        </div>
-        <div className="tool-actions">
-          {status.state === "ready" ? (
-            <>
-              <button onClick={() => void api.checkMediaToolsUpdate().then(onStatus)}>检查更新</button>
-              <button className="danger" onClick={() => void api.removeMediaTools().then(() => api.toolStatus().then(onStatus))}>卸载</button>
-            </>
-          ) : active ? (
-            <button onClick={() => void api.cancelMediaTools()}>取消安装</button>
-          ) : (
-            <button className="primary" onClick={() => void install()}>确认下载并安装</button>
-          )}
-        </div>
+  const install = async () => { try { await api.installMediaTool(component); onStatus(await api.toolStatus()); } catch (error) { onStatus({ ...status, active_component: component, state: "failed", error: String(error) }); } };
+  const remove = async () => { try { await api.removeMediaTool(component); onStatus(await api.toolStatus()); } catch (error) { onStatus({ ...status, active_component: component, state: "failed", error: String(error) }); } };
+  return <div className={compact ? "media-tools-card compact" : "media-tools-card"}>
+    <div className="media-tools-card-main">
+      <div className="tool-summary">
+        <span className={`tool-state ${phase}`}>{available && !active ? <Check size={14} /> : active ? <LoaderCircle className="spin" size={14} /> : <Video size={14} />}</span>
+        <div><strong>{title}</strong><small>{description} · {version}{available ? source === "bundled" ? ` · 应用占用 ${formatBytes(installedBytes)}` : ` · 使用${sourceLabel}` : ` · 下载约 ${formatBytes(downloadBytes)} · 安装约 ${formatBytes(installEstimate)}`}</small></div>
       </div>
-      {active && (
-        <div className="tool-progress">
-          <div><i style={{ width: `${progress}%` }} /></div>
-          <span>{status.state === "verifying" ? "正在校验" : status.state === "extracting" ? "正在解压" : `${formatBytes(status.downloaded_bytes)} / ${formatBytes(status.total_bytes)}`}</span>
-        </div>
-      )}
-      {status.error && <p className="tool-error">{status.error}</p>}
+      <div className="tool-actions">
+        {active ? <button onClick={() => void api.cancelMediaTools()}>取消安装</button> : available && source === "bundled" ? <button className="danger" disabled={someInstallActive} onClick={() => void remove()}>卸载</button> : available ? <button disabled>已使用外部组件</button> : <button className="primary" disabled={someInstallActive} onClick={() => void install()}>下载并安装</button>}
+      </div>
+    </div>
+    {active && <div className="tool-progress"><div><i style={{ width: `${progress}%` }} /></div><span>{status.state === "verifying" ? "正在校验 SHA-256" : status.state === "extracting" ? "正在安全解压" : `${formatBytes(status.downloaded_bytes)} / ${formatBytes(status.total_bytes)}`}</span></div>}
+    {operationForThis && status.error && <p className="tool-error">{status.error}</p>}
+  </div>;
+}
+function ContextMenu({ x, y, task, close, notify }: { x: number; y: number; task: DownloadTask; close: () => void; notify: (text: string, kind?: "ok" | "error") => void }) {
+  const action = async (value: string) => {
+    try {
+      await api.action(task.id, value);
+      close();
+    } catch (error) {
+      notify(String(error), "error");
+    }
+  };
+  const safeX = Math.min(x, window.innerWidth - 170 - 12);
+  const safeY = Math.min(y, window.innerHeight - 195 - 12);
+  return (
+    <div className="context-menu" style={{ left: safeX, top: safeY }} onClick={(e) => e.stopPropagation()}>
+      {task.status === "downloading" ? <button onClick={() => void action("pause")}><Pause size={13} />暂停</button> : !["completed","cancelled"].includes(task.status) && <button onClick={() => void action("resume")}><Play size={13} />开始 / 继续</button>}
+      <button onClick={() => void api.openFolder(task.id).then(close)}><FolderOpen size={13} />打开文件夹</button>
+      <button onClick={() => void navigator.clipboard.writeText(task.url).then(() => { notify("链接已复制"); close(); })}><Copy size={13} />复制链接</button>
+      {task.status === "completed" && <button onClick={() => void api.verify(task.id).then(() => { notify("文件校验完成"); close(); })}><ShieldCheck size={13} />校验 SHA-256</button>}
+      <button className="danger" onClick={() => void api.remove(task.id, false).then(close)}><Trash2 size={13} />删除记录</button>
+      <button className="danger" onClick={() => void api.remove(task.id, true).then(close)}><Trash2 size={13} />删除记录和文件</button>
     </div>
   );
 }
-function ContextMenu({ x, y, task, close, notify }: { x: number; y: number; task: DownloadTask; close: () => void; notify: (text: string, kind?: "ok" | "error") => void }) { const action = async (value: string) => { try { await api.action(task.id, value); close(); } catch (error) { notify(String(error), "error"); } }; return <div className="context-menu" style={{ left: x, top: y }} onClick={(e) => e.stopPropagation()}>{task.status === "downloading" ? <button onClick={() => void action("pause")}><Pause size={13} />暂停</button> : !["completed","cancelled"].includes(task.status) && <button onClick={() => void action("resume")}><Play size={13} />开始 / 继续</button>}<button onClick={() => void api.openFolder(task.id).then(close)}><FolderOpen size={13} />打开文件夹</button><button onClick={() => void navigator.clipboard.writeText(task.url).then(() => { notify("链接已复制"); close(); })}><Copy size={13} />复制链接</button>{task.status === "completed" && <button onClick={() => void api.verify(task.id).then(() => { notify("文件校验完成"); close(); })}><ShieldCheck size={13} />校验 SHA-256</button>}<button className="danger" onClick={() => void api.remove(task.id, false).then(close)}><Trash2 size={13} />删除记录</button><button className="danger" onClick={() => void api.remove(task.id, true).then(close)}><Trash2 size={13} />删除记录和文件</button></div>; }
 function Modal({ title, onClose, wide, children, style }: { title: string; onClose: () => void; wide?: boolean; children: ReactNode; style?: CSSProperties }) { return <div className="modal-layer" onMouseDown={onClose}><section className={wide ? "dialog wide" : "dialog"} style={style} onMouseDown={(e) => e.stopPropagation()}><div className="settings-title"><h2>{title}</h2></div>{children}</section></div>; }
 function formatBytes(value: number) { if (!value) return "0 B"; const units = ["B","KB","MB","GB","TB"]; const index = Math.min(Math.floor(Math.log(value) / Math.log(1024)), units.length - 1); return `${(value / 1024 ** index).toFixed(index ? 1 : 0)} ${units[index]}`; }
 function formatDuration(seconds: number) { if (seconds < 60) return `${seconds} 秒`; if (seconds < 3600) return `${Math.ceil(seconds / 60)} 分钟`; return `${Math.floor(seconds / 3600)} 小时 ${Math.ceil(seconds % 3600 / 60)} 分`; }
