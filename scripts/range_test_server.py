@@ -8,13 +8,23 @@ import threading
 import time
 
 
-PAYLOAD = bytes(range(256)) * (128 * 1024)  # 32 MiB
+PATTERN = bytes(range(256))
+PAYLOAD_SIZE = 32 * 1024 * 1024
 REQUESTS: list[str] = []
 LOCK = threading.Lock()
 ACTIVE = 0
 PEAK_ACTIVE = 0
 DROP_ONCE = False
 DROPPED = False
+
+
+def payload_bytes(start: int, length: int) -> bytes:
+    """Generate the deterministic byte pattern without allocating the full fixture."""
+    if length <= 0:
+        return b""
+    phase = start % len(PATTERN)
+    rotated = PATTERN[phase:] + PATTERN[:phase]
+    return (rotated * ((length + len(PATTERN) - 1) // len(PATTERN)))[:length]
 
 
 class RangeServer(ThreadingHTTPServer):
@@ -29,7 +39,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         self.send_response(200)
         self.send_header("Accept-Ranges", "bytes")
-        self.send_header("Content-Length", str(len(PAYLOAD)))
+        self.send_header("Content-Length", str(PAYLOAD_SIZE))
         self.send_header("ETag", '"lumaget-range-fixture-v1"')
         self.end_headers()
 
@@ -60,39 +70,42 @@ class Handler(BaseHTTPRequestHandler):
             return
         value = self.headers.get("Range")
         if not value or not value.startswith("bytes="):
-            start, end, status = 0, len(PAYLOAD) - 1, 200
+            start, end, status = 0, PAYLOAD_SIZE - 1, 200
         else:
             start_text, end_text = value[6:].split("-", 1)
             start = int(start_text)
-            end = min(int(end_text) if end_text else len(PAYLOAD) - 1, len(PAYLOAD) - 1)
+            end = min(int(end_text) if end_text else PAYLOAD_SIZE - 1, PAYLOAD_SIZE - 1)
             status = 206
             with LOCK:
                 REQUESTS.append(value)
-        body = PAYLOAD[start : end + 1]
+        body_length = end - start + 1
         self.send_response(status)
         self.send_header("Accept-Ranges", "bytes")
-        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Content-Length", str(body_length))
         self.send_header("ETag", '"lumaget-range-fixture-v1"')
         if status == 206:
-            self.send_header("Content-Range", f"bytes {start}-{end}/{len(PAYLOAD)}")
+            self.send_header("Content-Range", f"bytes {start}-{end}/{PAYLOAD_SIZE}")
         self.end_headers()
         with LOCK:
             ACTIVE += 1
             PEAK_ACTIVE = max(PEAK_ACTIVE, ACTIVE)
         try:
-            if DROP_ONCE and status == 206 and len(body) > 1 and not DROPPED:
+            send_length = body_length
+            if DROP_ONCE and status == 206 and body_length > 1 and not DROPPED:
                 with LOCK:
                     should_drop = not DROPPED
                     DROPPED = True
                 if should_drop:
-                    self.wfile.write(body[: len(body) // 2])
-                    self.wfile.flush()
-                    self.close_connection = True
-                    return
-            for offset in range(0, len(body), 64 * 1024):
-                self.wfile.write(body[offset : offset + 64 * 1024])
+                    send_length = body_length // 2
+            for offset in range(0, send_length, 64 * 1024):
+                chunk_length = min(64 * 1024, send_length - offset)
+                self.wfile.write(payload_bytes(start + offset, chunk_length))
                 self.wfile.flush()
-                time.sleep(0.005)
+                if offset + chunk_length < send_length:
+                    time.sleep(0.005)
+            if send_length < body_length:
+                self.close_connection = True
+                return
         finally:
             with LOCK:
                 ACTIVE -= 1
@@ -108,8 +121,11 @@ if __name__ == "__main__":
     parser.add_argument("--drop-once", action="store_true")
     parser.add_argument("--size-mib", type=int, default=32)
     args = parser.parse_args()
-    PAYLOAD = bytes(range(256)) * (args.size_mib * 4096)
+    PAYLOAD_SIZE = args.size_mib * 1024 * 1024
     DROP_ONCE = args.drop_once
     if args.info:
-        print(json.dumps({"bytes": len(PAYLOAD), "sha256": hashlib.sha256(PAYLOAD).hexdigest()}))
+        digest = hashlib.sha256()
+        for offset in range(0, PAYLOAD_SIZE, 1024 * 1024):
+            digest.update(payload_bytes(offset, min(1024 * 1024, PAYLOAD_SIZE - offset)))
+        print(json.dumps({"bytes": PAYLOAD_SIZE, "sha256": digest.hexdigest()}))
     RangeServer(("127.0.0.1", args.port), Handler).serve_forever()

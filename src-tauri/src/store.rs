@@ -1,5 +1,6 @@
 use crate::models::{
-    AppSettings, CollisionPolicy, DownloadSegment, DownloadTask, MediaSelection, TaskStatus,
+    AppSettings, CollisionPolicy, CompletionAction, DownloadSegment, DownloadTask, MediaSelection,
+    TaskStatus,
 };
 use rusqlite::{params, Connection, OptionalExtension, Row};
 use std::{collections::HashMap, path::PathBuf};
@@ -30,6 +31,11 @@ impl Store {
             "INTEGER NOT NULL DEFAULT 8",
         )?;
         ensure_task_column(&connection, "segments_json", "TEXT NOT NULL DEFAULT '[]'")?;
+        ensure_task_column(
+            &connection,
+            "completion_action",
+            "TEXT NOT NULL DEFAULT '\"none\"'",
+        )?;
         let store = Self {
             connection: Mutex::new(connection),
             data_dir,
@@ -108,6 +114,7 @@ impl Store {
                 media: None,
                 per_task_speed_limit: 0,
                 collision_policy: CollisionPolicy::Rename,
+                completion_action: CompletionAction::None,
                 connection_count: 8,
                 active_connections: 0,
                 segments: Vec::new(),
@@ -177,7 +184,9 @@ impl Store {
                     serde_json::to_string(&task.collision_policy)
                         .unwrap_or_else(|_| "\"rename\"".into()),
                     task.connection_count as i64,
-                    serde_json::to_string(&task.segments).unwrap_or_else(|_| "[]".into())
+                    serde_json::to_string(&task.segments).unwrap_or_else(|_| "[]".into()),
+                    serde_json::to_string(&task.completion_action)
+                        .unwrap_or_else(|_| "\"none\"".into())
                 ],
             )
             .map_err(|e| e.to_string())?;
@@ -290,6 +299,7 @@ fn task_from_row(row: &Row<'_>) -> rusqlite::Result<DownloadTask> {
     let media_json: String = row.get("media_json")?;
     let collision_json: String = row.get("collision_policy")?;
     let segments_json: String = row.get("segments_json")?;
+    let completion_action_json: String = row.get("completion_action")?;
     Ok(DownloadTask {
         id: row.get("id")?,
         url: row.get("url")?,
@@ -318,6 +328,7 @@ fn task_from_row(row: &Row<'_>) -> rusqlite::Result<DownloadTask> {
         media: serde_json::from_str::<Option<MediaSelection>>(&media_json).unwrap_or_default(),
         per_task_speed_limit: row.get::<_, i64>("per_task_speed_limit")? as u64,
         collision_policy: serde_json::from_str(&collision_json).unwrap_or_default(),
+        completion_action: serde_json::from_str(&completion_action_json).unwrap_or_default(),
         connection_count: row.get::<_, i64>("connection_count")? as u8,
         active_connections: 0,
         segments: serde_json::from_str::<Vec<DownloadSegment>>(&segments_json).unwrap_or_default(),
@@ -333,7 +344,8 @@ CREATE TABLE IF NOT EXISTS tasks (
   retry_count INTEGER NOT NULL DEFAULT 0, max_retries INTEGER NOT NULL DEFAULT 3, checksum_sha256 TEXT, expected_checksum TEXT,
   source TEXT NOT NULL DEFAULT 'desktop', etag TEXT, last_modified TEXT, headers_json TEXT NOT NULL DEFAULT '{}',
   media_json TEXT NOT NULL DEFAULT 'null', per_task_speed_limit INTEGER NOT NULL DEFAULT 0, collision_policy TEXT NOT NULL DEFAULT '"rename"',
-  connection_count INTEGER NOT NULL DEFAULT 8, segments_json TEXT NOT NULL DEFAULT '[]'
+  connection_count INTEGER NOT NULL DEFAULT 8, segments_json TEXT NOT NULL DEFAULT '[]',
+  completion_action TEXT NOT NULL DEFAULT '"none"'
 );
 CREATE INDEX IF NOT EXISTS idx_tasks_status_queue ON tasks(status, priority DESC, queue_position ASC);
 CREATE TABLE IF NOT EXISTS segments (
@@ -347,9 +359,9 @@ CREATE TABLE IF NOT EXISTS error_history (id INTEGER PRIMARY KEY AUTOINCREMENT, 
 "#;
 
 const UPSERT_TASK: &str = r#"
-INSERT INTO tasks(id,url,file_name,destination,total_bytes,downloaded_bytes,speed,eta_seconds,status,error,created_at,completed_at,scheduled_at,category,queue_position,priority,retry_count,max_retries,checksum_sha256,expected_checksum,source,etag,last_modified,headers_json,media_json,per_task_speed_limit,collision_policy,connection_count,segments_json)
-VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26,?27,?28,?29)
-ON CONFLICT(id) DO UPDATE SET url=excluded.url,file_name=excluded.file_name,destination=excluded.destination,total_bytes=excluded.total_bytes,downloaded_bytes=excluded.downloaded_bytes,speed=excluded.speed,eta_seconds=excluded.eta_seconds,status=excluded.status,error=excluded.error,completed_at=excluded.completed_at,scheduled_at=excluded.scheduled_at,category=excluded.category,queue_position=excluded.queue_position,priority=excluded.priority,retry_count=excluded.retry_count,max_retries=excluded.max_retries,checksum_sha256=excluded.checksum_sha256,expected_checksum=excluded.expected_checksum,source=excluded.source,etag=excluded.etag,last_modified=excluded.last_modified,headers_json=excluded.headers_json,media_json=excluded.media_json,per_task_speed_limit=excluded.per_task_speed_limit,collision_policy=excluded.collision_policy,connection_count=excluded.connection_count,segments_json=excluded.segments_json
+INSERT INTO tasks(id,url,file_name,destination,total_bytes,downloaded_bytes,speed,eta_seconds,status,error,created_at,completed_at,scheduled_at,category,queue_position,priority,retry_count,max_retries,checksum_sha256,expected_checksum,source,etag,last_modified,headers_json,media_json,per_task_speed_limit,collision_policy,connection_count,segments_json,completion_action)
+VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26,?27,?28,?29,?30)
+ON CONFLICT(id) DO UPDATE SET url=excluded.url,file_name=excluded.file_name,destination=excluded.destination,total_bytes=excluded.total_bytes,downloaded_bytes=excluded.downloaded_bytes,speed=excluded.speed,eta_seconds=excluded.eta_seconds,status=excluded.status,error=excluded.error,completed_at=excluded.completed_at,scheduled_at=excluded.scheduled_at,category=excluded.category,queue_position=excluded.queue_position,priority=excluded.priority,retry_count=excluded.retry_count,max_retries=excluded.max_retries,checksum_sha256=excluded.checksum_sha256,expected_checksum=excluded.expected_checksum,source=excluded.source,etag=excluded.etag,last_modified=excluded.last_modified,headers_json=excluded.headers_json,media_json=excluded.media_json,per_task_speed_limit=excluded.per_task_speed_limit,collision_policy=excluded.collision_policy,connection_count=excluded.connection_count,segments_json=excluded.segments_json,completion_action=excluded.completion_action
 "#;
 
 fn ensure_task_column(connection: &Connection, name: &str, definition: &str) -> Result<(), String> {
@@ -392,5 +404,37 @@ mod tests {
             assert!(restored.frosted_glass);
         });
         assert!(directory.path().join("lumaget.db").exists());
+    }
+
+    #[test]
+    fn migrates_old_tasks_with_a_safe_completion_action_default() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = directory.path().join("lumaget.db");
+        let connection = Connection::open(&database).unwrap();
+        connection.execute_batch(
+            r#"CREATE TABLE tasks (
+              id TEXT PRIMARY KEY, url TEXT NOT NULL, file_name TEXT NOT NULL, destination TEXT NOT NULL,
+              total_bytes INTEGER NOT NULL DEFAULT 0, downloaded_bytes INTEGER NOT NULL DEFAULT 0, speed INTEGER NOT NULL DEFAULT 0,
+              eta_seconds INTEGER, status TEXT NOT NULL, error TEXT, created_at INTEGER NOT NULL, completed_at INTEGER, scheduled_at INTEGER,
+              category TEXT NOT NULL DEFAULT 'other', queue_position INTEGER NOT NULL DEFAULT 0, priority INTEGER NOT NULL DEFAULT 0,
+              retry_count INTEGER NOT NULL DEFAULT 0, max_retries INTEGER NOT NULL DEFAULT 3, checksum_sha256 TEXT, expected_checksum TEXT,
+              source TEXT NOT NULL DEFAULT 'desktop', etag TEXT, last_modified TEXT, headers_json TEXT NOT NULL DEFAULT '{}',
+              media_json TEXT NOT NULL DEFAULT 'null', per_task_speed_limit INTEGER NOT NULL DEFAULT 0,
+              collision_policy TEXT NOT NULL DEFAULT '"rename"', connection_count INTEGER NOT NULL DEFAULT 8,
+              segments_json TEXT NOT NULL DEFAULT '[]'
+            );"#,
+        ).unwrap();
+        drop(connection);
+
+        let store = Store::open(directory.path().to_path_buf()).unwrap();
+        let connection = store.connection.blocking_lock();
+        let columns = connection
+            .prepare("PRAGMA table_info(tasks)")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert!(columns.iter().any(|column| column == "completion_action"));
     }
 }

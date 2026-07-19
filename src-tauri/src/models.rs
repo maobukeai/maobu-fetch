@@ -12,6 +12,8 @@ pub enum TaskStatus {
     Cancelled,
     Scheduled,
     Verifying,
+    #[serde(rename = "waiting-network")]
+    WaitingNetwork,
 }
 
 impl TaskStatus {
@@ -25,6 +27,7 @@ impl TaskStatus {
             Self::Cancelled => "cancelled",
             Self::Scheduled => "scheduled",
             Self::Verifying => "verifying",
+            Self::WaitingNetwork => "waiting-network",
         }
     }
 
@@ -37,6 +40,7 @@ impl TaskStatus {
             "cancelled" => Self::Cancelled,
             "scheduled" => Self::Scheduled,
             "verifying" => Self::Verifying,
+            "waiting-network" => Self::WaitingNetwork,
             _ => Self::Queued,
         }
     }
@@ -71,6 +75,8 @@ pub struct DownloadTask {
     pub media: Option<MediaSelection>,
     pub per_task_speed_limit: u64,
     pub collision_policy: CollisionPolicy,
+    #[serde(default)]
+    pub completion_action: CompletionAction,
     pub connection_count: u8,
     #[serde(default)]
     pub active_connections: u8,
@@ -107,6 +113,15 @@ pub enum CollisionPolicy {
     Rename,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum CompletionAction {
+    #[default]
+    None,
+    OpenFolder,
+    RunFile,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct NewTaskRequest {
     pub url: String,
@@ -124,6 +139,8 @@ pub struct NewTaskRequest {
     pub per_task_speed_limit: u64,
     #[serde(default)]
     pub collision_policy: CollisionPolicy,
+    #[serde(default)]
+    pub completion_action: CompletionAction,
     pub media: Option<MediaSelection>,
     pub connection_count: Option<u8>,
 }
@@ -138,7 +155,11 @@ pub struct BatchTaskRequest {
     #[serde(default)]
     pub priority: i32,
     #[serde(default)]
+    pub per_task_speed_limit: u64,
+    #[serde(default)]
     pub collision_policy: CollisionPolicy,
+    #[serde(default)]
+    pub completion_action: CompletionAction,
     pub connection_count: Option<u8>,
 }
 
@@ -166,6 +187,8 @@ pub struct AppSettings {
     pub proxy_password: String,
     pub user_agent: String,
     pub default_collision_policy: CollisionPolicy,
+    #[serde(default)]
+    pub default_completion_action: CompletionAction,
     pub max_retries: u32,
     pub retry_base_seconds: u64,
     pub verify_after_download: bool,
@@ -213,6 +236,7 @@ impl Default for AppSettings {
             proxy_password: String::new(),
             user_agent: "MaobuFetch/0.5".into(),
             default_collision_policy: CollisionPolicy::Rename,
+            default_completion_action: CompletionAction::None,
             max_retries: 3,
             retry_base_seconds: 2,
             verify_after_download: false,
@@ -326,12 +350,14 @@ mod tests {
         object.remove("yt_dlp_path");
         object.remove("ffmpeg_path");
         object.remove("ffprobe_path");
+        object.remove("default_completion_action");
 
         let restored: AppSettings = serde_json::from_value(value).unwrap();
         assert!(!restored.low_memory_mode);
         assert!(restored.yt_dlp_path.is_empty());
         assert!(restored.ffmpeg_path.is_empty());
         assert!(restored.ffprobe_path.is_empty());
+        assert_eq!(restored.default_completion_action, CompletionAction::None);
     }
 
     #[test]
@@ -351,5 +377,26 @@ mod tests {
         }))
         .unwrap();
         assert!(!selection.requires_ffmpeg);
+    }
+
+    #[test]
+    fn old_extension_request_defaults_completion_action_to_none() {
+        let request: NewTaskRequest = serde_json::from_value(serde_json::json!({
+            "url": "https://example.com/file.zip"
+        }))
+        .unwrap();
+        assert_eq!(request.completion_action, CompletionAction::None);
+    }
+
+    #[test]
+    fn waiting_network_status_uses_stable_protocol_value() {
+        assert_eq!(
+            serde_json::to_string(&TaskStatus::WaitingNetwork).unwrap(),
+            "\"waiting-network\""
+        );
+        assert_eq!(
+            TaskStatus::from_db("waiting-network"),
+            TaskStatus::WaitingNetwork
+        );
     }
 }

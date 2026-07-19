@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { AppSettings, DetectedMediaTools, DownloadTask, MediaProbeResult, NewTaskRequest, PairingInfo, TaskEvent, ToolComponent, ToolStatus } from "./types";
+import type { AppSettings, CompletionAction, DetectedMediaTools, DownloadTask, MediaProbeResult, NewTaskRequest, PairingInfo, TaskEvent, ToolComponent, ToolStatus } from "./types";
 
 export const isDesktop = () => "__TAURI_INTERNALS__" in window;
 const call = <T>(command: string, args?: Record<string, unknown>): Promise<T> => isDesktop() ? invoke<T>(command, args) : Promise.reject(new Error("请运行猫步下载器桌面应用"));
@@ -8,8 +8,9 @@ const call = <T>(command: string, args?: Record<string, unknown>): Promise<T> =>
 export const api = {
   list: () => isDesktop() ? call<DownloadTask[]>("tasks_list") : Promise.resolve([]),
   add: (request: NewTaskRequest) => call<DownloadTask>("task_add", { request }),
-  addBatch: (urls: string[], template: Omit<NewTaskRequest, "url">) => call<DownloadTask[]>("tasks_add_batch", { request: { urls, destination: template.destination, headers: template.headers, scheduled_at: template.scheduled_at, priority: template.priority, collision_policy: template.collision_policy, connection_count: template.connection_count } }),
+  addBatch: (urls: string[], template: Omit<NewTaskRequest, "url">) => call<DownloadTask[]>("tasks_add_batch", { request: { urls, destination: template.destination, headers: template.headers, scheduled_at: template.scheduled_at, priority: template.priority, per_task_speed_limit: template.per_task_speed_limit, collision_policy: template.collision_policy, completion_action: template.completion_action, connection_count: template.connection_count } }),
   action: (id: string, action: string) => call<void>("task_action", { id, action }),
+  updateTaskOptions: (id: string, options: { priority?: number; perTaskSpeedLimit?: number; completionAction?: CompletionAction }) => call<DownloadTask>("task_update_options", { id, priority: options.priority, perTaskSpeedLimit: options.perTaskSpeedLimit, completionAction: options.completionAction }),
   bulkAction: (ids: string[], action: string) => call<void>("tasks_bulk_action", { ids, action }),
   remove: (id: string, deleteFile: boolean) => call<void>("task_remove", { id, deleteFile }),
   reorder: (ids: string[]) => call<void>("queue_reorder", { ids }),

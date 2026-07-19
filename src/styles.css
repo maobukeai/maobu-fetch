@@ -265,6 +265,7 @@ svg { flex: 0 0 auto; }
 .task-status.completed { color: var(--success); }.task-status.completed::before { background: var(--success); }
 .task-status.failed { color: var(--danger); }.task-status.failed::before { background: var(--danger); }
 .task-status.queued, .task-status.scheduled { color: var(--warning); }.task-status.queued::before, .task-status.scheduled::before { background: var(--warning); }
+.task-status.waiting-network { color: var(--warning); }.task-status.waiting-network::before { background: var(--warning); }
 .connection-count { color: var(--muted); font-variant-numeric: tabular-nums; }
 .connection-count small { color: var(--subtle); font-size: 8px; }
 .task-row:has(.task-status.downloading) .connection-count { color: var(--accent); font-weight: 600; }
@@ -626,7 +627,7 @@ svg { flex: 0 0 auto; }
 .maintenance { display: flex; gap: 10px; margin-top: 6px; }.maintenance button { height: 32px; padding: 0 14px; border: 1px solid var(--border-strong); border-radius: 6px; background: var(--control); font-size: 11px; font-weight: 500; transition: background-color 0.15s, border-color 0.15s; }
 .maintenance button:hover { background: var(--surface-hover); }
 
-.context-menu { position: fixed; z-index: 50; min-width: 170px; padding: 4px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-solid); box-shadow: var(--shadow); }
+.context-menu { position: fixed; z-index: 50; min-width: 210px; padding: 4px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-solid); box-shadow: var(--shadow); }
 .context-menu button { display: flex; align-items: center; gap: 8px; width: 100%; height: 30px; padding: 0 9px; border-radius: 6px; color: var(--text); background: transparent; text-align: left; font-size: 10px; }
 .context-menu button:hover { background: var(--surface-selected); }.context-menu .danger { color: var(--danger); }
 .toast { position: fixed; right: 18px; bottom: 38px; z-index: 60; max-width: 360px; padding: 10px 14px; border: 1px solid var(--border); border-radius: 8px; color: var(--text); background: var(--surface-solid); box-shadow: var(--shadow); font-size: 11px; }
@@ -937,9 +938,14 @@ svg { flex: 0 0 auto; }
   box-shadow: 0 0 0 1px var(--accent-light), 0 2px 4px rgba(0,0,0,0.04);
 }
 .dialog-actions.new-task-actions {
+  position: sticky;
+  bottom: -18px;
+  z-index: 2;
   margin-top: 8px;
-  padding-top: 8px;
+  margin-bottom: -18px;
+  padding: 10px 0 18px;
   border-top: 1px solid var(--border);
+  background: var(--surface-solid);
   gap: 10px;
 }
 .new-task-actions button {

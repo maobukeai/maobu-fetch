@@ -1,5 +1,6 @@
-export type TaskStatus = "queued" | "downloading" | "paused" | "completed" | "failed" | "cancelled" | "scheduled" | "verifying";
+export type TaskStatus = "queued" | "downloading" | "paused" | "completed" | "failed" | "cancelled" | "scheduled" | "verifying" | "waiting-network";
 export type CollisionPolicy = "overwrite" | "skip" | "rename";
+export type CompletionAction = "none" | "open-folder" | "run-file";
 
 export interface MediaSelection {
   extractor?: string;
@@ -38,6 +39,7 @@ export interface DownloadTask {
   media?: MediaSelection;
   per_task_speed_limit: number;
   collision_policy: CollisionPolicy;
+  completion_action: CompletionAction;
   connection_count: number;
   active_connections: number;
   segments: DownloadSegment[];
@@ -56,6 +58,7 @@ export interface NewTaskRequest {
   source?: string;
   per_task_speed_limit: number;
   collision_policy: CollisionPolicy;
+  completion_action: CompletionAction;
   media?: MediaSelection;
   connection_count?: number;
 }
@@ -82,6 +85,7 @@ export interface AppSettings {
   proxy_password: string;
   user_agent: string;
   default_collision_policy: CollisionPolicy;
+  default_completion_action: CompletionAction;
   max_retries: number;
   retry_base_seconds: number;
   verify_after_download: boolean;

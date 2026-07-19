@@ -4,6 +4,9 @@ const destination = process.argv[2];
 const connections = Number(process.argv[3] ?? 32);
 const sourceUrl = process.argv[4] ?? "http://127.0.0.1:18765/fixture.bin";
 const fileName = process.argv[5] ?? "fixture.bin";
+const collisionPolicy = process.argv[6] ?? "overwrite";
+const priority = Number(process.argv[7] ?? 0);
+const perTaskSpeedLimit = Number(process.argv[8] ?? 0);
 if (!destination) throw new Error("Usage: node scripts/range_e2e.mjs <download-directory> [connections] [url] [file-name]");
 
 const extension = "abcdefghijklmnopabcdefghijklmnop";
@@ -15,7 +18,9 @@ const body = JSON.stringify({
   destination,
   source: "e2e",
   connection_count: connections,
-  collision_policy: "overwrite",
+  priority,
+  per_task_speed_limit: perTaskSpeedLimit,
+  collision_policy: collisionPolicy,
 });
 const timestamp = Date.now().toString();
 const signature = createHmac("sha256", key).update(`${timestamp}\n${body}`).digest("hex");

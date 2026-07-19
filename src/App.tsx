@@ -14,13 +14,13 @@ import { readText } from "@tauri-apps/plugin-clipboard-manager";
 import { invoke } from "@tauri-apps/api/core";
 import { LogicalSize } from "@tauri-apps/api/dpi";
 import type {
-  AppSettings, CollisionPolicy, DownloadTask, FilterKey, MediaProbeResult,
+  AppSettings, CollisionPolicy, CompletionAction, DownloadTask, FilterKey, MediaProbeResult,
   NewTaskRequest, PairingInfo, TaskStatus, ToolComponent, ToolStatus,
 } from "./types";
 
 const statusText: Record<TaskStatus, string> = {
   queued: "等待中", downloading: "下载中", paused: "已暂停", completed: "已完成",
-  failed: "失败", cancelled: "已取消", scheduled: "已计划", verifying: "校验中",
+  failed: "失败", cancelled: "已取消", scheduled: "已计划", verifying: "校验中", "waiting-network": "等待网络",
 };
 const nav: Array<[FilterKey, string, typeof Download]> = [
   ["all", "全部任务", Download], ["downloading", "正在下载", MonitorDown],
@@ -39,7 +39,7 @@ const defaults: AppSettings = {
   frosted_glass: false,
   language: "zh-CN", intercept_browser_downloads: true, min_file_size_mb: 1,
   clipboard_monitor: false, proxy_mode: "system", proxy_url: "", proxy_username: "",
-  proxy_password: "", user_agent: "MaobuFetch/0.5", default_collision_policy: "rename",
+  proxy_password: "", user_agent: "MaobuFetch/0.5", default_collision_policy: "rename", default_completion_action: "none",
   max_retries: 3, retry_base_seconds: 2, verify_after_download: false,
   media_tool_auto_update: true,
   yt_dlp_path: "", ffmpeg_path: "", ffprobe_path: "",
@@ -387,7 +387,7 @@ export default function App() {
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "n") { event.preventDefault(); setNewOpen(true); }
       if (event.key === "Delete" && selected.size) void removeSelected(false);
       if (event.code === "Space" && selected.size && !event.repeat) {
-        event.preventDefault(); void bulk(tasks.some((task) => selected.has(task.id) && task.status === "downloading") ? "pause" : "resume");
+        event.preventDefault(); void bulk(tasks.some((task) => selected.has(task.id) && ["downloading", "waiting-network"].includes(task.status)) ? "pause" : "resume");
       }
     };
     window.addEventListener("keydown", handler);
@@ -530,7 +530,7 @@ function TaskRow({ task, selected, onSelect, onOpen, onContext }: { task: Downlo
   const progress = task.total_bytes ? Math.min(100, task.downloaded_bytes / task.total_bytes * 100) : 0;
   return <div className={selected ? "task-row selected" : "task-row"} onDoubleClick={onOpen} onContextMenu={onContext}>
     <label><input type="checkbox" aria-label={`选择 ${task.file_name}`} checked={selected} onChange={onSelect} /></label>
-    <div className="name-cell" onClick={onSelect}><FileIcon category={task.category} /><div><strong title={task.file_name}>{task.file_name}</strong><small title={task.url}>{hostOf(task.url)}</small></div></div>
+    <div className="name-cell" onClick={onSelect}><FileIcon category={task.category} /><div><strong title={task.file_name}>{task.file_name}</strong><small title={task.url}>{task.priority > 0 ? "高优先级 · " : task.priority < 0 ? "低优先级 · " : ""}{hostOf(task.url)}</small></div></div>
     <span>{task.total_bytes ? formatBytes(task.total_bytes) : "—"}</span><span className={`task-status ${task.status}`}>{statusText[task.status]}</span><span className="connection-count">{task.status === "downloading" ? `${task.active_connections}/${task.connection_count}` : task.connection_count}<small> 路</small></span>
     <div className="progress-cell"><div><i style={{ width: `${progress}%` }} /></div><span>{task.status === "completed" ? "100%" : `${progress.toFixed(0)}%`}</span></div>
     <span>{task.status === "downloading" ? `${formatBytes(task.speed)}/s` : "—"}</span><span>{task.eta_seconds ? formatDuration(task.eta_seconds) : "—"}</span><span>{formatDate(task.created_at)}</span><button className="row-menu" onClick={(event) => { event.stopPropagation(); onContext(event); }}><MoreHorizontal size={15} /></button>
@@ -578,6 +578,9 @@ function Details({ task, onClose, notify, selectedCount }: { task?: DownloadTask
         <div><dt>剩余时间</dt><dd>{task.eta_seconds ? formatDuration(task.eta_seconds) : "—"}</dd></div>
         <div><dt>来源</dt><dd>{hostOf(task.url)}</dd></div>
         <div><dt>保存位置</dt><dd>{task.destination}</dd></div>
+        <div><dt>优先级</dt><dd>{task.priority > 0 ? "高" : task.priority < 0 ? "低" : "普通"}</dd></div>
+        <div><dt>任务限速</dt><dd>{task.per_task_speed_limit ? `${Math.round(task.per_task_speed_limit / 1024)} KB/s` : "不限速"}</dd></div>
+        <div><dt>完成动作</dt><dd>{task.completion_action === "open-folder" ? "打开文件夹" : task.completion_action === "run-file" ? "运行文件" : "无"}</dd></div>
         <div><dt>下载来源</dt><dd>{task.source}</dd></div>
         {task.checksum_sha256 && <div><dt>SHA-256 校验码</dt><dd title={task.checksum_sha256}>{task.checksum_sha256}</dd></div>}
       </dl>
@@ -604,7 +607,7 @@ function Details({ task, onClose, notify, selectedCount }: { task?: DownloadTask
       )}
 
       <div className="details-actions">
-        {task.status === "downloading" ? (
+        {["downloading", "waiting-network"].includes(task.status) ? (
           <button onClick={() => void action("pause")}><Pause size={13} />暂停下载</button>
         ) : (
           !["completed", "cancelled"].includes(task.status) && <button onClick={() => void action("resume")}><Play size={13} />继续下载</button>
@@ -664,6 +667,8 @@ function NewTaskDialog({ settings, onClose, onCreated, defaultUrl }: { settings:
   }); const [advanced, setAdvanced] = useState(false);
   const [busy, setBusy] = useState(false); const [error, setError] = useState<string>();
   const [schedule, setSchedule] = useState(""); const [policy, setPolicy] = useState<CollisionPolicy>(settings.default_collision_policy);
+  const [priority, setPriority] = useState(0);
+  const [completionAction, setCompletionAction] = useState<CompletionAction>(settings.default_completion_action);
   const [referer, setReferer] = useState(""); const [cookie, setCookie] = useState(""); const [authorization, setAuthorization] = useState("");
   const [checksum, setChecksum] = useState(""); const [limit, setLimit] = useState(0);
   const [connections, setConnections] = useState(settings.connections_per_download);
@@ -681,7 +686,7 @@ function NewTaskDialog({ settings, onClose, onCreated, defaultUrl }: { settings:
       setBusy(false);
       return;
     }
-    const template: Omit<NewTaskRequest, "url"> = { file_name: fileName || undefined, destination, headers, scheduled_at: schedule ? new Date(schedule).getTime() : undefined, priority: 0, expected_checksum: checksum || undefined, source: "desktop", per_task_speed_limit: limit * 1024, collision_policy: policy, connection_count: connections, media: media ? { extractor: media.extractor, format_id: format, format_label: selectedFormat?.label, subtitles: [], thumbnail: media.thumbnail, requires_ffmpeg: selectedFormat?.requires_ffmpeg } : undefined };
+    const template: Omit<NewTaskRequest, "url"> = { file_name: fileName || undefined, destination, headers, scheduled_at: schedule ? new Date(schedule).getTime() : undefined, priority, expected_checksum: checksum || undefined, source: "desktop", per_task_speed_limit: limit * 1024, collision_policy: policy, completion_action: lines.length > 1 ? "none" : completionAction, connection_count: connections, media: media ? { extractor: media.extractor, format_id: format, format_label: selectedFormat?.label, subtitles: [], thumbnail: media.thumbnail, requires_ffmpeg: selectedFormat?.requires_ffmpeg } : undefined };
     try {
       if (lines.length === 1) {
         const task = await api.add({ url: lines[0], ...template });
@@ -899,6 +904,20 @@ function NewTaskDialog({ settings, onClose, onCreated, defaultUrl }: { settings:
                   <span className="unit-label">KB/s</span>
                 </div>
               </Field>
+              <Field label="任务优先级">
+                <select value={priority} onChange={(e) => setPriority(+e.target.value)}>
+                  <option value={1}>高优先级</option>
+                  <option value={0}>普通</option>
+                  <option value={-1}>低优先级</option>
+                </select>
+              </Field>
+              <Field label="下载完成后">
+                <select value={completionAction} onChange={(e) => setCompletionAction(e.target.value as CompletionAction)}>
+                  <option value="none">不执行操作</option>
+                  {lines.length === 1 && <option value="open-folder">打开文件夹</option>}
+                  {lines.length === 1 && <option value="run-file">运行文件（仅本次任务）</option>}
+                </select>
+              </Field>
               <Field label="自定义 Referer">
                 <input
                   value={referer}
@@ -1047,7 +1066,19 @@ function SettingsPage({ value, onChange, onClose, notify }: { value: AppSettings
   const items: Array<[SettingsSection, string, typeof Settings]> = [["general","常规",Settings],["download","下载",Download],["network","网络",Network],["browser","浏览器",Globe2],["media","媒体",Video],["appearance","外观",SlidersHorizontal],["advanced","高级",Info],["about","关于",Info]];
   return <div className="settings-page"><aside className="nav-pane"><div className="brand" data-tauri-drag-region>设置</div>{items.map(([key,label,Icon]) => <button key={key} className={section === key ? "nav-item active" : "nav-item"} onClick={() => setSection(key)}><Icon size={15} /><span>{label}</span></button>)}</aside><main className="settings-body" data-tauri-drag-region><div className="settings-title" data-tauri-drag-region><h1 data-tauri-drag-region>{items.find(([key]) => key === section)?.[1]}</h1></div><div className="settings-content">
     {section === "general" && <SettingsGroup title="应用行为"><div className="settings-group-content"><Toggle label="启动时最小化" checked={draft.start_minimized} onChange={(v) => set("start_minimized", v)} /><Toggle label="最小化到托盘" checked={draft.minimize_to_tray} onChange={(v) => set("minimize_to_tray", v)} /><Toggle label="关闭时驻留托盘" checked={draft.close_to_tray} onChange={(v) => set("close_to_tray", v)} /><Toggle label="下载完成通知" checked={draft.notifications} onChange={(v) => set("notifications", v)} /><Toggle label="监视剪贴板链接" checked={draft.clipboard_monitor} onChange={(v) => set("clipboard_monitor", v)} /></div></SettingsGroup>}
-    {section === "download" && <SettingsGroup title="保存与性能"><div className="settings-group-content"><SettingRow label="默认下载目录"><input value={draft.download_dir} onChange={(e) => set("download_dir", e.target.value)} /></SettingRow><SettingRow label="文件重名"><div className="fluent-segmented-control settings-segmented"><button type="button" className={draft.default_collision_policy === "rename" ? "active" : ""} onClick={() => set("default_collision_policy", "rename")}>自动重命名</button><button type="button" className={draft.default_collision_policy === "overwrite" ? "active" : ""} onClick={() => set("default_collision_policy", "overwrite")}>覆盖</button><button type="button" className={draft.default_collision_policy === "skip" ? "active" : ""} onClick={() => set("default_collision_policy", "skip")}>跳过</button></div></SettingRow><Toggle label="低内存模式（1 个任务、每任务最多 2 路连接）" checked={draft.low_memory_mode} onChange={(v) => set("low_memory_mode", v)} /><SettingRow label="同时下载任务"><input type="number" min="1" max="16" value={draft.concurrent_downloads} onChange={(e) => set("concurrent_downloads", +e.target.value)} /></SettingRow><SettingRow label={`每任务连接数 (${draft.connections_per_download} 路)`}><div className="settings-slider-wrapper"><input type="range" min="0" max="5" step="1" value={[1, 2, 4, 8, 16, 32].indexOf(draft.connections_per_download)} onChange={(e) => { const values = [1, 2, 4, 8, 16, 32]; set("connections_per_download", values[+e.target.value]); }} className="fluent-slider" /><div className="slider-ticks"><span>1</span><span>2</span><span>4</span><span>8</span><span>16</span><span>32</span></div></div></SettingRow><SettingRow label="全局限速（KB/s）"><input type="number" min="0" value={draft.speed_limit_kbps} onChange={(e) => set("speed_limit_kbps", +e.target.value)} /></SettingRow><Toggle label="完成后计算 SHA-256" checked={draft.verify_after_download} onChange={(v) => set("verify_after_download", v)} /></div><p className="settings-note">开启后使用更小的合并缓冲区和连接池；不会改写上述并发偏好，关闭后自动恢复。已建立的连接会安全完成。</p></SettingsGroup>}
+    {section === "download" && <SettingsGroup title="保存与性能">
+      <div className="settings-group-content">
+        <SettingRow label="默认下载目录"><input value={draft.download_dir} onChange={(e) => set("download_dir", e.target.value)} /></SettingRow>
+        <SettingRow label="文件重名"><div className="fluent-segmented-control settings-segmented"><button type="button" className={draft.default_collision_policy === "rename" ? "active" : ""} onClick={() => set("default_collision_policy", "rename")}>自动重命名</button><button type="button" className={draft.default_collision_policy === "overwrite" ? "active" : ""} onClick={() => set("default_collision_policy", "overwrite")}>覆盖</button><button type="button" className={draft.default_collision_policy === "skip" ? "active" : ""} onClick={() => set("default_collision_policy", "skip")}>跳过</button></div></SettingRow>
+        <SettingRow label="默认完成动作"><select value={draft.default_completion_action} onChange={(e) => set("default_completion_action", e.target.value as CompletionAction)}><option value="none">不执行操作</option><option value="open-folder">打开文件夹</option></select></SettingRow>
+        <Toggle label="低内存模式（1 个任务、每任务最多 2 路连接）" checked={draft.low_memory_mode} onChange={(v) => set("low_memory_mode", v)} />
+        <SettingRow label="同时下载任务"><input type="number" min="1" max="16" value={draft.concurrent_downloads} onChange={(e) => set("concurrent_downloads", +e.target.value)} /></SettingRow>
+        <SettingRow label={`每任务连接数 (${draft.connections_per_download} 路)`}><div className="settings-slider-wrapper"><input type="range" min="0" max="5" step="1" value={[1, 2, 4, 8, 16, 32].indexOf(draft.connections_per_download)} onChange={(e) => { const values = [1, 2, 4, 8, 16, 32]; set("connections_per_download", values[+e.target.value]); }} className="fluent-slider" /><div className="slider-ticks"><span>1</span><span>2</span><span>4</span><span>8</span><span>16</span><span>32</span></div></div></SettingRow>
+        <SettingRow label="全局限速（KB/s）"><input type="number" min="0" value={draft.speed_limit_kbps} onChange={(e) => set("speed_limit_kbps", +e.target.value)} /></SettingRow>
+        <Toggle label="完成后计算 SHA-256" checked={draft.verify_after_download} onChange={(v) => set("verify_after_download", v)} />
+      </div>
+      <p className="settings-note">开启低内存模式后使用更小的合并缓冲区和连接池；不会改写并发偏好，关闭后自动恢复。</p>
+    </SettingsGroup>}
     {section === "network" && <SettingsGroup title="代理与重试"><div className="settings-group-content"><SettingRow label="代理模式"><select value={draft.proxy_mode} onChange={(e) => set("proxy_mode", e.target.value as AppSettings["proxy_mode"])}><option value="system">跟随系统</option><option value="none">不使用代理</option><option value="manual">手动代理</option></select></SettingRow>{draft.proxy_mode === "manual" && <><SettingRow label="代理地址"><input value={draft.proxy_url} onChange={(e) => set("proxy_url", e.target.value)} /></SettingRow><SettingRow label="用户名"><input value={draft.proxy_username} onChange={(e) => set("proxy_username", e.target.value)} /></SettingRow><SettingRow label="密码"><input type="password" value={draft.proxy_password} onChange={(e) => set("proxy_password", e.target.value)} /></SettingRow></>}<SettingRow label="最大重试次数"><input type="number" min="0" max="10" value={draft.max_retries} onChange={(e) => set("max_retries", +e.target.value)} /></SettingRow></div></SettingsGroup>}
     {section === "browser" && <><SettingsGroup title="下载接管"><div className="settings-group-content"><Toggle label="允许浏览器扩展接管下载" checked={draft.intercept_browser_downloads} onChange={(v) => set("intercept_browser_downloads", v)} /><SettingRow label="最小文件大小（MB）"><input type="number" min="0" value={draft.min_file_size_mb} onChange={(e) => set("min_file_size_mb", +e.target.value)} /></SettingRow></div></SettingsGroup><SettingsGroup title="安全配对">{pair ? <div className="pair-card"><p>在扩展中输入一次性配对码（10 分钟有效）</p><div className="pair-code-wrapper"><code>{pair.code}</code><button className="copy-code-btn" onClick={() => { void navigator.clipboard.writeText(pair.code); notify("配对码已复制到剪贴板"); }} title="复制配对码"><Copy size={13} /><span>复制</span></button></div>{pair.paired_extension && <p>已配对：{pair.paired_extension.slice(0, 16)}…</p>}<div className="maintenance"><button onClick={() => void api.rotatePairing().then(setPair)}>更换配对码</button>{pair.paired_extension && <button onClick={() => void api.revokePairing().then(() => api.pairing().then(setPair))}>撤销配对</button>}</div></div> : <LoaderCircle className="spin" />}</SettingsGroup></>}
     {section === "media" && <SettingsGroup title="媒体组件"><p className="settings-note">按“自定义路径 → 应用安装 → Windows PATH”顺序查找组件。外部组件只会被引用，猫步下载器不会复制、更新或删除它们。</p>{tools ? <MediaToolsCard status={tools} onStatus={setTools} /> : <LoaderCircle className="spin" />}<MediaPathSettings value={draft} onChange={(patch) => setDraft((current) => ({ ...current, ...patch }))} /><div className="settings-group-content"><Toggle label="自动检查媒体工具更新" checked={draft.media_tool_auto_update} onChange={(v) => set("media_tool_auto_update", v)} /></div></SettingsGroup>}
@@ -1228,11 +1259,33 @@ function ContextMenu({ x, y, task, close, notify }: { x: number; y: number; task
       notify(String(error), "error");
     }
   };
-  const safeX = Math.min(x, window.innerWidth - 170 - 12);
-  const safeY = Math.min(y, window.innerHeight - 195 - 12);
+  const update = async (options: { priority?: number; perTaskSpeedLimit?: number; completionAction?: CompletionAction }) => {
+    try {
+      await api.updateTaskOptions(task.id, options);
+      close();
+    } catch (error) {
+      notify(String(error), "error");
+    }
+  };
+  const changeSpeedLimit = async () => {
+    const current = Math.round(task.per_task_speed_limit / 1024);
+    const input = window.prompt("输入当前任务限速（KB/s，0 表示不限速）", String(current));
+    if (input === null) return;
+    const value = Number(input);
+    if (!Number.isFinite(value) || value < 0) {
+      notify("请输入不小于 0 的有效数字", "error");
+      return;
+    }
+    await update({ perTaskSpeedLimit: Math.round(value * 1024) });
+  };
+  const safeX = Math.min(x, window.innerWidth - 210 - 12);
+  const safeY = Math.min(y, window.innerHeight - 285 - 12);
   return (
     <div className="context-menu" style={{ left: safeX, top: safeY }} onClick={(e) => e.stopPropagation()}>
-      {task.status === "downloading" ? <button onClick={() => void action("pause")}><Pause size={13} />暂停</button> : !["completed","cancelled"].includes(task.status) && <button onClick={() => void action("resume")}><Play size={13} />开始 / 继续</button>}
+      {["downloading", "waiting-network"].includes(task.status) ? <button onClick={() => void action("pause")}><Pause size={13} />暂停</button> : !["completed","cancelled"].includes(task.status) && <button onClick={() => void action("resume")}><Play size={13} />开始 / 继续</button>}
+      <button onClick={() => void update({ priority: task.priority > 0 ? 0 : 1 })}><Gauge size={13} />{task.priority > 0 ? "设为普通优先级" : "设为高优先级"}</button>
+      <button onClick={() => void changeSpeedLimit()}><Gauge size={13} />任务限速：{task.per_task_speed_limit ? `${Math.round(task.per_task_speed_limit / 1024)} KB/s` : "不限速"}</button>
+      <button onClick={() => void update({ completionAction: task.completion_action === "open-folder" ? "none" : "open-folder" })}><FolderOpen size={13} />{task.completion_action === "open-folder" ? "取消完成后打开文件夹" : "完成后打开文件夹"}</button>
       <button onClick={() => void api.openFolder(task.id).then(close)}><FolderOpen size={13} />打开文件夹</button>
       <button onClick={() => void navigator.clipboard.writeText(task.url).then(() => { notify("链接已复制"); close(); })}><Copy size={13} />复制链接</button>
       {task.status === "completed" && <button onClick={() => void api.verify(task.id).then(() => { notify("文件校验完成"); close(); })}><ShieldCheck size={13} />校验 SHA-256</button>}

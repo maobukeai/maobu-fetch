@@ -9,8 +9,8 @@ use bridge::PairingService;
 use manager::{DownloadManager, SharedManager};
 use media_tools::MediaTools;
 use models::{
-    AppSettings, BatchTaskRequest, DetectedMediaTools, DownloadTask, MediaProbeResult,
-    NewTaskRequest, PairingInfo, ToolComponent, ToolStatus,
+    AppSettings, BatchTaskRequest, CompletionAction, DetectedMediaTools, DownloadTask,
+    MediaProbeResult, NewTaskRequest, PairingInfo, ToolComponent, ToolStatus,
 };
 use std::{path::PathBuf, sync::Arc};
 use store::Store;
@@ -52,6 +52,19 @@ async fn task_action(
     manager: State<'_, SharedManager>,
 ) -> Result<(), String> {
     manager.inner().action(&id, &action).await
+}
+
+#[tauri::command]
+async fn task_update_options(
+    id: String,
+    priority: Option<i32>,
+    per_task_speed_limit: Option<u64>,
+    completion_action: Option<CompletionAction>,
+    manager: State<'_, SharedManager>,
+) -> Result<DownloadTask, String> {
+    manager
+        .update_task_options(&id, priority, per_task_speed_limit, completion_action)
+        .await
 }
 
 #[tauri::command]
@@ -387,6 +400,7 @@ pub fn run() {
             task_add,
             tasks_add_batch,
             task_action,
+            task_update_options,
             tasks_bulk_action,
             task_remove,
             queue_reorder,
