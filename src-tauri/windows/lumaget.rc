@@ -1,2 +1,31 @@
 1 ICON "../icons/icon.ico"
 1 24 "app.manifest"
+
+1 VERSIONINFO
+ FILEVERSION 0,5,0,0
+ PRODUCTVERSION 0,5,0,0
+ FILEFLAGSMASK 0x3fL
+ FILEFLAGS 0x0L
+ FILEOS 0x40004L
+ FILETYPE 0x1L
+ FILESUBTYPE 0x0L
+BEGIN
+  BLOCK "StringFileInfo"
+  BEGIN
+    BLOCK "040904B0"
+    BEGIN
+      VALUE "CompanyName", "Maobu Fetch Contributors\0"
+      VALUE "FileDescription", "Maobu Fetch - Cat-inspired Download Manager\0"
+      VALUE "FileVersion", "0.5.0\0"
+      VALUE "InternalName", "maobu-fetch\0"
+      VALUE "LegalCopyright", "Copyright (c) 2026 Maobu Fetch Contributors\0"
+      VALUE "OriginalFilename", "maobu-fetch.exe\0"
+      VALUE "ProductName", "Maobu Fetch\0"
+      VALUE "ProductVersion", "0.5.0\0"
+    END
+  END
+  BLOCK "VarFileInfo"
+  BEGIN
+    VALUE "Translation", 0x409, 1200
+  END
+END

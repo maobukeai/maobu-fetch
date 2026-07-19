@@ -1,4 +1,4 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 fn main() {
-    lumaget_lib::run();
+    maobu_fetch_lib::run();
 }

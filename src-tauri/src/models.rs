@@ -195,7 +195,7 @@ impl Default for AppSettings {
             proxy_url: String::new(),
             proxy_username: String::new(),
             proxy_password: String::new(),
-            user_agent: "LumaGet/0.3".into(),
+            user_agent: "MaobuFetch/0.5".into(),
             default_collision_policy: CollisionPolicy::Rename,
             max_retries: 3,
             retry_base_seconds: 2,

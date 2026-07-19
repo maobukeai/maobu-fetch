@@ -16,16 +16,16 @@ async function sendTask(url, fileName, extra = {}) {
 
 chrome.runtime.onInstalled.addListener(() => {
   chrome.contextMenus.removeAll(() => {
-    chrome.contextMenus.create({ id: "lumaget-link", title: "使用 LumaGet 下载链接", contexts: ["link"] });
-    chrome.contextMenus.create({ id: "lumaget-media", title: "使用 LumaGet 下载媒体", contexts: ["video", "audio", "image"] });
-    chrome.contextMenus.create({ id: "lumaget-page", title: "使用 LumaGet 分析当前页面", contexts: ["page"] });
+    chrome.contextMenus.create({ id: "lumaget-link", title: "使用猫步下载器下载链接", contexts: ["link"] });
+    chrome.contextMenus.create({ id: "lumaget-media", title: "使用猫步下载器下载媒体", contexts: ["video", "audio", "image"] });
+    chrome.contextMenus.create({ id: "lumaget-page", title: "使用猫步下载器分析当前页面", contexts: ["page"] });
   });
 });
 
 chrome.contextMenus.onClicked.addListener(async (info, tab) => {
   const url = info.linkUrl || info.srcUrl || info.pageUrl;
   if (!url) return;
-  try { await sendTask(url); notify("已发送到 LumaGet", tab?.title || url); }
+  try { await sendTask(url); notify("已发送到猫步下载器", tab?.title || url); }
   catch (error) { notify("发送失败", String(error.message || error)); }
 });
 

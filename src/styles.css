@@ -55,9 +55,13 @@ svg { flex: 0 0 auto; }
 .app-frame { display: grid; grid-template-columns: 184px minmax(0, 1fr); width: 100%; height: 100%; background: var(--surface-alt); }
 .nav-pane { display: flex; flex-direction: column; min-height: 0; padding: 12px 8px 8px; border-right: 1px solid var(--border); background: rgba(243, 243, 243, .82); backdrop-filter: blur(20px); }
 :root[data-theme="dark"] .nav-pane { background: rgba(32, 32, 32, .9); }
-.brand { display: flex; align-items: center; gap: 9px; height: 40px; padding: 0 8px; font-size: 13px; font-weight: 600; }
-.app-icon { display: grid; place-items: center; width: 28px; height: 28px; color: white; border-radius: 6px; background: var(--accent); }
-:root[data-theme="dark"] .app-icon { color: #111; }
+.brand { display: flex; align-items: center; gap: 9px; height: 44px; padding: 0 7px; }
+.brand > span { min-width: 0; }
+.brand b, .brand small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.brand b { color: var(--text); font-size: 12px; font-weight: 650; }
+.brand small { margin-top: 1px; color: var(--muted); font-size: 8px; font-weight: 500; letter-spacing: .2px; }
+.app-icon { display: grid; place-items: center; width: 30px; height: 30px; flex: 0 0 auto; border-radius: 8px; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,.14); }
+.app-icon svg { width: 100%; height: 100%; }
 .new-button { display: flex; align-items: center; justify-content: center; gap: 7px; height: 32px; margin: 4px 2px 8px; border: 1px solid rgba(255,255,255,.08); border-radius: 3px; color: white; background: #005fb8; font-size: 11px; font-weight: 600; }
 .new-button:hover { background: #196ebc; }
 .nav-scroll { min-height: 0; overflow: auto; scrollbar-width: thin; }

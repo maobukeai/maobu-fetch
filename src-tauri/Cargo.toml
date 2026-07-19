@@ -1,13 +1,13 @@
 [package]
-name = "lumaget"
-version = "0.4.0"
+name = "maobu-fetch"
+version = "0.5.0"
 description = "A clean-room open-source download manager"
-authors = ["LumaGet contributors"]
+authors = ["Maobu Fetch contributors"]
 license = "MIT"
 edition = "2021"
 
 [lib]
-name = "lumaget_lib"
+name = "maobu_fetch_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]

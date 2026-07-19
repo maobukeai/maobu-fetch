@@ -124,7 +124,7 @@ pub async fn run(manager: SharedManager, pairing: PairingService, app: AppHandle
 }
 
 async fn health() -> impl IntoResponse {
-    Json(serde_json::json!({"name":"LumaGet","api_version":1,"ready":true}))
+    Json(serde_json::json!({"name":"Maobu Fetch","api_version":1,"ready":true}))
 }
 async fn pair(
     State(state): State<BridgeState>,

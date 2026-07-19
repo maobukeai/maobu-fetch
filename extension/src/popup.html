@@ -1,6 +1,6 @@
-<!doctype html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="popup.css"><title>LumaGet</title></head><body><main>
-  <header><img src="icon128.png" alt=""><div><b>LumaGet</b><span id="connection">正在检测桌面端…</span></div><i id="status"></i></header>
-  <section id="pairBox" class="pair hidden"><b>连接桌面端</b><p>在 LumaGet 设置 → 浏览器中查看一次性配对码。</p><div><input id="pairCode" inputmode="numeric" maxlength="6" placeholder="6 位配对码"><button id="pair">配对</button></div></section>
+<!doctype html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="popup.css"><title>猫步下载器</title></head><body><main>
+  <header><img src="icon128.png" alt=""><div><b>猫步下载器</b><span>Maobu Fetch · <em id="connection" style="font-style:normal">正在检测桌面端…</em></span></div><i id="status"></i></header>
+  <section id="pairBox" class="pair hidden"><b>连接桌面端</b><p>在猫步下载器的设置 → 浏览器中查看一次性配对码。</p><div><input id="pairCode" inputmode="numeric" maxlength="6" placeholder="6 位配对码"><button id="pair">配对</button></div></section>
   <section class="quick"><label>快速下载</label><div><input id="url" placeholder="粘贴下载链接"><button id="send">发送</button></div><p id="message">连接状态检测中…</p></section>
   <section><div class="section-title"><b>当前页面媒体</b><span id="count">0</span></div><div id="media" class="media"><div class="empty">当前页面暂未发现媒体资源</div></div></section>
   <section class="rules"><label><span><b>接管浏览器下载</b><small>离线时自动回退到浏览器</small></span><input id="intercept" type="checkbox"></label><label><span><b>最小文件大小</b></span><select id="minSize"><option value="0">不限</option><option value="1">1 MB</option><option value="5">5 MB</option><option value="20">20 MB</option><option value="100">100 MB</option></select></label><button id="bypass">临时绕过接管 10 分钟</button></section>

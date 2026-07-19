@@ -3,7 +3,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { AppSettings, DownloadTask, MediaProbeResult, NewTaskRequest, PairingInfo, TaskEvent, ToolStatus } from "./types";
 
 export const isDesktop = () => "__TAURI_INTERNALS__" in window;
-const call = <T>(command: string, args?: Record<string, unknown>): Promise<T> => isDesktop() ? invoke<T>(command, args) : Promise.reject(new Error("请运行 LumaGet 桌面应用"));
+const call = <T>(command: string, args?: Record<string, unknown>): Promise<T> => isDesktop() ? invoke<T>(command, args) : Promise.reject(new Error("请运行猫步下载器桌面应用"));
 
 export const api = {
   list: () => isDesktop() ? call<DownloadTask[]>("tasks_list") : Promise.resolve([]),

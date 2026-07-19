@@ -166,7 +166,8 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
         .setup(|app| {
-            let data_dir = std::env::var_os("LUMAGET_DATA_DIR")
+            let data_dir = std::env::var_os("MAOBU_FETCH_DATA_DIR")
+                .or_else(|| std::env::var_os("LUMAGET_DATA_DIR"))
                 .map(PathBuf::from)
                 .unwrap_or_else(|| {
                     app.path()
@@ -210,5 +211,5 @@ pub fn run() {
             media_tools_check_update
         ])
         .run(tauri::generate_context!())
-        .expect("error while running LumaGet");
+        .expect("error while running Maobu Fetch");
 }

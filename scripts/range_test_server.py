@@ -1,4 +1,4 @@
-"""Deterministic HTTP Range server for LumaGet integration checks."""
+"""Deterministic HTTP Range server for Maobu Fetch integration checks."""
 
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import argparse

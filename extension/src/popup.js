@@ -8,7 +8,7 @@ function call(payload) { return new Promise((resolve) => chrome.runtime.sendMess
 async function health() {
   const response = await call({ type: "health" }); const online = Boolean(response?.ok);
   $("status").classList.toggle("online", online); $("connection").textContent = online ? "桌面端已连接" : "桌面端未连接";
-  $("pairBox").classList.toggle("hidden", !online || response?.paired); message(!online ? "请先启动 LumaGet；下载会保留在浏览器中" : response?.paired ? "连接安全，可以发送下载" : "需要先输入桌面端配对码", !online);
+  $("pairBox").classList.toggle("hidden", !online || response?.paired); message(!online ? "请先启动猫步下载器；下载会保留在浏览器中" : response?.paired ? "连接安全，可以发送下载" : "需要先输入桌面端配对码", !online);
 }
 await health();
 $("refresh").onclick = health;

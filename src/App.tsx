@@ -33,7 +33,7 @@ const defaults: AppSettings = {
   close_to_tray: false, notifications: true, auto_start: false, theme: "system",
   language: "zh-CN", intercept_browser_downloads: true, min_file_size_mb: 1,
   clipboard_monitor: false, proxy_mode: "system", proxy_url: "", proxy_username: "",
-  proxy_password: "", user_agent: "LumaGet/0.3", default_collision_policy: "rename",
+  proxy_password: "", user_agent: "MaobuFetch/0.5", default_collision_policy: "rename",
   max_retries: 3, retry_base_seconds: 2, verify_after_download: false,
   media_tool_auto_update: true,
 };
@@ -134,7 +134,7 @@ export default function App() {
   const sectionTitle = [...nav, ...categories].find(([key]) => key === filter)?.[1] ?? "全部任务";
   return <div className="app-frame">
     <aside className="nav-pane">
-      <div className="brand"><div className="app-icon"><Download size={18} /></div><span>LumaGet</span></div>
+      <div className="brand"><div className="app-icon"><CatDownloadMark /></div><span><b>猫步下载器</b><small>Maobu Fetch</small></span></div>
       <button className="new-button" onClick={() => setNewOpen(true)}><Plus size={15} />新建任务</button>
       <div className="nav-scroll">
         <p className="nav-label">任务</p>
@@ -182,6 +182,7 @@ function TaskRow({ task, selected, onSelect, onOpen, onContext }: { task: Downlo
     <span>{task.status === "downloading" ? `${formatBytes(task.speed)}/s` : "—"}</span><span>{task.eta_seconds ? formatDuration(task.eta_seconds) : "—"}</span><span>{formatDate(task.created_at)}</span><button className="row-menu"><MoreHorizontal size={15} /></button>
   </div>;
 }
+function CatDownloadMark() { return <svg viewBox="0 0 1024 1024" aria-hidden="true"><rect x="48" y="48" width="928" height="928" rx="220" fill="#f5f5f7" /><path d="M302 360 358 230l112 78c28-9 56-14 86-14s58 5 86 14l112-78 56 130v214c0 151-113 254-254 254S302 725 302 574V360Z" fill="#1d1d1f" /><path d="M556 392v218m-86-82 86 86 86-86" fill="none" stroke="#f5f5f7" strokeWidth="58" strokeLinecap="round" strokeLinejoin="round" /><path d="M445 694h222" fill="none" stroke="#0a84ff" strokeWidth="58" strokeLinecap="round" /><circle cx="428" cy="430" r="19" fill="#f5f5f7" /><circle cx="684" cy="430" r="19" fill="#f5f5f7" /><path d="M755 700c86 15 119-50 76-103" fill="none" stroke="#1d1d1f" strokeWidth="48" strokeLinecap="round" /></svg>; }
 function FileIcon({ category }: { category: string }) { const Icon = category === "video" ? Film : category === "audio" ? FileAudio : category === "images" ? FileImage : category === "archives" ? Archive : category === "apps" ? File : FileText; return <span className={`file-type ${category}`}><Icon size={16} /></span>; }
 function EmptyState({ filter, onAdd }: { filter: FilterKey; onAdd: () => void }) { return <div className="empty-state"><Download size={27} /><h2>{filter === "all" ? "还没有下载任务" : "此分类中没有任务"}</h2><p>添加链接，或从 Chrome / Edge 扩展发送下载。</p><button onClick={onAdd}>新建任务</button></div>; }
 
@@ -210,7 +211,7 @@ function NewTaskDialog({ settings, onClose, onCreated }: { settings: AppSettings
   const [toolStatus, setToolStatus] = useState<ToolStatus>();
   useEffect(() => { let unlisten: (() => void) | undefined; void api.subscribeMediaTools(setToolStatus).then((value) => { unlisten = value; }); return () => unlisten?.(); }, []);
   const lines = urls.split(/\r?\n/).map((value) => value.trim()).filter(Boolean);
-  const probe = async () => { setBusy(true); setError(undefined); try { const result = await api.probeMedia(lines[0]); if (result.drm) throw new Error("检测到 DRM 保护，LumaGet 不处理此内容"); setMedia(result); const selected = result.formats.find((item) => item.has_video && item.has_audio) ?? result.formats.find((item) => item.has_video); setFormat(selected?.id ?? ""); if (!fileName) setFileName(`${safeDisplayName(result.title)}.mp4`); } catch (reason) { const text = String(reason); if (text.includes("MEDIA_TOOLS_MISSING")) setToolStatus(await api.toolStatus()); else setError(text); } finally { setBusy(false); } };
+  const probe = async () => { setBusy(true); setError(undefined); try { const result = await api.probeMedia(lines[0]); if (result.drm) throw new Error("检测到 DRM 保护，猫步下载器不处理此内容"); setMedia(result); const selected = result.formats.find((item) => item.has_video && item.has_audio) ?? result.formats.find((item) => item.has_video); setFormat(selected?.id ?? ""); if (!fileName) setFileName(`${safeDisplayName(result.title)}.mp4`); } catch (reason) { const text = String(reason); if (text.includes("MEDIA_TOOLS_MISSING")) setToolStatus(await api.toolStatus()); else setError(text); } finally { setBusy(false); } };
   const submit = async () => {
     if (!lines.length) return; setBusy(true); setError(undefined);
     const headers: Record<string, string> = {}; if (referer) headers.Referer = referer; if (cookie) headers.Cookie = cookie; if (authorization) headers.Authorization = authorization;
