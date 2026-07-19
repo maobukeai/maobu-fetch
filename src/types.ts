@@ -84,6 +84,9 @@ export interface AppSettings {
   retry_base_seconds: number;
   verify_after_download: boolean;
   media_tool_auto_update: boolean;
+  window_width?: number;
+  window_height?: number;
+  auto_scale_ui?: boolean;
 }
 
 export interface PairingInfo { code: string; expires_at: number; paired_extension?: string; }

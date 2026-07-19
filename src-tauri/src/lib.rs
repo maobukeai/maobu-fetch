@@ -14,7 +14,9 @@ use models::{
 };
 use std::{path::PathBuf, sync::Arc};
 use store::Store;
-use tauri::{Manager, State};
+use tauri::{Emitter, Manager, State};
+use tauri::menu::{CheckMenuItem, Menu, MenuItem};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 
 #[tauri::command]
 async fn tasks_list(manager: State<'_, SharedManager>) -> Result<Vec<DownloadTask>, String> {
@@ -78,7 +80,9 @@ async fn settings_get(manager: State<'_, SharedManager>) -> Result<AppSettings, 
 async fn settings_save(
     settings: AppSettings,
     manager: State<'_, SharedManager>,
+    clip_item: State<'_, CheckMenuItem<tauri::Wry>>,
 ) -> Result<(), String> {
+    let _ = clip_item.set_checked(settings.clipboard_monitor);
     manager.save_settings(settings).await
 }
 
@@ -165,6 +169,7 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_clipboard_manager::init())
         .setup(|app| {
             let data_dir = std::env::var_os("MAOBU_FETCH_DATA_DIR")
                 .or_else(|| std::env::var_os("LUMAGET_DATA_DIR"))
@@ -183,7 +188,64 @@ pub fn run() {
             app.manage(pairing.clone());
             app.manage(media_tools);
             let bridge_app = app.handle().clone();
-            tauri::async_runtime::spawn(bridge::run(manager, pairing, bridge_app));
+            tauri::async_runtime::spawn(bridge::run(manager.clone(), pairing, bridge_app));
+
+            if let Some(icon) = app.default_window_icon() {
+                let show_item = MenuItem::with_id(app, "show", "显示主窗口", true, None::<&str>)?;
+                let initial_settings = tauri::async_runtime::block_on(manager.settings());
+                let clip_item = CheckMenuItem::with_id(
+                    app,
+                    "clipboard",
+                    "监视剪贴板",
+                    true,
+                    initial_settings.clipboard_monitor,
+                    None::<&str>,
+                )?;
+                app.manage(clip_item.clone());
+
+                let quit_item = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
+                let menu = Menu::with_items(app, &[&show_item, &clip_item, &quit_item])?;
+
+                let _tray = TrayIconBuilder::new()
+                    .icon(icon.clone())
+                    .menu(&menu)
+                    .on_menu_event(|app, event| {
+                        if event.id.as_ref() == "show" {
+                            if let Some(window) = app.get_webview_window("main") {
+                                let _ = window.show();
+                                let _ = window.unminimize();
+                                let _ = window.set_focus();
+                            }
+                        } else if event.id.as_ref() == "clipboard" {
+                            let clip_item = app.state::<CheckMenuItem<tauri::Wry>>();
+                            if let Ok(checked) = clip_item.is_checked() {
+                                let manager = app.state::<SharedManager>();
+                                let mut settings = tauri::async_runtime::block_on(manager.settings());
+                                settings.clipboard_monitor = checked;
+                                tauri::async_runtime::block_on(manager.save_settings(settings.clone()));
+                                let _ = app.emit("settings-changed", settings);
+                            }
+                        } else if event.id.as_ref() == "quit" {
+                            app.exit(0);
+                        }
+                    })
+                    .on_tray_icon_event(|tray, event| {
+                        if let TrayIconEvent::Click {
+                            button: MouseButton::Left,
+                            button_state: MouseButtonState::Up,
+                            ..
+                        } = event
+                        {
+                            let app = tray.app_handle();
+                            if let Some(window) = app.get_webview_window("main") {
+                                let _ = window.show();
+                                let _ = window.set_focus();
+                            }
+                        }
+                    })
+                    .build(app)?;
+            }
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

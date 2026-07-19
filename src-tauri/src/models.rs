@@ -166,6 +166,9 @@ pub struct AppSettings {
     pub retry_base_seconds: u64,
     pub verify_after_download: bool,
     pub media_tool_auto_update: bool,
+    pub window_width: Option<u32>,
+    pub window_height: Option<u32>,
+    pub auto_scale_ui: Option<bool>,
 }
 
 impl Default for AppSettings {
@@ -201,6 +204,9 @@ impl Default for AppSettings {
             retry_base_seconds: 2,
             verify_after_download: false,
             media_tool_auto_update: true,
+            window_width: Some(1024),
+            window_height: Some(720),
+            auto_scale_ui: Some(false),
         }
     }
 }

@@ -29,6 +29,7 @@ export const api = {
   removeMediaTools: () => call<void>("media_tools_remove"),
   checkMediaToolsUpdate: () => call<ToolStatus>("media_tools_check_update"),
   subscribeMediaTools: async (handler: (status: ToolStatus) => void): Promise<UnlistenFn | undefined> => isDesktop() ? listen<ToolStatus>("media-tools-progress", event => handler(event.payload)) : undefined,
+  subscribeSettings: async (handler: (settings: AppSettings) => void): Promise<UnlistenFn | undefined> => isDesktop() ? listen<AppSettings>("settings-changed", event => handler(event.payload)) : undefined,
   subscribe: async (handler: (event: TaskEvent | { removed: string }) => void): Promise<UnlistenFn[]> => {
     if (!isDesktop()) return [];
     return Promise.all([
