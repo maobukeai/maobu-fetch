@@ -11,6 +11,7 @@ import {
 import { api, isDesktop } from "./api";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { readText } from "@tauri-apps/plugin-clipboard-manager";
+import { invoke } from "@tauri-apps/api/core";
 import { LogicalSize } from "@tauri-apps/api/dpi";
 import type {
   AppSettings, CollisionPolicy, DownloadTask, FilterKey, MediaProbeResult,
@@ -234,8 +235,7 @@ export default function App() {
       if (rememberAction === "tray") {
         await appWindow.hide();
       } else if (rememberAction === "exit") {
-        allowClose.current = true;
-        await appWindow.close();
+        await invoke("app_exit");
       } else {
         setShowCloseConfirm(true);
       }
@@ -253,8 +253,7 @@ export default function App() {
     if (action === "tray") {
       await appWindow?.hide();
     } else {
-      allowClose.current = true;
-      await appWindow?.close();
+      await invoke("app_exit");
     }
   };
 
