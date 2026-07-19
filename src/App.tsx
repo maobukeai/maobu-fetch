@@ -337,7 +337,7 @@ export default function App() {
         const text = await readText();
         if (text && text !== lastText) {
           lastText = text;
-          if (/^https?:\/\/[^\s]+$/i.test(text.trim())) {
+          if (isDownloadableUrl(text)) {
             setInitialUrlFromClipboard(text.trim());
             setNewOpen(true);
             if (appWindow) {
@@ -545,7 +545,7 @@ export default function App() {
             <div className="about-dialog-content">
               <div className="about-logo"><CatDownloadMark /></div>
               <h3>猫步下载器 (Maobu Fetch)</h3>
-              <p className="about-version">版本 v0.5.6</p>
+              <p className="about-version">版本 v0.5.7</p>
               <p className="about-desc">
                 本地优先、紧凑高效的 Windows 下载管理器。<br />
                 支持多线程并发 HTTP Range 连接，接管浏览器下载。
@@ -1241,7 +1241,7 @@ function SettingsPage({ value, onChange, onClose, notify }: { value: AppSettings
             </div>
             <div>
               <h2 style={{ margin: 0, fontSize: "16px", fontWeight: 700, color: "var(--text)" }}>猫步下载器 (Maobu Fetch)</h2>
-              <p style={{ margin: "4px 0 0", fontSize: "11px", color: "var(--muted)" }}>版本 0.5.6</p>
+              <p style={{ margin: "4px 0 0", fontSize: "11px", color: "var(--muted)" }}>版本 0.5.7</p>
             </div>
           </div>
 
@@ -1449,6 +1449,74 @@ function formatDate(value: number) { return new Intl.DateTimeFormat("zh-CN", { m
 function redactedUrl(value: string) { try { const url = new URL(value); url.username = ""; url.password = ""; url.search = ""; url.hash = ""; return url.toString(); } catch { return "地址格式无效"; } }
 function hostOf(url: string) { try { return new URL(url).host; } catch { return url; } }
 function safeDisplayName(value: string) { return value.replace(/[<>:"/\\|?*]/g, "_").slice(0, 120); }
+
+function isDownloadableUrl(url: string): boolean {
+  try {
+    const trimmed = url.trim();
+    if (!/^https?:\/\/[^\s]+$/i.test(trimmed)) {
+      return false;
+    }
+
+    const parsed = new URL(trimmed);
+    const pathname = parsed.pathname.toLowerCase();
+    
+    // 1. 纯根目录链接（例如 https://github.com/ 或 https://bilibili.com ），排除
+    if (pathname === "/" || pathname === "") {
+      const search = parsed.search.toLowerCase();
+      if (search.includes("download") || search.includes("file=") || search.includes("url=")) {
+        return true;
+      }
+      return false;
+    }
+
+    // 2. 普通 HTML/网页扩展名，排除
+    const pageExtensions = [".html", ".htm", ".shtml", ".jsp", ".php", ".asp", ".aspx"];
+    if (pageExtensions.some(ext => pathname.endsWith(ext))) {
+      const search = parsed.search.toLowerCase();
+      if (search.includes("download") || search.includes("file=") || search.includes("url=")) {
+        return true;
+      }
+      return false;
+    }
+
+    // 3. 常见可下载文件扩展名，放行
+    const downloadExtensions = [
+      ".zip", ".rar", ".7z", ".tar", ".gz", ".bz2", ".xz", ".pkg", ".dmg", ".iso", ".tgz",
+      ".exe", ".msi", ".apk", ".ipa", ".deb", ".rpm",
+      ".mp4", ".mkv", ".avi", ".mov", ".wmv", ".flv", ".webm", ".m3u8", ".ts", ".rmvb",
+      ".mp3", ".flac", ".wav", ".aac", ".ogg", ".m4a", ".ape",
+      ".pdf", ".epub", ".docx", ".xlsx", ".pptx", ".torrent"
+    ];
+    const lastSegment = pathname.split('/').pop() || "";
+    if (downloadExtensions.some(ext => lastSegment.endsWith(ext))) {
+      return true;
+    }
+
+    // 4. 音视频分享网站，放行
+    const mediaDomains = [
+      "youtube.com", "youtu.be", "bilibili.com", "b23.tv", "douyin.com", 
+      "vimeo.com", "tiktok.com", "twitter.com", "x.com", "weibo.com"
+    ];
+    const hostname = parsed.hostname.toLowerCase();
+    if (mediaDomains.some(domain => hostname === domain || hostname.endsWith("." + domain))) {
+      return true;
+    }
+
+    // 5. URL 路径或参数包含下载敏感词，放行
+    const downloadKeywords = ["/download", "/attachment", "/file/", "/release/", "/update/"];
+    if (downloadKeywords.some(keyword => pathname.includes(keyword))) {
+      return true;
+    }
+    const search = parsed.search.toLowerCase();
+    if (search.includes("download") || search.includes("file=") || search.includes("url=")) {
+      return true;
+    }
+
+    return false;
+  } catch {
+    return false;
+  }
+}
 
 function CloseConfirmDialog({ onClose, onConfirm }: { onClose: () => void; onConfirm: (action: "tray" | "exit", remember: boolean) => void }) {
   const [remember, setRemember] = useState(false);

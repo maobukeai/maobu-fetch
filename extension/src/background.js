@@ -1,4 +1,4 @@
-import { API, signedFetch } from "./protocol.js";
+import { API, signedFetch, compatFetch } from "./protocol.js";
 import { interceptBrowserDownload } from "./interceptor.js";
 import { bridgeMediaTask } from "./media-selection.js";
 import { requestPageWithTrackingFallback } from "./rules.js";
@@ -54,11 +54,11 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
   (async () => {
     if (message.type === "media") { await chrome.storage.session.set({ [`media:${sender.tab?.id}`]: message.items }); return { ok: true }; }
     if (message.type === "pair") {
-      const response = await fetch(`${API}/v1/pair`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ code: message.code, extension_id: chrome.runtime.id }) });
+      const response = await compatFetch("/v1/pair", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ code: message.code, extension_id: chrome.runtime.id }) });
       if (!response.ok) throw new Error(await response.text()); const result = await response.json();
       await chrome.storage.local.set({ bridgeToken: result.token }); return { ok: true };
     }
-    if (message.type === "health") { const response = await fetch(`${API}/v1/health`); const stored = await chrome.storage.local.get("bridgeToken"); return { ok: response.ok, paired: Boolean(stored.bridgeToken) }; }
+    if (message.type === "health") { const response = await compatFetch("/v1/health"); const stored = await chrome.storage.local.get("bridgeToken"); return { ok: response.ok, paired: Boolean(stored.bridgeToken) }; }
     if (message.type === "send") return { ok: true, item: await sendTask(message.url, message.fileName, message.extra) };
     if (message.type === "probe") { const response = await signedFetch("/v1/media/probe", { url: message.url }); if (!response.ok) throw new Error(await response.text()); return { ok: true, result: await response.json() }; }
     if (message.type === "bypass") { await chrome.storage.local.set({ bypassUntil: Date.now() + Number(message.minutes || 10) * 60_000 }); return { ok: true }; }

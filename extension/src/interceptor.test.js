@@ -2,6 +2,15 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { evaluateDownload, interceptBrowserDownload, refreshDownload } from "./interceptor.js";
 
+globalThis.chrome = {
+  storage: {
+    local: {
+      set: async () => {},
+      get: async () => ({}),
+    }
+  }
+};
+
 const settings = {
   intercept: true, minSizeMb: 1, allowHosts: [], blockHosts: [], extensions: [], bypassUntil: 0,
 };

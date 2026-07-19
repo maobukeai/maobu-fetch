@@ -79,6 +79,17 @@ export async function interceptBrowserDownload(initial, options) {
     const item = await refreshDownload(downloads, initial, wait);
     const decision = evaluateDownload(item, settings, runtimeId);
     if (!decision.eligible) {
+      try {
+        await chrome.storage.local.set({
+          lastIgnored: {
+            url: item.url,
+            filename: basename(item.filename) || "未知文件",
+            size: item.totalBytes,
+            reason: decision.reason,
+            timestamp: Date.now()
+          }
+        });
+      } catch {}
       await downloads.resume(initial.id);
       return false;
     }
@@ -89,6 +100,17 @@ export async function interceptBrowserDownload(initial, options) {
     return true;
   } catch (error) {
     if (!taskSent) {
+      try {
+        await chrome.storage.local.set({
+          lastIgnored: {
+            url: initial.url,
+            filename: basename(initial.filename) || "未知文件",
+            size: initial.totalBytes,
+            reason: `error:${error.message || String(error)}`,
+            timestamp: Date.now()
+          }
+        });
+      } catch {}
       try { await downloads.resume(initial.id); } catch { /* 下载可能已由浏览器结束。 */ }
       notify?.("接管失败，已回退浏览器下载", String(error?.message || error));
       return false;
