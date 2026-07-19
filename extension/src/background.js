@@ -1,9 +1,8 @@
 import { API, signedFetch } from "./protocol.js";
+import { interceptBrowserDownload } from "./interceptor.js";
 
 const defaults = { intercept: true, minSizeMb: 1, allowHosts: [], blockHosts: [], extensions: [], bypassUntil: 0 };
 const config = async () => ({ ...defaults, ...(await chrome.storage.local.get(Object.keys(defaults))) });
-const host = (url) => { try { return new URL(url).hostname.toLowerCase(); } catch { return ""; } };
-const matchesHost = (hostname, rules) => rules.some((rule) => hostname === rule || hostname.endsWith(`.${rule}`));
 
 async function sendTask(url, fileName, extra = {}) {
   const response = await signedFetch("/v1/tasks", {
@@ -30,16 +29,10 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
 });
 
 chrome.downloads.onCreated.addListener(async (item) => {
-  const settings = await config(); const url = item.finalUrl || item.url; const hostname = host(url);
-  if (!settings.intercept || Date.now() < settings.bypassUntil || !/^https?:/.test(url) || item.byExtensionId === chrome.runtime.id) return;
-  if (matchesHost(hostname, settings.blockHosts) || (settings.allowHosts.length && !matchesHost(hostname, settings.allowHosts))) return;
-  const ext = (item.filename?.split(".").pop() || new URL(url).pathname.split(".").pop() || "").toLowerCase();
-  if (settings.extensions.length && !settings.extensions.includes(ext)) return;
-  if (item.totalBytes > 0 && item.totalBytes < Number(settings.minSizeMb) * 1024 * 1024) return;
-  try {
-    await sendTask(url, item.filename?.split(/[\\/]/).pop());
-    await chrome.downloads.cancel(item.id); await chrome.downloads.erase({ id: item.id });
-  } catch { /* 离线时保留浏览器原下载。 */ }
+  const settings = await config();
+  await interceptBrowserDownload(item, {
+    downloads: chrome.downloads, settings, runtimeId: chrome.runtime.id, sendTask, notify,
+  });
 });
 
 chrome.runtime.onMessage.addListener((message, sender, respond) => {
