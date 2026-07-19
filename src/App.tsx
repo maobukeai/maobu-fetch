@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent, type ReactNode } from "react";
-import { open as pickPath } from "@tauri-apps/plugin-dialog";
+import { open as pickPath, save as savePath } from "@tauri-apps/plugin-dialog";
 import { open as openUrl } from "@tauri-apps/plugin-shell";
 import {
   AlertCircle, Archive, Check, CheckCircle2, ChevronDown, CirclePause, Copy,
   Download, ExternalLink, File, FileAudio, FileImage, FileText, Film, FolderOpen,
   Gauge, Globe2, Info, LoaderCircle, MonitorDown, MoreHorizontal, Network,
   PanelRightClose, PanelRightOpen, Pause, Play, Plus, RefreshCw, Search, Settings,
-  ShieldCheck, SlidersHorizontal, Trash2, Unplug, Video, X,
+  ShieldCheck, SlidersHorizontal, Trash2, Unplug, Video, X, Zap,
 } from "lucide-react";
 import { api, isDesktop } from "./api";
 import { Effect, getCurrentWindow } from "@tauri-apps/api/window";
@@ -15,8 +15,10 @@ import { invoke } from "@tauri-apps/api/core";
 import { LogicalSize } from "@tauri-apps/api/dpi";
 import type {
   AppSettings, CollisionPolicy, CompletionAction, DownloadTask, FilterKey, MediaProbeResult,
-  NewTaskRequest, PairingInfo, TaskStatus, ToolComponent, ToolStatus,
+  NewTaskRequest, PairingInfo, PowerAction, PowerActionState, TaskStatus, ToolComponent, ToolStatus,
 } from "./types";
+import { defaultHistoryDateRange, HistoryDateFilter, matchesHistoryDate } from "./components/HistoryDateFilter";
+import { PowerActionBanner, PowerActionButton } from "./components/PowerActionControl";
 
 const statusText: Record<TaskStatus, string> = {
   queued: "等待中", downloading: "下载中", paused: "已暂停", completed: "已完成",
@@ -36,6 +38,7 @@ const defaults: AppSettings = {
   download_dir: "", concurrent_downloads: 3, connections_per_download: 8,
   speed_limit_kbps: 0, start_minimized: false, minimize_to_tray: true,
   close_to_tray: false, notifications: true, auto_start: false, theme: "system",
+  accent_color: "blue",
   frosted_glass: false,
   language: "zh-CN", intercept_browser_downloads: true, min_file_size_mb: 1,
   clipboard_monitor: false, proxy_mode: "system", proxy_url: "", proxy_username: "",
@@ -48,6 +51,7 @@ const defaults: AppSettings = {
   window_height: 720,
   auto_scale_ui: false,
 };
+const defaultPowerActionState: PowerActionState = { action: "none", phase: "idle", remaining_seconds: 0, target_count: 0 };
 
 function usesDarkTheme(theme: AppSettings["theme"]) {
   return theme === "dark" || (theme === "system" && matchMedia("(prefers-color-scheme: dark)").matches);
@@ -61,7 +65,7 @@ async function applyWindowAppearance(frostedGlass: boolean, dark: boolean) {
   if (frostedGlass) {
     await appWindow.setEffects({
       effects: [Effect.Acrylic],
-      color: dark ? [24, 24, 27, 112] : [246, 248, 252, 104],
+      color: dark ? [24, 24, 27, 72] : [246, 248, 252, 56],
     });
   } else {
     await appWindow.clearEffects();
@@ -161,6 +165,8 @@ export default function App() {
   const [fatal, setFatal] = useState<string>();
   const [filter, setFilter] = useState<FilterKey>("all");
   const [search, setSearch] = useState("");
+  const [historyDate, setHistoryDate] = useState(defaultHistoryDateRange);
+  const [powerAction, setPowerAction] = useState(defaultPowerActionState);
   const [sort, setSort] = useState<{ key: keyof DownloadTask; desc: boolean }>({ key: "created_at", desc: true });
   const [selected, setSelected] = useState(new Set<string>());
   const [showDetails, setShowDetails] = useState(false);
@@ -172,12 +178,17 @@ export default function App() {
   const [initialUrlFromClipboard, setInitialUrlFromClipboard] = useState("");
   const [toast, setToast] = useState<{ kind: "ok" | "error"; text: string }>();
   const [context, setContext] = useState<{ x: number; y: number; id: string }>();
+  const [aboutOpen, setAboutOpen] = useState(false);
   const [columnWidths, setColumnWidths] = useState<Record<string, number>>({});
 
   const refresh = async () => {
     try {
       setTasks(await api.list());
-      if (isDesktop()) setSettings(await api.settings());
+      if (isDesktop()) {
+        const [nextSettings, nextPowerAction] = await Promise.all([api.settings(), api.powerActionState()]);
+        setSettings(nextSettings);
+        setPowerAction(nextPowerAction);
+      }
       setFatal(undefined);
     } catch (error) { setFatal(String(error)); }
     finally { setLoading(false); }
@@ -224,6 +235,12 @@ export default function App() {
     void api.subscribeSettings(setSettings).then((item) => {
       if (item) unlisten.push(item);
     });
+    void api.subscribePowerAction(setPowerAction).then((item) => {
+      if (item) unlisten.push(item);
+    });
+    void api.subscribeNotificationErrors((message) => setToast({ kind: "error", text: message })).then((item) => {
+      if (item) unlisten.push(item);
+    });
     return () => {
       document.removeEventListener("contextmenu", handleContextMenu);
       unlisten.forEach((item) => item());
@@ -232,11 +249,12 @@ export default function App() {
   useEffect(() => {
     const dark = usesDarkTheme(settings.theme);
     document.documentElement.dataset.theme = dark ? "dark" : "light";
+    document.documentElement.dataset.accent = settings.accent_color;
     void applyWindowAppearance(settings.frosted_glass, dark).catch((error) => {
       document.documentElement.dataset.windowStyle = "solid";
       setToast({ kind: "error", text: `无法应用磨砂玻璃效果：${String(error)}` });
     });
-  }, [settings.theme, settings.frosted_glass]);
+  }, [settings.theme, settings.accent_color, settings.frosted_glass]);
   useEffect(() => {
     if (!appWindow || !settings.window_width || !settings.window_height) return;
     void appWindow.setSize(new LogicalSize(settings.window_width, settings.window_height));
@@ -349,17 +367,33 @@ export default function App() {
   const visible = useMemo(() => tasks.filter((task) => {
     const category = categories.some(([key]) => key === filter) ? task.category === filter : true;
     const status = nav.some(([key]) => key === filter && key !== "all") ? task.status === filter : true;
-    return category && status && `${task.file_name} ${task.url}`.toLowerCase().includes(search.toLowerCase());
+    const date = filter !== "completed" || matchesHistoryDate(task.completed_at, historyDate);
+    return category && status && date && `${task.file_name} ${task.url}`.toLowerCase().includes(search.toLowerCase());
   }).sort((a, b) => {
     const av = a[sort.key] ?? ""; const bv = b[sort.key] ?? "";
     const result = typeof av === "number" && typeof bv === "number" ? av - bv : String(av).localeCompare(String(bv));
     return sort.desc ? -result : result;
-  }), [tasks, filter, search, sort]);
+  }), [tasks, filter, historyDate, search, sort]);
   const selectedTasks = tasks.filter((task) => selected.has(task.id));
   const selectedOne = selectedTasks.length === 1 ? selectedTasks[0] : undefined;
   const active = tasks.filter((task) => task.status === "downloading");
   const totalSpeed = active.reduce((sum, task) => sum + task.speed, 0);
   const notify = (text: string, kind: "ok" | "error" = "ok") => setToast({ text, kind });
+  const armPowerAction = async (action: Exclude<PowerAction, "none">) => {
+    try {
+      setPowerAction(await api.armPowerAction(action));
+      notify(action === "shutdown" ? "已设置队列完成后关机" : "已设置队列完成后休眠");
+    } catch (error) {
+      notify(String(error), "error");
+      throw error;
+    }
+  };
+  const cancelPowerAction = async () => {
+    try {
+      setPowerAction(await api.cancelPowerAction());
+      notify("已取消队列完成后的系统操作");
+    } catch (error) { notify(String(error), "error"); }
+  };
   const bulk = async (action: string) => {
     try { await api.bulkAction([...selected], action); notify(action === "pause" ? "已暂停所选任务" : "任务已加入队列"); }
     catch (error) { notify(String(error), "error"); }
@@ -411,7 +445,7 @@ export default function App() {
       {titlebar}
       <div className="app-frame">
         <aside className="nav-pane">
-          <div className="brand"><div className="app-icon"><CatDownloadMark /></div><span><b>猫步下载器</b><small>Maobu Fetch</small></span></div>
+          <div className="brand" onClick={() => setAboutOpen(true)} title="关于猫步下载器"><div className="app-icon"><CatDownloadMark /></div><span><b>猫步下载器</b><small>Maobu Fetch</small></span></div>
           <button className="new-button" onClick={() => setNewOpen(true)}><Plus size={15} />新建任务</button>
           <div className="nav-scroll">
             <p className="nav-label">任务</p>
@@ -458,10 +492,13 @@ export default function App() {
               </div>
 
               <button className="action-btn-standalone" onClick={() => void refresh()} title="刷新列表"><RefreshCw size={14} /></button>
+              <PowerActionButton state={powerAction} onArm={armPowerAction} onCancel={cancelPowerAction} />
             </div>
             <button className="details-toggle" onClick={() => setShowDetails((value) => !value)} title="详情面板">{showDetails ? <PanelRightClose size={15} /> : <PanelRightOpen size={15} />}</button>
           </header>
           {fatal && <div className="error-banner"><Unplug size={16} /><span>无法连接下载内核：{fatal}</span><button onClick={() => void refresh()}>重试</button></div>}
+          <PowerActionBanner state={powerAction} onCancel={cancelPowerAction} />
+          {filter === "completed" && <HistoryDateFilter value={historyDate} onChange={setHistoryDate} />}
           <section className={showDetails ? "content-grid details-on" : "content-grid"}>
             <div
               className="task-list-panel"
@@ -474,8 +511,8 @@ export default function App() {
               }
             >
               <div className="task-grid">
-              <div className="table-header"><label><input type="checkbox" aria-label="全选" checked={visible.length > 0 && visible.every((task) => selected.has(task.id))} onChange={() => setSelected(visible.every((task) => selected.has(task.id)) ? new Set() : new Set(visible.map((task) => task.id)))} /></label>{[["file_name","文件名",""],["total_bytes","大小","size"],["status","状态","status"],["connection_count","连接","connection"],["downloaded_bytes","进度","progress"],["speed","速度","speed"],["eta_seconds","剩余时间","eta"],["created_at","添加时间","created"]].map(([key,label,widthKey]) => <span key={key} onClick={() => setSort((current) => ({ key: key as keyof DownloadTask, desc: current.key === key ? !current.desc : key === "created_at" }))}>{label}{widthKey && <i className="column-resizer" onMouseDown={(event) => beginResize(widthKey, event)} />}</span>)}<span /></div>
-              <div className="task-rows">{loading ? <div className="center-state"><LoaderCircle className="spin" /></div> : visible.length === 0 ? <EmptyState filter={filter} onAdd={() => setNewOpen(true)} /> : visible.map((task) => <TaskRow key={task.id} task={task} selected={selected.has(task.id)} onSelect={() => setSelected((current) => { const next = new Set(current); next.has(task.id) ? next.delete(task.id) : next.add(task.id); return next; })} onOpen={() => task.status === "completed" && void api.openFile(task.id)} onContext={(event) => { event.preventDefault(); setContext({ x: event.clientX, y: event.clientY, id: task.id }); if (!selected.has(task.id)) setSelected(new Set([task.id])); }} />)}</div>
+              <div className="table-header"><label><input type="checkbox" aria-label="全选" checked={visible.length > 0 && visible.every((task) => selected.has(task.id))} onChange={() => setSelected(visible.every((task) => selected.has(task.id)) ? new Set() : new Set(visible.map((task) => task.id)))} /></label>{[["file_name","文件名",""],["total_bytes","大小","size"],["status","状态","status"],["connection_count","连接","connection"],["downloaded_bytes","进度","progress"],["speed","速度","speed"],["eta_seconds","剩余时间","eta"],[filter === "completed" ? "completed_at" : "created_at",filter === "completed" ? "完成时间" : "添加时间","created"]].map(([key,label,widthKey]) => <span key={key} onClick={() => setSort((current) => ({ key: key as keyof DownloadTask, desc: current.key === key ? !current.desc : ["created_at", "completed_at"].includes(key) }))}>{label}{widthKey && <i className="column-resizer" onMouseDown={(event) => beginResize(widthKey, event)} />}</span>)}<span /></div>
+              <div className="task-rows">{loading ? <div className="center-state"><LoaderCircle className="spin" /></div> : visible.length === 0 ? <EmptyState filter={filter} onAdd={() => setNewOpen(true)} /> : visible.map((task) => <TaskRow key={task.id} task={task} showCompletedAt={filter === "completed"} selected={selected.has(task.id)} onSelect={() => setSelected((current) => { const next = new Set(current); next.has(task.id) ? next.delete(task.id) : next.add(task.id); return next; })} onOpen={() => task.status === "completed" && void api.openFile(task.id)} onContext={(event) => { event.preventDefault(); setContext({ x: event.clientX, y: event.clientY, id: task.id }); if (!selected.has(task.id)) setSelected(new Set([task.id])); }} />)}</div>
             </div></div>
             {showDetails && <Details task={selectedOne} onClose={() => setShowDetails(false)} notify={notify} selectedCount={selected.size} />}
           </section>
@@ -487,7 +524,6 @@ export default function App() {
           notify(`已添加 ${list.length} 个任务`);
           if (list.length > 0) {
             setSelected(new Set(list.map((t) => t.id)));
-            setShowDetails(true);
           }
         }} defaultUrl={initialUrlFromClipboard} />}
         {(() => {
@@ -504,6 +540,26 @@ export default function App() {
         })()}
         {toast && <div className="toast"><span>{toast.kind === "ok" ? <Check size={14} /> : <AlertCircle size={14} />}</span>{toast.text}</div>}
         {showCloseConfirm && <CloseConfirmDialog onClose={() => setShowCloseConfirm(false)} onConfirm={handleCloseConfirm} />}
+        {aboutOpen && (
+          <Modal title="关于" onClose={() => setAboutOpen(false)} style={{ width: "290px" }}>
+            <div className="about-dialog-content">
+              <div className="about-logo"><CatDownloadMark /></div>
+              <h3>猫步下载器 (Maobu Fetch)</h3>
+              <p className="about-version">版本 v0.5.6</p>
+              <p className="about-desc">
+                本地优先、紧凑高效的 Windows 下载管理器。<br />
+                支持多线程并发 HTTP Range 连接，接管浏览器下载。
+              </p>
+              <div className="about-links">
+                <button className="about-link-btn" onClick={() => void openUrl("https://github.com/maobukeai/maobu-fetch")}>
+                  <ExternalLink size={10} />
+                  <span>项目主页</span>
+                </button>
+              </div>
+              <p className="about-copyright">© 2026 Maobu Fetch. 保留所有权利。</p>
+            </div>
+          </Modal>
+        )}
       </div>
       <WindowResizeHandles />
       {splash && (
@@ -526,14 +582,57 @@ export default function App() {
   );
 }
 
-function TaskRow({ task, selected, onSelect, onOpen, onContext }: { task: DownloadTask; selected: boolean; onSelect: () => void; onOpen: () => void; onContext: (event: MouseEvent) => void }) {
+function TaskRow({ task, selected, showCompletedAt, onSelect, onOpen, onContext }: { task: DownloadTask; selected: boolean; showCompletedAt: boolean; onSelect: () => void; onOpen: () => void; onContext: (event: MouseEvent) => void }) {
   const progress = task.total_bytes ? Math.min(100, task.downloaded_bytes / task.total_bytes * 100) : 0;
+  const speedMB = task.speed / (1024 * 1024);
+  const stripeDuration = speedMB > 0 ? Math.max(0.25, Math.min(2.0, 1.5 / (speedMB + 0.5))) : 1.5;
+  const isDownloading = ["downloading", "connecting", "verifying", "extracting"].includes(task.status);
+  const canControl = ["downloading", "connecting", "verifying", "extracting", "paused", "failed", "cancelled"].includes(task.status);
+  const handleAction = async (event: React.MouseEvent) => {
+    event.stopPropagation();
+    try {
+      if (isDownloading) {
+        await api.action(task.id, "pause");
+      } else {
+        await api.action(task.id, "resume");
+      }
+    } catch (e) {}
+  };
   return <div className={selected ? "task-row selected" : "task-row"} onDoubleClick={onOpen} onContextMenu={onContext}>
     <label><input type="checkbox" aria-label={`选择 ${task.file_name}`} checked={selected} onChange={onSelect} /></label>
     <div className="name-cell" onClick={onSelect}><FileIcon category={task.category} /><div><strong title={task.file_name}>{task.file_name}</strong><small title={task.url}>{task.priority > 0 ? "高优先级 · " : task.priority < 0 ? "低优先级 · " : ""}{hostOf(task.url)}</small></div></div>
-    <span>{task.total_bytes ? formatBytes(task.total_bytes) : "—"}</span><span className={`task-status ${task.status}`}>{statusText[task.status]}</span><span className="connection-count">{task.status === "downloading" ? `${task.active_connections}/${task.connection_count}` : task.connection_count}<small> 路</small></span>
-    <div className="progress-cell"><div><i style={{ width: `${progress}%` }} /></div><span>{task.status === "completed" ? "100%" : `${progress.toFixed(0)}%`}</span></div>
-    <span>{task.status === "downloading" ? `${formatBytes(task.speed)}/s` : "—"}</span><span>{task.eta_seconds ? formatDuration(task.eta_seconds) : "—"}</span><span>{formatDate(task.created_at)}</span><button className="row-menu" onClick={(event) => { event.stopPropagation(); onContext(event); }}><MoreHorizontal size={15} /></button>
+    <span>{task.total_bytes ? formatBytes(task.total_bytes) : "—"}</span>
+    <span className={`task-status ${task.status}`}>
+      {statusText[task.status]}
+      {canControl && (
+        <button 
+          className="task-status-btn" 
+          onClick={handleAction} 
+          title={isDownloading ? "暂停" : "继续"}
+        >
+          {isDownloading ? <Pause size={10} strokeWidth={2.5} /> : <Play size={10} strokeWidth={2.5} />}
+        </button>
+      )}
+    </span>
+    <span className="connection-count">{task.status === "downloading" ? `${task.active_connections}/${task.connection_count}` : task.connection_count}<small> 路</small></span>
+    <div className="progress-cell">
+      <div style={{ position: "relative", overflow: "visible", flex: 1, display: "flex", alignItems: "center" }}>
+        <div style={{ flex: 1, height: "4px", overflow: "hidden", borderRadius: "2px", background: "var(--progress-track)", display: "flex" }}>
+          <i style={{ width: `${progress}%`, "--stripe-duration": `${stripeDuration}s` } as CSSProperties} className={task.status === "downloading" && task.connection_count > 1 ? "multi-thread" : ""} />
+        </div>
+        {task.status === "downloading" && task.connection_count > 1 && (
+          <span 
+            className="speed-up-icon" 
+            style={{ left: `calc(${progress}% - 6px)` }}
+            title={`多线程加速中: ${task.active_connections}连接`}
+          >
+            <Zap size={11} strokeWidth={2.5} />
+          </span>
+        )}
+      </div>
+      <span>{task.status === "completed" ? "100%" : `${progress.toFixed(0)}%`}</span>
+    </div>
+    <span>{task.status === "downloading" ? `${formatBytes(task.speed)}/s` : "—"}</span><span>{task.eta_seconds ? formatDuration(task.eta_seconds) : "—"}</span><span>{formatDate(showCompletedAt ? task.completed_at ?? task.created_at : task.created_at)}</span><button className="row-menu" onClick={(event) => { event.stopPropagation(); onContext(event); }}><MoreHorizontal size={15} /></button>
   </div>;
 }
 function CatDownloadMark() { return <svg viewBox="0 0 1024 1024" aria-hidden="true"><rect x="48" y="48" width="928" height="928" rx="220" fill="#f5f5f7" /><path d="M302 360 358 230l112 78c28-9 56-14 86-14s58 5 86 14l112-78 56 130v214c0 151-113 254-254 254S302 725 302 574V360Z" fill="#1d1d1f" /><path d="M556 392v218m-86-82 86 86 86-86" fill="none" stroke="#f5f5f7" strokeWidth="58" strokeLinecap="round" strokeLinejoin="round" /><path d="M445 694h222" fill="none" stroke="#0a84ff" strokeWidth="58" strokeLinecap="round" /><circle cx="428" cy="430" r="19" fill="#f5f5f7" /><circle cx="684" cy="430" r="19" fill="#f5f5f7" /><path d="M755 700c86 15 119-50 76-103" fill="none" stroke="#1d1d1f" strokeWidth="48" strokeLinecap="round" /></svg>; }
@@ -541,6 +640,8 @@ function FileIcon({ category }: { category: string }) { const Icon = category ==
 function EmptyState({ filter, onAdd }: { filter: FilterKey; onAdd: () => void }) { return <div className="empty-state"><Download size={36} /><h2>{filter === "all" ? "还没有下载任务" : "此分类中没有任务"}</h2><p>添加链接，或从 Chrome / Edge 扩展发送下载。</p><button onClick={onAdd}>新建任务</button></div>; }
 
 function Details({ task, onClose, notify, selectedCount }: { task?: DownloadTask; onClose: () => void; notify: (text: string, kind?: "ok" | "error") => void; selectedCount: number }) {
+  const [showMore, setShowMore] = useState(false);
+
   if (!task) {
     return <aside className="details-pane">
       <div className="details-header">
@@ -565,6 +666,9 @@ function Details({ task, onClose, notify, selectedCount }: { task?: DownloadTask
   }
 
   const action = async (value: string) => { try { await api.action(task.id, value); } catch (error) { notify(String(error), "error"); } };
+  const completionLabel = task.completion_action === "open-folder" ? "打开文件夹" : task.completion_action === "run-file" ? "运行文件" : "无";
+  const priorityLabel = task.priority > 0 ? "高" : task.priority < 0 ? "低" : "普通";
+
   return <aside className="details-pane">
     <div className="details-header">
       <h2>{task.file_name}</h2>
@@ -576,14 +680,34 @@ function Details({ task, onClose, notify, selectedCount }: { task?: DownloadTask
         <div><dt>大小</dt><dd>{task.total_bytes ? formatBytes(task.total_bytes) : "—"}</dd></div>
         <div><dt>速度</dt><dd>{task.speed ? `${formatBytes(task.speed)}/s` : "—"}</dd></div>
         <div><dt>剩余时间</dt><dd>{task.eta_seconds ? formatDuration(task.eta_seconds) : "—"}</dd></div>
-        <div><dt>来源</dt><dd>{hostOf(task.url)}</dd></div>
+        <div><dt>来源域名</dt><dd>{hostOf(task.url)}</dd></div>
         <div><dt>保存位置</dt><dd>{task.destination}</dd></div>
-        <div><dt>优先级</dt><dd>{task.priority > 0 ? "高" : task.priority < 0 ? "低" : "普通"}</dd></div>
+        <div><dt>优先级</dt><dd>{priorityLabel}</dd></div>
         <div><dt>任务限速</dt><dd>{task.per_task_speed_limit ? `${Math.round(task.per_task_speed_limit / 1024)} KB/s` : "不限速"}</dd></div>
-        <div><dt>完成动作</dt><dd>{task.completion_action === "open-folder" ? "打开文件夹" : task.completion_action === "run-file" ? "运行文件" : "无"}</dd></div>
+        <div><dt>完成动作</dt><dd>{completionLabel}</dd></div>
         <div><dt>下载来源</dt><dd>{task.source}</dd></div>
-        {task.checksum_sha256 && <div><dt>SHA-256 校验码</dt><dd title={task.checksum_sha256}>{task.checksum_sha256}</dd></div>}
       </dl>
+
+      <button className={`details-more-toggle ${showMore ? "open" : ""}`} onClick={() => setShowMore(v => !v)}>
+        <ChevronDown size={11} />
+        更多信息
+      </button>
+
+      {showMore && (
+        <dl>
+          <DetailValue label="原始地址" value={redactedUrl(task.url)} notify={notify} />
+          {task.final_url && <DetailValue label="最终地址" value={task.final_url} notify={notify} />}
+          {task.response_status && <div><dt>HTTP 状态</dt><dd>{task.response_status}</dd></div>}
+          {task.content_type && <DetailValue label="内容类型" value={task.content_type} notify={notify} />}
+          {task.accepts_ranges !== undefined && <div><dt>断点分段</dt><dd>{task.accepts_ranges ? "支持" : "不支持"}</dd></div>}
+          {task.etag && <DetailValue label="ETag" value={task.etag} notify={notify} />}
+          {task.last_modified && <DetailValue label="Last-Modified" value={task.last_modified} notify={notify} />}
+          <div><dt>重试次数</dt><dd>{task.retry_count} / {task.max_retries}</dd></div>
+          {task.checksum_sha256 && <div><dt>SHA-256</dt><dd title={task.checksum_sha256}>{task.checksum_sha256.slice(0, 16)}…</dd></div>}
+        </dl>
+      )}
+
+      <p className="details-security-note">仅展示安全白名单字段；Cookie、Authorization 和代理凭据不会显示。</p>
 
       {task.error && <div className="task-error">{task.error}</div>}
 
@@ -626,6 +750,10 @@ function Details({ task, onClose, notify, selectedCount }: { task?: DownloadTask
       </div>
     </div>
   </aside>;
+}
+
+function DetailValue({ label, value, notify }: { label: string; value: string; notify: (text: string, kind?: "ok" | "error") => void }) {
+  return <div><dt>{label}</dt><dd className="detail-copy-value" title={value}><span>{value}</span><button onClick={() => void navigator.clipboard.writeText(value).then(() => notify(`${label}已复制`))} title={`复制${label}`}><Copy size={11} /></button></dd></div>;
 }
 
 function extractFileNameFromUrl(url: string): string {
@@ -762,7 +890,7 @@ function NewTaskDialog({ settings, onClose, onCreated, defaultUrl }: { settings:
           <div className="form-field">
             <div className="field-label-row">
               <span>分段连接数</span>
-              <span className="field-label-value">{connections} 路并发</span>
+              <span className="field-label-value"><span className="field-label-num">{connections}</span><span className="field-label-text">路并发</span></span>
             </div>
             <div className="slider-container">
               <input
@@ -974,6 +1102,24 @@ function SettingsPage({ value, onChange, onClose, notify }: { value: AppSettings
   const appWindow = useMemo(() => isDesktop() ? getCurrentWindow() : null, []);
   const [draft, setDraft] = useState(value); const [section, setSection] = useState<SettingsSection>("general");
   const [pair, setPair] = useState<PairingInfo>(); const [tools, setTools] = useState<ToolStatus>();
+  const exportTasks = async () => {
+    try {
+      const path = await savePath({ defaultPath: "maobu-tasks.json", filters: [{ name: "JSON", extensions: ["json"] }] });
+      if (!path) return;
+      const count = await api.exportTasks(path);
+      notify(`已安全导出 ${count} 个任务`);
+    } catch (error) { notify(String(error), "error"); }
+  };
+  const importTasks = async () => {
+    try {
+      const path = await pickPath({ multiple: false, filters: [{ name: "JSON", extensions: ["json"] }] });
+      if (typeof path !== "string") return;
+      const destination = await pickPath({ directory: true, multiple: false, title: "选择导入任务的下载目录" });
+      if (typeof destination !== "string") return;
+      const tasks = await api.importTasks(path, destination);
+      notify(`已导入 ${tasks.length} 个任务，均保持暂停`);
+    } catch (error) { notify(String(error), "error"); }
+  };
   const set = <K extends keyof AppSettings>(key: K, val: AppSettings[K]) => setDraft((item) => ({ ...item, [key]: val }));
 
   const hasSaved = useRef(false);
@@ -1025,11 +1171,12 @@ function SettingsPage({ value, onChange, onClose, notify }: { value: AppSettings
   useEffect(() => {
     const dark = usesDarkTheme(draft.theme);
     document.documentElement.dataset.theme = dark ? "dark" : "light";
+    document.documentElement.dataset.accent = draft.accent_color;
     void applyWindowAppearance(draft.frosted_glass, dark).catch((error) => {
       document.documentElement.dataset.windowStyle = "solid";
       notify(`无法预览磨砂玻璃效果：${String(error)}`, "error");
     });
-  }, [draft.theme, draft.frosted_glass]);
+  }, [draft.theme, draft.accent_color, draft.frosted_glass]);
   useEffect(() => {
     const applyDraftScale = () => {
       if (draft.auto_scale_ui) {
@@ -1052,6 +1199,7 @@ function SettingsPage({ value, onChange, onClose, notify }: { value: AppSettings
       const finalSettings = hasSaved.current ? draftRef.current : value;
       const dark = usesDarkTheme(finalSettings.theme);
       document.documentElement.dataset.theme = dark ? "dark" : "light";
+      document.documentElement.dataset.accent = finalSettings.accent_color;
       void applyWindowAppearance(finalSettings.frosted_glass, dark);
       if (finalSettings.auto_scale_ui) {
         const scale = window.outerWidth / 1024;
@@ -1082,8 +1230,8 @@ function SettingsPage({ value, onChange, onClose, notify }: { value: AppSettings
     {section === "network" && <SettingsGroup title="代理与重试"><div className="settings-group-content"><SettingRow label="代理模式"><select value={draft.proxy_mode} onChange={(e) => set("proxy_mode", e.target.value as AppSettings["proxy_mode"])}><option value="system">跟随系统</option><option value="none">不使用代理</option><option value="manual">手动代理</option></select></SettingRow>{draft.proxy_mode === "manual" && <><SettingRow label="代理地址"><input value={draft.proxy_url} onChange={(e) => set("proxy_url", e.target.value)} /></SettingRow><SettingRow label="用户名"><input value={draft.proxy_username} onChange={(e) => set("proxy_username", e.target.value)} /></SettingRow><SettingRow label="密码"><input type="password" value={draft.proxy_password} onChange={(e) => set("proxy_password", e.target.value)} /></SettingRow></>}<SettingRow label="最大重试次数"><input type="number" min="0" max="10" value={draft.max_retries} onChange={(e) => set("max_retries", +e.target.value)} /></SettingRow></div></SettingsGroup>}
     {section === "browser" && <><SettingsGroup title="下载接管"><div className="settings-group-content"><Toggle label="允许浏览器扩展接管下载" checked={draft.intercept_browser_downloads} onChange={(v) => set("intercept_browser_downloads", v)} /><SettingRow label="最小文件大小（MB）"><input type="number" min="0" value={draft.min_file_size_mb} onChange={(e) => set("min_file_size_mb", +e.target.value)} /></SettingRow></div></SettingsGroup><SettingsGroup title="安全配对">{pair ? <div className="pair-card"><p>在扩展中输入一次性配对码（10 分钟有效）</p><div className="pair-code-wrapper"><code>{pair.code}</code><button className="copy-code-btn" onClick={() => { void navigator.clipboard.writeText(pair.code); notify("配对码已复制到剪贴板"); }} title="复制配对码"><Copy size={13} /><span>复制</span></button></div>{pair.paired_extension && <p>已配对：{pair.paired_extension.slice(0, 16)}…</p>}<div className="maintenance"><button onClick={() => void api.rotatePairing().then(setPair)}>更换配对码</button>{pair.paired_extension && <button onClick={() => void api.revokePairing().then(() => api.pairing().then(setPair))}>撤销配对</button>}</div></div> : <LoaderCircle className="spin" />}</SettingsGroup></>}
     {section === "media" && <SettingsGroup title="媒体组件"><p className="settings-note">按“自定义路径 → 应用安装 → Windows PATH”顺序查找组件。外部组件只会被引用，猫步下载器不会复制、更新或删除它们。</p>{tools ? <MediaToolsCard status={tools} onStatus={setTools} /> : <LoaderCircle className="spin" />}<MediaPathSettings value={draft} onChange={(patch) => setDraft((current) => ({ ...current, ...patch }))} /><div className="settings-group-content"><Toggle label="自动检查媒体工具更新" checked={draft.media_tool_auto_update} onChange={(v) => set("media_tool_auto_update", v)} /></div></SettingsGroup>}
-    {section === "appearance" && <SettingsGroup title="主题与窗口"><div className="settings-group-content"><SettingRow label="应用主题"><select value={draft.theme} onChange={(e) => set("theme", e.target.value as AppSettings["theme"])}><option value="system">跟随系统</option><option value="light">浅色</option><option value="dark">深色</option></select></SettingRow><Toggle label="磨砂玻璃" checked={draft.frosted_glass} onChange={(v) => set("frosted_glass", v)} /><SettingRow label="窗口大小"><div className="window-size-setting-row"><input type="number" placeholder="宽度 (如 800)" value={draft.window_width || ""} onChange={(e) => changeWidth(e.target.value ? +e.target.value : undefined)} className="window-size-input" /><span>×</span><input type="number" placeholder="高度 (如 600)" value={draft.window_height || ""} onChange={(e) => changeHeight(e.target.value ? +e.target.value : undefined)} className="window-size-input" /><select value={draft.window_width && draft.window_height ? `${draft.window_width}x${draft.window_height}` : ""} onChange={(e) => { if (!e.target.value) return; const [w, h] = e.target.value.split("x").map(Number); set("window_width", w); set("window_height", h); applyTemporarySize(w, h); }} className="window-size-preset-select"><option value="">选择常用预设...</option><option value="800x600">800 × 600 (迷你紧凑)</option><option value="960x640">960 × 640 (精致比例)</option><option value="1024x720">1024 × 720 (默认标准)</option><option value="1120x760">1120 × 760 (舒适格局)</option><option value="1280x800">1280 × 800 (高效宽屏)</option><option value="1440x900">1440 × 900 (专业超宽)</option></select></div></SettingRow><Toggle label="自适应缩放" checked={draft.auto_scale_ui || false} onChange={(v) => set("auto_scale_ui", v)} /></div><p className="settings-note">磨砂玻璃使用 Windows 10/11 原生 Acrylic 材质；关闭后恢复为不透明窗口。</p></SettingsGroup>}
-    {section === "advanced" && <SettingsGroup title="维护"><div className="maintenance"><button onClick={() => void api.clearHistory(false).then(() => notify("已清理取消的任务"))}>清理取消任务</button><button onClick={() => void api.clearHistory(true).then(() => notify("下载历史已清理"))}>清理完成和取消任务</button></div></SettingsGroup>}
+    {section === "appearance" && <SettingsGroup title="主题与窗口"><div className="settings-group-content"><SettingRow label="应用主题"><select value={draft.theme} onChange={(e) => set("theme", e.target.value as AppSettings["theme"])}><option value="system">跟随系统</option><option value="light">浅色</option><option value="dark">深色</option></select></SettingRow><SettingRow label="强调色"><select value={draft.accent_color} onChange={(e) => set("accent_color", e.target.value as AppSettings["accent_color"])}><option value="system">跟随 Windows</option><option value="blue">猫步蓝</option><option value="cyan">青色</option><option value="green">绿色</option><option value="purple">紫色</option><option value="orange">橙色</option></select></SettingRow><Toggle label="磨砂玻璃" checked={draft.frosted_glass} onChange={(v) => set("frosted_glass", v)} /><SettingRow label="窗口大小"><div className="window-size-setting-row"><input type="number" placeholder="宽度 (如 800)" value={draft.window_width || ""} onChange={(e) => changeWidth(e.target.value ? +e.target.value : undefined)} className="window-size-input" /><span>×</span><input type="number" placeholder="高度 (如 600)" value={draft.window_height || ""} onChange={(e) => changeHeight(e.target.value ? +e.target.value : undefined)} className="window-size-input" /><select value={draft.window_width && draft.window_height ? `${draft.window_width}x${draft.window_height}` : ""} onChange={(e) => { if (!e.target.value) return; const [w, h] = e.target.value.split("x").map(Number); set("window_width", w); set("window_height", h); applyTemporarySize(w, h); }} className="window-size-preset-select"><option value="">选择常用预设...</option><option value="800x600">800 × 600 (迷你紧凑)</option><option value="960x640">960 × 640 (精致比例)</option><option value="1024x720">1024 × 720 (默认标准)</option><option value="1120x760">1120 × 760 (舒适格局)</option><option value="1280x800">1280 × 800 (高效宽屏)</option><option value="1440x900">1440 × 900 (专业超宽)</option></select></div></SettingRow><Toggle label="自适应缩放" checked={draft.auto_scale_ui || false} onChange={(v) => set("auto_scale_ui", v)} /></div><p className="settings-note">强调色可跟随 Windows 或使用经过浅色/深色对比度检查的预设；磨砂玻璃使用 Windows 10/11 原生 Acrylic 材质。</p></SettingsGroup>}
+    {section === "advanced" && <><SettingsGroup title="任务迁移"><div className="maintenance"><button onClick={() => void exportTasks()}>导出任务 JSON</button><button onClick={() => void importTasks()}>导入任务 JSON</button></div><p className="settings-note">导出文件不包含请求头、凭据、绝对保存路径和下载进度；导入任务统一暂停，并保存到你选择的目录。带时效签名的链接可能需要重新获取。</p></SettingsGroup><SettingsGroup title="维护"><div className="maintenance"><button onClick={() => void api.clearHistory(false).then(() => notify("已清理取消的任务"))}>清理取消任务</button><button onClick={() => void api.clearHistory(true).then(() => notify("下载历史已清理"))}>清理完成和取消任务</button></div></SettingsGroup></>}
     {section === "about" && (
       <SettingsGroup title="关于猫步下载器">
         <div style={{ display: "flex", flexDirection: "column", gap: "16px", padding: "10px 0" }}>
@@ -1093,7 +1241,7 @@ function SettingsPage({ value, onChange, onClose, notify }: { value: AppSettings
             </div>
             <div>
               <h2 style={{ margin: 0, fontSize: "16px", fontWeight: 700, color: "var(--text)" }}>猫步下载器 (Maobu Fetch)</h2>
-              <p style={{ margin: "4px 0 0", fontSize: "11px", color: "var(--muted)" }}>版本 0.5.0 (Beta)</p>
+              <p style={{ margin: "4px 0 0", fontSize: "11px", color: "var(--muted)" }}>版本 0.5.6</p>
             </div>
           </div>
 
@@ -1202,7 +1350,7 @@ function MediaPathSettings({ value, onChange }: { value: AppSettings; onChange: 
   };
   return <div className="settings-group-content media-path-settings">
     <div className="media-detect-row">
-      <div><strong>自动使用系统已有组件</strong><small>检查 PATH、Python、Scoop、WinGet 等常见位置，并将绝对路径填入下方</small></div>
+      <div><strong>自动使用系统已有组件</strong><span className="media-detect-desc">扫描系统环境并自动填入对应路径</span></div>
       <button className="input-button" disabled={detecting} onClick={() => void detectSystemTools()}>{detecting ? "检测中…" : "自动检测"}</button>
     </div>
     {detectionMessage && <p className="media-detect-result" role="status">{detectionMessage}</p>}
@@ -1294,10 +1442,11 @@ function ContextMenu({ x, y, task, close, notify }: { x: number; y: number; task
     </div>
   );
 }
-function Modal({ title, onClose, wide, children, style }: { title: string; onClose: () => void; wide?: boolean; children: ReactNode; style?: CSSProperties }) { return <div className="modal-layer" onMouseDown={onClose}><section className={wide ? "dialog wide" : "dialog"} style={style} onMouseDown={(e) => e.stopPropagation()}><div className="settings-title"><h2>{title}</h2></div>{children}</section></div>; }
+function Modal({ title, onClose, wide, children, style }: { title: string; onClose: () => void; wide?: boolean; children: ReactNode; style?: CSSProperties }) { return <div className="modal-layer" onMouseDown={onClose}><div className="dialog-material" onMouseDown={(e) => e.stopPropagation()}><section className={wide ? "dialog wide" : "dialog"} style={style}><div className="settings-title"><h2>{title}</h2></div>{children}</section></div></div>; }
 function formatBytes(value: number) { if (!value) return "0 B"; const units = ["B","KB","MB","GB","TB"]; const index = Math.min(Math.floor(Math.log(value) / Math.log(1024)), units.length - 1); return `${(value / 1024 ** index).toFixed(index ? 1 : 0)} ${units[index]}`; }
 function formatDuration(seconds: number) { if (seconds < 60) return `${seconds} 秒`; if (seconds < 3600) return `${Math.ceil(seconds / 60)} 分钟`; return `${Math.floor(seconds / 3600)} 小时 ${Math.ceil(seconds % 3600 / 60)} 分`; }
 function formatDate(value: number) { return new Intl.DateTimeFormat("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }).format(new Date(value)); }
+function redactedUrl(value: string) { try { const url = new URL(value); url.username = ""; url.password = ""; url.search = ""; url.hash = ""; return url.toString(); } catch { return "地址格式无效"; } }
 function hostOf(url: string) { try { return new URL(url).host; } catch { return url; } }
 function safeDisplayName(value: string) { return value.replace(/[<>:"/\\|?*]/g, "_").slice(0, 120); }
 

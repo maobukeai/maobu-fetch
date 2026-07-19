@@ -1,6 +1,7 @@
 import { API, signedFetch } from "./protocol.js";
 import { interceptBrowserDownload } from "./interceptor.js";
 import { bridgeMediaTask } from "./media-selection.js";
+import { requestPageWithTrackingFallback } from "./rules.js";
 
 const defaults = { intercept: true, minSizeMb: 1, allowHosts: [], blockHosts: [], extensions: [], bypassUntil: 0 };
 const config = async () => ({ ...defaults, ...(await chrome.storage.local.get(Object.keys(defaults))) });
@@ -27,7 +28,10 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
   if (!url) return;
   try {
     if (info.menuItemId === "lumaget-page") {
-      const response = await signedFetch("/v1/media/probe", { url });
+      const response = await requestPageWithTrackingFallback(
+        (candidate) => signedFetch("/v1/media/probe", { url: candidate }),
+        url,
+      );
       if (!response.ok) throw new Error(await response.text());
       const task = bridgeMediaTask(await response.json(), tab?.title);
       await sendTask(url, task.fileName, { media: task.media });

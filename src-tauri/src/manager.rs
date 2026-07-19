@@ -1,26 +1,29 @@
 use crate::{
     models::{
         AppSettings, BatchTaskRequest, CollisionPolicy, CompletionAction, DownloadSegment,
-        DownloadTask, NewTaskRequest, TaskProgressEvent, TaskStatus,
+        DownloadTask, NewTaskRequest, PowerAction, PowerActionPhase, PowerActionState,
+        TaskProgressEvent, TaskStatus,
     },
     store::Store,
 };
 use futures_util::StreamExt;
 use reqwest::header::{
-    ACCEPT_ENCODING, ACCEPT_RANGES, CONTENT_DISPOSITION, CONTENT_LENGTH, CONTENT_RANGE, ETAG,
-    IF_RANGE, LAST_MODIFIED, RANGE,
+    ACCEPT_ENCODING, ACCEPT_RANGES, CONTENT_DISPOSITION, CONTENT_LENGTH, CONTENT_RANGE,
+    CONTENT_TYPE, ETAG, IF_RANGE, LAST_MODIFIED, RANGE,
 };
 use sha2::{Digest, Sha256};
 use std::{
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
+    process::Command,
     sync::{
         atomic::{AtomicI32, AtomicU64, AtomicU8, Ordering},
-        Arc,
+        Arc, Mutex as StdMutex,
     },
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use tauri::{AppHandle, Emitter};
+use tauri_plugin_notification::NotificationExt;
 use tokio::{
     fs::{self, OpenOptions},
     io::{AsyncReadExt, AsyncWriteExt, BufWriter},
@@ -36,6 +39,23 @@ struct RuntimeTaskOptions {
     speed_limit: AtomicU64,
     priority: AtomicI32,
     completion_action: RwLock<CompletionAction>,
+}
+
+const POWER_ACTION_COUNTDOWN_MILLIS: u64 = 60_000;
+
+#[derive(Default)]
+struct PowerActionRuntime {
+    state: PowerActionState,
+    target_ids: HashSet<String>,
+    countdown_deadline: Option<u64>,
+}
+
+#[derive(Clone)]
+struct TrayTaskSnapshot {
+    status: TaskStatus,
+    downloaded_bytes: u64,
+    total_bytes: u64,
+    speed: u64,
 }
 
 impl RuntimeTaskOptions {
@@ -61,9 +81,12 @@ pub struct DownloadManager {
     controls: Mutex<HashMap<String, CancellationToken>>,
     task_runtime: RwLock<HashMap<String, Arc<RuntimeTaskOptions>>>,
     path_reservation: Mutex<()>,
+    power_action: Mutex<PowerActionRuntime>,
     dispatcher: Notify,
     app: AppHandle,
     global_limiter: Arc<RateLimiter>,
+    tray_tasks: StdMutex<HashMap<String, TrayTaskSnapshot>>,
+    last_tray_update: AtomicU64,
 }
 
 impl DownloadManager {
@@ -77,11 +100,15 @@ impl DownloadManager {
             controls: Mutex::new(HashMap::new()),
             task_runtime: RwLock::new(HashMap::new()),
             path_reservation: Mutex::new(()),
+            power_action: Mutex::new(PowerActionRuntime::default()),
             dispatcher: Notify::new(),
             app,
             global_limiter: Arc::new(RateLimiter::new()),
+            tray_tasks: StdMutex::new(HashMap::new()),
+            last_tray_update: AtomicU64::new(0),
         });
         manager.recover_interrupted().await?;
+        manager.reload_tray_snapshots().await?;
         let scheduler = manager.clone();
         tauri::async_runtime::spawn(async move { scheduler.scheduler_loop().await });
         Ok(manager)
@@ -89,6 +116,33 @@ impl DownloadManager {
 
     pub async fn list(&self) -> Result<Vec<DownloadTask>, String> {
         self.store.list_tasks().await
+    }
+
+    pub async fn export_tasks(&self, path: &str) -> Result<usize, String> {
+        let tasks = self.store.list_tasks().await?;
+        crate::task_transfer::export_file(path, &tasks, now()).await
+    }
+
+    pub async fn import_tasks(
+        self: &SharedManager,
+        path: &str,
+        destination: &str,
+    ) -> Result<Vec<DownloadTask>, String> {
+        let requests = crate::task_transfer::import_requests(path, destination).await?;
+        let mut imported = Vec::with_capacity(requests.len());
+        for (index, request) in requests.into_iter().enumerate() {
+            match self.add(request).await {
+                Ok(task) => imported.push(task),
+                Err(error) => {
+                    return Err(format!(
+                        "已导入 {} 个任务，第 {} 个任务导入失败：{error}",
+                        imported.len(),
+                        index + 1
+                    ));
+                }
+            }
+        }
+        Ok(imported)
     }
     pub async fn settings(&self) -> AppSettings {
         self.settings.read().await.clone()
@@ -102,6 +156,67 @@ impl DownloadManager {
         self.dispatcher.notify_waiters();
         let _ = self.app.emit("settings-updated", settings);
         Ok(())
+    }
+
+    pub async fn power_action_state(&self) -> PowerActionState {
+        self.power_action.lock().await.state.clone()
+    }
+
+    pub async fn arm_power_action(&self, action: PowerAction) -> Result<PowerActionState, String> {
+        if action == PowerAction::None {
+            return self.cancel_power_action().await;
+        }
+        let target_ids: HashSet<_> = self
+            .store
+            .list_tasks()
+            .await?
+            .into_iter()
+            .filter(|task| is_power_action_target(&task.status))
+            .map(|task| task.id)
+            .collect();
+        if target_ids.is_empty() {
+            return Err("当前没有等待完成的下载任务".into());
+        }
+        let state = PowerActionState {
+            action,
+            phase: PowerActionPhase::Armed,
+            remaining_seconds: 0,
+            target_count: target_ids.len(),
+            message: Some("队列全部成功完成后将开始 60 秒倒计时".into()),
+        };
+        let mut runtime = self.power_action.lock().await;
+        runtime.state = state.clone();
+        runtime.target_ids = target_ids;
+        runtime.countdown_deadline = None;
+        drop(runtime);
+        self.emit_power_action_state(&state);
+        self.dispatcher.notify_waiters();
+        Ok(state)
+    }
+
+    pub async fn cancel_power_action(&self) -> Result<PowerActionState, String> {
+        let state = PowerActionState::default();
+        let mut runtime = self.power_action.lock().await;
+        *runtime = PowerActionRuntime::default();
+        drop(runtime);
+        self.emit_power_action_state(&state);
+        Ok(state)
+    }
+
+    async fn register_power_action_target(&self, id: &str) {
+        let mut runtime = self.power_action.lock().await;
+        if runtime.state.phase == PowerActionPhase::Idle {
+            return;
+        }
+        runtime.target_ids.insert(id.to_string());
+        runtime.countdown_deadline = None;
+        runtime.state.phase = PowerActionPhase::Armed;
+        runtime.state.remaining_seconds = 0;
+        runtime.state.target_count = runtime.target_ids.len();
+        runtime.state.message = Some("检测到新任务，等待整个队列完成".into());
+        let state = runtime.state.clone();
+        drop(runtime);
+        self.emit_power_action_state(&state);
     }
 
     pub async fn add(
@@ -138,7 +253,9 @@ impl DownloadManager {
             downloaded_bytes: 0,
             speed: 0,
             eta_seconds: None,
-            status: if scheduled.is_some() {
+            status: if request.start_paused {
+                TaskStatus::Paused
+            } else if scheduled.is_some() {
                 TaskStatus::Scheduled
             } else {
                 TaskStatus::Queued
@@ -159,6 +276,10 @@ impl DownloadManager {
             source,
             etag: None,
             last_modified: None,
+            final_url: None,
+            response_status: None,
+            content_type: None,
+            accepts_ranges: None,
             headers: request.headers,
             media: request.media,
             per_task_speed_limit: request.per_task_speed_limit,
@@ -173,6 +294,7 @@ impl DownloadManager {
         };
         self.reserve_output_path(&mut task).await?;
         self.store.upsert_task(&task).await?;
+        self.register_power_action_target(&task.id).await;
         self.emit_task("created", &task);
         self.dispatcher.notify_waiters();
         Ok(task)
@@ -202,6 +324,7 @@ impl DownloadManager {
                     completion_action: request.completion_action.clone(),
                     media: None,
                     connection_count: request.connection_count,
+                    start_paused: false,
                 })
                 .await?;
             tasks.push(task);
@@ -232,7 +355,11 @@ impl DownloadManager {
                 if matches!(task.status, TaskStatus::Completed) && action == "resume" {
                     return Ok(());
                 }
-                task.status = TaskStatus::Queued;
+                task.status = if task.scheduled_at.is_some_and(|time| time > now()) {
+                    TaskStatus::Scheduled
+                } else {
+                    TaskStatus::Queued
+                };
                 task.error = None;
                 task.active_connections = 0;
                 if action == "retry" {
@@ -276,13 +403,31 @@ impl DownloadManager {
         if let Some(token) = self.controls.lock().await.remove(id) {
             token.cancel();
         }
+        
+        // Wait for the task runtime thread to exit completely (freeing file handles)
+        let mut retries = 0;
+        while self.task_runtime.read().await.contains_key(id) && retries < 30 {
+            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+            retries += 1;
+        }
+
         if let Some(task) = self.store.get_task(id).await? {
             if delete_file {
                 let path = PathBuf::from(&task.destination).join(&task.file_name);
-                let _ = fs::remove_file(path).await;
+                // 1. Delete final completed file
+                let _ = fs::remove_file(&path).await;
+                // 2. Delete temporary .lumaget file
+                let temp_path = PathBuf::from(format!("{}.lumaget", path.to_string_lossy()));
+                let _ = fs::remove_file(&temp_path).await;
+                // 3. Clear all part segment files
+                self.clear_parts(&task).await;
             }
         }
         self.store.remove_task(id).await?;
+        if let Ok(mut tasks) = self.tray_tasks.lock() {
+            tasks.remove(id);
+        }
+        self.update_tray_tooltip(true);
         let _ = self.app.emit("task-removed", id.to_string());
         Ok(())
     }
@@ -379,11 +524,82 @@ impl DownloadManager {
     async fn scheduler_loop(self: SharedManager) {
         loop {
             let _ = self.dispatch_once().await;
+            let _ = self.evaluate_power_action().await;
             tokio::select! {
                 _ = self.dispatcher.notified() => {},
                 _ = tokio::time::sleep(Duration::from_millis(500)) => {},
             }
         }
+    }
+
+    async fn evaluate_power_action(&self) -> Result<(), String> {
+        let (phase, target_ids) = {
+            let runtime = self.power_action.lock().await;
+            (runtime.state.phase, runtime.target_ids.clone())
+        };
+        if phase == PowerActionPhase::Idle || target_ids.is_empty() {
+            return Ok(());
+        }
+        let tasks = self.store.list_tasks().await?;
+        let statuses: HashMap<_, _> = tasks
+            .into_iter()
+            .filter(|task| target_ids.contains(&task.id))
+            .map(|task| (task.id, task.status))
+            .collect();
+        let decision = power_action_decision(&target_ids, &statuses);
+        let current = now();
+        let mut execute = None;
+        let mut runtime = self.power_action.lock().await;
+        let previous = runtime.state.clone();
+        match decision {
+            PowerActionDecision::Waiting => {
+                runtime.countdown_deadline = None;
+                runtime.state.phase = PowerActionPhase::Armed;
+                runtime.state.remaining_seconds = 0;
+                runtime.state.message = Some("等待队列中的任务全部完成".into());
+            }
+            PowerActionDecision::Blocked(message) => {
+                runtime.countdown_deadline = None;
+                runtime.state.phase = PowerActionPhase::Blocked;
+                runtime.state.remaining_seconds = 0;
+                runtime.state.message = Some(message);
+            }
+            PowerActionDecision::Complete => {
+                let deadline = *runtime
+                    .countdown_deadline
+                    .get_or_insert(current.saturating_add(POWER_ACTION_COUNTDOWN_MILLIS));
+                if current >= deadline {
+                    execute = Some(runtime.state.action);
+                    *runtime = PowerActionRuntime::default();
+                } else {
+                    runtime.state.phase = PowerActionPhase::Countdown;
+                    runtime.state.remaining_seconds =
+                        power_action_remaining_seconds(deadline, current);
+                    runtime.state.message = Some("所有目标任务均已完成，可随时取消".into());
+                }
+            }
+        }
+        runtime.state.target_count = runtime.target_ids.len();
+        let state = runtime.state.clone();
+        drop(runtime);
+        if state != previous {
+            self.emit_power_action_state(&state);
+        }
+        if let Some(action) = execute {
+            self.emit_power_action_state(&PowerActionState::default());
+            if let Err(error) = execute_power_action(action) {
+                let failed = PowerActionState {
+                    action,
+                    phase: PowerActionPhase::Blocked,
+                    remaining_seconds: 0,
+                    target_count: 0,
+                    message: Some(format!("系统操作执行失败：{error}")),
+                };
+                self.power_action.lock().await.state = failed.clone();
+                self.emit_power_action_state(&failed);
+            }
+        }
+        Ok(())
     }
 
     async fn dispatch_once(self: &SharedManager) -> Result<(), String> {
@@ -457,6 +673,7 @@ impl DownloadManager {
                         }
                         if let Ok(Some(completed)) = manager.store.get_task(&id).await {
                             if completed.status == TaskStatus::Completed {
+                                manager.notify_download_completed(&completed).await;
                                 manager.perform_completion_action(completed).await;
                             }
                         }
@@ -542,6 +759,19 @@ impl DownloadManager {
             head = head.header(name, value);
         }
         let probe = head.send().await.map_err(friendly_reqwest)?;
+        task.final_url = Some(diagnostic_url(probe.url()));
+        task.response_status = Some(probe.status().as_u16());
+        task.content_type =
+            header_string(&probe, CONTENT_TYPE).map(|value| truncate_text(value, 256));
+        task.accepts_ranges = Some(
+            probe
+                .headers()
+                .get(ACCEPT_RANGES)
+                .and_then(|value| value.to_str().ok())
+                .is_some_and(|value| value.eq_ignore_ascii_case("bytes")),
+        );
+        self.store.upsert_task(&task).await?;
+        self.emit_task("updated", &task);
         if !probe.status().is_success() {
             return Err(format!("服务器返回 HTTP {}", probe.status()));
         }
@@ -612,6 +842,9 @@ impl DownloadManager {
         } else {
             supports_range
         };
+        task.accepts_ranges = Some(supports_range);
+        self.store.upsert_task(&task).await?;
+        self.emit_task("updated", &task);
         let task_limiter = Arc::new(RateLimiter::new());
         if supports_range && total >= 4 * 1024 * 1024 && connections > 1 {
             task = self
@@ -1109,6 +1342,17 @@ impl DownloadManager {
         task.active_connections = 0;
         runtime_options.apply(&mut task).await;
         if let Some(error) = worker_error {
+            if token.is_cancelled() {
+                task.status = TaskStatus::Paused;
+                task.speed = 0;
+                task.eta_seconds = None;
+                task.active_connections = 0;
+                for segment in &mut task.segments {
+                    if segment.status == "downloading" {
+                        segment.status = "paused".into();
+                    }
+                }
+            }
             self.store.upsert_task(&task).await?;
             self.emit_task("updated", &task);
             return Err(error);
@@ -1261,6 +1505,26 @@ impl DownloadManager {
             self.emit_task("updated", &task);
         }
     }
+
+    async fn notify_download_completed(&self, task: &DownloadTask) {
+        let settings = self.settings().await;
+        let Some((title, body)) = completion_notification(&settings, task) else {
+            return;
+        };
+        if let Err(error) = self
+            .app
+            .notification()
+            .builder()
+            .title(title)
+            .body(body)
+            .show()
+        {
+            let _ = self.app.emit(
+                "notification-error",
+                format!("下载已完成，但 Windows 通知发送失败：{error}"),
+            );
+        }
+    }
     async fn clear_parts(&self, task: &DownloadTask) {
         let output = PathBuf::from(&task.destination).join(&task.file_name);
         let temp = PathBuf::from(format!("{}.lumaget", output.to_string_lossy()));
@@ -1282,6 +1546,18 @@ impl DownloadManager {
         let _ = fs::remove_file(&temp).await;
     }
     fn emit_task(&self, event: &str, task: &DownloadTask) {
+        if let Ok(mut tasks) = self.tray_tasks.lock() {
+            tasks.insert(
+                task.id.clone(),
+                TrayTaskSnapshot {
+                    status: task.status.clone(),
+                    downloaded_bytes: task.downloaded_bytes,
+                    total_bytes: task.total_bytes,
+                    speed: task.speed,
+                },
+            );
+        }
+        self.update_tray_tooltip(false);
         let _ = self.app.emit(
             &format!("task-{event}"),
             TaskProgressEvent {
@@ -1290,6 +1566,141 @@ impl DownloadManager {
             },
         );
     }
+
+    async fn reload_tray_snapshots(&self) -> Result<(), String> {
+        let snapshots = self
+            .store
+            .list_tasks()
+            .await?
+            .into_iter()
+            .map(|task| {
+                (
+                    task.id,
+                    TrayTaskSnapshot {
+                        status: task.status,
+                        downloaded_bytes: task.downloaded_bytes,
+                        total_bytes: task.total_bytes,
+                        speed: task.speed,
+                    },
+                )
+            })
+            .collect();
+        if let Ok(mut tasks) = self.tray_tasks.lock() {
+            *tasks = snapshots;
+        }
+        self.update_tray_tooltip(true);
+        Ok(())
+    }
+
+    fn update_tray_tooltip(&self, force: bool) {
+        let current = now_millis();
+        let previous = self.last_tray_update.load(Ordering::Relaxed);
+        if !force && current.saturating_sub(previous) < 1_000 {
+            return;
+        }
+        self.last_tray_update.store(current, Ordering::Relaxed);
+        let tooltip = self
+            .tray_tasks
+            .lock()
+            .map(|tasks| tray_tooltip(tasks.values()))
+            .unwrap_or_else(|_| "猫步下载器".into());
+        if let Some(tray) = self.app.tray_by_id("main-tray") {
+            let _ = tray.set_tooltip(Some(tooltip));
+        }
+    }
+
+    fn emit_power_action_state(&self, state: &PowerActionState) {
+        let _ = self.app.emit("power-action-state", state.clone());
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum PowerActionDecision {
+    Waiting,
+    Blocked(String),
+    Complete,
+}
+
+fn is_power_action_target(status: &TaskStatus) -> bool {
+    matches!(
+        status,
+        TaskStatus::Queued
+            | TaskStatus::Downloading
+            | TaskStatus::Paused
+            | TaskStatus::Scheduled
+            | TaskStatus::Verifying
+            | TaskStatus::WaitingNetwork
+    )
+}
+
+fn power_action_decision(
+    target_ids: &HashSet<String>,
+    statuses: &HashMap<String, TaskStatus>,
+) -> PowerActionDecision {
+    if target_ids.iter().any(|id| !statuses.contains_key(id)) {
+        return PowerActionDecision::Blocked("目标任务已被删除，系统操作不会执行".into());
+    }
+    if statuses
+        .values()
+        .any(|status| matches!(status, TaskStatus::Failed))
+    {
+        return PowerActionDecision::Blocked("存在失败任务，系统操作不会执行".into());
+    }
+    if statuses
+        .values()
+        .any(|status| matches!(status, TaskStatus::Paused))
+    {
+        return PowerActionDecision::Blocked("存在暂停任务，恢复后才会继续等待".into());
+    }
+    if statuses
+        .values()
+        .any(|status| matches!(status, TaskStatus::Cancelled))
+    {
+        return PowerActionDecision::Blocked("存在已取消任务，系统操作不会执行".into());
+    }
+    if statuses
+        .values()
+        .all(|status| matches!(status, TaskStatus::Completed))
+    {
+        PowerActionDecision::Complete
+    } else {
+        PowerActionDecision::Waiting
+    }
+}
+
+fn power_action_remaining_seconds(deadline: u64, current: u64) -> u64 {
+    deadline.saturating_sub(current).div_ceil(1_000)
+}
+
+#[cfg(target_os = "windows")]
+fn execute_power_action(action: PowerAction) -> Result<(), String> {
+    let Some(args) = power_action_command_args(action) else {
+        return Ok(());
+    };
+    let status = Command::new("shutdown.exe")
+        .args(args)
+        .status()
+        .map_err(|error| format!("无法启动 shutdown.exe：{error}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("shutdown.exe 返回状态 {status}"))
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn power_action_command_args(action: PowerAction) -> Option<&'static [&'static str]> {
+    match action {
+        PowerAction::Shutdown => Some(&["/s", "/t", "0"]),
+        PowerAction::Hibernate => Some(&["/h"]),
+        PowerAction::None => None,
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn execute_power_action(action: PowerAction) -> Result<(), String> {
+    let _ = action;
+    Err("当前系统不支持该电源操作".into())
 }
 
 async fn append_part(
@@ -1814,6 +2225,62 @@ fn now() -> u64 {
         .unwrap_or_default()
         .as_millis() as u64
 }
+
+fn now_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .try_into()
+        .unwrap_or(u64::MAX)
+}
+
+fn tray_tooltip<'a>(tasks: impl Iterator<Item = &'a TrayTaskSnapshot>) -> String {
+    let relevant: Vec<_> = tasks
+        .filter(|task| {
+            matches!(
+                task.status,
+                TaskStatus::Queued
+                    | TaskStatus::Downloading
+                    | TaskStatus::Paused
+                    | TaskStatus::Scheduled
+                    | TaskStatus::Verifying
+                    | TaskStatus::WaitingNetwork
+            )
+        })
+        .collect();
+    if relevant.is_empty() {
+        return "猫步下载器 · 无活动任务".into();
+    }
+    let speed: u64 = relevant.iter().map(|task| task.speed).sum();
+    let (downloaded, total) = relevant.iter().filter(|task| task.total_bytes > 0).fold(
+        (0_u64, 0_u64),
+        |(downloaded, total), task| {
+            (
+                downloaded.saturating_add(task.downloaded_bytes.min(task.total_bytes)),
+                total.saturating_add(task.total_bytes),
+            )
+        },
+    );
+    let mut result = format!("猫步下载器 · {} 个任务", relevant.len());
+    if speed > 0 {
+        result.push_str(&format!(" · {}/s", compact_bytes(speed)));
+    }
+    if total > 0 {
+        result.push_str(&format!(" · {}%", downloaded.saturating_mul(100) / total));
+    }
+    result
+}
+
+fn compact_bytes(bytes: u64) -> String {
+    if bytes >= 1_048_576 {
+        format!("{:.1} MB", bytes as f64 / 1_048_576.0)
+    } else if bytes >= 1_024 {
+        format!("{:.1} KB", bytes as f64 / 1_024.0)
+    } else {
+        format!("{bytes} B")
+    }
+}
 fn validate_settings(s: &AppSettings) -> Result<(), String> {
     if s.concurrent_downloads == 0 || s.concurrent_downloads > 16 {
         return Err("同时下载任务必须为 1–16".into());
@@ -1823,6 +2290,9 @@ fn validate_settings(s: &AppSettings) -> Result<(), String> {
     }
     if s.default_completion_action == CompletionAction::RunFile {
         return Err("全局完成动作不能设置为自动运行文件".into());
+    }
+    if !["system", "blue", "cyan", "green", "purple", "orange"].contains(&s.accent_color.as_str()) {
+        return Err("强调色设置无效".into());
     }
     validate_tool_path(&s.yt_dlp_path, "yt-dlp.exe", "yt-dlp")?;
     if s.ffmpeg_path.is_empty() != s.ffprobe_path.is_empty() {
@@ -1930,6 +2400,29 @@ fn header_string(
         .get(name)
         .and_then(|v| v.to_str().ok())
         .map(str::to_owned)
+}
+fn diagnostic_url(url: &Url) -> String {
+    let mut redacted = url.clone();
+    let _ = redacted.set_username("");
+    let _ = redacted.set_password(None);
+    redacted.set_query(None);
+    redacted.set_fragment(None);
+    redacted.to_string()
+}
+fn truncate_text(value: String, maximum_chars: usize) -> String {
+    value.chars().take(maximum_chars).collect()
+}
+fn completion_notification(
+    settings: &AppSettings,
+    task: &DownloadTask,
+) -> Option<(String, String)> {
+    if !settings.notifications || task.status != TaskStatus::Completed {
+        return None;
+    }
+    Some((
+        format!("下载完成：{}", truncate_text(task.file_name.clone(), 80)),
+        format!("已保存到 {}", truncate_text(task.destination.clone(), 160)),
+    ))
 }
 fn parse_content_range(response: &reqwest::Response) -> Option<(u64, u64, u64)> {
     parse_content_range_value(response.headers().get(CONTENT_RANGE)?.to_str().ok()?)
@@ -2069,6 +2562,10 @@ mod tests {
             source: "desktop".into(),
             etag: None,
             last_modified: None,
+            final_url: None,
+            response_status: None,
+            content_type: None,
+            accepts_ranges: None,
             headers: HashMap::new(),
             media: None,
             per_task_speed_limit: 0,
@@ -2088,6 +2585,51 @@ mod tests {
     fn classifies_files() {
         assert_eq!(category("movie.mp4"), "video");
         assert_eq!(category("setup.exe"), "apps")
+    }
+    #[test]
+    fn diagnostic_urls_hide_credentials_query_and_fragment() {
+        let url =
+            Url::parse("https://user:password@example.com/file?token=secret#private").unwrap();
+        assert_eq!(diagnostic_url(&url), "https://example.com/file");
+    }
+    #[test]
+    fn completion_notifications_respect_settings_and_terminal_state() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut task = test_task(directory.path(), "done.zip", CollisionPolicy::Rename);
+        task.status = TaskStatus::Completed;
+        let mut settings = AppSettings::default();
+        let notification = completion_notification(&settings, &task).unwrap();
+        assert!(notification.0.contains("done.zip"));
+        assert!(notification
+            .1
+            .contains(directory.path().to_string_lossy().as_ref()));
+        settings.notifications = false;
+        assert!(completion_notification(&settings, &task).is_none());
+        settings.notifications = true;
+        task.status = TaskStatus::Downloading;
+        assert!(completion_notification(&settings, &task).is_none());
+    }
+    #[test]
+    fn tray_tooltip_aggregates_known_progress_without_runtime_polling() {
+        let tasks = [
+            TrayTaskSnapshot {
+                status: TaskStatus::Downloading,
+                downloaded_bytes: 25,
+                total_bytes: 100,
+                speed: 2_048,
+            },
+            TrayTaskSnapshot {
+                status: TaskStatus::Paused,
+                downloaded_bytes: 25,
+                total_bytes: 100,
+                speed: 0,
+            },
+        ];
+        assert_eq!(
+            tray_tooltip(tasks.iter()),
+            "猫步下载器 · 2 个任务 · 2.0 KB/s · 25%"
+        );
+        assert_eq!(tray_tooltip(std::iter::empty()), "猫步下载器 · 无活动任务");
     }
     #[test]
     fn validates_concurrency() {
@@ -2179,6 +2721,81 @@ mod tests {
         assert_eq!(task.per_task_speed_limit, 512 * 1024);
         assert_eq!(task.priority, 1);
         assert_eq!(task.completion_action, CompletionAction::OpenFolder);
+    }
+    #[test]
+    fn power_action_waits_for_every_tracked_task_to_complete() {
+        let targets = HashSet::from(["one".to_string(), "two".to_string()]);
+        let mut statuses = HashMap::from([
+            ("one".to_string(), TaskStatus::Completed),
+            ("two".to_string(), TaskStatus::Downloading),
+        ]);
+        assert_eq!(
+            power_action_decision(&targets, &statuses),
+            PowerActionDecision::Waiting
+        );
+        statuses.insert("two".into(), TaskStatus::Completed);
+        assert_eq!(
+            power_action_decision(&targets, &statuses),
+            PowerActionDecision::Complete
+        );
+    }
+
+    #[test]
+    fn power_action_is_blocked_by_unsafe_terminal_states() {
+        let targets = HashSet::from(["task".to_string()]);
+        for status in [
+            TaskStatus::Paused,
+            TaskStatus::Failed,
+            TaskStatus::Cancelled,
+        ] {
+            let statuses = HashMap::from([("task".to_string(), status)]);
+            assert!(matches!(
+                power_action_decision(&targets, &statuses),
+                PowerActionDecision::Blocked(_)
+            ));
+        }
+        assert!(matches!(
+            power_action_decision(&targets, &HashMap::new()),
+            PowerActionDecision::Blocked(_)
+        ));
+    }
+
+    #[test]
+    fn power_action_tracks_all_runnable_and_paused_tasks() {
+        for status in [
+            TaskStatus::Queued,
+            TaskStatus::Downloading,
+            TaskStatus::Paused,
+            TaskStatus::Scheduled,
+            TaskStatus::Verifying,
+            TaskStatus::WaitingNetwork,
+        ] {
+            assert!(is_power_action_target(&status));
+        }
+        assert!(!is_power_action_target(&TaskStatus::Completed));
+        assert!(!is_power_action_target(&TaskStatus::Failed));
+    }
+
+    #[test]
+    fn power_action_countdown_reports_seconds_from_milliseconds() {
+        assert_eq!(power_action_remaining_seconds(60_000, 0), 60);
+        assert_eq!(power_action_remaining_seconds(60_000, 1), 60);
+        assert_eq!(power_action_remaining_seconds(60_000, 59_001), 1);
+        assert_eq!(power_action_remaining_seconds(60_000, 60_000), 0);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn power_actions_use_direct_windows_commands_without_a_shell() {
+        assert_eq!(
+            power_action_command_args(PowerAction::Shutdown),
+            Some(&["/s", "/t", "0"][..])
+        );
+        assert_eq!(
+            power_action_command_args(PowerAction::Hibernate),
+            Some(&["/h"][..])
+        );
+        assert_eq!(power_action_command_args(PowerAction::None), None);
     }
     #[test]
     fn accepts_32_connections_and_rejects_other_values() {

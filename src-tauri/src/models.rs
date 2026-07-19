@@ -71,6 +71,14 @@ pub struct DownloadTask {
     pub source: String,
     pub etag: Option<String>,
     pub last_modified: Option<String>,
+    #[serde(default)]
+    pub final_url: Option<String>,
+    #[serde(default)]
+    pub response_status: Option<u16>,
+    #[serde(default)]
+    pub content_type: Option<String>,
+    #[serde(default)]
+    pub accepts_ranges: Option<bool>,
     pub headers: HashMap<String, String>,
     pub media: Option<MediaSelection>,
     pub per_task_speed_limit: u64,
@@ -122,6 +130,34 @@ pub enum CompletionAction {
     RunFile,
 }
 
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum PowerAction {
+    #[default]
+    None,
+    Shutdown,
+    Hibernate,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum PowerActionPhase {
+    #[default]
+    Idle,
+    Armed,
+    Countdown,
+    Blocked,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct PowerActionState {
+    pub action: PowerAction,
+    pub phase: PowerActionPhase,
+    pub remaining_seconds: u64,
+    pub target_count: usize,
+    pub message: Option<String>,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct NewTaskRequest {
     pub url: String,
@@ -143,6 +179,8 @@ pub struct NewTaskRequest {
     pub completion_action: CompletionAction,
     pub media: Option<MediaSelection>,
     pub connection_count: Option<u8>,
+    #[serde(default)]
+    pub start_paused: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -163,6 +201,27 @@ pub struct BatchTaskRequest {
     pub connection_count: Option<u8>,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TaskExportFile {
+    pub schema_version: u32,
+    pub exported_at: u64,
+    pub tasks: Vec<TaskExportItem>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TaskExportItem {
+    pub url: String,
+    pub file_name: String,
+    pub priority: i32,
+    pub scheduled_at: Option<u64>,
+    pub expected_checksum: Option<String>,
+    pub per_task_speed_limit: u64,
+    pub collision_policy: CollisionPolicy,
+    pub completion_action: CompletionAction,
+    pub media: Option<MediaSelection>,
+    pub connection_count: u8,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AppSettings {
     pub download_dir: String,
@@ -175,6 +234,8 @@ pub struct AppSettings {
     pub notifications: bool,
     pub auto_start: bool,
     pub theme: String,
+    #[serde(default = "default_accent_color")]
+    pub accent_color: String,
     #[serde(default)]
     pub frosted_glass: bool,
     pub language: String,
@@ -225,6 +286,7 @@ impl Default for AppSettings {
             notifications: true,
             auto_start: false,
             theme: "system".into(),
+            accent_color: default_accent_color(),
             frosted_glass: false,
             language: "zh-CN".into(),
             intercept_browser_downloads: true,
@@ -250,6 +312,10 @@ impl Default for AppSettings {
             auto_scale_ui: Some(false),
         }
     }
+}
+
+fn default_accent_color() -> String {
+    "blue".into()
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -351,6 +417,7 @@ mod tests {
         object.remove("ffmpeg_path");
         object.remove("ffprobe_path");
         object.remove("default_completion_action");
+        object.remove("accent_color");
 
         let restored: AppSettings = serde_json::from_value(value).unwrap();
         assert!(!restored.low_memory_mode);
@@ -358,6 +425,7 @@ mod tests {
         assert!(restored.ffmpeg_path.is_empty());
         assert!(restored.ffprobe_path.is_empty());
         assert_eq!(restored.default_completion_action, CompletionAction::None);
+        assert_eq!(restored.accent_color, "blue");
     }
 
     #[test]
@@ -397,6 +465,18 @@ mod tests {
         assert_eq!(
             TaskStatus::from_db("waiting-network"),
             TaskStatus::WaitingNetwork
+        );
+    }
+
+    #[test]
+    fn power_action_uses_stable_kebab_case_values() {
+        assert_eq!(
+            serde_json::to_string(&PowerAction::Hibernate).unwrap(),
+            "\"hibernate\""
+        );
+        assert_eq!(
+            serde_json::to_string(&PowerActionPhase::Countdown).unwrap(),
+            "\"countdown\""
         );
     }
 }

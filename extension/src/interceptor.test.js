@@ -28,6 +28,18 @@ test("blocks a redirect when either original or final host is blocked", () => {
   assert.equal(result.reason, "blocked-host");
 });
 
+test("applies file-type rules without intercepting unknown extensions", () => {
+  const allowed = evaluateDownload({
+    id: 20, url: "https://example.com/archive.zip", filename: "archive.zip", totalBytes: 3_000_000,
+  }, { ...settings, extensions: ["zip", "7z"] }, "extension-id");
+  const blocked = evaluateDownload({
+    id: 21, url: "https://example.com/readme.pdf", filename: "readme.pdf", totalBytes: 3_000_000,
+  }, { ...settings, extensions: ["zip", "7z"] }, "extension-id");
+  assert.equal(allowed.eligible, true);
+  assert.equal(blocked.eligible, false);
+  assert.equal(blocked.reason, "extension");
+});
+
 test("refreshes a download until the redirected URL and filename stabilize", async () => {
   const snapshots = [
     { id: 3, url: "https://github.com/a/b.zip", finalUrl: "https://codeload.github.com/a/b", filename: "" },

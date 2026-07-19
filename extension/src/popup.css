@@ -371,6 +371,30 @@ footer {
   font-size: 9px;
 }
 
+.rules-links {
+  margin-top: 8px;
+  padding: 0;
+  border: 0;
+  box-shadow: none;
+  background: transparent;
+}
+
+.rules-links button {
+  width: 100%;
+  height: 32px;
+  border: 1px solid var(--border-strong);
+  border-radius: 7px;
+  color: var(--accent);
+  background: var(--control);
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.rules-links button:hover {
+  border-color: var(--accent);
+  background: var(--accent-light);
+}
+
 footer button {
   color: var(--accent);
   font-size: 9px;

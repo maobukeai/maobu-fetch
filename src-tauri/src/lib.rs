@@ -4,13 +4,15 @@ mod media;
 mod media_tools;
 mod models;
 mod store;
+mod task_transfer;
 
 use bridge::PairingService;
 use manager::{DownloadManager, SharedManager};
 use media_tools::MediaTools;
 use models::{
     AppSettings, BatchTaskRequest, CompletionAction, DetectedMediaTools, DownloadTask,
-    MediaProbeResult, NewTaskRequest, PairingInfo, ToolComponent, ToolStatus,
+    MediaProbeResult, NewTaskRequest, PairingInfo, PowerAction, PowerActionState, ToolComponent,
+    ToolStatus,
 };
 use std::{path::PathBuf, sync::Arc};
 use store::Store;
@@ -43,6 +45,20 @@ async fn tasks_add_batch(
     manager: State<'_, SharedManager>,
 ) -> Result<Vec<DownloadTask>, String> {
     manager.inner().add_batch(request).await
+}
+
+#[tauri::command]
+async fn tasks_export(path: String, manager: State<'_, SharedManager>) -> Result<usize, String> {
+    manager.export_tasks(&path).await
+}
+
+#[tauri::command]
+async fn tasks_import(
+    path: String,
+    destination: String,
+    manager: State<'_, SharedManager>,
+) -> Result<Vec<DownloadTask>, String> {
+    manager.inner().import_tasks(&path, &destination).await
 }
 
 #[tauri::command]
@@ -106,6 +122,26 @@ async fn settings_save(
     let _ = tray_items.low_memory.set_checked(settings.low_memory_mode);
     let _ = tray_items.frosted_glass.set_checked(settings.frosted_glass);
     Ok(())
+}
+
+#[tauri::command]
+async fn power_action_get(manager: State<'_, SharedManager>) -> Result<PowerActionState, String> {
+    Ok(manager.power_action_state().await)
+}
+
+#[tauri::command]
+async fn power_action_arm(
+    action: PowerAction,
+    manager: State<'_, SharedManager>,
+) -> Result<PowerActionState, String> {
+    manager.arm_power_action(action).await
+}
+
+#[tauri::command]
+async fn power_action_cancel(
+    manager: State<'_, SharedManager>,
+) -> Result<PowerActionState, String> {
+    manager.cancel_power_action().await
 }
 
 #[tauri::command]
@@ -318,8 +354,9 @@ pub fn run() {
                     ],
                 )?;
 
-                let _tray = TrayIconBuilder::new()
+                let _tray = TrayIconBuilder::with_id("main-tray")
                     .icon(icon.clone())
+                    .tooltip("猫步下载器 · 无活动任务")
                     .menu(&menu)
                     .on_menu_event(|app, event| {
                         if event.id.as_ref() == "show" {
@@ -399,6 +436,8 @@ pub fn run() {
             tasks_list,
             task_add,
             tasks_add_batch,
+            tasks_export,
+            tasks_import,
             task_action,
             task_update_options,
             tasks_bulk_action,
@@ -406,6 +445,9 @@ pub fn run() {
             queue_reorder,
             settings_get,
             settings_save,
+            power_action_get,
+            power_action_arm,
+            power_action_cancel,
             task_verify,
             task_open_file,
             task_open_folder,

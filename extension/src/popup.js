@@ -21,4 +21,5 @@ async function send(url, fileName) { if (!url) return; message("正在发送…"
 $("send").onclick = () => send($("url").value.trim()); $("url").onkeydown = (event) => { if (event.key === "Enter") $("send").click(); };
 $("intercept").onchange = (event) => chrome.storage.local.set({ intercept: event.target.checked });
 $("minSize").onchange = (event) => chrome.storage.local.set({ minSizeMb: Number(event.target.value) });
+$("editRules").onclick = () => chrome.runtime.openOptionsPage();
 $("bypass").onclick = async () => { await call({ type: "bypass", minutes: 10 }); message("接管已暂停 10 分钟"); };

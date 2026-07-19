@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <link rel="stylesheet" href="options.css">
+  <title>猫步下载器 · 接管规则</title>
+</head>
+<body>
+  <main>
+    <header><img src="icon128.png" alt=""><div><h1>浏览器接管规则</h1><p>规则仅保存在当前浏览器扩展中，不会上传。</p></div></header>
+    <section>
+      <label for="allowHosts">仅接管这些域名</label>
+      <textarea id="allowHosts" placeholder="每行一个域名；留空表示不限制&#10;example.com"></textarea>
+      <small>填写后仅接管名单中的域名及其子域名。</small>
+    </section>
+    <section>
+      <label for="blockHosts">不接管这些域名</label>
+      <textarea id="blockHosts" placeholder="每行一个域名&#10;updates.example.com"></textarea>
+      <small>黑名单优先于白名单，匹配域名及其子域名。</small>
+    </section>
+    <section>
+      <label for="extensions">仅接管这些文件类型</label>
+      <textarea id="extensions" placeholder="每行一个扩展名；留空表示不限制&#10;zip&#10;exe"></textarea>
+      <small>不用输入点号，支持 1–12 位字母或数字。</small>
+    </section>
+    <p id="message" role="status"></p>
+    <footer>
+      <div><button id="importRules" class="secondary">导入 JSON</button><button id="exportRules" class="secondary">导出 JSON</button><input id="importFile" type="file" accept="application/json,.json" hidden></div>
+      <button id="saveRules" class="primary">保存规则</button>
+    </footer>
+  </main>
+  <script type="module" src="options.js"></script>
+</body>
+</html>

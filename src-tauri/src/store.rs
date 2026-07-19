@@ -36,6 +36,10 @@ impl Store {
             "completion_action",
             "TEXT NOT NULL DEFAULT '\"none\"'",
         )?;
+        ensure_task_column(&connection, "final_url", "TEXT")?;
+        ensure_task_column(&connection, "response_status", "INTEGER")?;
+        ensure_task_column(&connection, "content_type", "TEXT")?;
+        ensure_task_column(&connection, "accepts_ranges", "INTEGER")?;
         let store = Self {
             connection: Mutex::new(connection),
             data_dir,
@@ -110,6 +114,10 @@ impl Store {
                 source: "migration".into(),
                 etag: None,
                 last_modified: None,
+                final_url: None,
+                response_status: None,
+                content_type: None,
+                accepts_ranges: None,
                 headers: HashMap::new(),
                 media: None,
                 per_task_speed_limit: 0,
@@ -178,6 +186,10 @@ impl Store {
                     task.source,
                     task.etag,
                     task.last_modified,
+                    task.final_url,
+                    task.response_status.map(i64::from),
+                    task.content_type,
+                    task.accepts_ranges.map(i64::from),
                     serde_json::to_string(&task.headers).unwrap_or_else(|_| "{}".into()),
                     serde_json::to_string(&task.media).unwrap_or_else(|_| "null".into()),
                     task.per_task_speed_limit as i64,
@@ -324,6 +336,14 @@ fn task_from_row(row: &Row<'_>) -> rusqlite::Result<DownloadTask> {
         source: row.get("source")?,
         etag: row.get("etag")?,
         last_modified: row.get("last_modified")?,
+        final_url: row.get("final_url")?,
+        response_status: row
+            .get::<_, Option<i64>>("response_status")?
+            .map(|value| value as u16),
+        content_type: row.get("content_type")?,
+        accepts_ranges: row
+            .get::<_, Option<i64>>("accepts_ranges")?
+            .map(|value| value != 0),
         headers: serde_json::from_str(&headers_json).unwrap_or_default(),
         media: serde_json::from_str::<Option<MediaSelection>>(&media_json).unwrap_or_default(),
         per_task_speed_limit: row.get::<_, i64>("per_task_speed_limit")? as u64,
@@ -342,7 +362,8 @@ CREATE TABLE IF NOT EXISTS tasks (
   eta_seconds INTEGER, status TEXT NOT NULL, error TEXT, created_at INTEGER NOT NULL, completed_at INTEGER, scheduled_at INTEGER,
   category TEXT NOT NULL DEFAULT 'other', queue_position INTEGER NOT NULL DEFAULT 0, priority INTEGER NOT NULL DEFAULT 0,
   retry_count INTEGER NOT NULL DEFAULT 0, max_retries INTEGER NOT NULL DEFAULT 3, checksum_sha256 TEXT, expected_checksum TEXT,
-  source TEXT NOT NULL DEFAULT 'desktop', etag TEXT, last_modified TEXT, headers_json TEXT NOT NULL DEFAULT '{}',
+  source TEXT NOT NULL DEFAULT 'desktop', etag TEXT, last_modified TEXT, final_url TEXT, response_status INTEGER,
+  content_type TEXT, accepts_ranges INTEGER, headers_json TEXT NOT NULL DEFAULT '{}',
   media_json TEXT NOT NULL DEFAULT 'null', per_task_speed_limit INTEGER NOT NULL DEFAULT 0, collision_policy TEXT NOT NULL DEFAULT '"rename"',
   connection_count INTEGER NOT NULL DEFAULT 8, segments_json TEXT NOT NULL DEFAULT '[]',
   completion_action TEXT NOT NULL DEFAULT '"none"'
@@ -359,9 +380,9 @@ CREATE TABLE IF NOT EXISTS error_history (id INTEGER PRIMARY KEY AUTOINCREMENT, 
 "#;
 
 const UPSERT_TASK: &str = r#"
-INSERT INTO tasks(id,url,file_name,destination,total_bytes,downloaded_bytes,speed,eta_seconds,status,error,created_at,completed_at,scheduled_at,category,queue_position,priority,retry_count,max_retries,checksum_sha256,expected_checksum,source,etag,last_modified,headers_json,media_json,per_task_speed_limit,collision_policy,connection_count,segments_json,completion_action)
-VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26,?27,?28,?29,?30)
-ON CONFLICT(id) DO UPDATE SET url=excluded.url,file_name=excluded.file_name,destination=excluded.destination,total_bytes=excluded.total_bytes,downloaded_bytes=excluded.downloaded_bytes,speed=excluded.speed,eta_seconds=excluded.eta_seconds,status=excluded.status,error=excluded.error,completed_at=excluded.completed_at,scheduled_at=excluded.scheduled_at,category=excluded.category,queue_position=excluded.queue_position,priority=excluded.priority,retry_count=excluded.retry_count,max_retries=excluded.max_retries,checksum_sha256=excluded.checksum_sha256,expected_checksum=excluded.expected_checksum,source=excluded.source,etag=excluded.etag,last_modified=excluded.last_modified,headers_json=excluded.headers_json,media_json=excluded.media_json,per_task_speed_limit=excluded.per_task_speed_limit,collision_policy=excluded.collision_policy,connection_count=excluded.connection_count,segments_json=excluded.segments_json,completion_action=excluded.completion_action
+INSERT INTO tasks(id,url,file_name,destination,total_bytes,downloaded_bytes,speed,eta_seconds,status,error,created_at,completed_at,scheduled_at,category,queue_position,priority,retry_count,max_retries,checksum_sha256,expected_checksum,source,etag,last_modified,final_url,response_status,content_type,accepts_ranges,headers_json,media_json,per_task_speed_limit,collision_policy,connection_count,segments_json,completion_action)
+VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26,?27,?28,?29,?30,?31,?32,?33,?34)
+ON CONFLICT(id) DO UPDATE SET url=excluded.url,file_name=excluded.file_name,destination=excluded.destination,total_bytes=excluded.total_bytes,downloaded_bytes=excluded.downloaded_bytes,speed=excluded.speed,eta_seconds=excluded.eta_seconds,status=excluded.status,error=excluded.error,completed_at=excluded.completed_at,scheduled_at=excluded.scheduled_at,category=excluded.category,queue_position=excluded.queue_position,priority=excluded.priority,retry_count=excluded.retry_count,max_retries=excluded.max_retries,checksum_sha256=excluded.checksum_sha256,expected_checksum=excluded.expected_checksum,source=excluded.source,etag=excluded.etag,last_modified=excluded.last_modified,final_url=excluded.final_url,response_status=excluded.response_status,content_type=excluded.content_type,accepts_ranges=excluded.accepts_ranges,headers_json=excluded.headers_json,media_json=excluded.media_json,per_task_speed_limit=excluded.per_task_speed_limit,collision_policy=excluded.collision_policy,connection_count=excluded.connection_count,segments_json=excluded.segments_json,completion_action=excluded.completion_action
 "#;
 
 fn ensure_task_column(connection: &Connection, name: &str, definition: &str) -> Result<(), String> {
@@ -384,6 +405,65 @@ fn ensure_task_column(connection: &Connection, name: &str, definition: &str) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_task(directory: &PathBuf) -> DownloadTask {
+        DownloadTask {
+            id: "store-upsert".into(),
+            url: "https://example.com/file.zip".into(),
+            file_name: "file.zip".into(),
+            destination: directory.to_string_lossy().into_owned(),
+            total_bytes: 100,
+            downloaded_bytes: 25,
+            speed: 0,
+            eta_seconds: None,
+            status: TaskStatus::Paused,
+            error: None,
+            created_at: 1,
+            completed_at: None,
+            scheduled_at: None,
+            category: "archives".into(),
+            queue_position: 0,
+            priority: 0,
+            retry_count: 1,
+            max_retries: 4,
+            checksum_sha256: None,
+            expected_checksum: None,
+            source: "desktop".into(),
+            etag: Some("etag-1".into()),
+            last_modified: None,
+            final_url: Some("https://cdn.example.com/file.zip".into()),
+            response_status: Some(206),
+            content_type: Some("application/zip".into()),
+            accepts_ranges: Some(true),
+            headers: HashMap::new(),
+            media: None,
+            per_task_speed_limit: 0,
+            collision_policy: CollisionPolicy::Rename,
+            completion_action: CompletionAction::None,
+            connection_count: 8,
+            active_connections: 0,
+            segments: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn inserts_and_updates_tasks_with_network_details() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::open(directory.path().to_path_buf()).unwrap();
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        runtime.block_on(async {
+            let mut task = test_task(&directory.path().to_path_buf());
+            store.upsert_task(&task).await.unwrap();
+            task.max_retries = 7;
+            task.response_status = Some(200);
+            store.upsert_task(&task).await.unwrap();
+            let restored = store.get_task(&task.id).await.unwrap().unwrap();
+            assert_eq!(restored.max_retries, 7);
+            assert_eq!(restored.response_status, Some(200));
+            assert_eq!(restored.content_type.as_deref(), Some("application/zip"));
+            assert_eq!(restored.accepts_ranges, Some(true));
+        });
+    }
 
     #[test]
     fn persists_settings_in_sqlite() {
@@ -435,6 +515,14 @@ mod tests {
             .unwrap()
             .collect::<Result<Vec<_>, _>>()
             .unwrap();
-        assert!(columns.iter().any(|column| column == "completion_action"));
+        for expected in [
+            "completion_action",
+            "final_url",
+            "response_status",
+            "content_type",
+            "accepts_ranges",
+        ] {
+            assert!(columns.iter().any(|column| column == expected));
+        }
     }
 }

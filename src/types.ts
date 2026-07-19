@@ -1,6 +1,16 @@
 export type TaskStatus = "queued" | "downloading" | "paused" | "completed" | "failed" | "cancelled" | "scheduled" | "verifying" | "waiting-network";
 export type CollisionPolicy = "overwrite" | "skip" | "rename";
 export type CompletionAction = "none" | "open-folder" | "run-file";
+export type PowerAction = "none" | "shutdown" | "hibernate";
+export type PowerActionPhase = "idle" | "armed" | "countdown" | "blocked";
+
+export interface PowerActionState {
+  action: PowerAction;
+  phase: PowerActionPhase;
+  remaining_seconds: number;
+  target_count: number;
+  message?: string;
+}
 
 export interface MediaSelection {
   extractor?: string;
@@ -35,6 +45,10 @@ export interface DownloadTask {
   source: string;
   etag?: string;
   last_modified?: string;
+  final_url?: string;
+  response_status?: number;
+  content_type?: string;
+  accepts_ranges?: boolean;
   headers: Record<string, string>;
   media?: MediaSelection;
   per_task_speed_limit: number;
@@ -61,6 +75,7 @@ export interface NewTaskRequest {
   completion_action: CompletionAction;
   media?: MediaSelection;
   connection_count?: number;
+  start_paused?: boolean;
 }
 
 export interface AppSettings {
@@ -74,6 +89,7 @@ export interface AppSettings {
   notifications: boolean;
   auto_start: boolean;
   theme: "system" | "light" | "dark";
+  accent_color: "system" | "blue" | "cyan" | "green" | "purple" | "orange";
   frosted_glass: boolean;
   language: string;
   intercept_browser_downloads: boolean;
