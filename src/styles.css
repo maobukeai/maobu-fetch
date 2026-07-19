@@ -1167,3 +1167,33 @@ svg { flex: 0 0 auto; }
 .nav-grid .nav-item small {
   font-size: 9px;
 }
+
+.pair-code-wrapper {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin: 7px 0;
+}
+.pair-code-wrapper code {
+  margin: 0;
+}
+.copy-code-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--control);
+  color: var(--text);
+  font-size: 11px;
+  transition: all 0.15s;
+}
+.copy-code-btn:hover {
+  background: var(--surface-hover);
+  border-color: var(--muted);
+}
+.copy-code-btn svg {
+  color: var(--muted);
+}

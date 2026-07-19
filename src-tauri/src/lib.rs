@@ -164,6 +164,11 @@ async fn media_tools_check_update(tools: State<'_, MediaTools>) -> Result<ToolSt
     Ok(tools.status().await)
 }
 
+#[tauri::command]
+fn app_exit(app: tauri::AppHandle) {
+    app.exit(0);
+}
+
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
@@ -222,7 +227,7 @@ pub fn run() {
                                 let manager = app.state::<SharedManager>();
                                 let mut settings = tauri::async_runtime::block_on(manager.settings());
                                 settings.clipboard_monitor = checked;
-                                tauri::async_runtime::block_on(manager.save_settings(settings.clone()));
+                                let _ = tauri::async_runtime::block_on(manager.save_settings(settings.clone()));
                                 let _ = app.emit("settings-changed", settings);
                             }
                         } else if event.id.as_ref() == "quit" {
@@ -270,7 +275,8 @@ pub fn run() {
             media_tools_install,
             media_tools_cancel,
             media_tools_remove,
-            media_tools_check_update
+            media_tools_check_update,
+            app_exit
         ])
         .run(tauri::generate_context!())
         .expect("error while running Maobu Fetch");

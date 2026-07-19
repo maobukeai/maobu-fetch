@@ -2333,7 +2333,7 @@ dependencies = [
 
 [[package]]
 name = "maobu-fetch"
-version = "0.5.0"
+version = "0.5.2"
 dependencies = [
  "axum",
  "base64 0.22.1",

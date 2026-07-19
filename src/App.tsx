@@ -161,6 +161,9 @@ export default function App() {
     finally { setLoading(false); }
   };
   useEffect(() => {
+    const handleContextMenu = (e: globalThis.MouseEvent) => e.preventDefault();
+    document.addEventListener("contextmenu", handleContextMenu);
+
     const startTime = Date.now();
     void refresh().then(() => {
       const elapsed = Date.now() - startTime;
@@ -180,12 +183,26 @@ export default function App() {
 
     let unlisten: Array<() => void> = [];
     void api.subscribe((event) => {
-      if ("removed" in event) setTasks((items) => items.filter((task) => task.id !== event.removed));
-      else setTasks((items) => items.some((task) => task.id === event.task.id)
-        ? items.map((task) => task.id === event.task.id ? event.task : task)
-        : [event.task, ...items]);
+      if ("removed" in event) {
+        setTasks((items) => items.filter((task) => task.id !== event.removed));
+        setSelected((current) => {
+          if (current.has(event.removed)) {
+            const next = new Set(current);
+            next.delete(event.removed);
+            return next;
+          }
+          return current;
+        });
+      } else {
+        setTasks((items) => items.some((task) => task.id === event.task.id)
+          ? items.map((task) => task.id === event.task.id ? event.task : task)
+          : [event.task, ...items]);
+      }
     }).then((items) => { unlisten = items; });
-    return () => unlisten.forEach((item) => item());
+    return () => {
+      document.removeEventListener("contextmenu", handleContextMenu);
+      unlisten.forEach((item) => item());
+    };
   }, []);
   useEffect(() => {
     const dark = settings.theme === "dark" || (settings.theme === "system" && matchMedia("(prefers-color-scheme: dark)").matches);
@@ -442,7 +459,18 @@ export default function App() {
             setShowDetails(true);
           }
         }} defaultUrl={initialUrlFromClipboard} />}
-        {context && <ContextMenu x={context.x} y={context.y} task={tasks.find((task) => task.id === context.id)!} close={() => setContext(undefined)} notify={notify} />}
+        {(() => {
+          const contextTask = context ? tasks.find((t) => t.id === context.id) : undefined;
+          return context && contextTask ? (
+            <ContextMenu
+              x={context.x}
+              y={context.y}
+              task={contextTask}
+              close={() => setContext(undefined)}
+              notify={notify}
+            />
+          ) : null;
+        })()}
         {toast && <div className="toast"><span>{toast.kind === "ok" ? <Check size={14} /> : <AlertCircle size={14} />}</span>{toast.text}</div>}
         {showCloseConfirm && <CloseConfirmDialog onClose={() => setShowCloseConfirm(false)} onConfirm={handleCloseConfirm} />}
       </div>
@@ -977,7 +1005,7 @@ function SettingsPage({ value, onChange, onClose, notify }: { value: AppSettings
     {section === "general" && <SettingsGroup title="应用行为"><div className="settings-group-content"><Toggle label="启动时最小化" checked={draft.start_minimized} onChange={(v) => set("start_minimized", v)} /><Toggle label="最小化到托盘" checked={draft.minimize_to_tray} onChange={(v) => set("minimize_to_tray", v)} /><Toggle label="关闭时驻留托盘" checked={draft.close_to_tray} onChange={(v) => set("close_to_tray", v)} /><Toggle label="下载完成通知" checked={draft.notifications} onChange={(v) => set("notifications", v)} /><Toggle label="监视剪贴板链接" checked={draft.clipboard_monitor} onChange={(v) => set("clipboard_monitor", v)} /></div></SettingsGroup>}
     {section === "download" && <SettingsGroup title="保存与性能"><div className="settings-group-content"><SettingRow label="默认下载目录"><input value={draft.download_dir} onChange={(e) => set("download_dir", e.target.value)} /></SettingRow><SettingRow label="文件重名"><div className="fluent-segmented-control settings-segmented"><button type="button" className={draft.default_collision_policy === "rename" ? "active" : ""} onClick={() => set("default_collision_policy", "rename")}>自动重命名</button><button type="button" className={draft.default_collision_policy === "overwrite" ? "active" : ""} onClick={() => set("default_collision_policy", "overwrite")}>覆盖</button><button type="button" className={draft.default_collision_policy === "skip" ? "active" : ""} onClick={() => set("default_collision_policy", "skip")}>跳过</button></div></SettingRow><SettingRow label="同时下载任务"><input type="number" min="1" max="16" value={draft.concurrent_downloads} onChange={(e) => set("concurrent_downloads", +e.target.value)} /></SettingRow><SettingRow label={`每任务连接数 (${draft.connections_per_download} 路)`}><div className="settings-slider-wrapper"><input type="range" min="0" max="4" step="1" value={[1, 2, 4, 8, 16].indexOf(draft.connections_per_download)} onChange={(e) => { const values = [1, 2, 4, 8, 16]; set("connections_per_download", values[+e.target.value]); }} className="fluent-slider" /><div className="slider-ticks"><span>1</span><span>2</span><span>4</span><span>8</span><span>16</span></div></div></SettingRow><SettingRow label="全局限速（KB/s）"><input type="number" min="0" value={draft.speed_limit_kbps} onChange={(e) => set("speed_limit_kbps", +e.target.value)} /></SettingRow><Toggle label="完成后计算 SHA-256" checked={draft.verify_after_download} onChange={(v) => set("verify_after_download", v)} /></div></SettingsGroup>}
     {section === "network" && <SettingsGroup title="代理与重试"><div className="settings-group-content"><SettingRow label="代理模式"><select value={draft.proxy_mode} onChange={(e) => set("proxy_mode", e.target.value as AppSettings["proxy_mode"])}><option value="system">跟随系统</option><option value="none">不使用代理</option><option value="manual">手动代理</option></select></SettingRow>{draft.proxy_mode === "manual" && <><SettingRow label="代理地址"><input value={draft.proxy_url} onChange={(e) => set("proxy_url", e.target.value)} /></SettingRow><SettingRow label="用户名"><input value={draft.proxy_username} onChange={(e) => set("proxy_username", e.target.value)} /></SettingRow><SettingRow label="密码"><input type="password" value={draft.proxy_password} onChange={(e) => set("proxy_password", e.target.value)} /></SettingRow></>}<SettingRow label="最大重试次数"><input type="number" min="0" max="10" value={draft.max_retries} onChange={(e) => set("max_retries", +e.target.value)} /></SettingRow></div></SettingsGroup>}
-    {section === "browser" && <><SettingsGroup title="下载接管"><div className="settings-group-content"><Toggle label="允许浏览器扩展接管下载" checked={draft.intercept_browser_downloads} onChange={(v) => set("intercept_browser_downloads", v)} /><SettingRow label="最小文件大小（MB）"><input type="number" min="0" value={draft.min_file_size_mb} onChange={(e) => set("min_file_size_mb", +e.target.value)} /></SettingRow></div></SettingsGroup><SettingsGroup title="安全配对">{pair ? <div className="pair-card"><p>在扩展中输入一次性配对码（10 分钟有效）</p><code>{pair.code}</code>{pair.paired_extension && <p>已配对：{pair.paired_extension.slice(0, 16)}…</p>}<div className="maintenance"><button onClick={() => void api.rotatePairing().then(setPair)}>更换配对码</button>{pair.paired_extension && <button onClick={() => void api.revokePairing().then(() => api.pairing().then(setPair))}>撤销配对</button>}</div></div> : <LoaderCircle className="spin" />}</SettingsGroup></>}
+    {section === "browser" && <><SettingsGroup title="下载接管"><div className="settings-group-content"><Toggle label="允许浏览器扩展接管下载" checked={draft.intercept_browser_downloads} onChange={(v) => set("intercept_browser_downloads", v)} /><SettingRow label="最小文件大小（MB）"><input type="number" min="0" value={draft.min_file_size_mb} onChange={(e) => set("min_file_size_mb", +e.target.value)} /></SettingRow></div></SettingsGroup><SettingsGroup title="安全配对">{pair ? <div className="pair-card"><p>在扩展中输入一次性配对码（10 分钟有效）</p><div className="pair-code-wrapper"><code>{pair.code}</code><button className="copy-code-btn" onClick={() => { void navigator.clipboard.writeText(pair.code); notify("配对码已复制到剪贴板"); }} title="复制配对码"><Copy size={13} /><span>复制</span></button></div>{pair.paired_extension && <p>已配对：{pair.paired_extension.slice(0, 16)}…</p>}<div className="maintenance"><button onClick={() => void api.rotatePairing().then(setPair)}>更换配对码</button>{pair.paired_extension && <button onClick={() => void api.revokePairing().then(() => api.pairing().then(setPair))}>撤销配对</button>}</div></div> : <LoaderCircle className="spin" />}</SettingsGroup></>}
     {section === "media" && <SettingsGroup title="媒体工具"><p className="settings-note">普通下载无需额外组件。媒体分析需要按需安装 yt-dlp 与 FFmpeg；DRM 内容不会处理。</p>{tools ? <MediaToolsCard status={tools} onStatus={setTools} /> : <LoaderCircle className="spin" />}<div className="settings-group-content"><Toggle label="自动检查媒体工具更新" checked={draft.media_tool_auto_update} onChange={(v) => set("media_tool_auto_update", v)} /></div></SettingsGroup>}
     {section === "appearance" && <SettingsGroup title="主题与窗口"><div className="settings-group-content"><SettingRow label="应用主题"><select value={draft.theme} onChange={(e) => set("theme", e.target.value as AppSettings["theme"])}><option value="system">跟随系统</option><option value="light">浅色</option><option value="dark">深色</option></select></SettingRow><SettingRow label="窗口大小"><div className="window-size-setting-row"><input type="number" placeholder="宽度 (如 800)" value={draft.window_width || ""} onChange={(e) => changeWidth(e.target.value ? +e.target.value : undefined)} className="window-size-input" /><span>×</span><input type="number" placeholder="高度 (如 600)" value={draft.window_height || ""} onChange={(e) => changeHeight(e.target.value ? +e.target.value : undefined)} className="window-size-input" /><select value={draft.window_width && draft.window_height ? `${draft.window_width}x${draft.window_height}` : ""} onChange={(e) => { if (!e.target.value) return; const [w, h] = e.target.value.split("x").map(Number); set("window_width", w); set("window_height", h); applyTemporarySize(w, h); }} className="window-size-preset-select"><option value="">选择常用预设...</option><option value="800x600">800 × 600 (迷你紧凑)</option><option value="960x640">960 × 640 (精致比例)</option><option value="1024x720">1024 × 720 (默认标准)</option><option value="1120x760">1120 × 760 (舒适格局)</option><option value="1280x800">1280 × 800 (高效宽屏)</option><option value="1440x900">1440 × 900 (专业超宽)</option></select></div></SettingRow><Toggle label="自适应缩放" checked={draft.auto_scale_ui || false} onChange={(v) => set("auto_scale_ui", v)} /></div><p className="settings-note">使用 Windows 系统字体、中性色和单一强调色，不加载在线字体。</p></SettingsGroup>}
     {section === "advanced" && <SettingsGroup title="维护"><div className="maintenance"><button onClick={() => void api.clearHistory(false).then(() => notify("已清理取消的任务"))}>清理取消任务</button><button onClick={() => void api.clearHistory(true).then(() => notify("下载历史已清理"))}>清理完成和取消任务</button></div></SettingsGroup>}
