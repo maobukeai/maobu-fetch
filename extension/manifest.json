@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "LumaGet Browser Companion",
   "short_name": "LumaGet",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "安全地接管下载并将页面媒体发送到 LumaGet。",
   "permissions": ["contextMenus", "downloads", "storage", "tabs", "notifications"],
   "host_permissions": ["http://127.0.0.1:17433/*", "http://*/*", "https://*/*"],

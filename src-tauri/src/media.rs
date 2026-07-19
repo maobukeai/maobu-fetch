@@ -1,4 +1,7 @@
-use crate::{media_tools::tool_path, models::{DownloadTask, MediaFormat, MediaProbeResult, TaskStatus}};
+use crate::{
+    media_tools::tool_path,
+    models::{DownloadTask, MediaFormat, MediaProbeResult, TaskStatus},
+};
 use serde_json::Value;
 use std::path::PathBuf;
 use tauri::AppHandle;
@@ -10,8 +13,7 @@ pub async fn probe(app: &AppHandle, url: &str) -> Result<MediaProbeResult, Strin
     if !matches!(parsed.scheme(), "http" | "https") {
         return Err("媒体地址无效".into());
     }
-    let yt = tool_path(app, "yt-dlp.exe")
-        .ok_or("MEDIA_TOOLS_MISSING: 需要先安装媒体工具")?;
+    let yt = tool_path(app, "yt-dlp.exe").ok_or("MEDIA_TOOLS_MISSING: 需要先安装媒体工具")?;
     let output = Command::new(yt)
         .args(["--dump-single-json", "--no-playlist", "--no-warnings", url])
         .output()
@@ -95,8 +97,7 @@ pub async fn download(
     token: CancellationToken,
 ) -> Result<DownloadTask, String> {
     let media = task.media.clone().ok_or("缺少媒体格式")?;
-    let yt = tool_path(app, "yt-dlp.exe")
-        .ok_or("MEDIA_TOOLS_MISSING: 需要先安装媒体工具")?;
+    let yt = tool_path(app, "yt-dlp.exe").ok_or("MEDIA_TOOLS_MISSING: 需要先安装媒体工具")?;
     let ffmpeg = tool_path(app, "ffmpeg.exe");
     let output = PathBuf::from(&task.destination).join(&task.file_name);
     if let Some(parent) = output.parent() {

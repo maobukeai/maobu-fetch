@@ -166,10 +166,13 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
         .setup(|app| {
-            let data_dir = app
-                .path()
-                .app_data_dir()
-                .unwrap_or_else(|_| PathBuf::from("."));
+            let data_dir = std::env::var_os("LUMAGET_DATA_DIR")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| {
+                    app.path()
+                        .app_data_dir()
+                        .unwrap_or_else(|_| PathBuf::from("."))
+                });
             let store = Arc::new(Store::open(data_dir)?);
             let manager =
                 tauri::async_runtime::block_on(DownloadManager::new(store, app.handle().clone()))?;

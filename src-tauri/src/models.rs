@@ -71,6 +71,20 @@ pub struct DownloadTask {
     pub media: Option<MediaSelection>,
     pub per_task_speed_limit: u64,
     pub collision_policy: CollisionPolicy,
+    pub connection_count: u8,
+    #[serde(default)]
+    pub active_connections: u8,
+    #[serde(default)]
+    pub segments: Vec<DownloadSegment>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct DownloadSegment {
+    pub index: u8,
+    pub start_byte: u64,
+    pub end_byte: u64,
+    pub downloaded_bytes: u64,
+    pub status: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Default, PartialEq, Eq)]
@@ -109,6 +123,7 @@ pub struct NewTaskRequest {
     #[serde(default)]
     pub collision_policy: CollisionPolicy,
     pub media: Option<MediaSelection>,
+    pub connection_count: Option<u8>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -122,6 +137,7 @@ pub struct BatchTaskRequest {
     pub priority: i32,
     #[serde(default)]
     pub collision_policy: CollisionPolicy,
+    pub connection_count: Option<u8>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

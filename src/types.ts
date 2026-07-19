@@ -37,7 +37,12 @@ export interface DownloadTask {
   media?: MediaSelection;
   per_task_speed_limit: number;
   collision_policy: CollisionPolicy;
+  connection_count: number;
+  active_connections: number;
+  segments: DownloadSegment[];
 }
+
+export interface DownloadSegment { index: number; start_byte: number; end_byte: number; downloaded_bytes: number; status: string; }
 
 export interface NewTaskRequest {
   url: string;
@@ -51,6 +56,7 @@ export interface NewTaskRequest {
   per_task_speed_limit: number;
   collision_policy: CollisionPolicy;
   media?: MediaSelection;
+  connection_count?: number;
 }
 
 export interface AppSettings {

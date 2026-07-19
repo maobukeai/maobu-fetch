@@ -1,7 +1,7 @@
 use crate::{
     models::{
-        AppSettings, BatchTaskRequest, CollisionPolicy, DownloadTask, NewTaskRequest,
-        TaskProgressEvent, TaskStatus,
+        AppSettings, BatchTaskRequest, CollisionPolicy, DownloadSegment, DownloadTask,
+        NewTaskRequest, TaskProgressEvent, TaskStatus,
     },
     store::Store,
 };
@@ -126,6 +126,12 @@ impl DownloadManager {
             media: request.media,
             per_task_speed_limit: request.per_task_speed_limit,
             collision_policy: request.collision_policy,
+            connection_count: request
+                .connection_count
+                .unwrap_or(settings.connections_per_download)
+                .clamp(1, 16),
+            active_connections: 0,
+            segments: Vec::new(),
         };
         self.store.upsert_task(&task).await?;
         self.emit_task("created", &task);
@@ -155,6 +161,7 @@ impl DownloadManager {
                     per_task_speed_limit: 0,
                     collision_policy: request.collision_policy.clone(),
                     media: None,
+                    connection_count: request.connection_count,
                 })
                 .await?;
             tasks.push(task);
@@ -174,6 +181,12 @@ impl DownloadManager {
                 task.status = TaskStatus::Paused;
                 task.speed = 0;
                 task.eta_seconds = None;
+                task.active_connections = 0;
+                for segment in &mut task.segments {
+                    if segment.status == "downloading" {
+                        segment.status = "paused".into();
+                    }
+                }
             }
             "resume" | "retry" => {
                 if matches!(task.status, TaskStatus::Completed) && action == "resume" {
@@ -181,6 +194,7 @@ impl DownloadManager {
                 }
                 task.status = TaskStatus::Queued;
                 task.error = None;
+                task.active_connections = 0;
                 if action == "retry" {
                     task.retry_count = 0;
                 }
@@ -192,6 +206,12 @@ impl DownloadManager {
                 task.status = TaskStatus::Cancelled;
                 task.speed = 0;
                 task.eta_seconds = None;
+                task.active_connections = 0;
+                for segment in &mut task.segments {
+                    if segment.status == "downloading" {
+                        segment.status = "cancelled".into();
+                    }
+                }
             }
             _ => return Err("未知任务操作".into()),
         }
@@ -266,6 +286,12 @@ impl DownloadManager {
                 task.status = TaskStatus::Queued;
                 task.speed = 0;
                 task.eta_seconds = None;
+                task.active_connections = 0;
+                for segment in &mut task.segments {
+                    if segment.status == "downloading" {
+                        segment.status = "paused".into();
+                    }
+                }
                 self.store.upsert_task(&task).await?;
             }
         }
@@ -337,6 +363,10 @@ impl DownloadManager {
                         finished.completed_at = Some(now());
                         finished.speed = 0;
                         finished.eta_seconds = Some(0);
+                        finished.active_connections = 0;
+                        for segment in &mut finished.segments {
+                            segment.status = "completed".into();
+                        }
                         let settings = manager.settings().await;
                         if settings.verify_after_download || finished.expected_checksum.is_some() {
                             let _ = manager.store.upsert_task(&finished).await;
@@ -348,8 +378,12 @@ impl DownloadManager {
                         break;
                     }
                     Err(error) if attempt < task.max_retries => {
+                        if let Ok(Some(current)) = manager.store.get_task(&id).await {
+                            task = current;
+                        }
                         attempt += 1;
                         task.retry_count = attempt;
+                        task.active_connections = 0;
                         task.error = Some(format!("{}，将在稍后重试", error));
                         let _ = manager.store.upsert_task(&task).await;
                         manager.emit_task("updated", &task);
@@ -361,11 +395,20 @@ impl DownloadManager {
                         tokio::select! { _ = token.cancelled() => break, _ = tokio::time::sleep(Duration::from_secs(wait.min(60))) => {} }
                     }
                     Err(error) => {
+                        if let Ok(Some(current)) = manager.store.get_task(&id).await {
+                            task = current;
+                        }
                         task.status = TaskStatus::Failed;
                         task.error = Some(error);
                         task.speed = 0;
                         task.eta_seconds = None;
                         task.retry_count = attempt;
+                        task.active_connections = 0;
+                        for segment in &mut task.segments {
+                            if segment.status == "downloading" {
+                                segment.status = "failed".into();
+                            }
+                        }
                         let _ = manager.store.upsert_task(&task).await;
                         manager.emit_task("updated", &task);
                         break;
@@ -385,7 +428,6 @@ impl DownloadManager {
         if task.media.is_some() {
             return crate::media::download(&self.app, task, token).await;
         }
-        let settings = self.settings().await;
         let client = self.client.read().await.clone();
         let mut head = client.head(&task.url);
         for (name, value) in &task.headers {
@@ -430,7 +472,7 @@ impl DownloadManager {
             .get(ACCEPT_RANGES)
             .and_then(|v| v.to_str().ok())
             .is_some_and(|v| v.eq_ignore_ascii_case("bytes"));
-        let connections = settings.connections_per_download.clamp(1, 16);
+        let connections = task.connection_count.clamp(1, 16);
         let task_limiter = Arc::new(RateLimiter::new());
         if supports_range && total >= 4 * 1024 * 1024 && connections > 1 {
             task = self
@@ -445,6 +487,16 @@ impl DownloadManager {
                 )
                 .await?;
         } else {
+            task.active_connections = 1;
+            task.segments = vec![DownloadSegment {
+                index: 0,
+                start_byte: 0,
+                end_byte: total.saturating_sub(1),
+                downloaded_bytes: 0,
+                status: "downloading".into(),
+            }];
+            self.store.upsert_task(&task).await?;
+            self.emit_task("updated", &task);
             task = self
                 .download_stream(task, &client, &temp, token.clone(), task_limiter)
                 .await?;
@@ -491,6 +543,9 @@ impl DownloadManager {
             .await
             .map_err(|e| e.to_string())?;
         task.downloaded_bytes = if append { existing } else { 0 };
+        if let Some(segment) = task.segments.first_mut() {
+            segment.downloaded_bytes = task.downloaded_bytes;
+        }
         let mut stream = response.bytes_stream();
         let mut sample = ProgressSample::new(task.downloaded_bytes);
         while let Some(chunk) = stream.next().await {
@@ -503,6 +558,9 @@ impl DownloadManager {
                 .await;
             file.write_all(&chunk).await.map_err(|e| e.to_string())?;
             task.downloaded_bytes += chunk.len() as u64;
+            if let Some(segment) = task.segments.first_mut() {
+                segment.downloaded_bytes = task.downloaded_bytes;
+            }
             if sample.should_emit(task.downloaded_bytes) {
                 sample.apply(&mut task);
                 self.store.upsert_task(&task).await?;
@@ -510,6 +568,10 @@ impl DownloadManager {
             }
         }
         file.flush().await.map_err(|e| e.to_string())?;
+        task.active_connections = 0;
+        if let Some(segment) = task.segments.first_mut() {
+            segment.status = "completed".into();
+        }
         Ok(task)
     }
 
@@ -523,17 +585,12 @@ impl DownloadManager {
         token: CancellationToken,
         task_limiter: Arc<RateLimiter>,
     ) -> Result<DownloadTask, String> {
-        let size = total.div_ceil(connections as u64);
         let progress = Arc::new(Mutex::new(task.downloaded_bytes));
         let sample = Arc::new(Mutex::new(ProgressSample::new(task.downloaded_bytes)));
+        let segment_states = Arc::new(Mutex::new(Vec::<DownloadSegment>::new()));
         let mut jobs = futures_util::stream::FuturesUnordered::new();
         let mut initial = 0;
-        for index in 0..connections {
-            let start = index as u64 * size;
-            if start >= total {
-                continue;
-            };
-            let end = ((index as u64 + 1) * size - 1).min(total - 1);
+        for (index, start, end) in segment_ranges(total, connections) {
             let part = PathBuf::from(format!("{}.part{index}", temp.to_string_lossy()));
             let existing = fs::metadata(&part)
                 .await
@@ -542,6 +599,17 @@ impl DownloadManager {
                 .min(end - start + 1);
             initial += existing;
             let request_start = start + existing;
+            segment_states.lock().await.push(DownloadSegment {
+                index,
+                start_byte: start,
+                end_byte: end,
+                downloaded_bytes: existing,
+                status: if request_start > end {
+                    "completed".into()
+                } else {
+                    "downloading".into()
+                },
+            });
             if request_start > end {
                 continue;
             };
@@ -551,6 +619,7 @@ impl DownloadManager {
             let token = token.clone();
             let progress = progress.clone();
             let sample = sample.clone();
+            let segment_states = segment_states.clone();
             let limiter = task_limiter.clone();
             let global = self.global_limiter.clone();
             let global_limit = self.settings().await.speed_limit_kbps * 1024;
@@ -596,6 +665,17 @@ impl DownloadManager {
                     *value += chunk.len() as u64;
                     let current = *value;
                     drop(value);
+                    let mut states = segment_states.lock().await;
+                    if let Some(segment) = states.iter_mut().find(|segment| segment.index == index)
+                    {
+                        segment.downloaded_bytes += chunk.len() as u64;
+                    }
+                    snapshot.segments = states.clone();
+                    snapshot.active_connections = states
+                        .iter()
+                        .filter(|segment| segment.status == "downloading")
+                        .count() as u8;
+                    drop(states);
                     let mut s = sample.lock().await;
                     if s.should_emit(current) {
                         snapshot.downloaded_bytes = current;
@@ -611,14 +691,28 @@ impl DownloadManager {
                     }
                 }
                 file.flush().await.map_err(|e| e.to_string())?;
+                let mut states = segment_states.lock().await;
+                if let Some(segment) = states.iter_mut().find(|segment| segment.index == index) {
+                    segment.status = "completed".into();
+                }
                 Ok::<(), String>(())
             });
         }
         task.downloaded_bytes = initial;
+        task.segments = segment_states.lock().await.clone();
+        task.active_connections = task
+            .segments
+            .iter()
+            .filter(|segment| segment.status == "downloading")
+            .count() as u8;
+        self.store.upsert_task(&task).await?;
+        self.emit_task("updated", &task);
         *progress.lock().await = initial;
         while let Some(result) = jobs.next().await {
             result?
         }
+        task.segments = segment_states.lock().await.clone();
+        task.active_connections = 0;
         if token.is_cancelled() {
             return Err("任务已暂停".into());
         }
@@ -631,8 +725,18 @@ impl DownloadManager {
             .await
             .map_err(|e| e.to_string())?;
         let mut buffer = vec![0; 1024 * 1024];
-        for index in 0..connections {
+        for (index, start, end) in segment_ranges(total, connections) {
             let part = PathBuf::from(format!("{}.part{index}", temp.to_string_lossy()));
+            let actual = fs::metadata(&part).await.map_err(|e| e.to_string())?.len();
+            let expected = end - start + 1;
+            if actual != expected {
+                return Err(format!(
+                    "分段 #{} 大小不完整（应为 {} 字节，实际 {} 字节）",
+                    index + 1,
+                    expected,
+                    actual
+                ));
+            }
             let mut source = fs::File::open(&part).await.map_err(|e| e.to_string())?;
             loop {
                 let n = source.read(&mut buffer).await.map_err(|e| e.to_string())?;
@@ -725,6 +829,23 @@ impl ProgressSample {
         self.at = Instant::now();
         self.bytes = task.downloaded_bytes
     }
+}
+
+fn segment_ranges(total: u64, connections: u8) -> Vec<(u8, u64, u64)> {
+    if total == 0 {
+        return Vec::new();
+    }
+    let connections = connections.clamp(1, 16);
+    let size = total.div_ceil(connections as u64);
+    (0..connections)
+        .filter_map(|index| {
+            let start = index as u64 * size;
+            (start < total).then(|| {
+                let end = ((index as u64 + 1) * size - 1).min(total - 1);
+                (index, start, end)
+            })
+        })
+        .collect()
 }
 
 fn now() -> u64 {
@@ -882,5 +1003,29 @@ mod tests {
         let mut settings = AppSettings::default();
         settings.concurrent_downloads = 0;
         assert!(validate_settings(&settings).is_err())
+    }
+    #[test]
+    fn segment_layout_covers_file_exactly() {
+        let total = 10_000_003;
+        let ranges = segment_ranges(total, 8);
+        assert_eq!(ranges.len(), 8);
+        assert_eq!(ranges.first().map(|range| range.1), Some(0));
+        assert_eq!(ranges.last().map(|range| range.2), Some(total - 1));
+        for pair in ranges.windows(2) {
+            assert_eq!(pair[0].2 + 1, pair[1].1);
+        }
+        assert_eq!(
+            ranges
+                .iter()
+                .map(|(_, start, end)| end - start + 1)
+                .sum::<u64>(),
+            total
+        );
+    }
+
+    #[test]
+    fn segment_layout_never_creates_empty_ranges() {
+        let ranges = segment_ranges(3, 16);
+        assert_eq!(ranges, vec![(0, 0, 0), (1, 1, 1), (2, 2, 2)]);
     }
 }

@@ -8,7 +8,7 @@ const call = <T>(command: string, args?: Record<string, unknown>): Promise<T> =>
 export const api = {
   list: () => isDesktop() ? call<DownloadTask[]>("tasks_list") : Promise.resolve([]),
   add: (request: NewTaskRequest) => call<DownloadTask>("task_add", { request }),
-  addBatch: (urls: string[], template: Omit<NewTaskRequest, "url">) => call<DownloadTask[]>("tasks_add_batch", { request: { urls, destination: template.destination, headers: template.headers, scheduled_at: template.scheduled_at, priority: template.priority, collision_policy: template.collision_policy } }),
+  addBatch: (urls: string[], template: Omit<NewTaskRequest, "url">) => call<DownloadTask[]>("tasks_add_batch", { request: { urls, destination: template.destination, headers: template.headers, scheduled_at: template.scheduled_at, priority: template.priority, collision_policy: template.collision_policy, connection_count: template.connection_count } }),
   action: (id: string, action: string) => call<void>("task_action", { id, action }),
   bulkAction: (ids: string[], action: string) => call<void>("tasks_bulk_action", { ids, action }),
   remove: (id: string, deleteFile: boolean) => call<void>("task_remove", { id, deleteFile }),
