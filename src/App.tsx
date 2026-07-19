@@ -8,6 +8,7 @@ import {
   ShieldCheck, SlidersHorizontal, Trash2, Unplug, Video, X,
 } from "lucide-react";
 import { api, isDesktop } from "./api";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import type {
   AppSettings, CollisionPolicy, DownloadTask, FilterKey, MediaProbeResult,
   NewTaskRequest, PairingInfo, TaskStatus, ToolStatus,
@@ -37,6 +38,54 @@ const defaults: AppSettings = {
   max_retries: 3, retry_base_seconds: 2, verify_after_download: false,
   media_tool_auto_update: true,
 };
+
+function Titlebar() {
+  const [isMaximized, setIsMaximized] = useState(false);
+  const appWindow = useMemo(() => isDesktop() ? getCurrentWindow() : null, []);
+
+  useEffect(() => {
+    if (!appWindow) return;
+    void appWindow.isMaximized().then(setIsMaximized);
+    let unlisten: (() => void) | undefined;
+    appWindow.onResized(() => {
+      void appWindow.isMaximized().then(setIsMaximized);
+    }).then(fn => { unlisten = fn; });
+    return () => { if (unlisten) unlisten(); };
+  }, [appWindow]);
+
+  const handleMinimize = () => { void appWindow?.minimize(); };
+  const handleMaximize = () => {
+    if (!appWindow) return;
+    void appWindow.isMaximized().then(max => max ? appWindow.unmaximize() : appWindow.maximize());
+  };
+  const handleClose = () => { void appWindow?.close(); };
+
+  return (
+    <div className="window-titlebar" data-tauri-drag-region>
+      <div className="window-titlebar-title" data-tauri-drag-region>猫步下载器 · Maobu Fetch</div>
+      <div className="window-controls">
+        <button className="window-control-btn min" onClick={handleMinimize} title="最小化">
+          <svg width="10" height="1" viewBox="0 0 10 1"><rect width="10" height="1" fill="currentColor"/></svg>
+        </button>
+        <button className="window-control-btn max" onClick={handleMaximize} title={isMaximized ? "向下还原" : "最大化"}>
+          {isMaximized ? (
+            <svg width="10" height="10" viewBox="0 0 10 10">
+              <path d="M1.5,3.5 L1.5,8.5 L6.5,8.5 L6.5,3.5 Z" fill="none" stroke="currentColor" strokeWidth="1" />
+              <path d="M3.5,1.5 L8.5,1.5 L8.5,6.5" fill="none" stroke="currentColor" strokeWidth="1" />
+            </svg>
+          ) : (
+            <svg width="10" height="10" viewBox="0 0 10 10"><rect width="10" height="10" fill="none" stroke="currentColor" strokeWidth="1"/></svg>
+          )}
+        </button>
+        <button className="window-control-btn close" onClick={handleClose} title="关闭">
+          <svg width="10" height="10" viewBox="0 0 10 10">
+            <path d="M0,0 L10,10 M10,0 L0,10" stroke="currentColor" strokeWidth="1" />
+          </svg>
+        </button>
+      </div>
+    </div>
+  );
+}
 
 export default function App() {
   const [tasks, setTasks] = useState<DownloadTask[]>([]);
@@ -130,46 +179,58 @@ export default function App() {
     return () => window.removeEventListener("keydown", handler);
   }, [selected, tasks]);
 
-  if (settingsOpen) return <SettingsPage value={settings} onChange={setSettings} onClose={() => setSettingsOpen(false)} notify={notify} />;
+  const titlebar = isDesktop() ? <Titlebar /> : null;
+
+  if (settingsOpen) return (
+    <div className="app-container">
+      {titlebar}
+      <SettingsPage value={settings} onChange={setSettings} onClose={() => setSettingsOpen(false)} notify={notify} />
+    </div>
+  );
   const sectionTitle = [...nav, ...categories].find(([key]) => key === filter)?.[1] ?? "全部任务";
-  return <div className="app-frame">
-    <aside className="nav-pane">
-      <div className="brand"><div className="app-icon"><CatDownloadMark /></div><span><b>猫步下载器</b><small>Maobu Fetch</small></span></div>
-      <button className="new-button" onClick={() => setNewOpen(true)}><Plus size={15} />新建任务</button>
-      <div className="nav-scroll">
-        <p className="nav-label">任务</p>
-        {nav.map(([key, label, Icon]) => <button key={key} className={filter === key ? "nav-item active" : "nav-item"} onClick={() => setFilter(key)}><Icon size={15} /><span>{label}</span><small>{key === "all" ? tasks.length : tasks.filter((task) => task.status === key).length}</small></button>)}
-        <p className="nav-label">类型</p>
-        {categories.map(([key, label, Icon]) => <button key={key} className={filter === key ? "nav-item active" : "nav-item"} onClick={() => setFilter(key)}><Icon size={15} /><span>{label}</span><small>{tasks.filter((task) => task.category === key).length || ""}</small></button>)}
+  return (
+    <div className="app-container">
+      {titlebar}
+      <div className="app-frame">
+        <aside className="nav-pane">
+          <div className="brand"><div className="app-icon"><CatDownloadMark /></div><span><b>猫步下载器</b><small>Maobu Fetch</small></span></div>
+          <button className="new-button" onClick={() => setNewOpen(true)}><Plus size={15} />新建任务</button>
+          <div className="nav-scroll">
+            <p className="nav-label">任务</p>
+            {nav.map(([key, label, Icon]) => <button key={key} className={filter === key ? "nav-item active" : "nav-item"} onClick={() => setFilter(key)}><Icon size={15} /><span>{label}</span><small>{key === "all" ? tasks.length : tasks.filter((task) => task.status === key).length}</small></button>)}
+            <p className="nav-label">类型</p>
+            {categories.map(([key, label, Icon]) => <button key={key} className={filter === key ? "nav-item active" : "nav-item"} onClick={() => setFilter(key)}><Icon size={15} /><span>{label}</span><small>{tasks.filter((task) => task.category === key).length || ""}</small></button>)}
+          </div>
+          <button className="nav-settings" onClick={() => setSettingsOpen(true)}><Settings size={15} /><span>设置</span></button>
+        </aside>
+        <main className="workspace">
+          <header className="titlebar"><h1>{sectionTitle}</h1><label className="search-box"><Search size={14} /><input aria-label="搜索任务" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="搜索名称或网址" />{search && <button onClick={() => setSearch("")}><X size={13} /></button>}</label></header>
+          <div className="command-bar">
+            <button onClick={() => setNewOpen(true)}><Plus size={14} />新建</button><span className="separator" />
+            <button disabled={!selected.size} onClick={() => void bulk("resume")}><Play size={14} />开始</button>
+            <button disabled={!selected.size} onClick={() => void bulk("pause")}><Pause size={14} />暂停</button>
+            <button disabled={!selected.size} onClick={() => void removeSelected(false)}><Trash2 size={14} />删除</button>
+            <span className="separator" /><button disabled={!selectedOne || selectedOne.status !== "completed"} onClick={() => selectedOne && void api.openFile(selectedOne.id)}><ExternalLink size={14} />打开</button>
+            <button disabled={!selectedOne} onClick={() => selectedOne && void api.openFolder(selectedOne.id)}><FolderOpen size={14} />文件夹</button>
+            <span className="command-spacer" /><button onClick={() => setShowDetails((value) => !value)}>{showDetails ? <PanelRightClose size={15} /> : <PanelRightOpen size={15} />}</button>
+            <button onClick={() => void refresh()}><RefreshCw size={14} /></button>
+          </div>
+          {fatal && <div className="error-banner"><Unplug size={16} /><span>无法连接下载内核：{fatal}</span><button onClick={() => void refresh()}>重试</button></div>}
+          <section className={showDetails && selectedOne ? "content-grid details-on" : "content-grid"}>
+            <div className="task-list-panel" style={{ "--col-size": `${columnWidths.size}px`, "--col-status": `${columnWidths.status}px`, "--col-connection": `${columnWidths.connection}px`, "--col-progress": `${columnWidths.progress}px`, "--col-speed": `${columnWidths.speed}px`, "--col-eta": `${columnWidths.eta}px`, "--col-created": `${columnWidths.created}px` } as CSSProperties}><div className="task-grid">
+              <div className="table-header"><label><input type="checkbox" aria-label="全选" checked={visible.length > 0 && visible.every((task) => selected.has(task.id))} onChange={() => setSelected(visible.every((task) => selected.has(task.id)) ? new Set() : new Set(visible.map((task) => task.id)))} /></label>{[["file_name","文件名",""],["total_bytes","大小","size"],["status","状态","status"],["connection_count","连接","connection"],["downloaded_bytes","进度","progress"],["speed","速度","speed"],["eta_seconds","剩余时间","eta"],["created_at","添加时间","created"]].map(([key,label,widthKey]) => <span key={key} onClick={() => setSort((current) => ({ key: key as keyof DownloadTask, desc: current.key === key ? !current.desc : key === "created_at" }))}>{label}{widthKey && <i className="column-resizer" onMouseDown={(event) => beginResize(widthKey, event)} />}</span>)}<span /></div>
+              <div className="task-rows">{loading ? <div className="center-state"><LoaderCircle className="spin" /></div> : visible.length === 0 ? <EmptyState filter={filter} onAdd={() => setNewOpen(true)} /> : visible.map((task) => <TaskRow key={task.id} task={task} selected={selected.has(task.id)} onSelect={() => setSelected((current) => { const next = new Set(current); next.has(task.id) ? next.delete(task.id) : next.add(task.id); return next; })} onOpen={() => task.status === "completed" && void api.openFile(task.id)} onContext={(event) => { event.preventDefault(); setContext({ x: event.clientX, y: event.clientY, id: task.id }); if (!selected.has(task.id)) setSelected(new Set([task.id])); }} />)}</div>
+            </div></div>
+            {showDetails && selectedOne && <Details task={selectedOne} onClose={() => setSelected(new Set())} notify={notify} />}
+          </section>
+          <footer className="status-bar"><span className={isDesktop() ? "online" : "offline"}>{isDesktop() ? "下载服务已连接" : "仅界面预览"}</span><span>{active.length} 个活动任务</span><span>↓ {formatBytes(totalSpeed)}/s</span><span className="status-spacer" /><span>并发 {settings.concurrent_downloads}</span><button onClick={() => setSettingsOpen(true)}><Gauge size={12} /> {settings.speed_limit_kbps ? `${settings.speed_limit_kbps} KB/s` : "不限速"}</button></footer>
+        </main>
+        {newOpen && <NewTaskDialog settings={settings} onClose={() => setNewOpen(false)} onCreated={(count) => { setNewOpen(false); notify(`已添加 ${count} 个任务`); }} />}
+        {context && <ContextMenu x={context.x} y={context.y} task={tasks.find((task) => task.id === context.id)!} close={() => setContext(undefined)} notify={notify} />}
+        {toast && <div className="toast"><span>{toast.kind === "ok" ? <Check size={14} /> : <AlertCircle size={14} />}</span>{toast.text}</div>}
       </div>
-      <button className="nav-settings" onClick={() => setSettingsOpen(true)}><Settings size={15} /><span>设置</span></button>
-    </aside>
-    <main className="workspace">
-      <header className="titlebar"><h1>{sectionTitle}</h1><label className="search-box"><Search size={14} /><input aria-label="搜索任务" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="搜索名称或网址" />{search && <button onClick={() => setSearch("")}><X size={13} /></button>}</label></header>
-      <div className="command-bar">
-        <button onClick={() => setNewOpen(true)}><Plus size={14} />新建</button><span className="separator" />
-        <button disabled={!selected.size} onClick={() => void bulk("resume")}><Play size={14} />开始</button>
-        <button disabled={!selected.size} onClick={() => void bulk("pause")}><Pause size={14} />暂停</button>
-        <button disabled={!selected.size} onClick={() => void removeSelected(false)}><Trash2 size={14} />删除</button>
-        <span className="separator" /><button disabled={!selectedOne || selectedOne.status !== "completed"} onClick={() => selectedOne && void api.openFile(selectedOne.id)}><ExternalLink size={14} />打开</button>
-        <button disabled={!selectedOne} onClick={() => selectedOne && void api.openFolder(selectedOne.id)}><FolderOpen size={14} />文件夹</button>
-        <span className="command-spacer" /><button onClick={() => setShowDetails((value) => !value)}>{showDetails ? <PanelRightClose size={15} /> : <PanelRightOpen size={15} />}</button>
-        <button onClick={() => void refresh()}><RefreshCw size={14} /></button>
-      </div>
-      {fatal && <div className="error-banner"><Unplug size={16} /><span>无法连接下载内核：{fatal}</span><button onClick={() => void refresh()}>重试</button></div>}
-      <section className={showDetails && selectedOne ? "content-grid details-on" : "content-grid"}>
-        <div className="task-list-panel" style={{ "--col-size": `${columnWidths.size}px`, "--col-status": `${columnWidths.status}px`, "--col-connection": `${columnWidths.connection}px`, "--col-progress": `${columnWidths.progress}px`, "--col-speed": `${columnWidths.speed}px`, "--col-eta": `${columnWidths.eta}px`, "--col-created": `${columnWidths.created}px` } as CSSProperties}><div className="task-grid">
-          <div className="table-header"><label><input type="checkbox" aria-label="全选" checked={visible.length > 0 && visible.every((task) => selected.has(task.id))} onChange={() => setSelected(visible.every((task) => selected.has(task.id)) ? new Set() : new Set(visible.map((task) => task.id)))} /></label>{[["file_name","文件名",""],["total_bytes","大小","size"],["status","状态","status"],["connection_count","连接","connection"],["downloaded_bytes","进度","progress"],["speed","速度","speed"],["eta_seconds","剩余时间","eta"],["created_at","添加时间","created"]].map(([key,label,widthKey]) => <span key={key} onClick={() => setSort((current) => ({ key: key as keyof DownloadTask, desc: current.key === key ? !current.desc : key === "created_at" }))}>{label}{widthKey && <i className="column-resizer" onMouseDown={(event) => beginResize(widthKey, event)} />}</span>)}<span /></div>
-          <div className="task-rows">{loading ? <div className="center-state"><LoaderCircle className="spin" /></div> : visible.length === 0 ? <EmptyState filter={filter} onAdd={() => setNewOpen(true)} /> : visible.map((task) => <TaskRow key={task.id} task={task} selected={selected.has(task.id)} onSelect={() => setSelected((current) => { const next = new Set(current); next.has(task.id) ? next.delete(task.id) : next.add(task.id); return next; })} onOpen={() => task.status === "completed" && void api.openFile(task.id)} onContext={(event) => { event.preventDefault(); setContext({ x: event.clientX, y: event.clientY, id: task.id }); if (!selected.has(task.id)) setSelected(new Set([task.id])); }} />)}</div>
-        </div></div>
-        {showDetails && selectedOne && <Details task={selectedOne} onClose={() => setSelected(new Set())} notify={notify} />}
-      </section>
-      <footer className="status-bar"><span className={isDesktop() ? "online" : "offline"}>{isDesktop() ? "下载服务已连接" : "仅界面预览"}</span><span>{active.length} 个活动任务</span><span>↓ {formatBytes(totalSpeed)}/s</span><span className="status-spacer" /><span>并发 {settings.concurrent_downloads}</span><button onClick={() => setSettingsOpen(true)}><Gauge size={12} /> {settings.speed_limit_kbps ? `${settings.speed_limit_kbps} KB/s` : "不限速"}</button></footer>
-    </main>
-    {newOpen && <NewTaskDialog settings={settings} onClose={() => setNewOpen(false)} onCreated={(count) => { setNewOpen(false); notify(`已添加 ${count} 个任务`); }} />}
-    {context && <ContextMenu x={context.x} y={context.y} task={tasks.find((task) => task.id === context.id)!} close={() => setContext(undefined)} notify={notify} />}
-    {toast && <div className="toast"><span>{toast.kind === "ok" ? <Check size={14} /> : <AlertCircle size={14} />}</span>{toast.text}</div>}
-  </div>;
+    </div>
+  );
 }
 
 function TaskRow({ task, selected, onSelect, onOpen, onContext }: { task: DownloadTask; selected: boolean; onSelect: () => void; onOpen: () => void; onContext: (event: MouseEvent) => void }) {
