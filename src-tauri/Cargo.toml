@@ -1,6 +1,6 @@
 [package]
 name = "maobu-fetch"
-version = "0.5.2"
+version = "0.5.3"
 description = "A clean-room open-source download manager"
 authors = ["Maobu Fetch contributors"]
 license = "MIT"

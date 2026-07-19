@@ -372,6 +372,8 @@ export default function App() {
       {titlebar}
       <SettingsPage value={settings} onChange={setSettings} onClose={() => setSettingsOpen(false)} notify={notify} />
       <WindowResizeHandles />
+      {toast && <div className="toast"><span>{toast.kind === "ok" ? <Check size={14} /> : <AlertCircle size={14} />}</span>{toast.text}</div>}
+      {showCloseConfirm && <CloseConfirmDialog onClose={() => setShowCloseConfirm(false)} onConfirm={handleCloseConfirm} />}
     </div>
   );
   const sectionTitle = [...nav, ...categories].find(([key]) => key === filter)?.[1] ?? "全部任务";
