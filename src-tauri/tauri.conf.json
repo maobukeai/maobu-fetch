@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "猋步下载器 · Maobu Fetch",
+        "title": "猫步下载器 · Maobu Fetch",
         "width": 1024,
         "height": 720,
         "minWidth": 780,
@@ -38,6 +38,13 @@
     ],
     "shortDescription": "Windows 原生效率型下载器",
     "longDescription": "支持可靠续传、队列调度、浏览器接管与媒体下载的开源 Windows 下载管理器",
+    "fileAssociations": [
+      {
+        "ext": ["maobu-task"],
+        "name": "MaobuFetch.Task",
+        "description": "猫步下载器任务导出文件"
+      }
+    ],
     "windows": {
       "webviewInstallMode": {
         "type": "downloadBootstrapper",
@@ -48,6 +55,13 @@
           "SimpChinese"
         ],
         "displayLanguageSelector": false
+      }
+    }
+  },
+  "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": ["maobu"]
       }
     }
   }

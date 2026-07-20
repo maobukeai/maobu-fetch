@@ -24,7 +24,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }
 tokio-util = "0.7"
-reqwest = { version = "0.12", features = ["stream", "rustls-tls"] }
+reqwest = { version = "0.12", features = ["stream", "rustls-tls", "socks"] }
 futures-util = "0.3"
 uuid = { version = "1", features = ["v4"] }
 url = "2"
@@ -42,3 +42,38 @@ fs2 = "0.4"
 tauri-plugin-dialog = "2"
 tauri-plugin-notification = "2"
 tauri-plugin-clipboard-manager = "2"
+# Task 29：deep-link 插件用于注册 maobu:// 协议、接收 maobu://add?url=... 深链。
+# Tauri 官方插件，MIT 许可，零额外运行时依赖。
+tauri-plugin-deep-link = "2"
+# 错误诊断系统（Task 3）：用于 redact_sensitive 中识别 Cookie/Authorization/代理密码/URL token 等敏感模式。
+# regex 是 reqwest/hyper 的间接依赖，体积可控、MIT 许可、维护良好。
+regex = "1"
+# Task 27 完整备份与恢复：勾选"包含认证信息"时使用 PBKDF2 (SHA-256, 100k 迭代) 派生密钥，
+# AES-256-GCM 加密整个 bundle JSON。两者均为 RustCrypto 维护，MIT/Apache-2.0 双许可，
+# 无额外运行时依赖；体积远小于引入一个完整加密框架。sha2/hmac/rand 已在依赖列表中复用。
+# pbkdf2 启用 `hmac` feature 以使用 `pbkdf2_hmac::<Sha256>` 简化 API。
+aes-gcm = "0.10"
+pbkdf2 = { version = "0.12", default-features = false, features = ["hmac"] }
+# 日志系统（Task 23）：按天滚动日志文件 + 脱敏中间件。
+# tracing 是 tokio/reqwest 的间接依赖；tracing-subscriber 与 tracing-appender
+# 是 tracing 生态官方组件，MIT 许可、零额外运行时依赖。
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "env-filter", "ansi"] }
+tracing-appender = "0.2"
+# Task 35：命令行接口。
+# pico-args 是轻量 CLI 解析库（<10KB，MIT 许可），不引入 clap 等大型依赖。
+# tauri-plugin-single-instance 用于防止多 GUI 实例并转发 CLI 参数到运行中的实例。
+pico-args = "0.5"
+tauri-plugin-single-instance = "2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Security_Cryptography",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Console",
+    "Win32_System_Memory",
+    "Win32_System_Threading",
+] }

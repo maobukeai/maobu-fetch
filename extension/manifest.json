@@ -6,7 +6,9 @@
   "description": "安全地接管下载并将页面媒体发送到猫步下载器。",
   "permissions": [
     "contextMenus",
+    "cookies",
     "downloads",
+    "scripting",
     "storage",
     "tabs",
     "notifications"
@@ -17,19 +19,19 @@
     "https://*/*"
   ],
   "background": {
-    "service_worker": "background.js",
+    "service_worker": "src/background.js",
     "type": "module"
   },
   "icons": {
-    "128": "icon128.png"
+    "128": "src/icon128.png"
   },
   "action": {
-    "default_popup": "popup.html",
+    "default_popup": "src/popup.html",
     "default_title": "猫步下载器",
-    "default_icon": "icon128.png"
+    "default_icon": "src/icon128.png"
   },
   "options_ui": {
-    "page": "options.html",
+    "page": "src/options.html",
     "open_in_tab": true
   },
   "content_scripts": [
@@ -39,9 +41,9 @@
         "https://*/*"
       ],
       "js": [
-        "content.js"
+        "src/content.js"
       ],
-      "run_at": "document_idle"
+      "run_at": "document_start"
     }
   ]
 }
