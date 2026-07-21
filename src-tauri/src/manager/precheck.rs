@@ -73,10 +73,29 @@ impl DownloadManager {
         }
     }
 
-    async fn do_precheck(&self, request: PrecheckRequest) -> Result<PrecheckResult, String> {
+    async fn do_precheck(&self, mut request: PrecheckRequest) -> Result<PrecheckResult, String> {
+        let extracted_url = crate::media_platforms::extract_url_from_share_text(&request.url)
+            .unwrap_or_else(|| request.url.clone());
+        let expanded_url = match crate::media_platforms::expand_short_url(&extracted_url).await {
+            Ok(u) => u,
+            Err(_) => extracted_url,
+        };
+        request.url = expanded_url;
+
         let parsed_url = Url::parse(&request.url).map_err(|_| "URL 格式无效".to_string())?;
         if !matches!(parsed_url.scheme(), "http" | "https") {
             return Err("仅支持 http/https 协议".to_string());
+        }
+
+        let is_douyin = crate::media_platforms::detect_platform(&request.url) == crate::media_platforms::MediaPlatform::Douyin
+            || request.url.contains("douyin.com")
+            || request.url.contains("iesdouyin.com");
+
+        if !request.headers.keys().any(|k| k.eq_ignore_ascii_case("user-agent")) {
+            request.headers.insert("User-Agent".to_string(), "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36".to_string());
+        }
+        if is_douyin && !request.headers.keys().any(|k| k.eq_ignore_ascii_case("referer")) {
+            request.headers.insert("Referer".to_string(), "https://www.douyin.com/".to_string());
         }
 
         let settings = self.settings.read().await.clone();
@@ -91,13 +110,38 @@ impl DownloadManager {
             .await
             .map_err(|e| format!("预检请求失败：{e}"))?;
 
-        let file_name = determine_filename(
+        let is_media_url = crate::media_platforms::detect_platform(&request.url) != crate::media_platforms::MediaPlatform::Unknown
+            || request.url.contains("douyin.com")
+            || request.url.contains("iesdouyin.com");
+
+        let mut file_name = determine_filename(
             request.suggested_filename.as_deref(),
             probe.content_disposition.as_deref(),
             &probe.final_url,
         );
 
-        let suggested = suggest_connections(probe.file_size, probe.accepts_ranges);
+        if is_media_url && request.suggested_filename.is_none() {
+            let cookie = request.headers.get("Cookie").map(|s| s.as_str());
+            let referer = request.headers.get("Referer").map(|s| s.as_str());
+            let user_agent = request.headers.get("User-Agent").map(|s| s.as_str());
+            if let Ok(probe_res) = crate::media::probe(&self.app, &settings, &request.url, cookie, referer, user_agent).await {
+                if !probe_res.title.trim().is_empty() {
+                    let raw_title = probe_res.title.clone();
+                    let cleaned = crate::manager::naming_template::sanitize_filename(&regex::Regex::new(r"#[^\s#.]+")
+                        .map(|re| re.replace_all(&raw_title, "").to_string())
+                        .unwrap_or_else(|_| raw_title.clone()));
+                    if !cleaned.trim().is_empty() {
+                        file_name = format!("{}.mp4", cleaned.trim());
+                    }
+                }
+            }
+        }
+
+        let suggested = if probe.file_size.is_none() && is_media_url {
+            settings.connections_per_download
+        } else {
+            suggest_connections(probe.file_size, probe.accepts_ranges)
+        };
         let supports_resume = probe.accepts_ranges && probe.file_size.is_some();
 
         let target_dir_clone = target_directory.clone();
@@ -302,13 +346,15 @@ async fn probe_endpoint(
                 let status = resp.status().as_u16();
                 if resp.status().is_success() || resp.status().is_redirection() {
                     (resp, false)
-                } else if status == 405 || status == 403 {
-                    // HEAD 返回 405/403：回退到 GET Range: bytes=0-0
-                    let get_resp =
-                        send_get_range_probe(client, &current_url, &headers, default_ua).await?;
-                    (get_resp, true)
                 } else {
-                    return Err(format!("服务器返回错误状态：{status}"));
+                    // HEAD 返回 405/403/404 或其他非 2xx/3xx 状态：回退到 GET Range: bytes=0-0
+                    if let Ok(get_resp) =
+                        send_get_range_probe(client, &current_url, &headers, default_ua).await
+                    {
+                        (get_resp, true)
+                    } else {
+                        return Err(format!("服务器返回错误状态：{status}"));
+                    }
                 }
             }
             Err(_) => {
@@ -520,21 +566,43 @@ fn determine_filename(
     content_disposition: Option<&str>,
     final_url: &str,
 ) -> String {
-    if let Some(name) = suggested {
+    let mut name = if let Some(name) = suggested {
         let trimmed = name.trim();
         if !trimmed.is_empty() {
-            return sanitize_filename(trimmed);
+            sanitize_filename(trimmed)
+        } else {
+            String::new()
+        }
+    } else {
+        String::new()
+    };
+
+    if name.is_empty() {
+        if let Some(cd) = content_disposition {
+            if let Some(cd_name) = parse_content_disposition_filename(cd) {
+                name = cd_name;
+            }
         }
     }
-    if let Some(cd) = content_disposition {
-        if let Some(name) = parse_content_disposition_filename(cd) {
-            return name;
+
+    if name.is_empty() {
+        if let Some(url_name) = extract_filename_from_url(final_url) {
+            name = url_name;
+        } else {
+            name = "download".to_string();
         }
     }
-    if let Some(name) = extract_filename_from_url(final_url) {
-        return name;
+
+    let is_media = crate::media_platforms::detect_platform(final_url) != crate::media_platforms::MediaPlatform::Unknown
+        || final_url.contains("douyinvod.com")
+        || final_url.contains("douyin.com")
+        || final_url.contains("iesdouyin.com");
+
+    if is_media && !name.contains('.') {
+        name = format!("{}.mp4", name);
     }
-    "download".to_string()
+
+    name
 }
 
 /// 从 URL 路径提取文件名（percent-decode 后）。

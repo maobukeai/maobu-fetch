@@ -1,4 +1,4 @@
-import { sendWithCurrentPageAuth } from "./auth-download.js";
+import { sendWithCurrentPageAuth, buildCookieHeader } from "./auth-download.js";
 
 const $ = (id) => document.getElementById(id);
 const [tab] = await chrome.tabs.query({ active: true, currentWindow: true }).catch(() => [null]);
@@ -124,6 +124,28 @@ const currentTabUrl = tab?.url || "";
 const isHttpTab = /^https?:/i.test(currentTabUrl);
 if (authDownloadSection && isHttpTab) {
   authDownloadSection.classList.remove("hidden");
+}
+
+// Automatically sync cookies to the desktop app when the popup opens on a supported domain
+if (isHttpTab) {
+  (async () => {
+    const domainsToSync = ["douyin.com", "tiktok.com", "bilibili.com", "weibo.com", "weibo.cn", "youtube.com", "twitter.com", "x.com"];
+    try {
+      const urlObj = new URL(currentTabUrl);
+      const hostname = urlObj.hostname.toLowerCase();
+      const matchedDomain = domainsToSync.find(d => hostname === d || hostname.endsWith("." + d));
+      if (matchedDomain) {
+        let baseDomain = matchedDomain;
+        if (baseDomain === "weibo.cn") baseDomain = "weibo.com";
+        if (baseDomain === "x.com") baseDomain = "twitter.com";
+        const cookies = await chrome.cookies.getAll({ url: currentTabUrl }).catch(() => []);
+        const cookieHeader = buildCookieHeader(cookies);
+        if (cookieHeader) {
+          await call({ type: "sync-cookies", domain: baseDomain, cookie: cookieHeader }).catch(() => {});
+        }
+      }
+    } catch {}
+  })();
 }
 if (useAuthDownloadEl) {
   useAuthDownloadEl.onclick = async () => {

@@ -181,6 +181,8 @@ pub struct MediaSelection {
     pub thumbnail: Option<String>,
     #[serde(default)]
     pub requires_ffmpeg: bool,
+    #[serde(default)]
+    pub url: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Default, PartialEq, Eq)]
@@ -678,6 +680,57 @@ pub struct AppSettings {
     /// 旧 JSON 缺失此字段时通过 serde 默认值安全回填到 false。
     #[serde(default)]
     pub user_resumed_after_metered: bool,
+    /// 快捷键映射设置。旧 JSON 缺失时通过 serde 默认 `None` 安全回填。
+    #[serde(default)]
+    pub shortcut_keys: Option<ShortcutKeys>,
+}
+
+/// 自定义快捷键设置（Task 21）。
+///
+/// 保存用户在设置中心修改的列表快捷键映射。
+/// 旧数据库/JSON 缺失此字段时由 serde 默认 `None` 安全回填，前端使用默认按键列表。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ShortcutKeys {
+    #[serde(default = "default_key_new_task")]
+    pub new_task: String,
+    #[serde(default = "default_key_select_all")]
+    pub select_all: String,
+    #[serde(default = "default_key_copy_url")]
+    pub copy_url: String,
+    #[serde(default = "default_key_open_folder")]
+    pub open_folder: String,
+    #[serde(default = "default_key_toggle_pause")]
+    pub toggle_pause: String,
+    #[serde(default = "default_key_rename_task")]
+    pub rename_task: String,
+    #[serde(default = "default_key_delete_task")]
+    pub delete_task: String,
+    #[serde(default = "default_key_delete_file")]
+    pub delete_file: String,
+}
+
+fn default_key_new_task() -> String { "Ctrl+N".into() }
+fn default_key_select_all() -> String { "Ctrl+A".into() }
+fn default_key_copy_url() -> String { "Ctrl+C".into() }
+fn default_key_open_folder() -> String { "Ctrl+O".into() }
+fn default_key_toggle_pause() -> String { "Space".into() }
+fn default_key_rename_task() -> String { "F2".into() }
+fn default_key_delete_task() -> String { "Delete".into() }
+fn default_key_delete_file() -> String { "Ctrl+D".into() }
+
+impl Default for ShortcutKeys {
+    fn default() -> Self {
+        Self {
+            new_task: default_key_new_task(),
+            select_all: default_key_select_all(),
+            copy_url: default_key_copy_url(),
+            open_folder: default_key_open_folder(),
+            toggle_pause: default_key_toggle_pause(),
+            rename_task: default_key_rename_task(),
+            delete_task: default_key_delete_task(),
+            delete_file: default_key_delete_file(),
+        }
+    }
 }
 
 /// Task 31：代理测试结果。
@@ -775,7 +828,7 @@ impl Default for AppSettings {
             auto_start: false,
             theme: "system".into(),
             accent_color: default_accent_color(),
-            frosted_glass: false,
+            frosted_glass: true,
             language: "zh-CN".into(),
             intercept_browser_downloads: true,
             min_file_size_mb: 1,
@@ -811,6 +864,7 @@ impl Default for AppSettings {
             pac_script_path: None,
             metered_auto_pause: default_metered_auto_pause(),
             user_resumed_after_metered: false,
+            shortcut_keys: Some(ShortcutKeys::default()),
         }
     }
 }
@@ -1006,6 +1060,8 @@ pub struct MediaFormat {
     /// 满足 AGENTS.md §2"新增序列化字段必须提供安全默认值"。
     #[serde(default)]
     pub image_url: Option<String>,
+    #[serde(default)]
+    pub url: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]

@@ -2,6 +2,7 @@ import { API, signedFetch, signedGet, compatFetch } from "./protocol.js";
 import { interceptBrowserDownload } from "./interceptor.js";
 import { bridgeMediaTask } from "./media-selection.js";
 import { requestPageWithTrackingFallback } from "./rules.js";
+import { buildCookieHeader } from "./auth-download.js";
 
 const defaults = { intercept: true, minSizeMb: 1, allowHosts: [], blockHosts: [], extensions: [], bypassUntil: 0 };
 const config = async () => ({ ...defaults, ...(await chrome.storage.local.get(Object.keys(defaults))) });
@@ -163,11 +164,89 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
       if (!response.ok) throw new Error(await response.text() || `HTTP ${response.status}`);
       return { ok: true, result: await response.json() };
     }
+    if (message.type === "sync-cookies") {
+      const response = await signedFetch("/v1/media/credentials/sync", {
+        domain: message.domain,
+        cookie: message.cookie
+      });
+      if (!response.ok) throw new Error(await response.text() || `HTTP ${response.status}`);
+      return { ok: true };
+    }
     return { ok: false, error: "未知请求" };
   })().then(respond).catch((error) => respond({ ok: false, error: error.message || String(error) }));
   return true;
 });
 
+const domainsToSync = ["douyin.com", "tiktok.com", "bilibili.com", "weibo.com", "weibo.cn", "youtube.com", "twitter.com", "x.com"];
+const lastSyncTimes = {};
+
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  if (changeInfo.status === "complete" && tab.url) {
+    try {
+      const url = new URL(tab.url);
+      const hostname = url.hostname.toLowerCase();
+      const matchedDomain = domainsToSync.find(d => hostname === d || hostname.endsWith("." + d));
+      if (matchedDomain) {
+        let baseDomain = matchedDomain;
+        if (baseDomain === "weibo.cn") baseDomain = "weibo.com";
+        if (baseDomain === "x.com") baseDomain = "twitter.com";
+
+        const now = Date.now();
+        const lastSync = lastSyncTimes[baseDomain] || 0;
+        if (now - lastSync > 5 * 60 * 1000) {
+          lastSyncTimes[baseDomain] = now;
+          syncCookiesForDomain(baseDomain, tab.url);
+        }
+      }
+    } catch (e) {
+      console.error("Tab update error:", e);
+    }
+  }
+});
+
+async function syncCookiesForDomain(domain, url) {
+  try {
+    const stored = await chrome.storage.local.get("bridgeToken");
+    if (!stored.bridgeToken) return;
+    const cookies = await chrome.cookies.getAll({ url });
+    if (!cookies || cookies.length === 0) return;
+    const cookieHeader = buildCookieHeader(cookies);
+    if (!cookieHeader) return;
+
+    await signedFetch("/v1/media/credentials/sync", {
+      domain,
+      cookie: cookieHeader
+    });
+  } catch (err) {
+    console.error(`Failed to sync cookies for ${domain}:`, err);
+  }
+}
+
 function notify(title, message) {
   chrome.notifications.create({ type: "basic", iconUrl: "icon128.png", title, message });
 }
+
+async function syncAllOpenTabs() {
+  try {
+    const tabs = await chrome.tabs.query({});
+    for (const tab of tabs) {
+      if (!tab.url) continue;
+      try {
+        const url = new URL(tab.url);
+        const hostname = url.hostname.toLowerCase();
+        const matchedDomain = domainsToSync.find(d => hostname === d || hostname.endsWith("." + d));
+        if (matchedDomain) {
+          let baseDomain = matchedDomain;
+          if (baseDomain === "weibo.cn") baseDomain = "weibo.com";
+          if (baseDomain === "x.com") baseDomain = "twitter.com";
+          await syncCookiesForDomain(baseDomain, tab.url);
+        }
+      } catch {}
+    }
+  } catch (err) {
+    console.error("Failed to query open tabs on startup:", err);
+  }
+}
+
+// Call on startup
+syncAllOpenTabs().catch(() => {});

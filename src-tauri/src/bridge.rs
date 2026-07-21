@@ -113,6 +113,12 @@ struct ProbeRequest {
     user_agent: Option<String>,
 }
 
+#[derive(Deserialize)]
+struct MediaCredentialSyncRequest {
+    domain: String,
+    cookie: String,
+}
+
 /// `/v1/tasks/recent` 单条任务摘要（SubTask 13.1）。
 ///
 /// 仅暴露扩展弹窗需要的最小字段集，不包含 destination、headers、media 等敏感
@@ -164,6 +170,7 @@ pub async fn run(manager: SharedManager, pairing: PairingService, app: AppHandle
         .route("/v1/tasks/recent", get(recent_tasks))
         .route("/v1/tasks/{id}/action", post(task_action))
         .route("/v1/media/probe", post(probe_media))
+        .route("/v1/media/credentials/sync", post(sync_media_credentials))
         .with_state(state);
     if let Ok(listener) = tokio::net::TcpListener::bind("127.0.0.1:17433").await {
         let _ = axum::serve(listener, router).await;
@@ -322,6 +329,61 @@ async fn probe_media(
     .map(Json)
     .map_err(|e| (StatusCode::BAD_REQUEST, e))
 }
+
+async fn sync_media_credentials(
+    State(state): State<BridgeState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    authorize(&state, &headers, &body).await?;
+    let req: MediaCredentialSyncRequest = serde_json::from_slice(&body)
+        .map_err(|_| (StatusCode::BAD_REQUEST, "参数无效".into()))?;
+
+    let domain = req.domain.trim().to_lowercase();
+    if domain.is_empty() {
+        return Err((StatusCode::BAD_REQUEST, "域名不能为空".into()));
+    }
+
+    let supported = [
+        "douyin.com",
+        "tiktok.com",
+        "bilibili.com",
+        "weibo.com",
+        "weibo.cn",
+        "youtube.com",
+        "twitter.com",
+        "x.com",
+    ];
+    let is_supported = supported
+        .iter()
+        .any(|&d| domain == d || domain.ends_with(&format!(".{}", d)));
+    if !is_supported {
+        return Err((StatusCode::BAD_REQUEST, "不支持的媒体域名".into()));
+    }
+
+    let mut cred = crate::models::MediaCredential {
+        domain: domain.clone(),
+        cookie: req.cookie,
+        referer: None,
+        user_agent: None,
+        updated_at: crate::now_iso8601_utc(),
+    };
+
+    if let Ok(Some(existing)) = state.manager.store.media_credential_get_matching(&domain).await {
+        cred.referer = existing.referer;
+        cred.user_agent = existing.user_agent;
+    }
+
+    state
+        .manager
+        .store
+        .media_credential_upsert(cred)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+
+    Ok(StatusCode::OK)
+}
+
 
 async fn authorize(
     state: &BridgeState,

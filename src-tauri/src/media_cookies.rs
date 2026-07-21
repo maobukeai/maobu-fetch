@@ -150,6 +150,27 @@ impl Drop for CookieFileGuard {
 /// 返回 `CookieFileGuard`，drop 时自动删除文件。
 ///
 /// 失败时返回中文错误（不含文件路径）。
+fn normalize_cookie_domain(domain: &str) -> String {
+    let lower = domain.to_lowercase();
+    let platforms = [
+        ("douyin.com", ".douyin.com"),
+        ("iesdouyin.com", ".douyin.com"),
+        ("tiktok.com", ".tiktok.com"),
+        ("bilibili.com", ".bilibili.com"),
+        ("youtube.com", ".youtube.com"),
+        ("twitter.com", ".twitter.com"),
+        ("x.com", ".twitter.com"),
+        ("weibo.com", ".weibo.com"),
+        ("weibo.cn", ".weibo.cn"),
+    ];
+    for &(p, target) in &platforms {
+        if lower == p || lower.ends_with(&format!(".{}", p)) {
+            return target.to_string();
+        }
+    }
+    lower
+}
+
 pub(crate) async fn write_cookie_file_in_dir(
     base_dir: &Path,
     cookie: &str,
@@ -164,7 +185,8 @@ pub(crate) async fn write_cookie_file_in_dir(
     let (domain, is_https) = extract_host_and_scheme(target_url)
         .or_else(|| extract_host_and_scheme(url))
         .ok_or_else(|| "无法从 URL 或 Referer 解析域名".to_string())?;
-    let content = build_netscape_content(&pairs, &domain, is_https);
+    let normalized = normalize_cookie_domain(&domain);
+    let content = build_netscape_content(&pairs, &normalized, is_https);
 
     tokio::fs::create_dir_all(base_dir)
         .await

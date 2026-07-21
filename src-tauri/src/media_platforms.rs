@@ -114,8 +114,10 @@ pub fn detect_platform(url: &str) -> MediaPlatform {
         || host == "douyin.com"
         || host == "iesdouyin.com"
         || host == "www.iesdouyin.com"
+        || host == "douyinvod.com"
         || host.ends_with(".douyin.com")
         || host.ends_with(".iesdouyin.com")
+        || host.ends_with(".douyinvod.com")
     {
         return MediaPlatform::Douyin;
     }
@@ -275,9 +277,26 @@ pub async fn expand_short_url(url: &str) -> Result<String, String> {
         .send()
         .await
         .map_err(|e| format!("短链解析失败：{e}"))?;
-    let final_url = response.url().to_string();
+    let mut final_url = response.url().to_string();
     if final_url.is_empty() {
         return Err("短链解析失败：未返回最终地址".into());
+    }
+    if final_url.contains("iesdouyin.com/share/video/") {
+        if let Some(re) = Regex::new(r"/share/video/(\d+)").ok() {
+            if let Some(caps) = re.captures(&final_url) {
+                if let Some(id) = caps.get(1) {
+                    final_url = format!("https://www.douyin.com/video/{}", id.as_str());
+                }
+            }
+        }
+    } else if final_url.contains("iesdouyin.com/share/note/") {
+        if let Some(re) = Regex::new(r"/share/note/(\d+)").ok() {
+            if let Some(caps) = re.captures(&final_url) {
+                if let Some(id) = caps.get(1) {
+                    final_url = format!("https://www.douyin.com/note/{}", id.as_str());
+                }
+            }
+        }
     }
     Ok(final_url)
 }

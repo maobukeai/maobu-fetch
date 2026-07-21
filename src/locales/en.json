@@ -96,6 +96,7 @@
   "status": {
     "queued": "Queued",
     "downloading": "Downloading",
+    "parsing": "Parsing",
     "paused": "Paused",
     "completed": "Completed",
     "failed": "Failed",
@@ -157,6 +158,7 @@
     "tabPrecheck": "Precheck Result",
     "tabConnections": "Connections",
     "moreInfo": "More Info",
+    "saveAsTemplate": "Save as Template",
     "status": "Status",
     "size": "Size",
     "speed": "Speed",
@@ -288,10 +290,14 @@
     "sectionFilenameCleanup": "Filename Cleanup",
     "sectionNamingTemplate": "Platform Naming Templates",
     "sectionPresets": "Download Presets",
+    "sectionTemplates": "Templates & Intercept",
     "sectionTags": "Tags",
+    "sectionCredentials": "Media Credentials",
     "sectionAppearance": "Appearance",
+    "sectionShortcuts": "Shortcuts",
     "sectionAdvanced": "Advanced",
     "sectionAbout": "About",
+    "returnHome": "Return to Main Page",
     "groupAppBehavior": "App Behavior",
     "groupNotifications": "Notifications and Sounds",
     "groupHistoryArchive": "History Archive",
@@ -309,7 +315,7 @@
     "groupLogs": "Logs",
     "groupMaintenance": "Maintenance",
     "groupLanguage": "Language",
-    "groupAboutMaobu": "About Maobu Fetch",
+    "groupAboutMaobu": "Software Information",
     "languageLabel": "Interface language",
     "languageZhCN": "Simplified Chinese",
     "languageEn": "English",
@@ -494,5 +500,21 @@
   },
   "errors": {
     "runDesktopApp": "Please run the Maobu Fetch desktop app"
+  },
+  "shortcuts": {
+    "title": "Shortcuts Settings",
+    "desc": "Use keyboard shortcuts in the task list for efficient management. Click a key box and press a new key combination to record; shortcuts automatically pause when input fields are focused to prevent accidental triggers.",
+    "resetDefaults": "Restore Default Shortcuts",
+    "resetDefaultsSuccess": "Default shortcuts restored",
+    "conflictWarning": "Shortcut conflict detected: {keys}",
+    "recordingHint": "Press key combination...",
+    "actionNewTask": "New Task",
+    "actionSelectAll": "Select All / Deselect All",
+    "actionCopyUrl": "Copy Source URL",
+    "actionOpenFolder": "Open Directory",
+    "actionTogglePause": "Pause / Resume Task",
+    "actionRenameTask": "Rename Task",
+    "actionDeleteTask": "Delete Task Record",
+    "actionDeleteFile": "Delete Task & File"
   }
 }

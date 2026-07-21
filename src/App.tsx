@@ -2,10 +2,10 @@ import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, 
 import { open as pickPath, save as savePath } from "@tauri-apps/plugin-dialog";
 import { open as openUrl } from "@tauri-apps/plugin-shell";
 import {
-  AlertCircle, AlertTriangle, Archive, Bookmark, Check, CheckCircle2, ChevronDown, ChevronUp, ChevronsDown, ChevronsUp, CirclePause, Clock, Copy,
+  AlertCircle, AlertTriangle, Archive, ArrowLeft, Bookmark, Check, CheckCircle2, ChevronDown, ChevronUp, ChevronsDown, ChevronsUp, CirclePause, Clock, Copy,
   Download, ExternalLink, File, FileAudio, FileImage, FileText, Film, FolderOpen,
   Gauge, Globe2, Info, ListFilter, LoaderCircle, MonitorDown, MoreHorizontal, Network,
-  PanelRightClose, PanelRightOpen, Pause, Play, Plus, RefreshCw, Save, Search, Settings,
+  PanelRightClose, PanelRightOpen, Pause, Play, Plus, RefreshCw, RotateCcw, Save, Search, Settings, Keyboard,
   ShieldCheck, SlidersHorizontal, Sparkles, Tag as TagIcon, Trash2, Unplug, Video, X, Zap,
 } from "lucide-react";
 import { api, isDesktop } from "./api";
@@ -17,7 +17,7 @@ import { LogicalSize } from "@tauri-apps/api/dpi";
 import type {
   AdvancedFilter, AppInfo, AppSettings, BackoffStrategy, CategoryRule, CategoryRuleType, CollisionPolicy, ColorScheme, CompletionAction, ConnectionState, DeepLinkReceivedPayload, DownloadPreset, DownloadTask, DuplicateCheckResult, DuplicateMatch, DuplicateType, ExtensionCompatibilityResult, FilenameCleanupRule, FilterKey, MediaCredential, MediaFormat, MediaPlatform, MediaProbeResult, MeteredNetworkDetectedPayload,
   NewTaskRequest, PairingInfo, PlatformCompatibility, PlatformNamingTemplate, PowerAction, PowerActionState, PrecheckResult, ProxyAuth, QuickView, RestorePreview, RetryPolicy, SegmentStatus, SelfcheckReport, Tag,
-  TaskConnectionsEvent, TaskNotificationPayload, TaskStatus, TaskTagsMap, TaskTemplate, TaskTemplateTestResult, ToolComponent, ToolStatus, UpdateCheckResult, UrlHistoryEntry, WaitReason,
+  TaskConnectionsEvent, TaskNotificationPayload, TaskStatus, TaskTagsMap, TaskTemplate, TaskTemplateTestResult, ToolComponent, ToolStatus, UpdateCheckResult, UrlHistoryEntry, WaitReason, ShortcutKeys,
 } from "./types";
 import {
   completionActionKind,
@@ -40,6 +40,42 @@ import { BackupRestoreModal } from "./components/BackupRestoreModal";
 import { t, setLocale, useLocale } from "./i18n";
 import { reorderTaskIdsWithinPriority, TASK_PRIORITY_PRESETS } from "./priority";
 
+export function parseShortcutEvent(event: KeyboardEvent): string {
+  const parts: string[] = [];
+  if (event.ctrlKey || event.metaKey) parts.push("Ctrl");
+  if (event.shiftKey) parts.push("Shift");
+  if (event.altKey) parts.push("Alt");
+
+  const key = event.key;
+  if (["Control", "Shift", "Alt", "Meta"].includes(key)) {
+    return parts.join("+");
+  }
+
+  let keyName = key;
+  if (event.code === "Space" || key === " ") keyName = "Space";
+  else if (key.length === 1) keyName = key.toUpperCase();
+
+  parts.push(keyName);
+  return parts.join("+");
+}
+
+export function matchesShortcut(event: KeyboardEvent, targetStr?: string): boolean {
+  if (!targetStr) return false;
+  const current = parseShortcutEvent(event);
+  return current.toLowerCase() === targetStr.toLowerCase();
+}
+
+export const DEFAULT_SHORTCUTS: ShortcutKeys = {
+  new_task: "Ctrl+N",
+  select_all: "Ctrl+A",
+  copy_url: "Ctrl+C",
+  open_folder: "Ctrl+O",
+  toggle_pause: "Space",
+  rename_task: "F2",
+  delete_task: "Delete",
+  delete_file: "Ctrl+D",
+};
+
 /** Task 16: 任务优先级上下限与步长。语义：数字越小越优先。 */
 const MIN_PRIORITY = -1000;
 const MAX_PRIORITY = 1000;
@@ -47,17 +83,18 @@ const PRIORITY_STEP = 10;
 /** 将 priority clamp 到合法范围。 */
 const clampPriority = (value: number): number => Math.max(MIN_PRIORITY, Math.min(MAX_PRIORITY, value));
 
-const statusText: Record<TaskStatus, string> = {
-  queued: "等待中", downloading: "下载中", paused: "已暂停", completed: "已完成",
+const statusText: Record<TaskStatus | "parsing", string> = {
+  queued: "等待中", downloading: "下载中", parsing: "解析中", paused: "已暂停", completed: "已完成",
   failed: "失败", cancelled: "已取消", scheduled: "已计划", verifying: "校验中", "waiting-network": "等待网络",
   "remote-changed": "远端已变化", interrupted: "已中断", "paused-by-low-disk": "磁盘空间不足已暂停",
   "paused-by-metered": "计量网络已暂停",
 };
 /** Task 33: 按当前 locale 返回任务状态文案。在组件渲染时调用以响应语言切换。 */
-function getStatusText(): Record<TaskStatus, string> {
+function getStatusText(): Record<TaskStatus | "parsing", string> {
   return {
     queued: t("status.queued"),
     downloading: t("status.downloading"),
+    parsing: t("status.parsing"),
     paused: t("status.paused"),
     completed: t("status.completed"),
     failed: t("status.failed"),
@@ -159,6 +196,7 @@ const defaults: AppSettings = {
   pac_script_path: null,
   metered_auto_pause: true,
   user_resumed_after_metered: false,
+  shortcut_keys: DEFAULT_SHORTCUTS,
 };
 const defaultPowerActionState: PowerActionState = { action: "none", phase: "idle", remaining_seconds: 0, target_count: 0 };
 
@@ -359,10 +397,10 @@ export default function App() {
   // Task 24: 主列表 / 历史视图切换。history 默认按"已完成"筛选。
   const [view, setView] = useState<"main" | "history">("main");
   const [historyStatusFilter, setHistoryStatusFilter] = useState<TaskStatus | "all">("all");
-  const [clearHistoryDialog, setClearHistoryDialog] = useState<null | "choose" | "force">(null);
   const [powerAction, setPowerAction] = useState(defaultPowerActionState);
   const [sort, setSort] = useState<{ key: keyof DownloadTask; desc: boolean }>({ key: "queue_position", desc: false });
   const [selected, setSelected] = useState(new Set<string>());
+  const [primaryTaskId, setPrimaryTaskId] = useState<string | undefined>(undefined);
   const [showDetails, setShowDetails] = useState(false);
   const [newOpen, setNewOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -398,6 +436,53 @@ export default function App() {
   const [advancedFilter, setAdvancedFilter] = useState<AdvancedFilter>(EMPTY_ADVANCED_FILTER);
   const [advancedFilterOpen, setAdvancedFilterOpen] = useState(false);
   const [quickViews, setQuickViews] = useState<QuickView[]>([]);
+
+  // Drag-to-select checkbox batch selection implementation
+  const isDraggingSelection = useRef(false);
+  const targetCheckedState = useRef(true);
+
+  useEffect(() => {
+    const resetDrag = () => {
+      isDraggingSelection.current = false;
+    };
+    window.addEventListener("mouseup", resetDrag);
+    window.addEventListener("blur", resetDrag);
+    document.addEventListener("mouseleave", resetDrag);
+    return () => {
+      window.removeEventListener("mouseup", resetDrag);
+      window.removeEventListener("blur", resetDrag);
+      document.removeEventListener("mouseleave", resetDrag);
+    };
+  }, []);
+
+  const handleCheckboxMouseDown = (taskId: string, isChecked: boolean, event: React.MouseEvent) => {
+    if (event.button !== 0) return;
+    isDraggingSelection.current = true;
+    targetCheckedState.current = !isChecked;
+    setPrimaryTaskId(taskId);
+    setSelected((current) => {
+      const next = new Set(current);
+      if (targetCheckedState.current) {
+        next.add(taskId);
+      } else {
+        next.delete(taskId);
+      }
+      return next;
+    });
+  };
+
+  const handleCheckboxMouseEnter = (taskId: string) => {
+    if (!isDraggingSelection.current) return;
+    setSelected((current) => {
+      const next = new Set(current);
+      if (targetCheckedState.current) {
+        next.add(taskId);
+      } else {
+        next.delete(taskId);
+      }
+      return next;
+    });
+  };
 
   const refresh = async () => {
     try {
@@ -678,13 +763,17 @@ export default function App() {
         const text = await readText();
         if (text && text !== lastText) {
           lastText = text;
-          if (isDownloadableUrl(text)) {
-            setInitialUrlFromClipboard(text.trim());
-            setNewOpen(true);
-            if (appWindow) {
-              await appWindow.show();
-              await appWindow.unminimize();
-              await appWindow.setFocus();
+          const match = text.match(/https?:\/\/[^\s<>"']+/i);
+          if (match) {
+            const url = match[0];
+            if (isDownloadableUrl(url)) {
+              setInitialUrlFromClipboard(url);
+              setNewOpen(true);
+              if (appWindow) {
+                await appWindow.show();
+                await appWindow.unminimize();
+                await appWindow.setFocus();
+              }
             }
           }
         }
@@ -766,13 +855,23 @@ export default function App() {
   }, [partitioned, view, filter, historyDate, search, sort, historyStatusFilter, advancedFilter, taskTags]);
   const selectedTasks = tasks.filter((task) => selected.has(task.id));
   const selectedOne = selectedTasks.length === 1 ? selectedTasks[0] : undefined;
+  const activeTask = useMemo(() => {
+    if (selected.size === 0) return undefined;
+    if (primaryTaskId && selected.has(primaryTaskId)) {
+      const found = tasks.find((t) => t.id === primaryTaskId);
+      if (found) return found;
+    }
+    return selectedTasks.length > 0 ? selectedTasks[selectedTasks.length - 1] : undefined;
+  }, [selected, primaryTaskId, tasks, selectedTasks]);
+
   useEffect(() => {
     const currentCount = selected.size;
-    const currentTaskId = selectedOne?.id;
+    const currentTaskId = activeTask?.id;
     const taskIdChanged = currentTaskId !== lastSelectedTaskId.current;
     if (currentCount === 0) {
       setShowDetails(false);
       skipAutoCollapseRef.current = false;
+      setPrimaryTaskId(undefined);
     } else if (taskIdChanged) {
       if (skipAutoCollapseRef.current) {
         // 用户已显式请求展开/折叠，保持其意图，本次切换不覆盖。
@@ -785,7 +884,7 @@ export default function App() {
     // 同一任务内增减选择（多选/取消多选）不重置 showDetails。
     lastSelectedCount.current = currentCount;
     lastSelectedTaskId.current = currentTaskId;
-  }, [selected, selectedOne, settings.detail_default_collapsed]);
+  }, [selected, activeTask, settings.detail_default_collapsed]);
   const active = tasks.filter((task) => task.status === "downloading");
   const totalSpeed = active.reduce((sum, task) => sum + task.speed, 0);
   const notify = (text: string, kind: "ok" | "error" = "ok") => setToast({ text, kind });
@@ -808,8 +907,14 @@ export default function App() {
     } catch (error) { notify(String(error), "error"); }
   };
   const bulk = async (action: string) => {
-    try { await api.bulkAction([...selected], action); notify(action === "pause" ? "已暂停所选任务" : "任务已加入队列"); }
-    catch (error) { notify(String(error), "error"); }
+    try {
+      const ids = action === "resume"
+        ? [...selected].filter((id) => { const t = tasks.find((task) => task.id === id); return t && !["completed", "cancelled"].includes(t.status); })
+        : [...selected];
+      if (ids.length === 0) return;
+      await api.bulkAction(ids, action);
+      notify(action === "pause" ? "已暂停所选任务" : "任务已加入队列");
+    } catch (error) { notify(String(error), "error"); }
   };
   const removeSelected = async (deleteFile: boolean) => {
     try {
@@ -912,40 +1017,40 @@ export default function App() {
   };
   const handleDeleteTasks = useCallback(async (taskIds: Set<string>, deleteFile: boolean) => {
     if (taskIds.size === 0) return;
+    const taskList = tasks.filter((t) => taskIds.has(t.id));
+    const hasIncomplete = taskList.some((t) => t.status !== "completed");
+    const succeeded: string[] = [];
     try {
-      const taskList = tasks.filter((t) => taskIds.has(t.id));
-      const hasIncomplete = taskList.some((t) => t.status !== "completed");
       for (const id of taskIds) {
         await api.remove(id, deleteFile);
+        succeeded.push(id);
       }
-      setSelected((prev) => {
-        const next = new Set(prev);
-        for (const id of taskIds) next.delete(id);
-        return next;
-      });
+      const count = succeeded.length;
       notify(
         deleteFile
-          ? taskIds.size === 1
-            ? "任务和文件已删除"
-            : `${taskIds.size} 个任务和文件已删除`
+          ? count === 1 ? "任务和文件已删除" : `${count} 个任务和文件已删除`
           : hasIncomplete
-          ? taskIds.size === 1
-            ? "任务及未完成文件已清理"
-            : `${taskIds.size} 个任务及未完成文件已清理`
-          : taskIds.size === 1
-          ? "任务记录已删除"
-          : `${taskIds.size} 个任务记录已删除`
+          ? count === 1 ? "任务及未完成文件已清理" : `${count} 个任务及未完成文件已清理`
+          : count === 1 ? "任务记录已删除" : `${count} 个任务记录已删除`
       );
     } catch (error) {
       notify(String(error), "error");
+    } finally {
+      if (succeeded.length > 0) {
+        setSelected((prev) => {
+          const next = new Set(prev);
+          for (const id of succeeded) next.delete(id);
+          return next;
+        });
+        setPrimaryTaskId((prev) => prev && succeeded.includes(prev) ? undefined : prev);
+      }
     }
   }, [notify, tasks]);
 
   // Task 21.1: 任务列表全局快捷键。
   // - 仅在主列表区域使用：当焦点在 input/textarea/contenteditable 时不触发，
-  //   避免劫持输入框内的 Ctrl+A（全选文本）、空格（输入空格）等默认行为。
-  // - Ctrl+N 仍然全局生效，但输入框聚焦时也不触发，与下面所有快捷键一致。
-  // - 不与浏览器默认快捷键冲突：Ctrl+A 在列表区域 preventDefault 后选当前筛选范围。
+  //   避免劫持输入框内的全选文本、空格等默认行为。
+  // - 支持从 settings.shortcut_keys 动态匹配绑定的快捷键组合。
   useEffect(() => {
     const isEditing = () => {
       const active = document.activeElement as HTMLElement | null;
@@ -955,23 +1060,31 @@ export default function App() {
     };
     const handler = (event: KeyboardEvent) => {
       // 弹窗打开时也不触发列表快捷键（避免与对话框内输入冲突）
-      if (newOpen || settingsOpen || renameTarget || speedLimitTarget || aboutOpen || showCloseConfirm || context || clearHistoryDialog) return;
+      if (newOpen || settingsOpen || renameTarget || speedLimitTarget || aboutOpen || showCloseConfirm || context) return;
       if (isEditing()) return;
-      const isCtrl = event.ctrlKey || event.metaKey;
-      const key = event.key;
-      const lower = key.toLowerCase();
 
-      // Ctrl+N：新建任务
-      if (isCtrl && lower === "n") { event.preventDefault(); setNewOpen(true); return; }
-      // Ctrl+A：全选当前筛选范围内的任务（不是全部任务）
-      if (isCtrl && lower === "a") {
-        if (visible.length === 0) return;
+      const keys = settings.shortcut_keys || DEFAULT_SHORTCUTS;
+
+      // 新建任务
+      if (matchesShortcut(event, keys.new_task)) {
         event.preventDefault();
-        setSelected(new Set(visible.map((task) => task.id)));
+        setNewOpen(true);
         return;
       }
-      // Ctrl+C：复制来源 URL（单选或多选都复制）
-      if (isCtrl && lower === "c") {
+      // 全选 / 取消全选（连续按两下在全选和清空之间切换）
+      if (matchesShortcut(event, keys.select_all)) {
+        if (visible.length === 0) return;
+        event.preventDefault();
+        const allSelected = visible.length > 0 && selected.size === visible.length && visible.every((t) => selected.has(t.id));
+        if (allSelected) {
+          setSelected(new Set());
+        } else {
+          setSelected(new Set(visible.map((task) => task.id)));
+        }
+        return;
+      }
+      // 复制来源 URL（单选或多选都复制）
+      if (matchesShortcut(event, keys.copy_url)) {
         if (selectedTasks.length === 0) return;
         event.preventDefault();
         const text = selectedTasks.map((task) => task.url).join("\n");
@@ -980,30 +1093,29 @@ export default function App() {
           .catch((error) => notify(`复制 URL 失败：${String(error)}`, "error"));
         return;
       }
-
-      // Ctrl+O：打开所在文件夹（仅单选 + Completed 状态）
-      if (isCtrl && lower === "o") {
+      // 打开所在文件夹（仅单选 + Completed 状态）
+      if (matchesShortcut(event, keys.open_folder)) {
         if (!selectedOne || selectedOne.status !== "completed") return;
         event.preventDefault();
         void api.openFolder(selectedOne.id).catch((error) => notify(String(error), "error"));
         return;
       }
-      // Ctrl+D：删文件（连同本地文件一并删除）
-      if (isCtrl && lower === "d") {
+      // 删文件（连同本地文件一并删除）
+      if (matchesShortcut(event, keys.delete_file)) {
         if (selected.size === 0) return;
         event.preventDefault();
         void handleDeleteTasks(new Set(selected), true);
         return;
       }
-      // Delete：仅删除任务记录（无需确认）
-      if (key === "Delete") {
+      // 仅删除任务记录（无需确认）
+      if (matchesShortcut(event, keys.delete_task)) {
         if (selected.size === 0) return;
         event.preventDefault();
         void handleDeleteTasks(new Set(selected), false);
         return;
       }
-      // F2：重命名（仅单选 + Queued/Pending 状态，弹出重命名对话框）
-      if (key === "F2") {
+      // 重命名（仅单选 + Queued/Pending 状态，弹出重命名对话框）
+      if (matchesShortcut(event, keys.rename_task)) {
         if (!selectedOne) return;
         event.preventDefault();
         if (selectedOne.status !== "queued") {
@@ -1013,8 +1125,9 @@ export default function App() {
         setRenameTarget(selectedOne);
         return;
       }
-      // 空格：暂停/继续选中任务（单选时；多选时对全部生效）
-      if (event.code === "Space" && selected.size > 0 && !event.repeat) {
+      // 暂停/继续选中任务（单选时；多选时对全部生效）
+      if (matchesShortcut(event, keys.toggle_pause) && !event.repeat) {
+        if (selected.size === 0) return;
         event.preventDefault();
         const anyActive = tasks.some((task) => selected.has(task.id) && ["downloading", "waiting-network"].includes(task.status));
         void bulk(anyActive ? "pause" : "resume");
@@ -1023,14 +1136,14 @@ export default function App() {
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [selected, tasks, visible, selectedTasks, selectedOne, newOpen, settingsOpen, renameTarget, speedLimitTarget, aboutOpen, showCloseConfirm, context, clearHistoryDialog, view, handleDeleteTasks]);
+  }, [selected, tasks, visible, selectedTasks, selectedOne, newOpen, settingsOpen, renameTarget, speedLimitTarget, aboutOpen, showCloseConfirm, context, view, handleDeleteTasks, settings.shortcut_keys, notify, bulk]);
 
   const titlebar = isDesktop() ? <Titlebar /> : null;
 
   if (settingsOpen) return (
     <div className="app-container">
       {titlebar}
-      <SettingsPage value={settings} onChange={setSettings} onClose={() => setSettingsOpen(false)} notify={notify} />
+      <SettingsPage value={settings} onChange={setSettings} onClose={() => setSettingsOpen(false)} notify={notify} totalSpeed={totalSpeed} activeCount={active.length} />
       <WindowResizeHandles />
       {toast && <div className="toast"><span>{toast.kind === "ok" ? <Check size={14} /> : <AlertCircle size={14} />}</span>{toast.text}</div>}
       {showCloseConfirm && <CloseConfirmDialog onClose={() => setShowCloseConfirm(false)} onConfirm={handleCloseConfirm} />}
@@ -1050,7 +1163,7 @@ export default function App() {
           <button className="new-button" onClick={() => setNewOpen(true)}><Plus size={15} />{t("nav.newTask")}</button>
           <div className="nav-scroll">
             <p className="nav-label">{t("nav.tasks")}</p>
-            {getNav().map(([key, label, Icon]) => <button key={key} className={filter === key && view === "main" ? "nav-item active" : "nav-item"} onClick={() => { setView("main"); setFilter(key); }}><Icon size={14} /><span>{label}</span><small>{key === "all" ? partitioned.mainTasks.length : partitioned.mainTasks.filter((task) => task.status === key).length}</small></button>)}
+            {getNav().map(([key, label, Icon]) => <button key={key} className={filter === key && view === "main" ? "nav-item active" : "nav-item"} onClick={() => { setView("main"); setFilter(key); setSelected(new Set()); setPrimaryTaskId(undefined); }}><Icon size={14} /><span>{label}</span><small>{key === "all" ? partitioned.mainTasks.length : partitioned.mainTasks.filter((task) => task.status === key).length}</small></button>)}
             <p
               className="nav-label interactive"
               onClick={() => setCategoriesExpanded(!categoriesExpanded)}
@@ -1062,11 +1175,11 @@ export default function App() {
             </p>
             {categoriesExpanded && (
               <div className="nav-grid">
-                {getCategories().map(([key, label, Icon]) => <button key={key} className={filter === key && view === "main" ? "nav-item active" : "nav-item"} onClick={() => { setView("main"); setFilter(key); }}><Icon size={14} /><span>{label}</span><small>{partitioned.mainTasks.filter((task) => task.category === key).length || ""}</small></button>)}
+                {getCategories().map(([key, label, Icon]) => <button key={key} className={filter === key && view === "main" ? "nav-item active" : "nav-item"} onClick={() => { setView("main"); setFilter(key); setSelected(new Set()); setPrimaryTaskId(undefined); }}><Icon size={14} /><span>{label}</span><small>{partitioned.mainTasks.filter((task) => task.category === key).length || ""}</small></button>)}
               </div>
             )}
             <p className="nav-label">{t("nav.archive")}</p>
-            <button className={view === "history" ? "nav-item active" : "nav-item"} onClick={() => setView("history")} title={t("nav.historyArchive")}><Archive size={14} /><span>{t("nav.history")}</span><small>{partitioned.historyTasks.length || ""}</small></button>
+            <button className={view === "history" ? "nav-item active" : "nav-item"} onClick={() => { setView("history"); setSelected(new Set()); setPrimaryTaskId(undefined); }} title={t("nav.historyArchive")}><Archive size={14} /><span>{t("nav.history")}</span><small>{partitioned.historyTasks.length || ""}</small></button>
           </div>
           <div className="nav-footer">
             <button className="nav-settings" onClick={() => setSettingsOpen(true)}><Settings size={15} /><span>{t("nav.settings")}</span></button>
@@ -1110,7 +1223,7 @@ export default function App() {
                 <button
                   className="action-btn-standalone danger-action"
                   disabled={partitioned.historyTasks.length === 0}
-                  onClick={() => setClearHistoryDialog("choose")}
+                  onClick={() => void clearHistory(true)}
                   title={t("toolbar.clearHistory")}
                 ><Trash2 size={14} /></button>
               )}
@@ -1173,9 +1286,9 @@ export default function App() {
             >
               <div className="task-grid">
               <div className="table-header"><label><input type="checkbox" aria-label={t("toolbar.selectAll")} checked={visible.length > 0 && visible.every((task) => selected.has(task.id))} onChange={() => setSelected(visible.every((task) => selected.has(task.id)) ? new Set() : new Set(visible.map((task) => task.id)))} /></label>{[["file_name",t("table.fileName"),""],["total_bytes",t("table.size"),"size"],["status",t("table.status"),"status"],["connection_count",t("table.connection"),"connection"],["downloaded_bytes",t("table.progress"),"progress"],["speed",t("table.speed"),"speed"],["eta_seconds",t("table.eta"),"eta"],[showCompletedAt ? "completed_at" : "created_at",showCompletedAt ? t("table.completedAt") : t("table.createdAt"),"created"]].map(([key,label,widthKey]) => <span key={key} onClick={() => setSort((current) => ({ key: key as keyof DownloadTask, desc: current.key === key ? !current.desc : ["created_at", "completed_at"].includes(key) }))}>{label}{widthKey && <i className="column-resizer" onMouseDown={(event) => beginResize(widthKey, event)} />}</span>)}<span /></div>
-              <div className="task-rows">{loading ? <div className="center-state"><LoaderCircle className="spin" /></div> : visible.length === 0 ? <EmptyState filter={filter} view={view} onAdd={() => setNewOpen(true)} /> : visible.map((task) => <TaskRow key={task.id} task={task} showCompletedAt={showCompletedAt} taskTagList={taskTags[task.id] ?? []} selected={selected.has(task.id)} onSelect={() => setSelected((current) => { const next = new Set(current); next.has(task.id) ? next.delete(task.id) : next.add(task.id); return next; })} onOpen={() => task.status === "completed" && void api.openFile(task.id)} onContext={(event) => { event.preventDefault(); setContext({ x: event.clientX, y: event.clientY, id: task.id }); if (!selected.has(task.id)) setSelected(new Set([task.id])); }} onMouseDown={handleTaskMouseDown} />)}</div>
+              <div className="task-rows">{loading ? <div className="center-state"><LoaderCircle className="spin" /></div> : visible.length === 0 ? <EmptyState filter={filter} view={view} onAdd={() => setNewOpen(true)} /> : visible.map((task) => <TaskRow key={task.id} task={task} showCompletedAt={showCompletedAt} taskTagList={taskTags[task.id] ?? []} selected={selected.has(task.id)} onSelect={() => { setPrimaryTaskId(task.id); setSelected((current) => { const next = new Set(current); next.has(task.id) ? next.delete(task.id) : next.add(task.id); return next; }); }} onOpen={() => task.status === "completed" && void api.openFile(task.id)} onContext={(event) => { event.preventDefault(); setPrimaryTaskId(task.id); setContext({ x: event.clientX, y: event.clientY, id: task.id }); if (!selected.has(task.id)) setSelected(new Set([task.id])); }} onMouseDown={(taskItem, evt) => { setPrimaryTaskId(taskItem.id); handleTaskMouseDown(taskItem, evt); }} onCheckboxMouseDown={(evt) => handleCheckboxMouseDown(task.id, selected.has(task.id), evt)} onCheckboxMouseEnter={() => handleCheckboxMouseEnter(task.id)} />)}</div>
             </div></div>
-            {showDetails && <Details task={selectedOne} onClose={() => setShowDetails(false)} notify={notify} selectedCount={selected.size} onOpenProxySettings={() => { setSettingsOpen(true); }} onTagsChanged={refreshTags} />}
+            {showDetails && <Details task={activeTask} onClose={() => setShowDetails(false)} notify={notify} selectedCount={selected.size} onOpenProxySettings={() => { setSettingsOpen(true); }} onTagsChanged={refreshTags} />}
           </section>
         </main>
         {newOpen && <NewTaskDialog settings={settings} allTasks={tasks} onClose={() => { setNewOpen(false); setInitialUrlFromClipboard(""); }} onCreated={(created) => {
@@ -1201,10 +1314,20 @@ export default function App() {
               x={context.x}
               y={context.y}
               task={contextTask}
+              selectedTaskIds={selected}
+              allTasks={tasks}
               close={() => setContext(undefined)}
               notify={notify}
               onSetSpeedLimit={setSpeedLimitTarget}
               onDelete={(taskIds, deleteFile) => void handleDeleteTasks(taskIds, deleteFile)}
+              onViewDetails={() => {
+                setPrimaryTaskId(contextTask.id);
+                if (!selected.has(contextTask.id)) {
+                  setSelected(new Set([contextTask.id]));
+                }
+                requestShowDetails(true);
+                setContext(undefined);
+              }}
             />
           ) : null;
         })()}
@@ -1315,16 +1438,7 @@ export default function App() {
         )}
 
 
-        {clearHistoryDialog === "choose" && (
-          <ClearHistoryDialog
-            count={partitioned.historyTasks.length}
-            onCancel={() => setClearHistoryDialog(null)}
-            onConfirm={async (deleteFile) => {
-              await clearHistory(deleteFile);
-              setClearHistoryDialog(null);
-            }}
-          />
-        )}
+
         {renameTarget && (
           <RenameDialog
             task={renameTarget}
@@ -1357,7 +1471,22 @@ export default function App() {
   );
 }
 
-function TaskRow({ task, selected, showCompletedAt, taskTagList, onSelect, onOpen, onContext, onMouseDown }: { task: DownloadTask; selected: boolean; showCompletedAt: boolean; taskTagList: Tag[]; onSelect: () => void; onOpen: () => void; onContext: (event: MouseEvent) => void; onMouseDown: (task: DownloadTask, event: React.MouseEvent) => void }) {
+function isMediaTask(task: DownloadTask): boolean {
+  if (task.media) return true;
+  const mediaDomains = [
+    "youtube.com", "youtu.be", "bilibili.com", "b23.tv", "douyin.com",
+    "vimeo.com", "tiktok.com", "twitter.com", "x.com", "weibo.com"
+  ];
+  try {
+    const parsed = new URL(task.url);
+    const hostname = parsed.hostname.toLowerCase();
+    return mediaDomains.some(domain => hostname === domain || hostname.endsWith("." + domain));
+  } catch {
+    return false;
+  }
+}
+
+function TaskRow({ task, selected, showCompletedAt, taskTagList, onSelect, onOpen, onContext, onMouseDown, onCheckboxMouseDown, onCheckboxMouseEnter }: { task: DownloadTask; selected: boolean; showCompletedAt: boolean; taskTagList: Tag[]; onSelect: () => void; onOpen: () => void; onContext: (event: MouseEvent) => void; onMouseDown: (task: DownloadTask, event: React.MouseEvent) => void; onCheckboxMouseDown: (event: React.MouseEvent) => void; onCheckboxMouseEnter: () => void }) {
   // Task 33: 订阅 locale 变化，语言切换时 TaskRow 重渲染以刷新状态文案。
   useLocale();
   const statusText = getStatusText();
@@ -1371,6 +1500,8 @@ function TaskRow({ task, selected, showCompletedAt, taskTagList, onSelect, onOpe
     try {
       if (isDownloading) {
         await api.action(task.id, "pause");
+      } else if (task.status === "failed") {
+        await api.action(task.id, "retry");
       } else {
         await api.action(task.id, "resume");
       }
@@ -1383,11 +1514,35 @@ function TaskRow({ task, selected, showCompletedAt, taskTagList, onSelect, onOpe
     onContextMenu={onContext}
     onMouseDown={(e) => onMouseDown(task, e)}
   >
-    <label><input type="checkbox" aria-label={t("toolbar.selectAll")} checked={selected} onChange={onSelect} /></label>
-    <div className="name-cell" onClick={onSelect}><FileIcon category={task.category} /><div><strong title={task.file_name}>{task.file_name}</strong><small title={task.url}>{task.priority < 0 ? t("details.highPriority") : task.priority > 0 ? t("details.lowPriority") : ""}{hostOf(task.url)}</small>{taskTagList.length > 0 && <TaskTagChips tags={taskTagList} max={3} />}</div></div>
+    <label
+      onMouseDown={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        onCheckboxMouseDown(e);
+      }}
+      onMouseEnter={onCheckboxMouseEnter}
+      style={{ cursor: "pointer" }}
+    >
+      <input type="checkbox" aria-label={t("toolbar.selectAll")} checked={selected} readOnly />
+    </label>
+    <div className="name-cell" onClick={onSelect}>
+      <FileIcon category={task.category} />
+      <div style={{ minWidth: 0, flex: 1 }}>
+        <div className="name-title-row">
+          <strong title={task.file_name}>{task.file_name}</strong>
+          {taskTagList.length > 0 && <TaskTagChips tags={taskTagList} max={3} />}
+        </div>
+        <small title={task.url}>
+          {task.priority < 0 ? t("details.highPriority") : task.priority > 0 ? t("details.lowPriority") : ""}
+          {hostOf(task.url)}
+        </small>
+      </div>
+    </div>
     <span>{task.total_bytes ? formatBytes(task.total_bytes) : "—"}</span>
     <span className={`task-status ${task.status}`}>
-      {statusText[task.status]}
+      {task.status === "downloading" && isMediaTask(task) && task.downloaded_bytes === 0 && task.active_connections === 0
+        ? statusText.parsing
+        : statusText[task.status]}
       {canControl && (
         <button
           className="task-status-btn"
@@ -1554,7 +1709,14 @@ function Details({ task, onClose, notify, selectedCount, onOpenProxySettings, on
 
   return <aside className="details-pane">
     <div className="details-header">
-      <h2>{task.file_name}</h2>
+      <h2>
+        {task.file_name}
+        {selectedCount > 1 && (
+          <span style={{ fontSize: "11px", fontWeight: 400, color: "var(--subtle)", marginLeft: "8px" }}>
+            ({t("details.selectedCount", { count: selectedCount })})
+          </span>
+        )}
+      </h2>
       <button onClick={onClose} title={t("common.close")}><X size={14} /></button>
     </div>
     <div className="details-tabs" role="tablist" aria-label={t("details.title")}>
@@ -1915,7 +2077,7 @@ function DetailsInfoTab({ task, showMore, onToggleMore, notify, action, onTagsCh
 
   return <>
     <dl>
-      <div><dt>{t("details.status")}</dt><dd>{statusText[task.status]}</dd></div>
+      <div><dt>{t("details.status")}</dt><dd>{task.status === "downloading" && isMediaTask(task) && task.downloaded_bytes === 0 && task.active_connections === 0 ? statusText.parsing : statusText[task.status]}</dd></div>
       <div><dt>{t("details.size")}</dt><dd>{task.total_bytes ? formatBytes(task.total_bytes) : "—"}</dd></div>
       <div><dt>{t("details.speed")}</dt><dd>{task.speed ? `${formatBytes(task.speed)}/s` : "—"}</dd></div>
       <div><dt>{t("details.eta")}</dt><dd>{task.eta_seconds ? formatDuration(task.eta_seconds) : "—"}</dd></div>
@@ -2068,7 +2230,7 @@ function DetailsInfoTab({ task, showMore, onToggleMore, notify, action, onTagsCh
           }
         }}><ShieldCheck size={13} />{t("details.verifyFile")}</button>
       )}
-      <button onClick={openSaveAsTemplate} title={t("details.moreInfo")}><Bookmark size={13} />{t("common.save")}</button>
+      <button onClick={openSaveAsTemplate} title={t("details.saveAsTemplate")}><Bookmark size={13} />{t("details.saveAsTemplate")}</button>
     </div>
 
     <TaskRetryPolicySection task={task} notify={notify} />
@@ -2078,57 +2240,59 @@ function DetailsInfoTab({ task, showMore, onToggleMore, notify, action, onTagsCh
     {saveTplOpen && tplDraft && (
       <Modal title="保存为任务模板" onClose={() => setSaveTplOpen(false)} style={{ width: "520px" }}>
         <div className="category-rule-edit-form">
-          <p className="settings-note">将当前任务的下载参数保存为模板，下次新建同域名任务时自动套用到未显式设置的字段。</p>
-          <Field label="模板名称">
-            <input value={tplDraft.name} onChange={(e) => setTplDraft({ ...tplDraft, name: e.target.value })} />
-          </Field>
-          <Field label="域名匹配模式">
-            <input value={tplDraft.domain_pattern} onChange={(e) => setTplDraft({ ...tplDraft, domain_pattern: e.target.value })} placeholder="github.com 或 *.github.com" />
-          </Field>
-          <Field label="连接数（留空表示不覆盖；仅允许 1 / 2 / 4 / 8 / 16 / 32）">
-            <select
-              value={tplDraft.connections ?? ""}
-              onChange={(e) => {
-                const v = e.target.value;
-                setTplDraft({ ...tplDraft, connections: v === "" ? null : +v });
-              }}
-            >
-              <option value="">不覆盖</option>
-              <option value={1}>1 路</option>
-              <option value={2}>2 路</option>
-              <option value={4}>4 路</option>
-              <option value={8}>8 路</option>
-              <option value={16}>16 路</option>
-              <option value={32}>32 路</option>
-            </select>
-          </Field>
-          <Field label="单任务限速（KB/s，0 或留空表示不限速）">
-            <input
-              type="number"
-              min="0"
-              value={tplDraft.speed_limit ? Math.round(tplDraft.speed_limit / 1024) : 0}
-              onChange={(e) => {
-                const v = +e.target.value;
-                setTplDraft({ ...tplDraft, speed_limit: v > 0 ? v * 1024 : null });
-              }}
-            />
-          </Field>
-          <Field label="保存目录（留空表示不覆盖）">
-            <input
-              value={tplDraft.destination ?? ""}
-              onChange={(e) => setTplDraft({ ...tplDraft, destination: e.target.value || null })}
-              placeholder="例如：D:\\Downloads\\GitHub"
-            />
-          </Field>
-          <Field label="请求头（每行一个，格式 Key: Value；留空表示不覆盖）">
-            <textarea
-              rows={4}
-              value={tplHeadersText}
-              onChange={(e) => setTplHeadersText(e.target.value)}
-              placeholder={"Authorization: Bearer token\nUser-Agent: MaobuFetch"}
-              style={{ width: "100%", fontFamily: "monospace" }}
-            />
-          </Field>
+          <p className="settings-note" style={{ margin: "0 0 4px" }}>将当前任务的下载参数保存为模板，下次新建同域名任务时自动套用到未显式设置的字段。</p>
+          <div className="template-edit-grid">
+            <Field label="模板名称">
+              <input value={tplDraft.name} onChange={(e) => setTplDraft({ ...tplDraft, name: e.target.value })} />
+            </Field>
+            <Field label="域名匹配模式">
+              <input value={tplDraft.domain_pattern} onChange={(e) => setTplDraft({ ...tplDraft, domain_pattern: e.target.value })} placeholder="github.com 或 *.github.com" />
+            </Field>
+            <Field label="连接数（留空表示不覆盖；仅允许 1 / 2 / 4 / 8 / 16 / 32）">
+              <select
+                value={tplDraft.connections ?? ""}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  setTplDraft({ ...tplDraft, connections: v === "" ? null : +v });
+                }}
+              >
+                <option value="">不覆盖</option>
+                <option value={1}>1 路</option>
+                <option value={2}>2 路</option>
+                <option value={4}>4 路</option>
+                <option value={8}>8 路</option>
+                <option value={16}>16 路</option>
+                <option value={32}>32 路</option>
+              </select>
+            </Field>
+            <Field label="单任务限速（KB/s，0 或留空表示不限速）">
+              <input
+                type="number"
+                min="0"
+                value={tplDraft.speed_limit ? Math.round(tplDraft.speed_limit / 1024) : 0}
+                onChange={(e) => {
+                  const v = +e.target.value;
+                  setTplDraft({ ...tplDraft, speed_limit: v > 0 ? v * 1024 : null });
+                }}
+              />
+            </Field>
+            <Field className="wide" label="保存目录（留空表示不覆盖）">
+              <input
+                value={tplDraft.destination ?? ""}
+                onChange={(e) => setTplDraft({ ...tplDraft, destination: e.target.value || null })}
+                placeholder="例如：D:\\Downloads\\GitHub"
+              />
+            </Field>
+            <Field className="wide" label="请求头（每行一个，格式 Key: Value；留空表示不覆盖）">
+              <textarea
+                rows={3}
+                value={tplHeadersText}
+                onChange={(e) => setTplHeadersText(e.target.value)}
+                placeholder={"Authorization: Bearer token\nUser-Agent: MaobuFetch"}
+                style={{ width: "100%", fontFamily: "monospace" }}
+              />
+            </Field>
+          </div>
           <div className="dialog-actions"><button onClick={() => setSaveTplOpen(false)}>取消</button><button className="primary" onClick={() => void saveAsTemplate()}>保存</button></div>
         </div>
       </Modal>
@@ -2593,7 +2757,7 @@ function TaskTagEditor({ task, notify, onTagsChanged }: { task: DownloadTask; no
       {loading ? (
         <p className="muted">加载中…</p>
       ) : allTags.length === 0 ? (
-        <p className="muted">尚未创建任何标签。可在设置页添加。</p>
+        <p className="muted">暂无标签</p>
       ) : (
         <div className="tag-editor-grid" role="group" aria-label="选择标签">
           {allTags.map((tag) => {
@@ -2621,7 +2785,7 @@ function TaskTagEditor({ task, notify, onTagsChanged }: { task: DownloadTask; no
         >
           <Plus size={12} />新建标签
         </button>
-        <button onClick={() => void save()} disabled={saving || loading}>
+        <button className="primary" onClick={() => void save()} disabled={saving || loading}>
           {saving ? "保存中…" : "保存"}
         </button>
       </div>
@@ -2635,17 +2799,19 @@ function TaskTagEditor({ task, notify, onTagsChanged }: { task: DownloadTask; no
             maxLength={20}
             aria-label="新标签名称"
           />
-          <input
-            type="color"
-            value={newColor}
-            onChange={(e) => setNewColor(e.target.value.toUpperCase())}
-            aria-label="新标签颜色"
-            title="标签颜色"
-          />
-          <span className="tag-color-hex">{newColor}</span>
-          <button onClick={() => void createAndAttach()} disabled={saving || !newName.trim()}>
-            创建并附加
-          </button>
+          <div className="tag-editor-create-tools">
+            <input
+              type="color"
+              value={newColor}
+              onChange={(e) => setNewColor(e.target.value.toUpperCase())}
+              aria-label="新标签颜色"
+              title="标签颜色"
+            />
+            <span className="tag-color-hex">{newColor}</span>
+            <button className="primary" onClick={() => void createAndAttach()} disabled={saving || !newName.trim()}>
+              创建并附加
+            </button>
+          </div>
         </div>
       )}
     </div>
@@ -2669,29 +2835,15 @@ function AdvancedFilterPanel({ value, onChange, tags, quickViews, onApplyQuickVi
   const [saveName, setSaveName] = useState("");
   const [showSaveInput, setShowSaveInput] = useState(false);
   const allStatuses: TaskStatus[] = ["queued", "downloading", "paused", "completed", "failed", "cancelled", "scheduled", "verifying", "waiting-network", "remote-changed", "interrupted", "paused-by-low-disk", "paused-by-metered"];
-  const statusLabels: Record<TaskStatus, string> = {
-    queued: "排队中",
-    downloading: "下载中",
-    paused: "已暂停",
-    completed: "已完成",
-    failed: "失败",
-    cancelled: "已取消",
-    scheduled: "已计划",
-    verifying: "校验中",
-    "waiting-network": "等待网络",
-    "remote-changed": "远端变化",
-    interrupted: "已中断",
-    "paused-by-low-disk": "空间不足暂停",
-    "paused-by-metered": "计量网络暂停",
+
+  const sourceKeys: Record<string, string> = {
+    manual: "advancedFilter.sourceManual",
+    extension: "advancedFilter.sourceExtension",
+    "deep-link": "advancedFilter.sourceDeepLink",
+    desktop: "advancedFilter.sourceDesktop",
+    clipboard: "advancedFilter.sourceClipboard",
   };
-  const knownSources = ["manual", "extension", "deep-link", "desktop", "clipboard"];
-  const sourceLabels: Record<string, string> = {
-    manual: "手动添加",
-    extension: "浏览器扩展",
-    "deep-link": "深链导入",
-    desktop: "桌面端",
-    clipboard: "剪贴板",
-  };
+
   const toggleStatus = (status: TaskStatus) => {
     onChange({
       ...value,
@@ -2719,9 +2871,9 @@ function AdvancedFilterPanel({ value, onChange, tags, quickViews, onApplyQuickVi
   const isEmpty = isAdvancedFilterEmpty(value);
 
   return (
-    <div className="advanced-filter-panel" role="region" aria-label="高级筛选">
+    <div className="advanced-filter-panel" role="region" aria-label={t("advancedFilter.title")}>
       <div className="advanced-filter-row">
-        <span className="advanced-filter-label">状态</span>
+        <span className="advanced-filter-label">{t("advancedFilter.status")}</span>
         <div className="advanced-filter-chips">
           {allStatuses.map((status) => (
             <button
@@ -2731,15 +2883,15 @@ function AdvancedFilterPanel({ value, onChange, tags, quickViews, onApplyQuickVi
               type="button"
               aria-pressed={value.statuses.includes(status)}
             >
-              {statusLabels[status]}
+              {t("statusFilter." + status)}
             </button>
           ))}
         </div>
       </div>
       <div className="advanced-filter-row">
-        <span className="advanced-filter-label">来源</span>
+        <span className="advanced-filter-label">{t("advancedFilter.source")}</span>
         <div className="advanced-filter-chips">
-          {knownSources.map((src) => (
+          {Object.keys(sourceKeys).map((src) => (
             <button
               key={src}
               className={`filter-chip${value.sources.includes(src) ? " active" : ""}`}
@@ -2747,36 +2899,36 @@ function AdvancedFilterPanel({ value, onChange, tags, quickViews, onApplyQuickVi
               type="button"
               aria-pressed={value.sources.includes(src)}
             >
-              {sourceLabels[src] ?? src}
+              {t(sourceKeys[src])}
             </button>
           ))}
         </div>
       </div>
       <div className="advanced-filter-row">
-        <span className="advanced-filter-label">域名</span>
+        <span className="advanced-filter-label">{t("advancedFilter.domain")}</span>
         <input
           type="text"
-          placeholder="如 example.com（包含匹配）"
+          placeholder={t("advancedFilter.domainPlaceholder")}
           value={value.domain}
           onChange={(e) => onChange({ ...value, domain: e.target.value })}
-          aria-label="域名筛选"
+          aria-label={t("advancedFilter.domain")}
         />
       </div>
       <div className="advanced-filter-row">
-        <span className="advanced-filter-label">添加日期</span>
+        <span className="advanced-filter-label">{t("advancedFilter.addedDate")}</span>
         <input
           type="date"
-          aria-label="起始日期"
+          aria-label={t("advancedFilter.startDate")}
           value={value.dateFrom ? new Date(value.dateFrom).toISOString().slice(0, 10) : ""}
           onChange={(e) => {
             const v = e.target.value;
             onChange({ ...value, dateFrom: v ? new Date(v + "T00:00:00").getTime() : null });
           }}
         />
-        <span>至</span>
+        <span>{t("historyFilter.to")}</span>
         <input
           type="date"
-          aria-label="结束日期"
+          aria-label={t("advancedFilter.endDate")}
           value={value.dateTo ? new Date(value.dateTo).toISOString().slice(0, 10) : ""}
           onChange={(e) => {
             const v = e.target.value;
@@ -2785,34 +2937,34 @@ function AdvancedFilterPanel({ value, onChange, tags, quickViews, onApplyQuickVi
         />
       </div>
       <div className="advanced-filter-row">
-        <span className="advanced-filter-label">大小范围</span>
+        <span className="advanced-filter-label">{t("advancedFilter.sizeRange")}</span>
         <input
           type="number"
           min={0}
-          placeholder="最小 (MB)"
+          placeholder={t("advancedFilter.sizeMinPlaceholder")}
           value={value.sizeMin != null ? (value.sizeMin / (1024 * 1024)).toString() : ""}
           onChange={(e) => {
             const v = e.target.value ? Number(e.target.value) * 1024 * 1024 : null;
             onChange({ ...value, sizeMin: v != null && Number.isFinite(v) ? Math.max(0, v) : null });
           }}
-          aria-label="最小文件大小（MB）"
+          aria-label={t("advancedFilter.sizeMinPlaceholder")}
         />
-        <span>至</span>
+        <span>{t("historyFilter.to")}</span>
         <input
           type="number"
           min={0}
-          placeholder="最大 (MB)"
+          placeholder={t("advancedFilter.sizeMaxPlaceholder")}
           value={value.sizeMax != null ? (value.sizeMax / (1024 * 1024)).toString() : ""}
           onChange={(e) => {
             const v = e.target.value ? Number(e.target.value) * 1024 * 1024 : null;
             onChange({ ...value, sizeMax: v != null && Number.isFinite(v) ? Math.max(0, v) : null });
           }}
-          aria-label="最大文件大小（MB）"
+          aria-label={t("advancedFilter.sizeMaxPlaceholder")}
         />
       </div>
       {tags.length > 0 && (
         <div className="advanced-filter-row">
-          <span className="advanced-filter-label">标签</span>
+          <span className="advanced-filter-label">{t("advancedFilter.tags")}</span>
           <div className="advanced-filter-chips">
             {tags.map((tag) => (
               <button
@@ -2831,16 +2983,16 @@ function AdvancedFilterPanel({ value, onChange, tags, quickViews, onApplyQuickVi
         </div>
       )}
       <div className="advanced-filter-actions">
-        <button onClick={onClear} disabled={isEmpty} type="button">清除筛选</button>
+        <button onClick={onClear} disabled={isEmpty} type="button">{t("advancedFilter.clearFilter")}</button>
         {showSaveInput ? (
           <>
             <input
               type="text"
-              placeholder="快捷视图名称"
+              placeholder={t("advancedFilter.quickViewName")}
               value={saveName}
               onChange={(e) => setSaveName(e.target.value)}
               maxLength={20}
-              aria-label="快捷视图名称"
+              aria-label={t("advancedFilter.quickViewName")}
             />
             <button
               onClick={() => {
@@ -2853,19 +3005,19 @@ function AdvancedFilterPanel({ value, onChange, tags, quickViews, onApplyQuickVi
               disabled={!saveName.trim() || isEmpty}
               type="button"
             >
-              保存
+              {t("common.save")}
             </button>
-            <button onClick={() => { setShowSaveInput(false); setSaveName(""); }} type="button">取消</button>
+            <button onClick={() => { setShowSaveInput(false); setSaveName(""); }} type="button">{t("common.cancel")}</button>
           </>
         ) : (
           <button onClick={() => setShowSaveInput(true)} disabled={isEmpty} type="button">
-            <Save size={12} />保存为快捷视图
+            <Save size={12} />{t("advancedFilter.saveAsQuickView")}
           </button>
         )}
       </div>
       {quickViews.length > 0 && (
         <div className="advanced-filter-row quick-views">
-          <span className="advanced-filter-label">快捷视图</span>
+          <span className="advanced-filter-label">{t("advancedFilter.quickViews")}</span>
           <div className="advanced-filter-chips">
             {quickViews.map((qv) => (
               <span key={qv.id} className="quick-view-chip">
@@ -2873,7 +3025,7 @@ function AdvancedFilterPanel({ value, onChange, tags, quickViews, onApplyQuickVi
                   className="filter-chip"
                   onClick={() => onApplyQuickView(qv)}
                   type="button"
-                  title={`应用：${qv.name}`}
+                  title={t("advancedFilter.applyQuickView", { name: qv.name })}
                 >
                   {qv.name}
                 </button>
@@ -2881,8 +3033,8 @@ function AdvancedFilterPanel({ value, onChange, tags, quickViews, onApplyQuickVi
                   className="quick-view-delete"
                   onClick={() => onDeleteQuickView(qv.id)}
                   type="button"
-                  title="删除快捷视图"
-                  aria-label={`删除快捷视图 ${qv.name}`}
+                  title={t("advancedFilter.deleteQuickView")}
+                  aria-label={t("advancedFilter.deleteQuickView")}
                 >
                   <X size={10} />
                 </button>
@@ -2938,17 +3090,20 @@ function parseMultilineUrls(input: string): { lines: string[]; skippedCount: num
   const lines: string[] = [];
   let skippedCount = 0;
   let duplicateCount = 0;
+  const urlRegex = /https?:\/\/[^\s<>"']+/i;
   for (const line of rawLines) {
-    if (!/^https?:\/\//i.test(line)) {
+    const match = line.match(urlRegex);
+    if (!match) {
       skippedCount += 1;
       continue;
     }
-    if (seen.has(line)) {
+    const extracted = match[0];
+    if (seen.has(extracted)) {
       duplicateCount += 1;
       continue;
     }
-    seen.add(line);
-    lines.push(line);
+    seen.add(extracted);
+    lines.push(extracted);
   }
   return { lines, skippedCount, duplicateCount };
 }
@@ -4147,14 +4302,14 @@ function NewTaskDialog({ settings, allTasks, onClose, onCreated, defaultUrl, onL
                   placeholder="Bearer ... 或 Basic ..."
                 />
               </Field>
-              <Field className="wide" label="预期文件 SHA-256">
+              <Field className={["run-command", "copy-to", "move-to"].includes(completionActionKind(completionAction)) ? "wide" : ""} label="预期文件 SHA-256">
                 <input
                   value={checksum}
                   onChange={(e) => setChecksum(e.target.value)}
                   placeholder="用于校验文件完整性"
                 />
               </Field>
-              <Field className="wide" label="下载完成后">
+              <Field className={["run-command", "copy-to", "move-to"].includes(completionActionKind(completionAction)) ? "wide" : ""} label="下载完成后">
                 <CompletionActionEditor
                   value={completionAction}
                   onChange={setCompletionAction}
@@ -4318,8 +4473,120 @@ function NewTaskDialog({ settings, allTasks, onClose, onCreated, defaultUrl, onL
   );
 }
 
-type SettingsSection = "general" | "download" | "network" | "browser" | "media" | "rules" | "filename-cleanup" | "naming-template" | "presets" | "templates" | "tags" | "credentials" | "appearance" | "advanced" | "about";
-function SettingsPage({ value, onChange, onClose, notify }: { value: AppSettings; onChange: (value: AppSettings) => void; onClose: () => void; notify: (text: string, kind?: "ok" | "error") => void }) {
+/** Task 21: 快捷键设置面板与按键录制组件。 */
+function ShortcutSettingsSection({
+  value,
+  onChange,
+  notify,
+}: {
+  value: ShortcutKeys;
+  onChange: (value: ShortcutKeys) => void;
+  notify: (text: string, kind?: "ok" | "error") => void;
+}) {
+  const [recordingAction, setRecordingAction] = useState<keyof ShortcutKeys | null>(null);
+
+  const actionKeys: Array<{ key: keyof ShortcutKeys; label: string }> = [
+    { key: "new_task", label: t("shortcuts.actionNewTask") },
+    { key: "select_all", label: t("shortcuts.actionSelectAll") },
+    { key: "copy_url", label: t("shortcuts.actionCopyUrl") },
+    { key: "open_folder", label: t("shortcuts.actionOpenFolder") },
+    { key: "toggle_pause", label: t("shortcuts.actionTogglePause") },
+    { key: "rename_task", label: t("shortcuts.actionRenameTask") },
+    { key: "delete_task", label: t("shortcuts.actionDeleteTask") },
+    { key: "delete_file", label: t("shortcuts.actionDeleteFile") },
+  ];
+
+  // 检查按键冲突（不区分大小写）
+  const conflicts = useMemo(() => {
+    const map = new Map<string, string[]>();
+    for (const item of actionKeys) {
+      const val = (value[item.key] || "").toLowerCase();
+      if (!val) continue;
+      const existing = map.get(val) || [];
+      existing.push(item.label);
+      map.set(val, existing);
+    }
+    const conflictMsgs: string[] = [];
+    for (const [key, labels] of map.entries()) {
+      if (labels.length > 1) {
+        conflictMsgs.push(`${labels.join(" / ")} (${key.toUpperCase()})`);
+      }
+    }
+    return conflictMsgs;
+  }, [value]);
+
+  const handleKeyDown = (actionKey: keyof ShortcutKeys, event: React.KeyboardEvent) => {
+    event.preventDefault();
+    event.stopPropagation();
+
+    if (event.key === "Escape") {
+      setRecordingAction(null);
+      return;
+    }
+
+    const nativeEvent = event.nativeEvent;
+    const keyCombo = parseShortcutEvent(nativeEvent);
+
+    // 如果只按下了修饰键本身（如只按下了 Ctrl），保留在录制状态等待主按键
+    if (["Ctrl", "Shift", "Alt"].includes(keyCombo)) {
+      return;
+    }
+
+    onChange({ ...value, [actionKey]: keyCombo });
+    setRecordingAction(null);
+  };
+
+  const handleResetDefaults = () => {
+    onChange(DEFAULT_SHORTCUTS);
+    notify(t("shortcuts.resetDefaultsSuccess"));
+  };
+
+  return (
+    <div className="shortcuts-settings-section">
+      <div className="shortcuts-section-header">
+        <p className="settings-note" style={{ margin: 0 }}>{t("shortcuts.desc")}</p>
+        <button className="secondary reset-btn" type="button" onClick={handleResetDefaults}>
+          <RotateCcw size={13} />
+          <span>{t("shortcuts.resetDefaults")}</span>
+        </button>
+      </div>
+
+      {conflicts.length > 0 && (
+        <div className="shortcut-conflict-warning">
+          <AlertCircle size={14} />
+          <span>{t("shortcuts.conflictWarning", { keys: conflicts.join("; ") })}</span>
+        </div>
+      )}
+
+      <div className="shortcuts-list">
+        {actionKeys.map(({ key, label }) => {
+          const isRecording = recordingAction === key;
+          const currentCombo = value[key] || DEFAULT_SHORTCUTS[key];
+
+          return (
+            <div key={key} className="shortcut-item-row">
+              <span className="shortcut-action-label">{label}</span>
+              <div className="shortcut-recorder-box">
+                <button
+                  type="button"
+                  className={`shortcut-recorder-btn ${isRecording ? "recording" : ""}`}
+                  onClick={() => setRecordingAction(isRecording ? null : key)}
+                  onKeyDown={(e) => isRecording && handleKeyDown(key, e)}
+                  tabIndex={0}
+                >
+                  {isRecording ? t("shortcuts.recordingHint") : currentCombo}
+                </button>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+type SettingsSection = "general" | "download" | "network" | "browser" | "media" | "rules" | "filename-cleanup" | "naming-template" | "presets" | "templates" | "tags" | "credentials" | "appearance" | "shortcuts" | "advanced" | "about";
+function SettingsPage({ value, onChange, onClose, notify, totalSpeed = 0, activeCount = 0 }: { value: AppSettings; onChange: (value: AppSettings) => void; onClose: () => void; notify: (text: string, kind?: "ok" | "error") => void; totalSpeed?: number; activeCount?: number }) {
   // Task 33: 订阅 locale 变化，设置页文案同步刷新。
   useLocale();
   const appWindow = useMemo(() => isDesktop() ? getCurrentWindow() : null, []);
@@ -4532,8 +4799,8 @@ function SettingsPage({ value, onChange, onClose, notify }: { value: AppSettings
   }, [value]);
   const save = async () => { try { await api.saveSettings(draft); hasSaved.current = true; onChange(draft); notify(t("toasts.settingsSaved")); onClose(); } catch (error) { notify(String(error), "error"); } };
   // Task 33: 设置页导航项按当前 locale 渲染，语言切换时自动刷新。
-  const items: Array<[SettingsSection, string, typeof Settings]> = [["general",t("settings.sectionGeneral"),Settings],["download",t("settings.sectionDownload"),Download],["network",t("settings.sectionNetwork"),Network],["browser",t("settings.sectionBrowser"),Globe2],["media",t("settings.sectionMedia"),Video],["rules",t("settings.sectionRules"),ListFilter],["filename-cleanup",t("settings.sectionFilenameCleanup"),Sparkles],["naming-template",t("settings.sectionNamingTemplate"),File],["presets",t("settings.sectionPresets"),Zap],["templates",t("settings.sectionTemplates"),Bookmark],["tags",t("settings.sectionTags"),TagIcon],["credentials",t("settings.sectionCredentials"),ShieldCheck],["appearance",t("settings.sectionAppearance"),SlidersHorizontal],["advanced",t("settings.sectionAdvanced"),Info],["about",t("settings.sectionAbout"),Info]];
-  return <div className="settings-page"><aside className="nav-pane"><div className="brand" data-tauri-drag-region>{t("settings.title")}</div>{items.map(([key,label,Icon]) => <button key={key} className={section === key ? "nav-item active" : "nav-item"} onClick={() => setSection(key)}><Icon size={15} /><span>{label}</span></button>)}</aside><main className="settings-body" data-tauri-drag-region><div className="settings-title" data-tauri-drag-region><h1 data-tauri-drag-region>{items.find(([key]) => key === section)?.[1]}</h1></div><div className="settings-content">
+  const items: Array<[SettingsSection, string, typeof Settings]> = [["general",t("settings.sectionGeneral"),Settings],["download",t("settings.sectionDownload"),Download],["network",t("settings.sectionNetwork"),Network],["browser",t("settings.sectionBrowser"),Globe2],["media",t("settings.sectionMedia"),Video],["rules",t("settings.sectionRules"),ListFilter],["filename-cleanup",t("settings.sectionFilenameCleanup"),Sparkles],["naming-template",t("settings.sectionNamingTemplate"),File],["presets",t("settings.sectionPresets"),Zap],["templates",t("settings.sectionTemplates"),Bookmark],["tags",t("settings.sectionTags"),TagIcon],["credentials",t("settings.sectionCredentials"),ShieldCheck],["appearance",t("settings.sectionAppearance"),SlidersHorizontal],["shortcuts",t("settings.sectionShortcuts"),Keyboard],["advanced",t("settings.sectionAdvanced"),Info],["about",t("settings.sectionAbout"),Info]];
+  return <div className="settings-page"><aside className="nav-pane"><div className="brand" data-tauri-drag-region>{t("settings.title")}</div><div className="settings-nav-list">{items.map(([key,label,Icon]) => <button key={key} className={section === key ? "nav-item active" : "nav-item"} onClick={() => setSection(key)}><Icon size={15} /><span>{label}</span></button>)}</div><div className="nav-footer"><button className="nav-settings" onClick={onClose} title={t("settings.returnHome")}><ArrowLeft size={15} /><span>{t("settings.returnHome")}</span></button><div className="nav-status" style={{ cursor: "default" }}><i className={isDesktop() ? "status-dot online" : "status-dot offline"} /><span>{t("nav.speedFormat", { speed: `${formatBytes(totalSpeed)}/s`, count: activeCount })}</span></div></div></aside><main className="settings-body" data-tauri-drag-region><div className="settings-title" data-tauri-drag-region><h1 data-tauri-drag-region>{items.find(([key]) => key === section)?.[1]}</h1></div><div className="settings-content">
     {section === "general" && <>
       <SettingsGroup title={t("settings.groupLanguage")}>
         <div className="settings-group-content">
@@ -4603,13 +4870,13 @@ function SettingsPage({ value, onChange, onClose, notify }: { value: AppSettings
           </>}
           <SettingRow label="PAC 脚本路径（可选）"><input value={draft.pac_script_path ?? ""} onChange={(e) => set("pac_script_path", e.target.value || null)} placeholder="C:\path\to\proxy.pac，留空表示不使用" /></SettingRow>
         </div>
-        <p className="settings-note">代理密码通过 Windows DPAPI 加密后落库，仅当前 Windows 用户可解密；PAC 脚本路径仅在"跟随系统"模式下由操作系统读取。任务详情面板可为单个任务配置覆盖代理。</p>
+        <p className="settings-note">代理密码使用 Windows DPAPI 加密存储。可在任务详情面板中为单个任务配置覆盖代理。</p>
       </SettingsGroup>
       <SettingsGroup title="重试策略">
         <div className="retry-policy-grid">
           <RetryPolicyEditor value={draft.default_retry_policy} onChange={(p) => set("default_retry_policy", p)} compact />
         </div>
-        <p className="settings-note">单连接超时作用于 reqwest connect_timeout；任务总超时优先于连接重试，超过即强制失败；最大重试次数以"连接"为单位独立计数；退避期间连接停止活动不占用服务器资源。任务可在详情面板中覆盖此默认值。</p>
+        <p className="settings-note">在此设置默认重试与超时规则。单个任务可在其详情面板中独立配置进行覆盖。</p>
       </SettingsGroup>
       <SettingsGroup title="网络感知">
         <div className="settings-group-content">
@@ -4618,7 +4885,7 @@ function SettingsPage({ value, onChange, onClose, notify }: { value: AppSettings
             <MeteredCheckButton notify={notify} />
           </SettingRow>
         </div>
-        <p className="settings-note">每 60 秒检测一次系统网络计费状态；当检测到计量网络（按量计费）且开关开启时，正在下载的任务会被自动暂停并提示。用户手动恢复后将不再自动暂停，直至网络变为非计量时重新启用。检测失败时安全回退到非计量，不会误暂停任务。</p>
+        <p className="settings-note">每 60 秒检测一次网络计费状态。检测到计量网络（按量计费）时将自动暂停下载以节省流量，用户手动恢复后不再自动暂停。</p>
       </SettingsGroup>
     </>}
     {section === "browser" && <><SettingsGroup title="下载接管"><div className="settings-group-content"><Toggle label="允许浏览器扩展接管下载" checked={draft.intercept_browser_downloads} onChange={(v) => set("intercept_browser_downloads", v)} /><SettingRow label="最小文件大小（MB）"><input type="number" min="0" value={draft.min_file_size_mb} onChange={(e) => set("min_file_size_mb", +e.target.value)} /></SettingRow></div></SettingsGroup><SettingsGroup title="安全配对">{pair ? <div className="pair-card"><p>在扩展中输入一次性配对码（10 分钟有效）</p><div className="pair-code-wrapper"><code>{pair.code}</code><button className="copy-code-btn" onClick={() => { void navigator.clipboard.writeText(pair.code); notify("配对码已复制到剪贴板"); }} title="复制配对码"><Copy size={13} /><span>复制</span></button></div>{pair.paired_extension && <p>已配对：{pair.paired_extension.slice(0, 16)}…</p>}<div className="maintenance"><button onClick={() => void api.rotatePairing().then(setPair)}>更换配对码</button>{pair.paired_extension && <button onClick={() => void api.revokePairing().then(() => api.pairing().then(setPair))}>撤销配对</button>}</div></div> : <LoaderCircle className="spin" />}</SettingsGroup></>}
@@ -4639,7 +4906,7 @@ function SettingsPage({ value, onChange, onClose, notify }: { value: AppSettings
           <SettingRow label="强调色"><select value={draft.accent_color} onChange={(e) => set("accent_color", e.target.value as AppSettings["accent_color"])}><option value="system">跟随 Windows</option><option value="blue">猫步蓝</option><option value="cyan">青色</option><option value="green">绿色</option><option value="purple">紫色</option><option value="orange">橙色</option></select></SettingRow>
           <Toggle label="磨砂玻璃" checked={draft.frosted_glass} onChange={(v) => set("frosted_glass", v)} />
         </div>
-        <p className="settings-note">颜色方案可选择跟随系统或强制浅色/深色；紧凑行高将每行降至 32px 并略缩字号；启用"详情栏默认折叠"后切换任务时默认隐藏详情栏，仍可手动展开。</p>
+        <p className="settings-note">在此设置颜色方案、行高大小、强调色以及详情栏折叠与磨砂玻璃等外观偏好。</p>
       </SettingsGroup>
       <SettingsGroup title="窗口大小">
         <div className="settings-group-content">
@@ -4649,10 +4916,19 @@ function SettingsPage({ value, onChange, onClose, notify }: { value: AppSettings
         <p className="settings-note">磨砂玻璃使用 Windows 10/11 原生 Acrylic 材质；自适应缩放根据窗口宽度自动放大 UI。</p>
       </SettingsGroup>
     </>}
-    {section === "advanced" && <><SettingsGroup title="任务迁移"><div className="maintenance"><button onClick={() => void exportTasks()}>导出任务 JSON</button><button onClick={() => void importTasks()}>导入任务 JSON</button></div><p className="settings-note">导出文件不包含请求头、凭据、绝对保存路径和下载进度；导入任务统一暂停，并保存到你选择的目录。带时效签名的链接可能需要重新获取。</p></SettingsGroup><SettingsGroup title="备份与恢复"><div className="maintenance"><button onClick={() => setBackupOpen(true)}>创建完整备份</button><button onClick={() => setRestoreOpen(true)}>从备份恢复</button></div><p className="settings-note">备份包含设置、分类规则、文件名清理规则、下载预设、URL 历史和任务列表。默认不导出 Cookie、Authorization 和代理密码；勾选"包含认证信息"后将使用 AES-256-GCM 加密备份文件。恢复前会展示新增、覆盖和跳过的条数；已存在的任务会被跳过，不会覆盖用户进度。</p></SettingsGroup><SettingsGroup title="日志"><div className="maintenance"><button onClick={() => void openLogsDir()}>打开日志目录</button><button onClick={() => void exportRecentLogs()}>导出最近 24 小时日志</button></div><p className="settings-note">日志按天滚动保留 7 天，写入时已自动脱敏 Cookie、Authorization、代理密码和 URL token；导出会再次脱敏。日志目录路径不会暴露到前端。</p></SettingsGroup><SettingsGroup title="维护"><div className="maintenance"><button onClick={() => void api.clearHistory(false).then(() => notify("已清理取消的任务"))}>清理取消任务</button><button onClick={() => void api.clearHistory(true).then(() => notify("下载历史已清理"))}>清理完成和取消任务</button></div></SettingsGroup></>}
+    {section === "shortcuts" && (
+      <SettingsGroup title={t("shortcuts.title")}>
+        <ShortcutSettingsSection
+          value={draft.shortcut_keys || DEFAULT_SHORTCUTS}
+          onChange={(val) => set("shortcut_keys", val)}
+          notify={notify}
+        />
+      </SettingsGroup>
+    )}
+    {section === "advanced" && <><SettingsGroup title="任务迁移"><div className="maintenance"><button onClick={() => void exportTasks()}>导出任务 JSON</button><button onClick={() => void importTasks()}>导入任务 JSON</button></div><p className="settings-note">导出文件不含请求头、凭据和下载进度；导入任务将统一暂停并保存到指定目录。</p></SettingsGroup><SettingsGroup title="备份与恢复"><div className="maintenance"><button onClick={() => setBackupOpen(true)}>创建完整备份</button><button onClick={() => setRestoreOpen(true)}>从备份恢复</button></div><p className="settings-note">备份包含设置、规则与任务列表。勾选“包含认证信息”后将加密保护。恢复时已存在任务会自动跳过。</p></SettingsGroup><SettingsGroup title="日志"><div className="maintenance"><button onClick={() => void openLogsDir()}>打开日志目录</button><button onClick={() => void exportRecentLogs()}>导出最近 24 小时日志</button></div><p className="settings-note">日志滚动保留 7 天，敏感凭证已自动脱敏。出于安全考虑，日志目录路径不对前端公开。</p></SettingsGroup><SettingsGroup title="维护"><div className="maintenance"><button onClick={() => void api.clearHistory(false).then(() => notify("已清理取消的任务"))}>清理取消任务</button><button onClick={() => void api.clearHistory(true).then(() => notify("下载历史已清理"))}>清理完成和取消任务</button></div></SettingsGroup></>}
     <BackupRestoreModal notify={notify} backupOpen={backupOpen} setBackupOpen={setBackupOpen} restoreOpen={restoreOpen} setRestoreOpen={setRestoreOpen} />
     {section === "about" && (
-      <SettingsGroup title="关于猫步下载器">
+      <SettingsGroup title={t("settings.groupAboutMaobu")}>
         <div style={{ display: "flex", flexDirection: "column", gap: "16px", padding: "10px 0" }}>
           <div style={{ display: "flex", alignItems: "center", gap: "16px" }}>
             <div style={{ width: "64px", height: "64px", flexShrink: 0 }}>
@@ -4690,11 +4966,12 @@ function SettingsPage({ value, onChange, onClose, notify }: { value: AppSettings
             </div>
           )}
 
-          <div style={{ borderTop: "1px solid var(--border)", paddingTop: "14px" }}>
-            <h3 style={{ margin: "0 0 6px", fontSize: "12px", fontWeight: 600, color: "var(--text)" }}>作者 / 开发团队</h3>
-            <p style={{ margin: 0, fontSize: "11px", color: "var(--muted)", lineHeight: 1.5 }}>
-              猫步可爱 (maobukeai)
-            </p>
+          <div style={{ borderTop: "1px solid var(--border)", paddingTop: "14px", display: "flex", alignItems: "center", gap: "12px" }}>
+            <span style={{ fontSize: "12px", fontWeight: 600, color: "var(--muted)" }}>作者 / 开发团队</span>
+            <div style={{ display: "inline-flex", alignItems: "center", gap: "6px" }}>
+              <span style={{ fontSize: "12px", fontWeight: 600, color: "var(--text)" }}>猫步可爱</span>
+              <span style={{ fontSize: "11px", color: "var(--subtle)" }}>(maobukeai)</span>
+            </div>
           </div>
 
           <div style={{ borderTop: "1px solid var(--border)", paddingTop: "14px" }}>
@@ -4710,89 +4987,92 @@ function SettingsPage({ value, onChange, onClose, notify }: { value: AppSettings
             </ul>
           </div>
 
-          <div style={{ borderTop: "1px solid var(--border)", paddingTop: "14px", display: "flex", flexDirection: "column", gap: "10px" }}>
-            <h3 style={{ margin: "0", fontSize: "12px", fontWeight: 600, color: "var(--text)" }}>应用更新检查</h3>
-            <p style={{ margin: 0, fontSize: "11px", color: "var(--muted)", lineHeight: 1.5 }}>
-              点击"检查更新"会向 GitHub Releases 查询最新版本号与发布说明，<strong>不会自动下载或安装</strong>。如发现新版本，请手动前往 GitHub Releases 下载并校验 SHA-256。
-            </p>
-            <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
-              <button
-                className="input-button"
-                disabled={updateChecking}
-                onClick={() => void checkAppUpdate()}
-                style={{ display: "inline-flex", alignItems: "center", gap: "6px", height: "28px", padding: "0 14px", fontSize: "11px", fontWeight: 500, cursor: updateChecking ? "default" : "pointer", borderRadius: "6px", border: "1px solid var(--border)", background: "var(--accent)", color: "white" }}
-              >
-                {updateChecking ? <LoaderCircle size={12} className="spin" /> : <RefreshCw size={12} />}
-                {updateChecking ? "检查中…" : "检查更新"}
-              </button>
-              <span style={{ fontSize: "11px", color: "var(--muted)" }}>当前版本 v0.5.7</span>
-            </div>
-            {updateResult && !updateResult.error && (
-              <div style={{ fontSize: "11px", lineHeight: 1.6, color: "var(--muted)", padding: "8px 10px", background: "var(--bg-alt, rgba(0,0,0,0.03))", borderRadius: "6px", border: "1px solid var(--border)" }}>
-                {updateResult.has_update && updateResult.latest ? (
-                  <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-                      <AlertCircle size={12} color="var(--accent)" />
-                      <strong style={{ color: "var(--text)" }}>发现新版本 v{updateResult.latest.version}</strong>
-                      {updateResult.latest.release_date && <span style={{ color: "var(--muted)" }}>· {updateResult.latest.release_date}</span>}
-                    </div>
-                    {updateResult.latest.release_notes && (
-                      <div style={{ maxHeight: "120px", overflowY: "auto", whiteSpace: "pre-wrap", fontSize: "11px", color: "var(--muted)", borderTop: "1px solid var(--border)", paddingTop: "6px" }}>
-                        {updateResult.latest.release_notes}
-                      </div>
-                    )}
-                    {updateResult.latest.sha256 && (
-                      <div style={{ fontSize: "10px", color: "var(--muted)", wordBreak: "break-all" }}>SHA-256: {updateResult.latest.sha256}</div>
-                    )}
-                    <div>
-                      <button
-                        className="input-button"
-                        onClick={() => void openUrl(updateResult.latest?.download_url || "https://github.com/maobukeai/maobu-fetch/releases").catch((err) => notify(String(err), "error"))}
-                        style={{ display: "inline-flex", alignItems: "center", gap: "6px", height: "26px", padding: "0 12px", fontSize: "11px", fontWeight: 500, cursor: "pointer", borderRadius: "6px", border: "1px solid var(--accent)", background: "transparent", color: "var(--accent)" }}
-                      >
-                        <ExternalLink size={11} />
-                        前往下载页
-                      </button>
-                    </div>
-                  </div>
-                ) : (
-                  <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-                    <Check size={12} color="#22c55e" />
-                    <span>当前已是最新版本{updateResult.latest ? `（远端 v${updateResult.latest.version}）` : ""}</span>
-                  </div>
-                )}
-              </div>
-            )}
-            {updateResult?.error && (
-              <div style={{ fontSize: "11px", color: "var(--danger, #ef4444)", padding: "8px 10px", background: "rgba(239,68,68,0.08)", borderRadius: "6px", border: "1px solid rgba(239,68,68,0.2)", display: "flex", alignItems: "center", gap: "6px" }}>
-                <AlertCircle size={12} />
-                <span>检查失败：{updateResult.error}</span>
-              </div>
-            )}
-            <div style={{ borderTop: "1px dashed var(--border)", paddingTop: "10px", marginTop: "4px", display: "flex", flexDirection: "column", gap: "8px" }}>
-              <h4 style={{ margin: 0, fontSize: "11px", fontWeight: 600, color: "var(--text)" }}>扩展版本兼容性</h4>
+          <div style={{ borderTop: "1px solid var(--border)", paddingTop: "14px", display: "grid", gridTemplateColumns: "1fr 1fr", gap: "20px" }}>
+            <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+              <h3 style={{ margin: "0", fontSize: "12px", fontWeight: 600, color: "var(--text)" }}>应用更新检查</h3>
               <p style={{ margin: 0, fontSize: "11px", color: "var(--muted)", lineHeight: 1.5 }}>
-                输入浏览器扩展的版本号（在扩展管理页可见），与桌面端比较是否兼容。当前策略要求扩展版本与桌面端一致。
+                检查更新将向 GitHub Releases 查询最新版本；更新需手动下载并校验 SHA-256。
               </p>
-              <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap", marginTop: "auto", paddingTop: "4px" }}>
+                <button
+                  className="input-button"
+                  disabled={updateChecking}
+                  onClick={() => void checkAppUpdate()}
+                  style={{ display: "inline-flex", alignItems: "center", gap: "6px", height: "28px", padding: "0 14px", fontSize: "11px", fontWeight: 500, cursor: updateChecking ? "default" : "pointer", borderRadius: "6px", border: "1px solid var(--border)", background: "var(--accent)", color: "white" }}
+                >
+                  {updateChecking ? <LoaderCircle size={12} className="spin" /> : <RefreshCw size={12} />}
+                  {updateChecking ? "检查中…" : "检查更新"}
+                </button>
+                <span style={{ fontSize: "11px", color: "var(--muted)" }}>当前版本 v0.5.7</span>
+              </div>
+              {updateResult && !updateResult.error && (
+                <div style={{ marginTop: "6px", fontSize: "11px", lineHeight: 1.6, color: "var(--muted)", padding: "8px 10px", background: "var(--bg-alt, rgba(0,0,0,0.03))", borderRadius: "6px", border: "1px solid var(--border)" }}>
+                  {updateResult.has_update && updateResult.latest ? (
+                    <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                        <AlertCircle size={12} color="var(--accent)" />
+                        <strong style={{ color: "var(--text)" }}>发现新版本 v{updateResult.latest.version}</strong>
+                        {updateResult.latest.release_date && <span style={{ color: "var(--muted)" }}>· {updateResult.latest.release_date}</span>}
+                      </div>
+                      {updateResult.latest.release_notes && (
+                        <div style={{ maxHeight: "120px", overflowY: "auto", whiteSpace: "pre-wrap", fontSize: "11px", color: "var(--muted)", borderTop: "1px solid var(--border)", paddingTop: "6px" }}>
+                          {updateResult.latest.release_notes}
+                        </div>
+                      )}
+                      {updateResult.latest.sha256 && (
+                        <div style={{ fontSize: "10px", color: "var(--muted)", wordBreak: "break-all" }}>SHA-256: {updateResult.latest.sha256}</div>
+                      )}
+                      <div>
+                        <button
+                          className="input-button"
+                          onClick={() => void openUrl(updateResult.latest?.download_url || "https://github.com/maobukeai/maobu-fetch/releases").catch((err) => notify(String(err), "error"))}
+                          style={{ display: "inline-flex", alignItems: "center", gap: "6px", height: "26px", padding: "0 12px", fontSize: "11px", fontWeight: 500, cursor: "pointer", borderRadius: "6px", border: "1px solid var(--accent)", background: "transparent", color: "var(--accent)" }}
+                        >
+                          <ExternalLink size={11} />
+                          前往下载页
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                      <Check size={12} color="#22c55e" />
+                      <span>当前已是最新版本{updateResult.latest ? `（远端 v${updateResult.latest.version}）` : ""}</span>
+                    </div>
+                  )}
+                </div>
+              )}
+              {updateResult?.error && (
+                <div style={{ marginTop: "6px", fontSize: "11px", color: "var(--danger, #ef4444)", padding: "8px 10px", background: "rgba(239,68,68,0.08)", borderRadius: "6px", border: "1px solid rgba(239,68,68,0.2)", display: "flex", alignItems: "center", gap: "6px" }}>
+                  <AlertCircle size={12} />
+                  <span>检查失败：{updateResult.error}</span>
+                </div>
+              )}
+            </div>
+
+            <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+              <h3 style={{ margin: "0", fontSize: "12px", fontWeight: 600, color: "var(--text)" }}>扩展版本兼容性</h3>
+              <p style={{ margin: 0, fontSize: "11px", color: "var(--muted)", lineHeight: 1.5 }}>
+                在此输入浏览器扩展版本号以验证兼容性。策略要求扩展版本与桌面端保持一致。
+              </p>
+              <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap", marginTop: "auto", paddingTop: "4px" }}>
                 <input
                   value={extVersion}
                   onChange={(e) => setExtVersion(e.target.value)}
                   placeholder="如 0.5.7"
-                  style={{ height: "26px", padding: "0 8px", fontSize: "11px", borderRadius: "6px", border: "1px solid var(--border)", background: "var(--bg)", color: "var(--text)", width: "120px" }}
+                  style={{ height: "28px", padding: "0 8px", fontSize: "11px", borderRadius: "6px", border: "1px solid var(--border)", background: "var(--bg)", color: "var(--text)", width: "120px" }}
                 />
                 <button
                   className="input-button"
                   disabled={extChecking}
                   onClick={() => void checkExtCompat()}
-                  style={{ display: "inline-flex", alignItems: "center", gap: "6px", height: "26px", padding: "0 12px", fontSize: "11px", fontWeight: 500, cursor: extChecking ? "default" : "pointer", borderRadius: "6px", border: "1px solid var(--border)", background: "var(--bg)", color: "var(--text)" }}
+                  style={{ display: "inline-flex", alignItems: "center", gap: "6px", height: "28px", padding: "0 12px", fontSize: "11px", fontWeight: 500, cursor: extChecking ? "default" : "pointer", borderRadius: "6px", border: "1px solid var(--border)", background: "var(--bg)", color: "var(--text)" }}
                 >
                   {extChecking ? <LoaderCircle size={11} className="spin" /> : <ShieldCheck size={11} />}
                   {extChecking ? "检查中…" : "检查兼容性"}
                 </button>
               </div>
               {extResult && (
-                <div style={{ fontSize: "11px", lineHeight: 1.6, padding: "8px 10px", borderRadius: "6px", border: extResult.compatible ? "1px solid rgba(34,197,94,0.3)" : "1px solid rgba(239,68,68,0.3)", background: extResult.compatible ? "rgba(34,197,94,0.08)" : "rgba(239,68,68,0.08)", color: "var(--muted)" }}>
+                <div style={{ marginTop: "6px", fontSize: "11px", lineHeight: 1.6, padding: "8px 10px", borderRadius: "6px", border: extResult.compatible ? "1px solid rgba(34,197,94,0.3)" : "1px solid rgba(239,68,68,0.3)", background: extResult.compatible ? "rgba(34,197,94,0.08)" : "rgba(239,68,68,0.08)", color: "var(--muted)" }}>
                   <div style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: "4px" }}>
                     {extResult.compatible ? <Check size={12} color="#22c55e" /> : <AlertCircle size={12} color="#ef4444" />}
                     <strong style={{ color: "var(--text)" }}>
@@ -4809,7 +5089,7 @@ function SettingsPage({ value, onChange, onClose, notify }: { value: AppSettings
           <div style={{ borderTop: "1px solid var(--border)", paddingTop: "14px", display: "flex", flexDirection: "column", gap: "10px" }}>
             <h3 style={{ margin: "0", fontSize: "12px", fontWeight: 600, color: "var(--text)" }}>开源项目主页</h3>
             <p style={{ margin: 0, fontSize: "11px", color: "var(--muted)", lineHeight: 1.5 }}>
-              本下载管理器属于开源共享项目。欢迎访问 GitHub 主页获取最新构建版本以更新软件，或参与社区提交代码改进：
+              本软件为开源项目，欢迎访问 GitHub 获取最新版本或参与代码贡献：
             </p>
             <div>
               <button
@@ -4849,7 +5129,7 @@ function SettingsPage({ value, onChange, onClose, notify }: { value: AppSettings
           <div style={{ borderTop: "1px solid var(--border)", paddingTop: "14px", display: "flex", flexDirection: "column", gap: "10px" }}>
             <h3 style={{ margin: "0", fontSize: "12px", fontWeight: 600, color: "var(--text)" }}>平台兼容性</h3>
             <p style={{ margin: 0, fontSize: "11px", color: "var(--muted)", lineHeight: 1.5 }}>
-              以下是各媒体平台当前的支持级别。新建任务对话框在检测到平台后会显示对应徽章，<strong>"不支持"</strong>的平台会禁用下载按钮。
+              以下是各媒体平台的支持级别，新建任务时将根据匹配到的平台展示对应状态徽章。
             </p>
             {platformCompatList.length === 0 ? (
               <div style={{ fontSize: "11px", color: "var(--muted)", padding: "8px 10px", background: "var(--bg-alt, rgba(0,0,0,0.03))", borderRadius: "6px", border: "1px solid var(--border)" }}>
@@ -4944,9 +5224,14 @@ function MeteredCheckButton({ notify }: { notify: (text: string, kind?: "ok" | "
     }
   };
   return (
-    <button type="button" disabled={checking} onClick={() => void onClick()} style={{ display: "inline-flex", alignItems: "center", gap: "6px" }}>
-      {checking ? <LoaderCircle size={12} className="spin" /> : <Network size={12} />}
-      {checking ? "检查中…" : "立即检查"}
+    <button
+      type="button"
+      className="secondary-btn"
+      disabled={checking}
+      onClick={() => void onClick()}
+    >
+      {checking ? <LoaderCircle size={11} className="spin" /> : <Network size={11} />}
+      <span>{checking ? "检查中…" : "立即检查"}</span>
     </button>
   );
 }
@@ -5222,7 +5507,7 @@ function CategoryRulesPanel({ notify }: { notify: (text: string, kind?: "ok" | "
   };
 
   return <SettingsGroup title="分类规则">
-    <p className="settings-note">按优先级（数字越小越优先）匹配 URL 域名、Content-Type 主类型或文件名正则，命中后自动填充新任务的保存目录。仅当用户未显式选择目录时生效；已显式选择的目录不会被覆盖。</p>
+    <p className="settings-note">按优先级匹配域名、文件类型或文件名正则，自动设置新任务的保存目录（不覆盖手动指定的目录）。</p>
     <div className="category-rules-toolbar">
       <button className="input-button" onClick={startAdd}><Plus size={13} /><span>新增规则</span></button>
       <button className="input-button" onClick={() => void reload()}><RefreshCw size={13} /><span>刷新</span></button>
@@ -5259,8 +5544,19 @@ function CategoryRulesPanel({ notify }: { notify: (text: string, kind?: "ok" | "
       </div>
     )}
     {editing && (
-      <Modal title={isNew ? "新增分类规则" : "编辑分类规则"} onClose={() => setEditing(null)} style={{ width: "480px" }}>
+      <Modal
+        title={isNew ? "新增分类规则" : "编辑分类规则"}
+        headerAction={
+          <label className="dialog-header-action">
+            <span>启用此规则</span>
+            <input className="toggle" type="checkbox" checked={editing.enabled} onChange={(e) => setEditing({ ...editing, enabled: e.target.checked })} />
+          </label>
+        }
+        onClose={() => setEditing(null)}
+        style={{ width: "520px" }}
+      >
         <div className="category-rule-edit-form">
+
           <div className="form-grid-2">
             <Field label="名称">
               <input value={editing.name} onChange={(e) => setEditing({ ...editing, name: e.target.value })} placeholder="例如：GitHub 仓库" />
@@ -5278,7 +5574,7 @@ function CategoryRulesPanel({ notify }: { notify: (text: string, kind?: "ok" | "
             <Field label={editing.rule_type === "domain" ? "域名（如 github.com）" : editing.rule_type === "mime" ? "主类型（如 video）" : "正则表达式（如 \\.mp4$）"}>
               <input value={editing.pattern} onChange={(e) => setEditing({ ...editing, pattern: e.target.value })} placeholder={editing.rule_type === "domain" ? "github.com" : editing.rule_type === "mime" ? "video" : "\\.mp4$"} />
             </Field>
-            <Field label="优先级（数字越小越优先）">
+            <Field label="优先级（越小越先）">
               <input type="number" value={editing.priority} onChange={(e) => setEditing({ ...editing, priority: +e.target.value })} />
             </Field>
           </div>
@@ -5292,11 +5588,6 @@ function CategoryRulesPanel({ notify }: { notify: (text: string, kind?: "ok" | "
               }}>选择目录</button>
             </div>
           </Field>
-
-          <div className="category-rule-enable-row">
-            <span>启用此规则</span>
-            <input className="toggle" type="checkbox" checked={editing.enabled} onChange={(e) => setEditing({ ...editing, enabled: e.target.checked })} />
-          </div>
 
           <details className="category-rule-test-details">
             <summary style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
@@ -5527,8 +5818,7 @@ function FilenameCleanupPanel({ notify }: { notify: (text: string, kind?: "ok" |
 
   return <SettingsGroup title="文件名清理规则">
     <p className="settings-note">
-      在保存下载文件前按优先级（数字越小越先执行）依次应用正则替换，去除站点水印、画质标记和重复空格。
-      仅在用户未手动编辑文件名时生效；内置规则可编辑或禁用，但不可删除。
+      保存文件前按优先级进行正则替换，用以去除水印、标记或多余空格。仅对未手动编辑文件名的任务生效。
     </p>
     <div className="category-rules-toolbar">
       <button className="input-button" onClick={startAdd}><Plus size={13} /><span>新增规则</span></button>
@@ -5567,12 +5857,18 @@ function FilenameCleanupPanel({ notify }: { notify: (text: string, kind?: "ok" |
       </div>
     )}
     {editing && (
-      <Modal title={isNew ? "新增文件名清理规则" : "编辑文件名清理规则"} onClose={() => setEditing(null)} style={{ width: "520px" }}>
-        <div className="category-rule-edit-form">
-          <label className="setting-row">
-            <div><strong>启用规则</strong></div>
+      <Modal
+        title={isNew ? "新增文件名清理规则" : "编辑文件名清理规则"}
+        headerAction={
+          <label className="dialog-header-action">
+            <span>启用规则</span>
             <input className="toggle" type="checkbox" checked={editing.enabled} onChange={(e) => setEditing({ ...editing, enabled: e.target.checked })} />
           </label>
+        }
+        onClose={() => setEditing(null)}
+        style={{ width: "520px" }}
+      >
+        <div className="category-rule-edit-form">
           <div className="form-row-group">
             <Field label="名称">
               <input value={editing.name} onChange={(e) => setEditing({ ...editing, name: e.target.value })} placeholder="例如：去除站点方括号" />
@@ -5726,8 +6022,7 @@ function PlatformNamingTemplatePanel({ notify }: { notify: (text: string, kind?:
 
   return <SettingsGroup title="平台命名模板">
     <p className="settings-note">
-      媒体下载完成后按平台套用文件名模板。仅在新建任务的下载文件上生效，不会追溯重命名已有文件。
-      6 个内置模板可编辑或禁用，但不可删除。模板支持变量替换，长度上限 100 字符（不含扩展名）。
+      媒体下载完成后套用此文件名模板。仅对新建任务生效，支持变量替换，限制在 100 字符内。
     </p>
     <div className="category-rules-toolbar">
       <button className="input-button" onClick={startAdd}><Plus size={13} /><span>新增模板</span></button>
@@ -5893,8 +6188,7 @@ function PresetsPanel({ notify }: { notify: (text: string, kind?: "ok" | "error"
 
   return <SettingsGroup title="下载预设">
     <p className="settings-note">
-      预设可快速套用一组下载参数（连接数、限速、完成动作、计划时间、校验）到新任务或现有任务。
-      5 个内置预设可直接编辑，但不能删除；自定义预设可任意增删改。连接数仅允许 1 / 2 / 4 / 8 / 16 / 32。
+      预设用于快速套用一组下载参数。内置预设可编辑但不可删除，自定义预设可任意增删改。
     </p>
     <div className="category-rules-toolbar">
       <button className="input-button" onClick={startAdd}><Plus size={13} /><span>新增预设</span></button>
@@ -6168,9 +6462,7 @@ function TaskTemplatesPanel({ notify }: { notify: (text: string, kind?: "ok" | "
 
   return <SettingsGroup title="任务模板">
     <p className="settings-note">
-      按域名自动套用下载参数（连接数、限速、请求头、保存目录、完成动作）到新任务。
-      支持精确域名（github.com）与通配符子域（*.example.com）。
-      多模板命中时按优先级（数字越小越优先）取最高；仅当用户未显式设置对应字段时套用，不会覆盖用户选择。
+      新任务根据域名（支持 *.example.com 通配）自动套用连接数、限速、目录等设置。已手动配置的字段不会被覆盖。
     </p>
     <div className="category-rules-toolbar">
       <button className="input-button" onClick={startAdd}><Plus size={13} /><span>新增模板</span></button>
@@ -6226,76 +6518,79 @@ function TaskTemplatesPanel({ notify }: { notify: (text: string, kind?: "ok" | "
     {editing && (
       <Modal title={isNew ? "新增任务模板" : "编辑任务模板"} onClose={() => setEditing(null)} style={{ width: "560px" }}>
         <div className="category-rule-edit-form">
-          <Field label="名称">
-            <input value={editing.name} onChange={(e) => setEditing({ ...editing, name: e.target.value })} placeholder="例如：GitHub 大文件" />
-          </Field>
-          <Field label="域名匹配模式">
-            <input value={editing.domain_pattern} onChange={(e) => setEditing({ ...editing, domain_pattern: e.target.value })} placeholder="github.com 或 *.github.com" />
-          </Field>
-          <Field label="优先级（数字越小越优先）">
-            <input type="number" value={editing.priority} onChange={(e) => setEditing({ ...editing, priority: +e.target.value })} />
-          </Field>
-          <Field label="连接数（留空表示不覆盖；仅允许 1 / 2 / 4 / 8 / 16 / 32）">
-            <select
-              value={editing.connections ?? ""}
-              onChange={(e) => {
-                const v = e.target.value;
-                setEditing({ ...editing, connections: v === "" ? null : +v });
-              }}
-            >
-              <option value="">不覆盖</option>
-              <option value={1}>1 路（单连接）</option>
-              <option value={2}>2 路</option>
-              <option value={4}>4 路</option>
-              <option value={8}>8 路</option>
-              <option value={16}>16 路</option>
-              <option value={32}>32 路</option>
-            </select>
-          </Field>
-          <Field label="单任务限速（KB/s，0 或留空表示不限速）">
-            <input
-              type="number"
-              min="0"
-              value={editing.speed_limit ? Math.round(editing.speed_limit / 1024) : 0}
-              onChange={(e) => {
-                const v = +e.target.value;
-                setEditing({ ...editing, speed_limit: v > 0 ? v * 1024 : null });
-              }}
-            />
-          </Field>
-          <Field label="保存目录（留空表示不覆盖）">
-            <div className="input-group">
+          <div className="template-edit-grid">
+            <Field label="名称">
+              <input value={editing.name} onChange={(e) => setEditing({ ...editing, name: e.target.value })} placeholder="例如：GitHub 大文件" />
+            </Field>
+            <Field label="域名匹配模式">
+              <input value={editing.domain_pattern} onChange={(e) => setEditing({ ...editing, domain_pattern: e.target.value })} placeholder="github.com 或 *.github.com" />
+            </Field>
+            <Field label="优先级（数字越小越优先）">
+              <input type="number" value={editing.priority} onChange={(e) => setEditing({ ...editing, priority: +e.target.value })} />
+            </Field>
+            <Field label="连接数（留空表示不覆盖；仅允许 1 / 2 / 4 / 8 / 16 / 32）">
+              <select
+                value={editing.connections ?? ""}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  setEditing({ ...editing, connections: v === "" ? null : +v });
+                }}
+              >
+                <option value="">不覆盖</option>
+                <option value={1}>1 路（单连接）</option>
+                <option value={2}>2 路</option>
+                <option value={4}>4 路</option>
+                <option value={8}>8 路</option>
+                <option value={16}>16 路</option>
+                <option value={32}>32 路</option>
+              </select>
+            </Field>
+            <Field label="单任务限速（KB/s，0 或留空表示不限速）">
               <input
-                value={editing.destination ?? ""}
-                onChange={(e) => setEditing({ ...editing, destination: e.target.value || null })}
-                placeholder="例如：D:\\Downloads\\GitHub"
+                type="number"
+                min="0"
+                value={editing.speed_limit ? Math.round(editing.speed_limit / 1024) : 0}
+                onChange={(e) => {
+                  const v = +e.target.value;
+                  setEditing({ ...editing, speed_limit: v > 0 ? v * 1024 : null });
+                }}
               />
-              <button className="input-button" onClick={async () => {
-                const picked = await pickPath({ directory: true, multiple: false, title: "选择保存目录" });
-                if (typeof picked === "string") setEditing({ ...editing, destination: picked });
-              }}>选择目录</button>
-            </div>
-          </Field>
-          <Field className="wide" label="完成后动作（留空表示不覆盖）">
-            <CompletionActionEditor
-              value={editing.completion_action ?? "none"}
-              onChange={(a) => setEditing({ ...editing, completion_action: a === "none" ? null : a })}
-              hidePowerOptions
-            />
-          </Field>
-          <Field label="请求头（每行一个，格式 Key: Value；留空表示不覆盖）">
-            <textarea
-              rows={4}
-              value={headersText}
-              onChange={(e) => setHeadersText(e.target.value)}
-              placeholder={"Authorization: Bearer token\nUser-Agent: MaobuFetch"}
-              style={{ width: "100%", fontFamily: "monospace" }}
-            />
-          </Field>
-          <label className="setting-row">
-            <div><strong>启用</strong></div>
-            <input className="toggle" type="checkbox" checked={editing.enabled} onChange={(e) => setEditing({ ...editing, enabled: e.target.checked })} />
-          </label>
+            </Field>
+            <Field label="启用">
+              <div style={{ display: "flex", alignItems: "center", height: "28px" }}>
+                <input className="toggle" type="checkbox" checked={editing.enabled} onChange={(e) => setEditing({ ...editing, enabled: e.target.checked })} />
+              </div>
+            </Field>
+            <Field className="wide" label="保存目录（留空表示不覆盖）">
+              <div className="input-group">
+                <input
+                  value={editing.destination ?? ""}
+                  onChange={(e) => setEditing({ ...editing, destination: e.target.value || null })}
+                  placeholder="例如：D:\\Downloads\\GitHub"
+                />
+                <button className="input-button" onClick={async () => {
+                  const picked = await pickPath({ directory: true, multiple: false, title: "选择保存目录" });
+                  if (typeof picked === "string") setEditing({ ...editing, destination: picked });
+                }}>选择目录</button>
+              </div>
+            </Field>
+            <Field className="wide" label="完成后动作（留空表示不覆盖）">
+              <CompletionActionEditor
+                value={editing.completion_action ?? "none"}
+                onChange={(a) => setEditing({ ...editing, completion_action: a === "none" ? null : a })}
+                hidePowerOptions
+              />
+            </Field>
+            <Field className="wide" label="请求头（每行一个，格式 Key: Value；留空表示不覆盖）">
+              <textarea
+                rows={3}
+                value={headersText}
+                onChange={(e) => setHeadersText(e.target.value)}
+                placeholder={"Authorization: Bearer token\nUser-Agent: MaobuFetch"}
+                style={{ width: "100%", fontFamily: "monospace" }}
+              />
+            </Field>
+          </div>
           <div className="dialog-actions"><button onClick={() => setEditing(null)}>取消</button><button className="primary" onClick={() => void saveEdit()}>保存</button></div>
         </div>
       </Modal>
@@ -6400,9 +6695,18 @@ function TagManagementPanel({ notify }: { notify: (text: string, kind?: "ok" | "
 
   return (
     <SettingsGroup title="标签管理">
+      <p className="settings-note">标签用于对下载任务进行分类管理。删除标签只会解除关联，不会删除实际任务或文件。</p>
       <div className="settings-group-content">
-        <p className="settings-note">标签用于对任务进行多对多分类。删除标签会自动从所有任务上移除该标签。颜色仅作为视觉辅助，标签名称文字始终同时显示。</p>
         <div className="tag-management-add-row">
+          <div className="tag-color-col">
+            <input
+              type="color"
+              value={newColor}
+              onChange={(e) => setNewColor(e.target.value.toUpperCase())}
+              aria-label="新标签颜色"
+              title="标签颜色"
+            />
+          </div>
           <input
             type="text"
             placeholder="新标签名称"
@@ -6410,13 +6714,6 @@ function TagManagementPanel({ notify }: { notify: (text: string, kind?: "ok" | "
             onChange={(e) => setNewName(e.target.value)}
             maxLength={20}
             aria-label="新标签名称"
-          />
-          <input
-            type="color"
-            value={newColor}
-            onChange={(e) => setNewColor(e.target.value.toUpperCase())}
-            aria-label="新标签颜色"
-            title="标签颜色"
           />
           <span className="tag-color-hex">{newColor}</span>
           <button className="primary" onClick={() => void add()} disabled={!newName.trim()}>添加</button>
@@ -6431,12 +6728,14 @@ function TagManagementPanel({ notify }: { notify: (text: string, kind?: "ok" | "
               <div key={tag.id} className="tag-management-row">
                 {editingId === tag.id ? (
                   <>
-                    <input
-                      type="color"
-                      value={editingColor}
-                      onChange={(e) => setEditingColor(e.target.value.toUpperCase())}
-                      aria-label="编辑标签颜色"
-                    />
+                    <div className="tag-color-col">
+                      <input
+                        type="color"
+                        value={editingColor}
+                        onChange={(e) => setEditingColor(e.target.value.toUpperCase())}
+                        aria-label="编辑标签颜色"
+                      />
+                    </div>
                     <input
                       type="text"
                       value={editingName}
@@ -6445,14 +6744,16 @@ function TagManagementPanel({ notify }: { notify: (text: string, kind?: "ok" | "
                       aria-label="编辑标签名称"
                     />
                     <button className="primary" onClick={() => void saveEdit()}>保存</button>
-                    <button onClick={() => cancelEdit()}>取消</button>
+                    <button className="secondary-btn" onClick={() => cancelEdit()}>取消</button>
                   </>
                 ) : (
                   <>
-                    <span className="tag-swatch" style={{ background: tag.color }} aria-hidden="true" />
+                    <div className="tag-color-col">
+                      <span className="tag-swatch" style={{ background: tag.color }} aria-hidden="true" />
+                    </div>
                     <span className="tag-name" title={tag.name}>{tag.name}</span>
                     <span className="tag-color-hex muted">{tag.color}</span>
-                    <button onClick={() => beginEdit(tag)} title="编辑">编辑</button>
+                    <button className="secondary-btn" onClick={() => beginEdit(tag)} title="编辑">编辑</button>
                     <button className="danger-action" onClick={() => setConfirmDelete(tag.id)} title="删除">删除</button>
                   </>
                 )}
@@ -6461,11 +6762,13 @@ function TagManagementPanel({ notify }: { notify: (text: string, kind?: "ok" | "
           </div>
         )}
         {confirmDelete !== null && (
-          <Modal title="删除标签" onClose={() => setConfirmDelete(null)}>
-            <p>删除标签会自动从所有任务上移除该标签。任务本身不会被删除。是否继续？</p>
+          <Modal title="删除标签" onClose={() => setConfirmDelete(null)} style={{ width: "360px" }}>
+            <p style={{ fontSize: "11.5px", color: "var(--muted)", margin: "0 0 16px", lineHeight: "1.5" }}>
+              确定要删除此标签吗？这仅会移除所有任务与该标签的关联，不会删除下载文件。
+            </p>
             <div className="dialog-actions">
               <button onClick={() => setConfirmDelete(null)}>取消</button>
-              <button className="primary danger-action" onClick={() => void remove(confirmDelete)}>删除</button>
+              <button className="danger" onClick={() => void remove(confirmDelete)}>删除</button>
             </div>
           </Modal>
         )}
@@ -6575,9 +6878,7 @@ function MediaCredentialsPanel({ notify }: { notify: (text: string, kind?: "ok" 
 
   return <SettingsGroup title="媒体凭证管理">
     <p className="settings-note">
-      按域名保存 Cookie / Referer / User-Agent，分析或下载媒体时会自动套用。
-      Cookie 使用 Windows DPAPI 加密存储，仅当前 Windows 用户可解密；换机器或损坏时需要重新录入。
-      前端在新建任务对话框显式传入的凭证始终优先于数据库存储值。
+      按域名保存 Cookie 和 Referer 等凭证以在下载时自动附带。Cookie 使用 Windows DPAPI 加密存储。
     </p>
     <div className="category-rules-toolbar">
       <button className="input-button" onClick={startAdd}><Plus size={13} /><span>新增凭证</span></button>
@@ -6585,7 +6886,7 @@ function MediaCredentialsPanel({ notify }: { notify: (text: string, kind?: "ok" 
     </div>
     {loading ? <LoaderCircle className="spin" /> : credentials.length === 0 ? <p className="settings-note">暂无已保存的媒体凭证。</p> : (
       <div className="category-rules-list" role="table">
-        <div className="category-rule-row category-rule-row-header" role="row">
+        <div className="category-rule-row media-credential-row category-rule-row-header" role="row">
           <span className="category-rule-name">域名</span>
           <span className="category-rule-pattern">Cookie</span>
           <span>Referer</span>
@@ -6594,7 +6895,7 @@ function MediaCredentialsPanel({ notify }: { notify: (text: string, kind?: "ok" 
           <span className="category-rule-actions">操作</span>
         </div>
         {credentials.map((cred) => (
-          <div key={cred.domain} className="category-rule-row" role="row">
+          <div key={cred.domain} className="category-rule-row media-credential-row" role="row">
             <span className="category-rule-name" role="cell" title={cred.domain}><code>{cred.domain}</code></span>
             <span className="category-rule-pattern" role="cell">{maskCookie(cred.cookie)}</span>
             <span role="cell" title={cred.referer ?? ""}>{cred.referer ? "已设置" : "—"}</span>
@@ -6611,35 +6912,35 @@ function MediaCredentialsPanel({ notify }: { notify: (text: string, kind?: "ok" 
     {editing && (
       <Modal title={isNew ? "新增媒体凭证" : "编辑媒体凭证"} onClose={() => setEditing(null)} style={{ width: "560px" }}>
         <div className="category-rule-edit-form">
-          <Field label="域名（裸域名，如 example.com）">
+          <Field label="域名">
             <input
               value={editing.domain}
               onChange={(e) => setEditing({ ...editing, domain: e.target.value })}
-              placeholder="example.com"
+              placeholder="如 bilibili.com (裸域名，不含 http:// 或 https:// 协议前缀)"
               disabled={!isNew}
             />
           </Field>
-          <Field label="Cookie（多行 name=value; ... 形式；留空表示清除）">
+          <Field label="Cookie">
             <textarea
               rows={5}
               value={editing.cookie ?? ""}
               onChange={(e) => setEditing({ ...editing, cookie: e.target.value })}
-              placeholder={"session=abc123; theme=dark"}
+              placeholder="输入或粘贴 Cookie 键值对内容 (多行 name=value 形式，留空表示清除)"
               style={{ width: "100%", fontFamily: "monospace" }}
             />
           </Field>
-          <Field label="Referer（留空表示不设置）">
+          <Field label="Referer">
             <input
               value={editing.referer ?? ""}
               onChange={(e) => setEditing({ ...editing, referer: e.target.value || null })}
-              placeholder="https://example.com/"
+              placeholder="https://example.com/ (选填，留空表示不设置)"
             />
           </Field>
-          <Field label="User-Agent（留空表示不设置）">
+          <Field label="User-Agent">
             <input
               value={editing.user_agent ?? ""}
               onChange={(e) => setEditing({ ...editing, user_agent: e.target.value || null })}
-              placeholder="Mozilla/5.0 ..."
+              placeholder="Mozilla/5.0 ... (选填，使用自定义 User-Agent；留空表示使用软件默认)"
             />
           </Field>
           <div className="dialog-actions"><button onClick={() => setEditing(null)}>取消</button><button className="primary" onClick={() => void saveEdit()}>保存</button></div>
@@ -6649,21 +6950,40 @@ function MediaCredentialsPanel({ notify }: { notify: (text: string, kind?: "ok" 
   </SettingsGroup>;
 }
 
-function ContextMenu({ x, y, task, close, notify, onSetSpeedLimit, onDelete }: { x: number; y: number; task: DownloadTask; close: () => void; notify: (text: string, kind?: "ok" | "error") => void; onSetSpeedLimit: (task: DownloadTask) => void; onDelete: (taskIds: Set<string>, deleteFile: boolean) => void }) {
+function ContextMenu({ x, y, task, selectedTaskIds, allTasks = [], close, notify, onSetSpeedLimit, onDelete, onViewDetails }: { x: number; y: number; task: DownloadTask; selectedTaskIds?: Set<string>; allTasks?: DownloadTask[]; close: () => void; notify: (text: string, kind?: "ok" | "error") => void; onSetSpeedLimit: (task: DownloadTask) => void; onDelete: (taskIds: Set<string>, deleteFile: boolean) => void; onViewDetails?: () => void }) {
+  const targetTaskIds = useMemo(() => {
+    if (selectedTaskIds && selectedTaskIds.has(task.id) && selectedTaskIds.size > 1) {
+      return selectedTaskIds;
+    }
+    return new Set([task.id]);
+  }, [selectedTaskIds, task.id]);
+
+  const targetTasks = useMemo(() => {
+    return allTasks.filter((t) => targetTaskIds.has(t.id));
+  }, [allTasks, targetTaskIds]);
+
+  const countTag = targetTaskIds.size > 1 ? ` (${targetTaskIds.size} 项)` : "";
+
   const action = async (value: string) => {
     try {
-      await api.action(task.id, value);
-      close();
+      for (const id of targetTaskIds) {
+        await api.action(id, value);
+      }
     } catch (error) {
       notify(String(error), "error");
+    } finally {
+      close();
     }
   };
   const update = async (options: { priority?: number; perTaskSpeedLimit?: number; completionAction?: CompletionAction }) => {
     try {
-      await api.updateTaskOptions(task.id, options);
-      close();
+      for (const id of targetTaskIds) {
+        await api.updateTaskOptions(id, options);
+      }
     } catch (error) {
       notify(String(error), "error");
+    } finally {
+      close();
     }
   };
   const changeSpeedLimit = () => {
@@ -6680,6 +7000,18 @@ function ContextMenu({ x, y, task, close, notify, onSetSpeedLimit, onDelete }: {
       close();
     }
   };
+  const copyUrls = async () => {
+    try {
+      const list = targetTasks.length > 0 ? targetTasks : [task];
+      const text = list.map((t) => t.url).join("\n");
+      await navigator.clipboard.writeText(text);
+      notify(list.length > 1 ? `${list.length} 个来源链接已复制` : "来源链接已复制");
+    } catch (error) {
+      notify(`复制链接失败：${String(error)}`, "error");
+    } finally {
+      close();
+    }
+  };
   const buildFilePath = () => {
     const sep = task.destination.endsWith("\\") || task.destination.endsWith("/") ? "" : "\\";
     return `${task.destination}${sep}${task.file_name}`;
@@ -6690,7 +7022,7 @@ function ContextMenu({ x, y, task, close, notify, onSetSpeedLimit, onDelete }: {
     close();
   };
   const confirmDelete = (deleteFile: boolean) => {
-    onDelete(new Set([task.id]), deleteFile);
+    onDelete(targetTaskIds, deleteFile);
     close();
   };
 
@@ -6730,10 +7062,24 @@ function ContextMenu({ x, y, task, close, notify, onSetSpeedLimit, onDelete }: {
       sections.push(<button key="keep-cancel" onClick={() => void action("cancel")}><CirclePause size={13} />保留旧文件并取消</button>);
       break;
     case "completed":
-      sections.push(<button key="open-file" onClick={() => void api.openFile(task.id).then(close).catch((e) => notify(String(e), "error"))}><ExternalLink size={13} />打开文件</button>);
-      sections.push(<button key="open-folder" onClick={() => void api.openFolder(task.id).then(close).catch((e) => notify(String(e), "error"))}><FolderOpen size={13} />打开文件夹</button>);
-      sections.push(<button key="copy-path" onClick={() => void copyText("文件路径", buildFilePath())}><Copy size={13} />复制文件路径</button>);
-      sections.push(<button key="verify" onClick={() => void api.verify(task.id).then(() => { notify("文件校验完成"); close(); }).catch((e) => notify(String(e), "error"))}><ShieldCheck size={13} />校验 SHA-256</button>);
+      if (targetTaskIds.size <= 1) {
+        sections.push(<button key="open-file" onClick={() => void api.openFile(task.id).then(close).catch((e) => notify(String(e), "error"))}><ExternalLink size={13} />打开文件</button>);
+        sections.push(<button key="open-folder" onClick={() => void api.openFolder(task.id).then(close).catch((e) => notify(String(e), "error"))}><FolderOpen size={13} />打开文件夹</button>);
+      }
+      sections.push(<button key="copy-path" onClick={() => {
+        if (targetTaskIds.size <= 1) {
+          void copyText("文件路径", buildFilePath());
+        } else {
+          const paths = targetTasks.map((t) => {
+            const sep = t.destination.endsWith("\\") || t.destination.endsWith("/") ? "" : "\\";
+            return `${t.destination}${sep}${t.file_name}`;
+          }).join("\n");
+          void copyText("文件路径", paths);
+        }
+      }}><Copy size={13} />复制文件路径{countTag}</button>);
+      if (targetTaskIds.size <= 1) {
+        sections.push(<button key="verify" onClick={() => void api.verify(task.id).then(() => { notify("文件校验完成"); close(); }).catch((e) => notify(String(e), "error"))}><ShieldCheck size={13} />校验 SHA-256</button>);
+      }
       break;
     case "queued":
     case "scheduled":
@@ -6741,9 +7087,6 @@ function ContextMenu({ x, y, task, close, notify, onSetSpeedLimit, onDelete }: {
     default:
       break;
   }
-
-  if (sections.length > 0) pushSep();
-  sections.push(<button key="copy-url" onClick={() => void copyText("来源链接", task.url)}><Copy size={13} />复制链接</button>);
 
   if (!["cancelled", "completed"].includes(task.status)) {
     sections.push(
@@ -6761,17 +7104,24 @@ function ContextMenu({ x, y, task, close, notify, onSetSpeedLimit, onDelete }: {
     sections.push(<button key="completion" onClick={() => void update({ completionAction: task.completion_action === "open-folder" ? "none" : "open-folder" })}><FolderOpen size={13} />{task.completion_action === "open-folder" ? "取消完成后打开文件夹" : "完成后打开文件夹"}</button>);
   }
 
+  if (onViewDetails) {
+    sections.push(<button key="view-details" onClick={() => { onViewDetails(); close(); }}><Info size={13} />查看详情</button>);
+  }
+
+  if (sections.length > 0) pushSep();
+  sections.push(<button key="copy-url" onClick={() => void copyUrls()}><Copy size={13} />复制链接{countTag}</button>);
+
   pushSep();
   sections.push(
     <button key="delete-record" className="danger" onClick={() => void confirmDelete(false)}>
       <Trash2 size={13} />
-      {t("dialogs.deleteRecordOnly")}
+      {t("dialogs.deleteRecordOnly")}{countTag}
     </button>
   );
   sections.push(
     <button key="delete-file" className="danger" onClick={() => void confirmDelete(true)}>
       <Trash2 size={13} />
-      {t("dialogs.deleteRecordAndFile")}
+      {t("dialogs.deleteRecordAndFile")}{countTag}
     </button>
   );
 
@@ -6938,47 +7288,23 @@ function SpeedLimitDialog({
   );
 }
 
-function ClearHistoryDialog({ count, onCancel, onConfirm }: { count: number; onCancel: () => void; onConfirm: (deleteFile: boolean) => void }) {
-  // Task 33: 订阅 locale 变化，对话框文案同步刷新。
-  useLocale();
-  const [busy, setBusy] = useState(false);
-  const handle = async (deleteFile: boolean) => {
-    if (busy) return;
-    setBusy(true);
-    try { await onConfirm(deleteFile); } finally { setBusy(false); }
-  };
+
+
+function Modal({ title, onClose, wide, children, style, headerAction }: { title: string; onClose: () => void; wide?: boolean; children: ReactNode; style?: CSSProperties; headerAction?: ReactNode }) {
   return (
-    <Modal title={t("dialogs.clearHistoryTitle")} onClose={onCancel} style={{ width: "420px" }}>
-      <div className="delete-task-dialog">
-        <p className="delete-task-message">
-          {t("dialogs.clearHistoryConfirm", { count })}
-        </p>
-        <div className="delete-task-options">
-          <button className="delete-task-option" disabled={busy} onClick={() => void handle(false)}>
-            <div className="delete-task-option-header">
-              <Trash2 size={14} />
-              <span>{t("dialogs.deleteRecordOnly")}</span>
-            </div>
-            <p>{t("dialogs.deleteRecordOnlyDesc")}</p>
-          </button>
-          <button className="delete-task-option danger" disabled={busy} onClick={() => void handle(true)}>
-            <div className="delete-task-option-header">
-              <Trash2 size={14} />
-              <span>{t("dialogs.deleteRecordAndFile")}</span>
-            </div>
-            <p>{t("dialogs.deleteRecordAndFileDesc")}</p>
-            <p className="delete-task-warning">{t("dialogs.forceDeleteConfirm", { count })}</p>
-          </button>
-        </div>
-        <div className="dialog-actions">
-          <button onClick={onCancel} disabled={busy}>{t("common.cancel")}</button>
-        </div>
+    <div className="modal-layer" onMouseDown={onClose}>
+      <div className="dialog-material" onMouseDown={(e) => e.stopPropagation()}>
+        <section className={wide ? "dialog wide" : "dialog"} style={style}>
+          <div className="settings-title">
+            <h2>{title}</h2>
+            {headerAction}
+          </div>
+          {children}
+        </section>
       </div>
-    </Modal>
+    </div>
   );
 }
-
-function Modal({ title, onClose, wide, children, style }: { title: string; onClose: () => void; wide?: boolean; children: ReactNode; style?: CSSProperties }) { return <div className="modal-layer" onMouseDown={onClose}><div className="dialog-material" onMouseDown={(e) => e.stopPropagation()}><section className={wide ? "dialog wide" : "dialog"} style={style}><div className="settings-title"><h2>{title}</h2></div>{children}</section></div></div>; }
 
 /** Task 27.6：备份选项对话框。
  *

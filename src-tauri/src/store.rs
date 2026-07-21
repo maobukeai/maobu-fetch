@@ -968,7 +968,7 @@ impl Store {
     /// 返回的 `MediaCredential.cookie` 为解密后的明文。
     /// 解密失败（换机器/密文损坏）时返回中文错误，调用方应提示用户重新录入。
     /// 不存在时返回 `None`，不视为错误。
-    pub async fn media_credential_get(
+  pub async fn media_credential_get(
         &self,
         domain: &str,
     ) -> Result<Option<MediaCredential>, String> {
@@ -1007,6 +1007,27 @@ impl Store {
                 }))
             }
         }
+    }
+
+    /// Query credential matching domain or its parent domains (e.g. v.douyin.com -> douyin.com)
+    pub async fn media_credential_get_matching(
+        &self,
+        domain: &str,
+    ) -> Result<Option<MediaCredential>, String> {
+        if let Some(cred) = self.media_credential_get(domain).await? {
+            return Ok(Some(cred));
+        }
+        let parts: Vec<&str> = domain.split('.').collect();
+        for i in 1..parts.len() {
+            if parts.len() - i < 2 {
+                break;
+            }
+            let parent = parts[i..].join(".");
+            if let Some(cred) = self.media_credential_get(&parent).await? {
+                return Ok(Some(cred));
+            }
+        }
+        Ok(None)
     }
 
     /// Task 46: 按 domain 删除单条凭证。不存在不算错误（幂等）。
@@ -1593,6 +1614,7 @@ fn seed_builtin_filename_cleanup_rules(connection: &Connection) -> Result<(), St
               ('remove-square-bracket-quality','去除 [1080p] 画质标记','\[\d{3,4}[pP]\]','',1,21),
               ('remove-media-codec-tags','去除影音格式编码噪音','(?i)[._-]?\b(h\.?264|x264|h\.?265|x265|hevc|bluray|web-?rip|hdr|ddp\d\.\d|aac|dts)\b','',1,25),
               ('remove-underscore-site','去除 _www.站点_ 包围','_www\.[\w.-]+_','',1,30),
+              ('remove-hash-tags','去除 #话题 标记','#[^\s#.]+','',1,35),
               ('remove-copy-suffix','去除副本重名标记','\s*-\s*副本|\s*-\s*Copy','',1,38),
               ('collapse-spaces','合并空格与下划线','[\s_]+',' ',1,40),
               ('strip-trailing-spaces','去除点前面的空格','\s+(\.[a-zA-Z0-9]+)$','$1',1,45);
@@ -1619,15 +1641,31 @@ fn seed_builtin_platform_naming_templates(connection: &Connection) -> Result<(),
     connection
         .execute_batch(
             r#"INSERT OR IGNORE INTO platform_naming_templates(id,platform,template,enabled,is_builtin) VALUES
-              ('douyin-default','douyin','{author}_{title}_{date}',1,1),
-              ('tiktok-default','tiktok','{author}_{title}_{date}',1,1),
-              ('twitter-default','twitter','{author}_{id}_{date}',1,1),
-              ('youtube-default','youtube','{channel}_{title}_{id}',1,1),
-              ('bilibili-default','bilibili','{author}_{title}_{bvid}',1,1),
-              ('weibo-default','weibo','{author}_{title}_{date}',1,1);
+              ('douyin-default','douyin','{title}_{date}',1,1),
+              ('tiktok-default','tiktok','{title}_{date}',1,1),
+              ('twitter-default','twitter','{id}_{date}',1,1),
+              ('youtube-default','youtube','{title}_{id}',1,1),
+              ('bilibili-default','bilibili','{title}_{bvid}',1,1),
+              ('weibo-default','weibo','{title}_{date}',1,1);
             "#,
         )
         .map_err(|e| e.to_string())?;
+
+    // 升级已存在但未被用户定制过的内置模板，移除作者/频道前缀
+    let migrations = [
+        ("douyin-default", "{author}_{title}_{date}", "{title}_{date}"),
+        ("tiktok-default", "{author}_{title}_{date}", "{title}_{date}"),
+        ("twitter-default", "{author}_{id}_{date}", "{id}_{date}"),
+        ("youtube-default", "{channel}_{title}_{id}", "{title}_{id}"),
+        ("bilibili-default", "{author}_{title}_{bvid}", "{title}_{bvid}"),
+        ("weibo-default", "{author}_{title}_{date}", "{title}_{date}"),
+    ];
+    for (id, old_val, new_val) in migrations {
+        let _ = connection.execute(
+            "UPDATE platform_naming_templates SET template = ?1 WHERE id = ?2 AND template = ?3",
+            rusqlite::params![new_val, id, old_val],
+        );
+    }
     Ok(())
 }
 
@@ -2753,14 +2791,14 @@ mod tests {
         runtime.block_on(async {
             // 升级后表应存在且内置规则已 seed
             let list = store.filename_cleanup_rule_list().await.unwrap();
-            assert_eq!(list.len(), 10);
+            assert_eq!(list.len(), 11);
             // 用户也可新增自定义规则
             store
                 .filename_cleanup_rule_add(sample_cleanup_rule("legacy-1", 100, true))
                 .await
                 .unwrap();
             let list = store.filename_cleanup_rule_list().await.unwrap();
-            assert_eq!(list.len(), 11);
+            assert_eq!(list.len(), 12);
             assert!(list.iter().any(|r| r.id == "legacy-1"));
         });
 
@@ -2769,14 +2807,14 @@ mod tests {
         let runtime = tokio::runtime::Runtime::new().unwrap();
         runtime.block_on(async {
             let list = store.filename_cleanup_rule_list().await.unwrap();
-            assert_eq!(list.len(), 11);
+            assert_eq!(list.len(), 12);
             assert!(list.iter().any(|r| r.id == "legacy-1"));
             // 内置规则不应被重复插入
             let builtin_count = list
                 .iter()
                 .filter(|r| r.id.starts_with("remove-") || r.id == "collapse-spaces" || r.id == "strip-trailing-spaces")
                 .count();
-            assert_eq!(builtin_count, 10);
+            assert_eq!(builtin_count, 11);
         });
     }
 

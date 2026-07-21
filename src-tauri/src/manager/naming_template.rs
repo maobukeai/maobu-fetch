@@ -162,7 +162,7 @@ fn lookup_variable(name: &str, vars: &NamingVars) -> Option<String> {
 }
 
 /// 把字符串中的非法字符与控制字符替换为 `_`，压缩连续下划线，去除首尾下划线。
-fn sanitize_filename(input: &str) -> String {
+pub(crate) fn sanitize_filename(input: &str) -> String {
     let mut result = String::with_capacity(input.len());
     let mut prev_underscore = false;
     for c in input.chars() {

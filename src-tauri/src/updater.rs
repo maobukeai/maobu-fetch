@@ -76,7 +76,15 @@ pub async fn check_app_update() -> UpdateCheckResult {
 
     let status = response.status();
     if !status.is_success() {
-        return error_result(current, &format!("更新服务器返回 HTTP {}", status.as_u16()));
+        let err_body = response.text().await.unwrap_or_default();
+        let display_err = if status.as_u16() == 403 && (err_body.contains("rate limit") || err_body.contains("Rate limit")) {
+            "当前网络 IP 请求 GitHub 接口太频繁，已触发限流 (403)，请稍后重试或更换代理节点".to_string()
+        } else if status.as_u16() == 404 {
+            "未找到可用版本 (404)。请确认 GitHub 仓库已设置为公开 (Public) 且已发布至少一个 Release 包".to_string()
+        } else {
+            format!("更新服务器返回 HTTP {}：{}", status.as_u16(), err_body)
+        };
+        return error_result(current, &display_err);
     }
 
     let body = match response.text().await {

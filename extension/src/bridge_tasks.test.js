@@ -19,7 +19,8 @@ globalThis.chrome = {
   runtime: { id: "test-extension-id", onInstalled: { addListener: () => {} }, onMessage: { addListener: () => {} } },
   contextMenus: { removeAll: (cb) => cb && cb(), create: () => {}, onClicked: { addListener: () => {} } },
   downloads: { onCreated: { addListener: () => {} } },
-  tabs: { query: async () => [], sendMessage: async () => ({}) },
+  tabs: { query: async () => [], sendMessage: async () => ({}), onUpdated: { addListener: () => {} } },
+  cookies: { getAll: async () => [] },
   notifications: { create: () => {} },
 };
 

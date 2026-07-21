@@ -80,6 +80,13 @@ mod tests {
     }
 
     #[test]
+    fn default_rule_remove_hash_tags_strips_topics() {
+        let rule = make_rule("remove-hash-tags", r"#[^\s#.]+", "", true, 35);
+        let cleaned = apply_filename_cleanup("大疆 P4P vs 影石 Luna 两周使用，我更推荐谁？ #pocket4pro #lunaultra.mp4", &[rule]);
+        assert_eq!(cleaned, "大疆 P4P vs 影石 Luna 两周使用，我更推荐谁？  .mp4");
+    }
+
+    #[test]
     fn default_rule_remove_bracket_site_strips_bare_domain() {
         let rule = make_rule("remove-bracket-site", r"\[(www\.)?[\w.-]+\]", "", true, 10);
         let cleaned = apply_filename_cleanup("video [example.com].mkv", &[rule]);

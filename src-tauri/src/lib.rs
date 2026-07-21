@@ -411,7 +411,7 @@ async fn resolve_media_credentials(
     let Some(domain) = crate::media_cookies::extract_domain(url) else {
         return (cookie, referer, user_agent);
     };
-    let stored = match store.media_credential_get(&domain).await {
+    let stored = match store.media_credential_get_matching(&domain).await {
         Ok(Some(credential)) => credential,
         _ => return (cookie, referer, user_agent),
     };
@@ -839,7 +839,7 @@ async fn media_credential_get(
     domain: String,
     manager: State<'_, SharedManager>,
 ) -> Result<Option<MediaCredential>, String> {
-    manager.store.media_credential_get(&domain).await
+    manager.store.media_credential_get_matching(&domain).await
 }
 
 /// Task 46：按 domain 删除单条凭证。不存在不算错误（幂等）。
@@ -890,7 +890,7 @@ async fn platform_compatibility_get(
 /// Task 46：返回 ISO 8601 UTC 时间字符串（如 `2026-07-20T10:30:00Z`）。
 ///
 /// 用于 `media_credential_save` 在调用方未提供 `updated_at` 时填充默认值。
-fn now_iso8601_utc() -> String {
+pub(crate) fn now_iso8601_utc() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
     let secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -1345,6 +1345,9 @@ fn app_get_info(app: tauri::AppHandle) -> Result<AppInfo, String> {
 fn register_deep_link_handler(app: &tauri::AppHandle, manager: SharedManager) {
     use tauri_plugin_deep_link::DeepLinkExt;
 
+    // 在 Windows/Linux 上动态注册 maobu:// 协议以支持开发/便携模式下的深链唤醒。
+    let _ = app.deep_link().register("maobu");
+
     // 监听运行时 deep-link 事件（插件 emit "deep-link://new-url"，payload 为 Vec<url::Url>）。
     let event_app = app.clone();
     let event_manager = manager.clone();
@@ -1515,20 +1518,11 @@ async fn update_tray_progress(app: &tauri::AppHandle, manager: &SharedManager) {
     let _ = tray.set_tooltip(Some(tooltip));
 
     let Some(base) = app.default_window_icon() else {
-        // 无基础图标可叠加，仅更新 tooltip。
+        // 无基础图标，仅更新 tooltip。
         return;
     };
-    let icon = if progress.active_count > 0 && progress.percent > 0 {
-        match tray_icon::render_progress_icon(progress.percent, base) {
-            Ok(image) => Some(image),
-            Err(_) => Some(base.clone()),
-        }
-    } else {
-        Some(base.clone())
-    };
-    if let Err(_err) = tray.set_icon(icon) {
-        // 设置失败时静默回退到默认图标，避免阻塞下载流程。
-        let _ = tray.set_icon(Some(base.clone()));
+    if let Err(_err) = tray.set_icon(Some(base.clone())) {
+        // 设置失败时静默回退，避免阻断核心下载流程
     }
 }
 

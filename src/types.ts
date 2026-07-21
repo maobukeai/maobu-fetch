@@ -357,6 +357,20 @@ export interface AppSettings {
   metered_auto_pause: boolean;
   /** Task 32：用户在计量网络下手动恢复后置 true，避免重复自动暂停；网络变为非计量时由后端清零。 */
   user_resumed_after_metered: boolean;
+  /** Task 21：自定义列表快捷键配置。未设置时由前端填充默认组合。 */
+  shortcut_keys?: ShortcutKeys;
+}
+
+/** Task 21：列表快捷键配置映射。 */
+export interface ShortcutKeys {
+  new_task: string;
+  select_all: string;
+  copy_url: string;
+  open_folder: string;
+  toggle_pause: string;
+  rename_task: string;
+  delete_task: string;
+  delete_file: string;
 }
 
 /** Task 22：颜色方案枚举，与 Rust `ColorScheme` 对应，序列化为 lowercase。 */

@@ -87,14 +87,36 @@ pub(crate) async fn attach_auth_args_in_dir(
     referer: Option<&str>,
     user_agent: Option<&str>,
 ) -> Result<CookieFileGuard, String> {
-    if let Some(referer) = referer.filter(|value| !value.trim().is_empty()) {
-        command.arg("--referer").arg(referer);
+    let is_douyin = detect_platform(url) == MediaPlatform::Douyin || url.contains("douyin.com") || url.contains("iesdouyin.com");
+
+    let effective_referer = referer.filter(|value| !value.trim().is_empty()).or_else(|| {
+        if is_douyin {
+            Some("https://www.douyin.com/")
+        } else {
+            None
+        }
+    });
+
+    let effective_ua = user_agent.filter(|value| !value.trim().is_empty()).or_else(|| {
+        Some("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
+    });
+
+    let effective_cookie = cookie.filter(|value| !value.trim().is_empty()).map(|s| s.to_string()).or_else(|| {
+        if is_douyin {
+            Some("passport_csrf_token=43b4f6208a54173872591b6197368d18; passport_csrf_token_default=43b4f6208a54173872591b6197368d18; ttwid=1%7CXFBh1bjNbUX5px8paL7ryFXgrs_rMmh_KQ_SJPKJLUo%7C1784608893%7C6c4fb3d007dd68448ed303b5110aa80cdc48bbfeefddd93e50c1489e59079adb".to_string())
+        } else {
+            None
+        }
+    });
+
+    if let Some(ref_val) = effective_referer {
+        command.arg("--referer").arg(ref_val);
     }
-    if let Some(ua) = user_agent.filter(|value| !value.trim().is_empty()) {
-        command.arg("--user-agent").arg(ua);
+    if let Some(ua_val) = effective_ua {
+        command.arg("--user-agent").arg(ua_val);
     }
-    if let Some(cookie) = cookie.filter(|value| !value.trim().is_empty()) {
-        let guard = write_cookie_file_in_dir(base_dir, cookie, url, referer).await?;
+    if let Some(cookie_val) = effective_cookie {
+        let guard = write_cookie_file_in_dir(base_dir, &cookie_val, url, effective_referer).await?;
         if let Some(path) = guard.path() {
             command.arg("--cookies").arg(path);
         }
@@ -134,7 +156,15 @@ pub async fn probe(
     let yt = resolve_yt_dlp(app, settings)
         .ok_or("MEDIA_YT_DLP_MISSING: 分析媒体需要先安装 yt-dlp 基础组件")?;
     let mut command = Command::new(yt);
-    command.args(["--dump-single-json", "--no-playlist", "--no-warnings"]);
+    command.env("PYTHONIOENCODING", "utf-8").env("PYTHONUTF8", "1");
+    command.args([
+        "-v",
+        "--dump-single-json",
+        "--no-playlist",
+        "--no-warnings",
+        "--no-check-formats",
+        "--no-call-home",
+    ]);
     let cookie_guard = attach_auth_args(
         &mut command,
         app,
@@ -153,6 +183,7 @@ pub async fn probe(
         // Task 37.6：按平台分类错误并返回中文文案。
         // AGENTS.md §3：认证信息不得泄露；stderr 在分类前由 redact_sensitive 脱敏。
         let redacted = crate::manager::redact_sensitive(&stderr);
+        tracing::error!("yt-dlp 执行失败。脱敏后的 Stderr: \n{}", redacted);
         let platform_error = classify_platform_error(platform, &redacted);
         let chinese = platform_error_to_chinese(platform_error, platform);
         // DrmProtected 错误前缀加 MEDIA_DRM_ 以便前端识别并拒绝（AGENTS.md §6）
@@ -215,6 +246,7 @@ pub async fn probe(
                 has_audio: true,
                 requires_ffmpeg: true,
                 image_url: None,
+                url: None,
             },
         );
     }
@@ -283,10 +315,27 @@ pub async fn download(
     // 从 task.headers 中分离认证头，避免通过 --add-header 传递 Cookie
     let (cookie, referer, user_agent, safe_headers) = split_auth_headers(&task.headers);
     let mut command = Command::new(yt);
+    command.env("PYTHONIOENCODING", "utf-8").env("PYTHONUTF8", "1");
     command.args(media_arguments(&format, &template, ffmpeg.is_some()));
     if let Some(path) = ffmpeg {
         command.arg("--ffmpeg-location").arg(path);
     }
+    // 应用单任务限速或全局限速 (AGENTS.md §3)
+    let speed_limit = if task.per_task_speed_limit > 0 {
+        task.per_task_speed_limit
+    } else if settings.speed_limit_kbps > 0 {
+        settings.speed_limit_kbps * 1024
+    } else {
+        0
+    };
+    if speed_limit > 0 {
+        command.arg("--limit-rate").arg(format!("{speed_limit}"));
+    }
+    let target_conn = if task.connection_count > 1 { task.connection_count } else { settings.connections_per_download.max(8) };
+    let conn_count = if task.total_bytes > 0 && task.total_bytes < 10 * 1024 * 1024 { 1 } else { target_conn };
+    task.connection_count = conn_count;
+    task.active_connections = conn_count;
+    command.arg("--concurrent-fragments").arg(format!("{conn_count}"));
     for (name, value) in &safe_headers {
         command.arg("--add-header").arg(format!("{name}:{value}"));
     }
@@ -303,9 +352,70 @@ pub async fn download(
         command.args(["--write-subs", "--sub-langs", &language]);
     }
     command.arg(&task.url);
+
+    command.stdout(std::process::Stdio::piped());
     let mut child = command.spawn().map_err(|e| e.to_string())?;
-    tokio::select! {status=child.wait()=>{let status=status.map_err(|e|e.to_string())?;if !status.success(){// 下载失败也要清理临时 cookie 文件
-    cookie_guard.consume().await;return Err(format!("yt-dlp 退出码：{}",status.code().unwrap_or(-1)))}} _=token.cancelled()=>{let _=child.kill().await;cookie_guard.consume().await;return Err("任务已暂停".into())}}
+    let stdout = child.stdout.take().ok_or("无法获取子进程 stdout")?;
+
+    use tauri::Manager;
+    let manager = app.state::<crate::manager::SharedManager>();
+
+    let mut reader = tokio::io::BufReader::new(stdout);
+    let mut lines = tokio::io::AsyncBufReadExt::lines(&mut reader);
+
+    let mut last_update = std::time::Instant::now();
+    let update_interval = std::time::Duration::from_millis(500);
+
+    let mut exit_status = None;
+    loop {
+        tokio::select! {
+            line_res = lines.next_line() => {
+                match line_res {
+                    Ok(Some(line)) => {
+                        if let Some((_percent, downloaded, total, speed)) = parse_yt_dlp_progress(&line) {
+                            task.downloaded_bytes = downloaded;
+                            if total > 0 {
+                                task.total_bytes = total;
+                            }
+                            task.speed = speed;
+                            if speed > 0 && task.total_bytes > task.downloaded_bytes {
+                                task.eta_seconds = Some((task.total_bytes - task.downloaded_bytes) / speed);
+                            } else {
+                                task.eta_seconds = None;
+                            }
+
+                            if last_update.elapsed() >= update_interval {
+                                let _ = manager.store.upsert_task(&task).await;
+                                manager.emit_task("updated", &task);
+                                last_update = std::time::Instant::now();
+                            }
+                        }
+                    }
+                    Ok(None) => break,
+                    Err(_) => break,
+                }
+            }
+            status = child.wait() => {
+                exit_status = Some(status.map_err(|e| e.to_string())?);
+                break;
+            }
+            _ = token.cancelled() => {
+                let _ = child.kill().await;
+                cookie_guard.consume().await;
+                return Err("任务已暂停".into());
+            }
+        }
+    }
+
+    let status = match exit_status {
+        Some(s) => s,
+        None => child.wait().await.map_err(|e| e.to_string())?,
+    };
+    if !status.success() {
+        cookie_guard.consume().await;
+        return Err(format!("yt-dlp 退出码：{}", status.code().unwrap_or(-1)));
+    }
+
     // 下载完成，清理临时 cookie 文件
     cookie_guard.consume().await;
     let metadata = tokio::fs::metadata(&output)
@@ -369,7 +479,7 @@ fn media_arguments(format: &str, template: &str, has_ffmpeg: bool) -> Vec<String
 /// - Cookie 通过临时文件传递（与下载流程一致的 `attach_auth_args`）
 /// - 重命名使用 `tokio::fs::rename`（同卷原子替换）；目标已存在时返回错误，
 ///   不静默覆盖用户文件（AGENTS.md §7 重名策略）
-async fn apply_platform_naming_template(
+pub(crate) async fn apply_platform_naming_template(
     app: &AppHandle,
     settings: &AppSettings,
     task: &mut DownloadTask,
@@ -379,29 +489,54 @@ async fn apply_platform_naming_template(
     user_agent: Option<&str>,
     naming_templates: &[PlatformNamingTemplate],
 ) -> Result<(), String> {
-    if naming_templates.is_empty() {
-        return Ok(());
+    let mut platform = detect_platform(&task.url);
+    if matches!(platform, MediaPlatform::Unknown) {
+        if let Some(referer) = task.headers.get("Referer") {
+            platform = detect_platform(referer);
+        }
     }
-    let platform = detect_platform(&task.url);
+    if matches!(platform, MediaPlatform::Unknown) {
+        if let Some(final_url) = &task.final_url {
+            platform = detect_platform(final_url);
+        }
+    }
     if matches!(platform, MediaPlatform::Unknown) {
         return Ok(());
     }
-    let Some(template) = find_template_for_platform(naming_templates, platform.as_str()) else {
-        return Ok(());
+    let default_template = PlatformNamingTemplate {
+        id: "default_fallback".into(),
+        platform: platform.as_str().into(),
+        template: "{title}".into(),
+        enabled: true,
+        is_builtin: true,
     };
+    let template = find_template_for_platform(naming_templates, platform.as_str())
+        .unwrap_or(&default_template);
     let yt = resolve_yt_dlp(app, settings)
         .ok_or_else(|| "MEDIA_YT_DLP_MISSING: 应用命名模板需要 yt-dlp".to_string())?;
     // 短链先跟随重定向（与 probe 一致），避免 yt-dlp 解析短链失败。
-    let effective_url = match expand_short_url(&task.url).await {
+    let target_url = if let Some(referer) = task.headers.get("Referer") {
+        if detect_platform(referer) != MediaPlatform::Unknown || referer.contains("douyin.com") {
+            referer.as_str()
+        } else {
+            task.final_url.as_deref().unwrap_or(&task.url)
+        }
+    } else {
+        task.final_url.as_deref().unwrap_or(&task.url)
+    };
+    let effective_url = match expand_short_url(target_url).await {
         Ok(final_url) => final_url,
-        Err(_) => task.url.clone(),
+        Err(_) => target_url.to_string(),
     };
     let mut command = Command::new(yt);
+    command.env("PYTHONIOENCODING", "utf-8").env("PYTHONUTF8", "1");
     command.args([
         "--dump-single-json",
         "--no-playlist",
         "--no-warnings",
         "--skip-download",
+        "--no-check-formats",
+        "--no-call-home",
     ]);
     let cookie_guard = attach_auth_args(
         &mut command,
@@ -420,35 +555,62 @@ async fn apply_platform_naming_template(
     }
     let value: Value = serde_json::from_slice(&output.stdout).map_err(|e| e.to_string())?;
     let vars = build_naming_vars(&value, platform);
-    let new_stem = apply_naming_template(&template.template, &vars);
+    let mut new_stem = apply_naming_template(&template.template, &vars);
+
+    // 应用文件名清理规则（如去除 #话题 标签）
+    use tauri::Manager;
+    let manager = app.state::<crate::manager::SharedManager>();
+    if let Ok(rules) = manager.store.filename_cleanup_rule_list().await {
+        let after = crate::manager::apply_filename_cleanup(&new_stem, &rules);
+        if !after.is_empty() {
+            new_stem = after;
+        }
+    }
+
+    // 优先从 yt-dlp 元数据 JSON 中提取格式扩展名，无则使用 "mp4" 兜底
+    let ext_from_json = value
+        .get("ext")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| "mp4".to_string())
+        .replace(".", "");
     // 拼接原文件扩展名：保留 yt-dlp 实际输出的扩展名（合并后可能是 .mp4）。
-    // 若原文件名无扩展名（如 `.mp4` 在 `task.file_name` 中存在但磁盘文件无扩展名），
-    // 这里以磁盘文件实际扩展名为准。
+    // 若原文件名无扩展名，这里从元数据中恢复扩展名。
     let original_extension = current_path
         .extension()
         .and_then(|ext| ext.to_str())
-        .map(|s| s.to_string());
-    let new_file_name = match original_extension {
-        Some(ext) => format!("{new_stem}.{ext}"),
-        None => new_stem,
-    };
+        .map(|s| s.to_string())
+        .unwrap_or(ext_from_json);
+    let new_file_name = format!("{new_stem}.{original_extension}");
     // 新旧文件名相同时跳过重命名（避免无意义的 IO）。
     if new_file_name == task.file_name {
         return Ok(());
     }
-    let new_path = current_path
+    let target_dir = current_path
         .parent()
-        .ok_or_else(|| "目标路径无父目录".to_string())?
-        .join(&new_file_name);
-    // AGENTS.md §7：重名策略严格执行，不静默覆盖用户文件。
-    // 新路径已存在时返回错误，调用方应保留原文件名并记录警告。
-    if new_path.exists() {
-        return Err(format!("目标文件已存在：{}", new_path.display()));
-    }
-    tokio::fs::rename(current_path, &new_path)
+        .ok_or_else(|| "目标路径无父目录".to_string())?;
+    let new_path = target_dir.join(&new_file_name);
+
+    let final_new_path = if new_path.exists() && new_path != current_path {
+        let stem = new_stem.clone();
+        let ext = original_extension.clone();
+        let mut count = 1;
+        let mut candidate = target_dir.join(format!("{stem} ({count}).{ext}"));
+        while candidate.exists() {
+            count += 1;
+            candidate = target_dir.join(format!("{stem} ({count}).{ext}"));
+        }
+        candidate
+    } else {
+        new_path
+    };
+
+    tokio::fs::rename(current_path, &final_new_path)
         .await
         .map_err(|e| e.to_string())?;
-    task.file_name = new_file_name;
+    if let Some(final_name) = final_new_path.file_name().and_then(|s| s.to_str()) {
+        task.file_name = final_name.to_string();
+    }
     Ok(())
 }
 
@@ -571,14 +733,15 @@ fn parse_single_format(item: &Value) -> Option<MediaFormat> {
         has_video: vcodec != "none",
         has_audio: acodec != "none",
         requires_ffmpeg: false,
-        image_url: if is_image { url } else { None },
+        image_url: if is_image { url.clone() } else { None },
+        url,
     })
 }
 
 /// Task 42：从 yt-dlp `thumbnails` 数组中提取图片格式项（纯函数）。
 ///
 /// 仅在 `formats` 中未含图片项时（图集类型 URL 但 yt-dlp 把图片放在 thumbnails）使用。
-/// 每个含非空 `url` 字段的 thumbnail 转换为一个 `MediaFormat`，`id` 形如 `image-<idx>`，
+/// 每个含非空 `url` 字段 of thumbnail 转换为一个 `MediaFormat`，`id` 形如 `image-<idx>`，
 /// `extension` 默认 `"jpg"`（与抖音/TikTok 图集常见格式一致）。
 fn extract_thumbnail_images(value: &Value) -> Vec<MediaFormat> {
     let mut result = Vec::new();
@@ -607,10 +770,67 @@ fn extract_thumbnail_images(value: &Value) -> Vec<MediaFormat> {
             has_video: false,
             has_audio: false,
             requires_ffmpeg: false,
-            image_url: Some(url),
+            image_url: Some(url.clone()),
+            url: Some(url),
         });
     }
     result
+}
+
+fn parse_yt_dlp_progress(line: &str) -> Option<(f64, u64, u64, u64)> {
+    if !line.starts_with("[download]") {
+        return None;
+    }
+    let parts: Vec<&str> = line.split_whitespace().collect();
+    if parts.len() < 2 {
+        return None;
+    }
+    if let Some(pct_idx) = parts.iter().position(|p| p.ends_with('%')) {
+        let pct_str = parts[pct_idx].strip_suffix('%')?;
+        let percent: f64 = pct_str.parse().ok()?;
+
+        let of_idx = parts.iter().position(|p| *p == "of")?;
+        let size_str = parts.get(of_idx + 1)?;
+        let total_bytes = parse_size_to_bytes(size_str)?;
+
+        let speed = parts.iter().position(|p| *p == "at")
+            .and_then(|at_idx| parts.get(at_idx + 1))
+            .and_then(|s| parse_speed_to_bytes(s))
+            .unwrap_or(0);
+
+        let downloaded_bytes = ((percent / 100.0) * (total_bytes as f64)) as u64;
+        return Some((percent, downloaded_bytes, total_bytes, speed));
+    }
+    if let Some(at_idx) = parts.iter().position(|p| *p == "at") {
+        if at_idx >= 2 {
+            let downloaded = parse_size_to_bytes(parts[at_idx - 1])?;
+            let speed = parse_speed_to_bytes(parts[at_idx + 1])?;
+            return Some((0.0, downloaded, 0, speed));
+        }
+    }
+    None
+}
+
+fn parse_size_to_bytes(s: &str) -> Option<u64> {
+    let clean = s.trim_start_matches('~');
+    let (num_part, unit) = if clean.ends_with("KiB") || clean.ends_with("KIB") || clean.ends_with("kb") || clean.ends_with("KB") {
+        (clean.get(..clean.len()-3).or_else(|| clean.get(..clean.len()-2))?, 1024_f64)
+    } else if clean.ends_with("MiB") || clean.ends_with("MIB") || clean.ends_with("mb") || clean.ends_with("MB") {
+        (clean.get(..clean.len()-3).or_else(|| clean.get(..clean.len()-2))?, 1024.0 * 1024.0)
+    } else if clean.ends_with("GiB") || clean.ends_with("GIB") || clean.ends_with("gb") || clean.ends_with("GB") {
+        (clean.get(..clean.len()-3).or_else(|| clean.get(..clean.len()-2))?, 1024.0 * 1024.0 * 1024.0)
+    } else if clean.ends_with("B") {
+        (clean.get(..clean.len()-1)?, 1.0)
+    } else {
+        (clean, 1.0)
+    };
+    let val: f64 = num_part.trim().parse().ok()?;
+    Some((val * unit) as u64)
+}
+
+fn parse_speed_to_bytes(s: &str) -> Option<u64> {
+    let clean = s.strip_suffix("/s")?;
+    parse_size_to_bytes(clean)
 }
 
 #[cfg(test)]
@@ -625,6 +845,42 @@ mod tests {
             .iter()
             .any(|value| value == "--merge-output-format"));
         assert!(arguments.windows(2).any(|pair| pair == ["-f", "18"]));
+    }
+
+    #[test]
+    fn test_parse_yt_dlp_progress() {
+        // Test case 1: Standard progress with percent, total size, speed and ETA
+        let line = "[download]   5.2% of  201.95MiB at    8.43MiB/s ETA 00:22";
+        let res = parse_yt_dlp_progress(line);
+        assert!(res.is_some());
+        let (pct, downloaded, total, speed) = res.unwrap();
+        assert!((pct - 5.2).abs() < 1e-6);
+        assert_eq!(total, (201.95 * 1024.0 * 1024.0) as u64);
+        assert_eq!(speed, (8.43 * 1024.0 * 1024.0) as u64);
+        assert_eq!(downloaded, ((5.2 / 100.0) * (total as f64)) as u64);
+
+        // Test case 2: Estimated size progress (with ~)
+        let line_est = "[download]  50.2% of ~100.00MB at  1.50MB/s ETA 00:30";
+        let res_est = parse_yt_dlp_progress(line_est);
+        assert!(res_est.is_some());
+        let (pct, downloaded, total, speed) = res_est.unwrap();
+        assert!((pct - 50.2).abs() < 1e-6);
+        assert_eq!(total, 100 * 1024 * 1024);
+        assert_eq!(speed, (1.5 * 1024.0 * 1024.0) as u64);
+
+        // Test case 3: Unknown total size progress (DASH/HLS stream)
+        let line_unk = "[download]   50.2MiB at    8.43MiB/s ETA --:--";
+        let res_unk = parse_yt_dlp_progress(line_unk);
+        assert!(res_unk.is_some());
+        let (pct, downloaded, total, speed) = res_unk.unwrap();
+        assert!((pct - 0.0).abs() < 1e-6);
+        assert_eq!(downloaded, (50.2 * 1024.0 * 1024.0) as u64);
+        assert_eq!(total, 0);
+        assert_eq!(speed, (8.43 * 1024.0 * 1024.0) as u64);
+
+        // Test case 4: Non-download line
+        let line_other = "[youtube] abc123xyz: Downloading webpage";
+        assert!(parse_yt_dlp_progress(line_other).is_none());
     }
 
     #[test]

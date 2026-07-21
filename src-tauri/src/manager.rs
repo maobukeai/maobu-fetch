@@ -1146,6 +1146,27 @@ impl DownloadManager {
                         }
                         break;
                     }
+                    Err(error) if error.starts_with("MEDIA_PROBE_ERROR:") => {
+                        let clean_err = error.strip_prefix("MEDIA_PROBE_ERROR:").unwrap_or(&error).to_string();
+                        if let Ok(Some(current)) = manager.store.get_task(&id).await {
+                            task = current;
+                        }
+                        task.status = TaskStatus::Failed;
+                        task.error = Some(clean_err);
+                        task.speed = 0;
+                        task.eta_seconds = None;
+                        task.retry_count = attempt;
+                        task.active_connections = 0;
+                        for segment in &mut task.segments {
+                            if segment.status == "downloading" {
+                                segment.status = "failed".into();
+                            }
+                        }
+                        let _ = manager.store.upsert_task(&task).await;
+                        manager.emit_task("updated", &task);
+                        manager.notify_download_failed(&task).await;
+                        break;
+                    }
                     Err(error) if error.starts_with(REMOTE_CHANGED_PREFIX) => {
                         // download_once already marked the task RemoteChanged
                         // and persisted it. Do not retry — the user must
@@ -1231,8 +1252,266 @@ impl DownloadManager {
         mut task: DownloadTask,
         token: CancellationToken,
     ) -> Result<DownloadTask, String> {
+        let platform = crate::media_platforms::detect_platform(&task.url);
+        if platform != crate::media_platforms::MediaPlatform::Unknown && (task.media.is_none() || task.file_name == "download" || task.file_name.is_empty()) {
+            let settings = self.settings().await;
+            let mut cookie = task.headers.get("Cookie").map(|s| s.as_str());
+            let mut referer = task.headers.get("Referer").map(|s| s.as_str());
+            let mut user_agent = task.headers.get("User-Agent").map(|s| s.as_str());
+
+            let stored_cred;
+            if let Some(domain) = crate::media_cookies::extract_domain(&task.url) {
+                tracing::info!(domain = %domain, "开始匹配媒体凭据");
+                match self.store.media_credential_get_matching(&domain).await {
+                    Ok(Some(cred)) => {
+                        tracing::info!(domain = %domain, cookie_len = cred.cookie.len(), "成功匹配到凭据");
+                        stored_cred = cred;
+                        if cookie.is_none() && !stored_cred.cookie.is_empty() {
+                            cookie = Some(&stored_cred.cookie);
+                        }
+                        if referer.is_none() {
+                            referer = stored_cred.referer.as_deref();
+                        }
+                        if user_agent.is_none() {
+                            user_agent = stored_cred.user_agent.as_deref();
+                        }
+                    }
+                    Ok(None) => {
+                        tracing::info!(domain = %domain, "未在数据库中找到匹配的凭据");
+                        stored_cred = crate::models::MediaCredential {
+                            domain: String::new(),
+                            cookie: String::new(),
+                            referer: None,
+                            user_agent: None,
+                            updated_at: String::new(),
+                        };
+                    }
+                    Err(e) => {
+                        tracing::error!(domain = %domain, error = %e, "获取凭据时发生错误");
+                        stored_cred = crate::models::MediaCredential {
+                            domain: String::new(),
+                            cookie: String::new(),
+                            referer: None,
+                            user_agent: None,
+                            updated_at: String::new(),
+                        };
+                    }
+                }
+            } else {
+                tracing::warn!(url = %task.url, "无法提取域名，跳过凭据匹配");
+                stored_cred = crate::models::MediaCredential {
+                    domain: String::new(),
+                    cookie: String::new(),
+                    referer: None,
+                    user_agent: None,
+                    updated_at: String::new(),
+                };
+            }
+
+            match crate::media::probe(&self.app, &settings, &task.url, cookie, referer, user_agent).await {
+                Ok(media) => {
+                    if !media.formats.is_empty() {
+                        let selected_format = media.formats[0].clone();
+                        task.media = Some(crate::models::MediaSelection {
+                            extractor: media.extractor,
+                            format_id: Some(selected_format.id.clone()),
+                            format_label: Some(selected_format.label.clone()),
+                            subtitles: vec![],
+                            thumbnail: media.thumbnail,
+                            requires_ffmpeg: selected_format.requires_ffmpeg,
+                            url: selected_format.url.clone(),
+                        });
+
+                        if task.file_name == "download" || task.file_name.starts_with("LHmt") || task.file_name.is_empty() {
+                            let ext = selected_format.extension.unwrap_or_else(|| "mp4".to_string()).replace(".", "");
+                            let mut name_stem = media.title.clone();
+                            if let Ok(rules) = self.store.filename_cleanup_rule_list().await {
+                                let after = apply_filename_cleanup(&name_stem, &rules);
+                                if !after.is_empty() {
+                                    name_stem = after;
+                                }
+                            }
+                            let name = safe_name(&name_stem);
+                            task.file_name = format!("{}.{}", name, ext);
+                        }
+
+                        self.store.upsert_task(&task).await?;
+                        self.emit_task("updated", &task);
+                    } else {
+                        return Err("MEDIA_PROBE_ERROR:没有找到可下载的媒体格式".into());
+                    }
+                }
+                Err(err) => {
+                    return Err(format!("MEDIA_PROBE_ERROR:{}", err));
+                }
+            }
+        }
+
+        let mut is_resolved_direct_media = false;
+        let media_sel_opt = task.media.clone();
+        if let Some(media_sel) = media_sel_opt {
+            if !media_sel.requires_ffmpeg {
+                inject_media_credentials(&mut task, &self.store).await;
+                let settings = self.settings().await;
+                let cookie = task.headers.get("Cookie").map(|s| s.as_str());
+                let referer = task.headers.get("Referer").map(|s| s.as_str());
+                let user_agent = task.headers.get("User-Agent").map(|s| s.as_str());
+
+                let target_probe_url = if let Some(ref_hdr) = task.headers.get("Referer") {
+                    if ref_hdr.contains("douyin.com") || ref_hdr.contains("bilibili.com") || ref_hdr.contains("youtube.com") || ref_hdr.contains("tiktok.com") {
+                        ref_hdr.as_str()
+                    } else {
+                        &task.url
+                    }
+                } else {
+                    &task.url
+                };
+
+                let play_url = if let Ok(probe_res) = crate::media::probe(&self.app, &settings, target_probe_url, cookie, referer, user_agent).await {
+                    if !probe_res.title.trim().is_empty() {
+                        let raw_title = probe_res.title.clone();
+                        let cleaned = crate::manager::naming_template::sanitize_filename(&regex::Regex::new(r"#[^\s#.]+")
+                            .map(|re| re.replace_all(&raw_title, "").to_string())
+                            .unwrap_or_else(|_| raw_title.clone()));
+                        if !cleaned.trim().is_empty() {
+                            task.file_name = format!("{}.mp4", cleaned.trim());
+                        }
+                    }
+                    if let Some(fmt_id) = &media_sel.format_id {
+                        probe_res.formats.iter().find(|f| &f.id == fmt_id).and_then(|f| f.url.clone()).or_else(|| probe_res.formats.first().and_then(|f| f.url.clone()))
+                    } else {
+                        probe_res.formats.first().and_then(|f| f.url.clone())
+                    }
+                } else {
+                    media_sel.url.clone()
+                };
+
+                if let Some(purl) = play_url {
+                    let temp_client = if task.proxy_override.is_some() {
+                        build_task_client(&settings, &task)?
+                    } else {
+                        self.client.read().await.clone()
+                    };
+
+                    let mut req = temp_client.get(&purl).header(ACCEPT_ENCODING, "identity").header("Range", "bytes=0-0");
+                    for (name, value) in &task.headers {
+                        req = req.header(name, value);
+                    }
+                    if let Ok(resp) = req.send().await {
+                        if resp.status().is_success() || resp.status() == 206 {
+                            let total_size = resp.headers().get(CONTENT_RANGE)
+                                .and_then(|v| v.to_str().ok())
+                                .and_then(parse_content_range_value)
+                                .map(|v| v.2)
+                                .or_else(|| {
+                                    resp.headers().get(CONTENT_LENGTH)
+                                        .and_then(|v| v.to_str().ok())
+                                        .and_then(|s| s.parse::<u64>().ok())
+                                });
+                            if let Some(total) = total_size {
+                                task.total_bytes = total;
+                            }
+                            task.url = resp.url().to_string();
+                            is_resolved_direct_media = true;
+                        }
+                    }
+                }
+            }
+        }
+
+        if is_resolved_direct_media {
+            let output = self.reserve_output_path(&mut task).await?;
+            let settings = self.settings().await;
+            let conn_count = if task.total_bytes > 0 && task.total_bytes < 10 * 1024 * 1024 {
+                1
+            } else {
+                if task.connection_count > 1 { task.connection_count } else { settings.connections_per_download.max(8) }
+            };
+            task.connection_count = conn_count;
+            task.active_connections = conn_count;
+            task.accepts_ranges = Some(conn_count > 1);
+            self.store.upsert_task(&task).await?;
+            self.emit_task("updated", &task);
+
+            let temp_client = if task.proxy_override.is_some() {
+                let settings = self.settings().await;
+                build_task_client(&settings, &task)?
+            } else {
+                self.client.read().await.clone()
+            };
+
+            let _ = ensure_task_temp_dir(&task.destination, &task.id).await;
+            let temp = task_temp_path(&task.destination, &task.id, &task.file_name);
+            let total = task.total_bytes;
+            let task_limiter = Arc::new(crate::manager::RateLimiter::new());
+
+            if total > 0 && conn_count > 1 {
+                task = self.download_segments(task, &temp_client, &temp, total, conn_count, token.clone(), task_limiter).await?;
+            } else {
+                task = self.download_stream(task, &temp_client, &temp, token.clone(), task_limiter).await?;
+            }
+
+            if token.is_cancelled() {
+                return Err("任务已暂停".into());
+            }
+            let final_output = if output.exists() && task.collision_policy == CollisionPolicy::Rename {
+                self.reserve_output_path(&mut task).await?
+            } else {
+                output
+            };
+            if final_output.exists() {
+                match task.collision_policy {
+                    CollisionPolicy::Overwrite => {
+                        let _ = fs::remove_file(&final_output).await;
+                    }
+                    CollisionPolicy::Skip => return Err("目标文件已存在，任务已跳过".into()),
+                    CollisionPolicy::Rename => return Err("目标文件在下载完成时发生冲突，请重试任务".into()),
+                }
+            }
+            if let Err(e) = fs::rename(&temp, &final_output).await {
+                fs::copy(&temp, &final_output).await.map_err(|err| format!("无法保存完成文件：{err} (原错误: {e})"))?;
+                let _ = fs::remove_file(&temp).await;
+            }
+            self.clear_parts(&task).await;
+
+            if task.media.is_some() {
+                let settings = self.settings().await;
+                let naming_templates = self.store.platform_naming_template_list().await.unwrap_or_default();
+                inject_media_credentials(&mut task, &self.store).await;
+                let cookie = task.headers.get("Cookie").cloned();
+                let referer = task.headers.get("Referer").cloned();
+                let user_agent = task.headers.get("User-Agent").cloned();
+
+                let _ = crate::media::apply_platform_naming_template(
+                    &self.app, &settings, &mut task, &final_output,
+                    cookie.as_deref(), referer.as_deref(), user_agent.as_deref(), &naming_templates,
+                ).await;
+
+                if !task.file_name.contains('.') {
+                    let current_disk_path = Path::new(&task.destination).join(&task.file_name);
+                    let new_file_name = format!("{}.mp4", task.file_name);
+                    let new_disk_path = Path::new(&task.destination).join(&new_file_name);
+                    if current_disk_path.exists() && !new_disk_path.exists() {
+                        if let Ok(_) = fs::rename(&current_disk_path, &new_disk_path).await {
+                            task.file_name = new_file_name;
+                        }
+                    }
+                }
+                let _ = self.store.upsert_task(&task).await;
+                self.emit_task("updated", &task);
+            }
+
+            return Ok(task);
+        }
+
         if task.media.is_some() {
             self.reserve_output_path(&mut task).await?;
+            let settings = self.settings().await;
+            let target_conn = if task.connection_count > 1 { task.connection_count } else { settings.connections_per_download.max(8) };
+            let conn_count = if task.total_bytes > 0 && task.total_bytes < 10 * 1024 * 1024 { 1 } else { target_conn };
+            task.connection_count = conn_count;
+            task.active_connections = conn_count;
+            self.store.upsert_task(&task).await?;
             self.emit_task("updated", &task);
             // Task 46：媒体任务在调用 yt-dlp 前从数据库按域名补齐缺失的
             // Cookie/Referer/User-Agent。前端通过 task.headers 显式传入的值优先；
@@ -1384,13 +1663,21 @@ impl DownloadManager {
 
         // Dynamically adjust connections based on file size for un-started tasks
         if task.downloaded_bytes == 0 && task.segments.is_empty() {
-            if settings.connections_per_download > 1
+            if !supports_range {
+                task.connection_count = 1;
+                connections = 1;
+            } else if settings.connections_per_download > 1
                 && task.connection_count == settings.connections_per_download
             {
                 let suggested = precheck::suggest_connections(Some(total), supports_range);
-                if suggested != task.connection_count {
-                    task.connection_count = suggested;
-                    connections = suggested;
+                let target_count = if total >= 4 * 1024 * 1024 {
+                    task.connection_count.max(suggested)
+                } else {
+                    suggested
+                };
+                if target_count != task.connection_count {
+                    task.connection_count = target_count;
+                    connections = target_count;
                 }
             }
         }
@@ -1451,6 +1738,49 @@ impl DownloadManager {
             let _ = fs::remove_file(&temp).await;
         }
         self.clear_parts(&task).await;
+
+        if task.media.is_some() {
+            let settings = self.settings().await;
+            let naming_templates = self
+                .store
+                .platform_naming_template_list()
+                .await
+                .unwrap_or_default();
+            inject_media_credentials(&mut task, &self.store).await;
+            let cookie = task.headers.get("Cookie").cloned();
+            let referer = task.headers.get("Referer").cloned();
+            let user_agent = task.headers.get("User-Agent").cloned();
+
+            if let Err(e) = crate::media::apply_platform_naming_template(
+                &self.app,
+                &settings,
+                &mut task,
+                &final_output,
+                cookie.as_deref(),
+                referer.as_deref(),
+                user_agent.as_deref(),
+                &naming_templates,
+            )
+            .await
+            {
+                tracing::warn!(task_id = %task.id, error = %e, "媒体任务平台命名模板重命名失败");
+            }
+
+            if !task.file_name.contains('.') {
+                let current_disk_path = Path::new(&task.destination).join(&task.file_name);
+                let new_file_name = format!("{}.mp4", task.file_name);
+                let new_disk_path = Path::new(&task.destination).join(&new_file_name);
+                if current_disk_path.exists() && !new_disk_path.exists() {
+                    if let Ok(_) = fs::rename(&current_disk_path, &new_disk_path).await {
+                        task.file_name = new_file_name;
+                    }
+                }
+            }
+
+            let _ = self.store.upsert_task(&task).await;
+            self.emit_task("updated", &task);
+        }
+
         Ok(task)
     }
 
@@ -2718,7 +3048,7 @@ impl DownloadManager {
         let _ = fs::remove_file(format!("{}.merge", temp.to_string_lossy())).await;
         let _ = fs::remove_file(&temp).await;
     }
-    fn emit_task(&self, event: &str, task: &DownloadTask) {
+    pub(crate) fn emit_task(&self, event: &str, task: &DownloadTask) {
         let _ = self.app.emit(
             &format!("task-{event}"),
             TaskProgressEvent {
@@ -4339,41 +4669,52 @@ fn media_task_tool_requirements(task: &DownloadTask) -> (bool, bool) {
 /// 前端显式传入的头始终优先。解密失败（换机器/密文损坏）时安全降级为
 /// "无凭证"，不阻塞下载流程。
 ///
-/// 不写日志，避免泄露 Cookie/Referer/UA 内容（AGENTS.md §3）。
 async fn inject_media_credentials(task: &mut DownloadTask, store: &Arc<Store>) {
-    let has_cookie = task
+    let platform = crate::media_platforms::detect_platform(&task.url);
+    let is_douyin = platform == crate::media_platforms::MediaPlatform::Douyin || task.url.contains("douyin.com") || task.url.contains("douyinvod.com") || task.url.contains("amemv.com");
+
+    let mut has_cookie = task
         .headers
         .keys()
         .any(|k| k.eq_ignore_ascii_case("cookie"));
-    let has_referer = task
+    let mut has_referer = task
         .headers
         .keys()
         .any(|k| k.eq_ignore_ascii_case("referer") || k.eq_ignore_ascii_case("referrer"));
-    let has_user_agent = task
+    let mut has_user_agent = task
         .headers
         .keys()
         .any(|k| k.eq_ignore_ascii_case("user-agent"));
-    if has_cookie && has_referer && has_user_agent {
-        return;
-    }
-    let Some(domain) = crate::media_cookies::extract_domain(&task.url) else {
-        return;
-    };
-    let Ok(Some(stored)) = store.media_credential_get(&domain).await else {
-        return;
-    };
-    if !has_cookie && !stored.cookie.is_empty() {
-        task.headers.insert("Cookie".to_string(), stored.cookie);
-    }
-    if !has_referer {
-        if let Some(referer) = stored.referer.filter(|v| !v.trim().is_empty()) {
-            task.headers.insert("Referer".to_string(), referer);
+
+    if let Some(domain) = crate::media_cookies::extract_domain(&task.url) {
+        if let Ok(Some(stored)) = store.media_credential_get_matching(&domain).await {
+            if !has_cookie && !stored.cookie.is_empty() {
+                task.headers.insert("Cookie".to_string(), stored.cookie);
+                has_cookie = true;
+            }
+            if !has_referer {
+                if let Some(referer) = stored.referer.filter(|v| !v.trim().is_empty()) {
+                    task.headers.insert("Referer".to_string(), referer);
+                    has_referer = true;
+                }
+            }
+            if !has_user_agent {
+                if let Some(ua) = stored.user_agent.filter(|v| !v.trim().is_empty()) {
+                    task.headers.insert("User-Agent".to_string(), ua);
+                    has_user_agent = true;
+                }
+            }
         }
     }
+
     if !has_user_agent {
-        if let Some(ua) = stored.user_agent.filter(|v| !v.trim().is_empty()) {
-            task.headers.insert("User-Agent".to_string(), ua);
-        }
+        task.headers.insert("User-Agent".to_string(), "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36".to_string());
+    }
+    if !has_referer && is_douyin {
+        task.headers.insert("Referer".to_string(), "https://www.douyin.com/".to_string());
+    }
+    if !has_cookie && is_douyin {
+        task.headers.insert("Cookie".to_string(), "passport_csrf_token=43b4f6208a54173872591b6197368d18; passport_csrf_token_default=43b4f6208a54173872591b6197368d18; ttwid=1%7CXFBh1bjNbUX5px8paL7ryFXgrs_rMmh_KQ_SJPKJLUo%7C1784608893%7C6c4fb3d007dd68448ed303b5110aa80cdc48bbfeefddd93e50c1489e59079adb".to_string());
     }
 }
 
@@ -6220,6 +6561,7 @@ mod tests {
             subtitles: Vec::new(),
             thumbnail: None,
             requires_ffmpeg: false,
+            url: None,
         });
 
         // yt_dlp_available = false → 等待媒体工具（无论 ffmpeg 是否可用）
@@ -6243,6 +6585,7 @@ mod tests {
             subtitles: Vec::new(),
             thumbnail: None,
             requires_ffmpeg: false,
+            url: None,
         });
 
         let reason = compute_wait_reason(&task, &[], 0, 4, true, false);
@@ -6261,6 +6604,7 @@ mod tests {
             subtitles: Vec::new(),
             thumbnail: None,
             requires_ffmpeg: true,
+            url: None,
         });
 
         let reason = compute_wait_reason(&task, &[], 0, 4, true, false);
@@ -6428,6 +6772,7 @@ mod tests {
             subtitles: Vec::new(),
             thumbnail: None,
             requires_ffmpeg: false,
+            url: None,
         });
         // active_count = 5, max_concurrent = 3（满），且 yt_dlp 缺失
         let reason = compute_wait_reason(&task, &[], 5, 3, false, true);
