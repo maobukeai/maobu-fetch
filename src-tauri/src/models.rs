@@ -575,6 +575,10 @@ pub struct TaskExportItem {
     pub connection_count: u8,
 }
 
+fn default_auto_start() -> bool {
+    true
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct AppSettings {
     pub download_dir: String,
@@ -585,6 +589,7 @@ pub struct AppSettings {
     pub minimize_to_tray: bool,
     pub close_to_tray: bool,
     pub notifications: bool,
+    #[serde(default = "default_auto_start")]
     pub auto_start: bool,
     pub theme: String,
     #[serde(default = "default_accent_color")]
@@ -683,6 +688,9 @@ pub struct AppSettings {
     /// 快捷键映射设置。旧 JSON 缺失时通过 serde 默认 `None` 安全回填。
     #[serde(default)]
     pub shortcut_keys: Option<ShortcutKeys>,
+    /// YouTube PO Token 凭证（防止 YouTube 反爬虫拦截 bot 验证）。
+    #[serde(default)]
+    pub youtube_po_token: String,
 }
 
 /// 自定义快捷键设置（Task 21）。
@@ -825,7 +833,7 @@ impl Default for AppSettings {
             minimize_to_tray: true,
             close_to_tray: false,
             notifications: true,
-            auto_start: false,
+            auto_start: true,
             theme: "system".into(),
             accent_color: default_accent_color(),
             frosted_glass: true,
@@ -865,6 +873,7 @@ impl Default for AppSettings {
             metered_auto_pause: default_metered_auto_pause(),
             user_resumed_after_metered: false,
             shortcut_keys: Some(ShortcutKeys::default()),
+            youtube_po_token: String::new(),
         }
     }
 }
@@ -1002,6 +1011,14 @@ pub struct DetectedMediaTools {
     pub ffprobe_path: Option<String>,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
+pub struct MediaEpisode {
+    pub index: u32,
+    pub title: String,
+    pub url: String,
+    pub duration: Option<f64>,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct MediaProbeResult {
     pub title: String,
@@ -1011,18 +1028,21 @@ pub struct MediaProbeResult {
     pub formats: Vec<MediaFormat>,
     pub subtitles: Vec<String>,
     pub drm: bool,
-    /// Task 38 / Task 41：媒体内容类型，用于区分视频/音频/图集/混合。
+    /// Task 38 / Task 41：媒体内容类型，用于区分视频/音频/图集/混合/合集。
     ///
     /// `#[serde(default)]` 保证旧数据库与旧 JSON 仍可读取（默认 `Video`），
     /// 满足 AGENTS.md §2"新增序列化字段必须提供安全默认值"。
     #[serde(default)]
     pub media_type: MediaType,
+    /// 合集/多 P 列表（Task 47）。
+    #[serde(default)]
+    pub episodes: Vec<MediaEpisode>,
 }
 
-/// 媒体内容类型枚举（Task 38 / Task 41）。
+/// 媒体内容类型枚举（Task 38 / Task 41 / Task 47）。
 ///
 /// 用于 `MediaProbeResult.media_type` 字段，前端据此选择不同的下载策略
-/// （图集需要多图下载、音频仅下载音频流等）。
+/// （图集需要多图下载、合集需要选集批量下载等）。
 ///
 /// 序列化使用 kebab-case，与前端 TypeScript 联合类型对应。
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -1037,6 +1057,8 @@ pub enum MediaType {
     Gallery,
     /// 混合内容（视频+图集等）。
     Mixed,
+    /// 视频合集 / 多 P 播放列表（如 B 站多 P 视频、合集）。
+    Collection,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1637,6 +1659,15 @@ pub struct MediaCredential {
     pub updated_at: String,
 }
 
+/// 媒体凭证在线检测结果。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct MediaCredentialCheckResult {
+    pub domain: String,
+    pub valid: bool,
+    pub message: String,
+    pub tested_at: String,
+}
+
 /// 平台命名模板（Task 43）。
 ///
 /// 用于在媒体下载完成后按平台套用文件名模板。每条模板绑定一个 `platform`
@@ -1709,6 +1740,20 @@ pub struct PlatformCompatibility {
     pub known_issues: Vec<String>,
     #[serde(default)]
     pub last_tested_at: String,
+}
+
+/// 缓存检查结果。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct CacheInspectResult {
+    pub total_bytes: u64,
+    pub file_count: usize,
+}
+
+/// 缓存清理结果。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct CacheClearResult {
+    pub freed_bytes: u64,
+    pub deleted_files_count: usize,
 }
 
 #[cfg(test)]

@@ -45,6 +45,12 @@ const PRECHECK_USER_AGENT: &str = concat!("MaobuFetch/", env!("CARGO_PKG_VERSION
 
 /// 全流程总体预检超时（秒）。
 const PRECHECK_OVERALL_TIMEOUT_SECS: u64 = 12;
+/// 媒体平台 URL 的预检超时（秒）。
+///
+/// 媒体平台（YouTube / 抖音 / TikTok / Twitter / B 站 / 微博）的预检需要调用
+/// yt-dlp 解析网页与 JS，耗时较长（YouTube 反爬虫严格时可能需要 20-40 秒），
+/// 因此对这类 URL 放宽到 60 秒，避免误报"预检请求超时"。
+const PRECHECK_MEDIA_OVERALL_TIMEOUT_SECS: u64 = 60;
 
 impl DownloadManager {
     /// 执行下载前预检。
@@ -60,16 +66,31 @@ impl DownloadManager {
     /// 8. 计算建议连接数（1/2/4/8/16/32）
     /// 9. 校验目标盘可用空间（单连接 size+50MB / 多连接 2x size+100MB / 未知 size 50MB 试探）
     /// 10. 比对任务列表冲突（同 URL / 同 final_url / 同目标路径）
-    /// 11. 生成中文警告列表，全流程添加 12 秒总体 Deadline。
+    /// 11. 生成中文警告列表。
+    ///
+    /// **媒体平台豁免**：YouTube / 抖音 / TikTok / Twitter / B 站 / 微博 等需要 yt-dlp
+    /// 解析的 URL 跳过 HTTP HEAD 探测（这类 URL 不是直链，HEAD 会被反爬虫拦截或
+    /// 返回 HTML 网页，无意义且容易超时），直接走 yt-dlp 探测，超时放宽到 60 秒。
     pub async fn precheck(&self, request: PrecheckRequest) -> Result<PrecheckResult, String> {
+        let is_media = crate::media_platforms::detect_platform(&request.url)
+            != crate::media_platforms::MediaPlatform::Unknown
+            || request.url.contains("douyin.com")
+            || request.url.contains("iesdouyin.com");
+        let timeout_secs = if is_media {
+            PRECHECK_MEDIA_OVERALL_TIMEOUT_SECS
+        } else {
+            PRECHECK_OVERALL_TIMEOUT_SECS
+        };
         match tokio::time::timeout(
-            Duration::from_secs(PRECHECK_OVERALL_TIMEOUT_SECS),
+            Duration::from_secs(timeout_secs),
             self.do_precheck(request),
         )
         .await
         {
             Ok(res) => res,
-            Err(_) => Err("预检请求超时（超过 12 秒），请检查网络连接或代理设置".to_string()),
+            Err(_) => Err(format!(
+                "预检请求超时（超过 {timeout_secs} 秒），请检查网络连接或代理设置"
+            )),
         }
     }
 
@@ -106,13 +127,30 @@ impl DownloadManager {
             .filter(|dir| !dir.trim().is_empty())
             .unwrap_or_else(|| settings.download_dir.clone());
 
-        let probe = probe_endpoint(&client, &request, &settings.user_agent)
-            .await
-            .map_err(|e| format!("预检请求失败：{e}"))?;
-
         let is_media_url = crate::media_platforms::detect_platform(&request.url) != crate::media_platforms::MediaPlatform::Unknown
             || request.url.contains("douyin.com")
             || request.url.contains("iesdouyin.com");
+
+        // 媒体平台 URL（YouTube / 抖音 / TikTok / Twitter / B 站 / 微博）不是直链，
+        // HTTP HEAD 会被反爬虫拦截或返回 HTML 网页，无意义且容易超时。
+        // 直接跳过 probe_endpoint，用 yt-dlp 探测结果填充 file_name，
+        // file_size / accepts_ranges / etag 等字段留空（yt-dlp 下载时自行管理）。
+        let probe = if is_media_url {
+            PrecheckProbe {
+                final_url: request.url.clone(),
+                redirect_chain: Vec::new(),
+                file_size: None,
+                etag: None,
+                last_modified: None,
+                accepts_ranges: false,
+                content_type: None,
+                content_disposition: None,
+            }
+        } else {
+            probe_endpoint(&client, &request, &settings.user_agent)
+                .await
+                .map_err(|e| format!("预检请求失败：{e}"))?
+        };
 
         let mut file_name = determine_filename(
             request.suggested_filename.as_deref(),
@@ -121,11 +159,32 @@ impl DownloadManager {
         );
 
         if is_media_url && request.suggested_filename.is_none() {
-            let cookie = request.headers.get("Cookie").map(|s| s.as_str());
-            let referer = request.headers.get("Referer").map(|s| s.as_str());
-            let user_agent = request.headers.get("User-Agent").map(|s| s.as_str());
-            if let Ok(probe_res) = crate::media::probe(&self.app, &settings, &request.url, cookie, referer, user_agent).await {
-                if !probe_res.title.trim().is_empty() {
+            // 从 request.headers 取出前端/扩展可能传入的凭证，
+            // 再用 media_credentials 表中按域名存储的凭证回填缺失项。
+            // 这一步至关重要：用户通过浏览器扩展同步的 Cookie 存在数据库里，
+            // 若不回填，yt-dlp 会因无 Cookie 报"Sign in to confirm you're not a bot"。
+            let req_cookie = request.headers.get("Cookie").cloned();
+            let req_referer = request.headers.get("Referer").cloned();
+            let req_ua = request.headers.get("User-Agent").cloned();
+            let (cookie, referer, user_agent) = crate::resolve_media_credentials(
+                &request.url,
+                req_cookie,
+                req_referer,
+                req_ua,
+                &self.store,
+            )
+            .await;
+            let probe_result = crate::media::probe(
+                &self.app,
+                &settings,
+                &request.url,
+                cookie.as_deref(),
+                referer.as_deref(),
+                user_agent.as_deref(),
+            )
+            .await;
+            match probe_result {
+                Ok(probe_res) if !probe_res.title.trim().is_empty() => {
                     let raw_title = probe_res.title.clone();
                     let cleaned = crate::manager::naming_template::sanitize_filename(&regex::Regex::new(r"#[^\s#.]+")
                         .map(|re| re.replace_all(&raw_title, "").to_string())
@@ -133,6 +192,15 @@ impl DownloadManager {
                     if !cleaned.trim().is_empty() {
                         file_name = format!("{}.mp4", cleaned.trim());
                     }
+                }
+                Ok(_) => {
+                    // yt-dlp 成功但标题为空，保持默认 file_name
+                }
+                Err(e) => {
+                    // 预检阶段 yt-dlp 失败不阻塞下载（file_name 用默认值），
+                    // 但记录脱敏后的错误到日志，方便诊断为何预检未取到标题。
+                    // 错误信息已由 media::probe 内部经 redact_sensitive 脱敏。
+                    tracing::warn!(error = %e, "预检阶段 yt-dlp 探测失败，将使用默认文件名");
                 }
             }
         }
@@ -730,13 +798,13 @@ pub(crate) fn suggest_connections(file_size: Option<u64>, accepts_ranges: bool) 
         Some(s) => s,
         None => return 1,
     };
-    if size < 10 * PRECHECK_ONE_MB {
+    if size < 4 * PRECHECK_ONE_MB {
         1
-    } else if size < 100 * PRECHECK_ONE_MB {
+    } else if size < 15 * PRECHECK_ONE_MB {
         4
-    } else if size < PRECHECK_ONE_GB {
+    } else if size < 500 * PRECHECK_ONE_MB {
         8
-    } else if size < 10 * PRECHECK_ONE_GB {
+    } else if size < 5 * PRECHECK_ONE_GB {
         16
     } else {
         32
@@ -888,6 +956,57 @@ mod tests {
         assert_eq!(suggest_connections(Some(1024 * 1024 * 1024), false), 1);
     }
 
+    // ---- 媒体平台预检豁免 ----
+
+    /// 辅助函数：判断 URL 是否会被识别为媒体平台（触发 60 秒超时与跳过 HEAD）。
+    /// 复用 precheck 中的判定逻辑，避免重复实现。
+    fn is_media_url_for_precheck(url: &str) -> bool {
+        crate::media_platforms::detect_platform(url)
+            != crate::media_platforms::MediaPlatform::Unknown
+            || url.contains("douyin.com")
+            || url.contains("iesdouyin.com")
+    }
+
+    #[test]
+    fn media_url_youtube_is_detected_for_media_precheck() {
+        // YouTube 各种 URL 形式都应识别为媒体平台，触发 60 秒超时与跳过 HEAD
+        assert!(is_media_url_for_precheck("https://youtu.be/vrY1THC_NQE"));
+        assert!(is_media_url_for_precheck("https://www.youtube.com/watch?v=vrY1THC_NQE"));
+        assert!(is_media_url_for_precheck("https://m.youtube.com/watch?v=vrY1THC_NQE"));
+        assert!(is_media_url_for_precheck("https://music.youtube.com/watch?v=abc"));
+        assert!(is_media_url_for_precheck("https://www.youtube.com/shorts/abc"));
+    }
+
+    #[test]
+    fn media_url_other_platforms_are_detected_for_media_precheck() {
+        // 抖音 / TikTok / Twitter / B 站 / 微博 都应识别为媒体平台
+        assert!(is_media_url_for_precheck("https://www.douyin.com/video/123"));
+        assert!(is_media_url_for_precheck("https://www.iesdouyin.com/share/video/123"));
+        assert!(is_media_url_for_precheck("https://www.tiktok.com/@user/video/123"));
+        assert!(is_media_url_for_precheck("https://x.com/user/status/123"));
+        assert!(is_media_url_for_precheck("https://twitter.com/user/status/123"));
+        assert!(is_media_url_for_precheck("https://www.bilibili.com/video/BV123"));
+        assert!(is_media_url_for_precheck("https://weibo.com/123/abc"));
+    }
+
+    #[test]
+    fn non_media_url_is_not_detected_for_media_precheck() {
+        // 普通直链不应识别为媒体平台，走 12 秒超时与 HTTP HEAD
+        assert!(!is_media_url_for_precheck("https://example.com/file.zip"));
+        assert!(!is_media_url_for_precheck(
+            "https://github.com/user/repo/releases/download/v1/file.zip"
+        ));
+        assert!(!is_media_url_for_precheck("https://cdn.example.com/video.mp4"));
+    }
+
+    #[test]
+    fn media_precheck_timeout_is_longer_than_regular() {
+        // 媒体平台预检超时应严格大于普通预检超时
+        assert!(PRECHECK_MEDIA_OVERALL_TIMEOUT_SECS > PRECHECK_OVERALL_TIMEOUT_SECS);
+        // 媒体平台超时至少 60 秒（YouTube 反爬虫解析可能需要 20-40 秒）
+        assert!(PRECHECK_MEDIA_OVERALL_TIMEOUT_SECS >= 60);
+    }
+
     #[test]
     fn suggest_connections_returns_one_when_size_unknown() {
         assert_eq!(suggest_connections(None, true), 1);
@@ -895,51 +1014,50 @@ mod tests {
 
     #[test]
     fn suggest_connections_small_file_returns_one() {
-        assert_eq!(suggest_connections(Some(5 * PRECHECK_ONE_MB), true), 1);
+        assert_eq!(suggest_connections(Some(2 * PRECHECK_ONE_MB), true), 1);
     }
 
     #[test]
-    fn suggest_connections_under_10mb_boundary_returns_one() {
-        // 10MB 边界（< 10MB），返回 1
-        assert_eq!(suggest_connections(Some(10 * PRECHECK_ONE_MB - 1), true), 1);
+    fn suggest_connections_under_4mb_boundary_returns_one() {
+        assert_eq!(suggest_connections(Some(4 * PRECHECK_ONE_MB - 1), true), 1);
     }
 
     #[test]
-    fn suggest_connections_just_over_10mb_returns_four() {
-        assert_eq!(suggest_connections(Some(11 * PRECHECK_ONE_MB), true), 4);
+    fn suggest_connections_just_over_4mb_returns_four() {
+        assert_eq!(suggest_connections(Some(5 * PRECHECK_ONE_MB), true), 4);
     }
 
     #[test]
-    fn suggest_connections_under_100mb_returns_four() {
-        assert_eq!(suggest_connections(Some(50 * PRECHECK_ONE_MB), true), 4);
+    fn suggest_connections_under_15mb_returns_four() {
+        assert_eq!(suggest_connections(Some(10 * PRECHECK_ONE_MB), true), 4);
     }
 
     #[test]
-    fn suggest_connections_just_over_100mb_returns_eight() {
-        assert_eq!(suggest_connections(Some(101 * PRECHECK_ONE_MB), true), 8);
+    fn suggest_connections_just_over_15mb_returns_eight() {
+        assert_eq!(suggest_connections(Some(20 * PRECHECK_ONE_MB), true), 8);
     }
 
     #[test]
-    fn suggest_connections_just_under_1gb_returns_eight() {
-        assert_eq!(suggest_connections(Some(PRECHECK_ONE_GB - 1), true), 8);
+    fn suggest_connections_under_500mb_returns_eight() {
+        assert_eq!(suggest_connections(Some(100 * PRECHECK_ONE_MB), true), 8);
     }
 
     #[test]
-    fn suggest_connections_just_over_1gb_returns_sixteen() {
-        assert_eq!(suggest_connections(Some(PRECHECK_ONE_GB + 1), true), 16);
+    fn suggest_connections_just_over_500mb_returns_sixteen() {
+        assert_eq!(suggest_connections(Some(600 * PRECHECK_ONE_MB), true), 16);
     }
 
     #[test]
-    fn suggest_connections_just_under_10gb_returns_sixteen() {
+    fn suggest_connections_just_under_5gb_returns_sixteen() {
         assert_eq!(
-            suggest_connections(Some(10 * PRECHECK_ONE_GB - 1), true),
+            suggest_connections(Some(5 * PRECHECK_ONE_GB - 1), true),
             16
         );
     }
 
     #[test]
-    fn suggest_connections_over_10gb_returns_thirty_two() {
-        assert_eq!(suggest_connections(Some(20 * PRECHECK_ONE_GB), true), 32);
+    fn suggest_connections_over_5gb_returns_thirty_two() {
+        assert_eq!(suggest_connections(Some(10 * PRECHECK_ONE_GB), true), 32);
     }
 
     // ---- Accept-Ranges 解析 ----

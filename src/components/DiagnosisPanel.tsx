@@ -26,6 +26,7 @@ export interface DiagnosisPanelProps {
   notify: (text: string, kind?: "ok" | "error") => void;
   /** 跳转到设置页的代理部分（disable_proxy 动作）。 */
   onOpenProxySettings?: () => void;
+  onOpenYouTubeModal?: () => void;
   /** 完成诊断后建议刷新任务列表，调用方传入。 */
   onTaskChanged?: () => void;
 }
@@ -36,7 +37,7 @@ export interface DiagnosisPanelProps {
  * 当任务进入 Failed / Interrupted / RemoteChanged / PausedByLowDisk 时自动调用
  * `api.diagnose(id)` 获取诊断结果。
  */
-export function DiagnosisPanel({ taskId, status, notify, onOpenProxySettings, onTaskChanged }: DiagnosisPanelProps) {
+export function DiagnosisPanel({ taskId, status, notify, onOpenProxySettings, onOpenYouTubeModal, onTaskChanged }: DiagnosisPanelProps) {
   const [diagnosis, setDiagnosis] = useState<ErrorDiagnosis | null | undefined>(undefined);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string>();
@@ -184,6 +185,22 @@ export function DiagnosisPanel({ taskId, status, notify, onOpenProxySettings, on
             </button>
           );
         })}
+        {diagnosis.description.includes("YouTube") && (
+          <button
+            type="button"
+            className="diagnosis-action-btn"
+            onClick={() => {
+              if (onOpenYouTubeModal) {
+                onOpenYouTubeModal();
+              } else {
+                void api.openExternalUrl("https://www.youtube.com");
+              }
+            }}
+          >
+            <ShieldCheck size={12} />
+            <span>解决 YouTube 凭证与验证</span>
+          </button>
+        )}
       </div>
 
       <button

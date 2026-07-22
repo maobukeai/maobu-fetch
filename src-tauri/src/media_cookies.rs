@@ -40,6 +40,75 @@ pub(crate) fn parse_cookie_header(cookie: &str) -> Vec<(String, String)> {
         .collect()
 }
 
+/// 判断 Cookie 字符串是否为 Netscape cookies.txt 格式。
+///
+/// 识别条件：包含 `# Netscape` 头或任一行含 TAB 分隔的 7 列。
+/// 用于检测「设置 → 媒体凭证」里存的 Cookie 是 HTTP 头格式还是 cookies.txt 文件格式，
+/// 以便在用作 HTTP `Cookie:` 头前先转换格式（HTTP 头不允许 TAB/换行字符）。
+pub(crate) fn is_netscape_format(cookie: &str) -> bool {
+    let trimmed = cookie.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    if trimmed.contains("# Netscape") {
+        return true;
+    }
+    // 检查是否有 TAB 分隔的至少 7 列的行（Netscape 格式特征）
+    trimmed.lines().any(|line| {
+        !line.starts_with('#') && line.split('\t').count() >= 7
+    })
+}
+
+/// 判断是否应跳过扩展自动同步对已存在凭证的覆盖。
+///
+/// 当用户已手动配置了 Netscape cookies.txt 格式的凭证时（这种格式只能由
+/// 用户从「导出 cookies.txt」按钮导出后手动导入，扩展自动同步永远只发
+/// HTTP 头格式），自动同步不得覆盖。这避免了
+/// "用户导出无痕窗口 cookies.txt 导入 → 打开 youtube.com 网页 →
+///   扩展自动同步把普通窗口 Cookie 覆盖掉手动配置" 的数据丢失场景。
+///
+/// 参见 AGENTS.md §7：不得改变用户设置，除非操作由用户明确触发。
+pub(crate) fn should_skip_auto_sync(existing_cookie: &str, incoming_cookie: &str) -> bool {
+    // 已存在的是 Netscape 格式（用户手动导入）→ 不允许自动同步覆盖
+    is_netscape_format(existing_cookie)
+        && // 自动同步永远是头格式；如果 incoming 也是 Netscape
+           // （理论上不会发生），仍然允许，因为可能是用户在另一处手动同步
+           !is_netscape_format(incoming_cookie)
+}
+
+/// 把 Netscape cookies.txt 格式转换为 `name=value; name2=value2` HTTP 头格式。
+///
+/// 解析每行：`domain<TAB>include_subdomains<TAB>path<TAB>secure<TAB>expiration<TAB>name<TAB>value`
+/// 跳过注释行（`#` 开头）和列数不足的行。name/value 取第 6、7 列。
+///
+/// 如果输入不是 Netscape 格式（无 TAB 分隔行），原样返回。
+/// 用于 `media_credential_check` 等需要把存储的 Cookie 作为 HTTP 头发送的场景：
+/// 用户可能从「导出 cookies.txt」按钮导出后直接导入「媒体凭证」，
+/// 此时存的格式是 Netscape，不能直接当作 HTTP 头值（含 TAB/换行会被 reqwest 拒绝）。
+pub(crate) fn netscape_to_cookie_header(cookie: &str) -> String {
+    if !is_netscape_format(cookie) {
+        return cookie.to_string();
+    }
+    let mut segments: Vec<String> = Vec::new();
+    for line in cookie.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let cols: Vec<&str> = line.split('\t').collect();
+        if cols.len() < 7 {
+            continue;
+        }
+        let name = cols[5].trim();
+        let value = cols[6].trim();
+        if name.is_empty() {
+            continue;
+        }
+        segments.push(format!("{name}={value}"));
+    }
+    segments.join("; ")
+}
+
 /// 将 Cookie 列表转换为 Netscape cookies 文件格式内容。
 ///
 /// 格式：
@@ -152,23 +221,40 @@ impl Drop for CookieFileGuard {
 /// 失败时返回中文错误（不含文件路径）。
 fn normalize_cookie_domain(domain: &str) -> String {
     let lower = domain.to_lowercase();
-    let platforms = [
-        ("douyin.com", ".douyin.com"),
-        ("iesdouyin.com", ".douyin.com"),
-        ("tiktok.com", ".tiktok.com"),
-        ("bilibili.com", ".bilibili.com"),
-        ("youtube.com", ".youtube.com"),
-        ("twitter.com", ".twitter.com"),
-        ("x.com", ".twitter.com"),
-        ("weibo.com", ".weibo.com"),
-        ("weibo.cn", ".weibo.cn"),
-    ];
-    for &(p, target) in &platforms {
-        if lower == p || lower.ends_with(&format!(".{}", p)) {
-            return target.to_string();
+    let platform = crate::media_platforms::detect_platform(&format!("https://{lower}"));
+    match platform {
+        crate::media_platforms::MediaPlatform::Douyin => ".douyin.com".to_string(),
+        crate::media_platforms::MediaPlatform::TikTok => ".tiktok.com".to_string(),
+        crate::media_platforms::MediaPlatform::Twitter => ".twitter.com".to_string(),
+        crate::media_platforms::MediaPlatform::YouTube => ".youtube.com".to_string(),
+        crate::media_platforms::MediaPlatform::Bilibili => ".bilibili.com".to_string(),
+        crate::media_platforms::MediaPlatform::Weibo => {
+            if lower.contains("weibo.cn") {
+                ".weibo.cn".to_string()
+            } else {
+                ".weibo.com".to_string()
+            }
+        }
+        crate::media_platforms::MediaPlatform::Unknown => {
+            let platforms = [
+                ("douyin.com", ".douyin.com"),
+                ("iesdouyin.com", ".douyin.com"),
+                ("tiktok.com", ".tiktok.com"),
+                ("bilibili.com", ".bilibili.com"),
+                ("youtube.com", ".youtube.com"),
+                ("twitter.com", ".twitter.com"),
+                ("x.com", ".twitter.com"),
+                ("weibo.com", ".weibo.com"),
+                ("weibo.cn", ".weibo.cn"),
+            ];
+            for &(p, target) in &platforms {
+                if lower == p || lower.ends_with(&format!(".{}", p)) {
+                    return target.to_string();
+                }
+            }
+            lower
         }
     }
-    lower
 }
 
 pub(crate) async fn write_cookie_file_in_dir(
@@ -177,16 +263,24 @@ pub(crate) async fn write_cookie_file_in_dir(
     url: &str,
     referer: Option<&str>,
 ) -> Result<CookieFileGuard, String> {
-    let pairs = parse_cookie_header(cookie);
-    if pairs.is_empty() {
+    let trimmed = cookie.trim();
+    if trimmed.is_empty() {
         return Ok(CookieFileGuard { path: None });
     }
-    let target_url = referer.unwrap_or(url);
-    let (domain, is_https) = extract_host_and_scheme(target_url)
-        .or_else(|| extract_host_and_scheme(url))
-        .ok_or_else(|| "无法从 URL 或 Referer 解析域名".to_string())?;
-    let normalized = normalize_cookie_domain(&domain);
-    let content = build_netscape_content(&pairs, &normalized, is_https);
+    let content = if trimmed.contains("# Netscape") || trimmed.contains('\t') {
+        trimmed.to_string()
+    } else {
+        let pairs = parse_cookie_header(trimmed);
+        if pairs.is_empty() {
+            return Ok(CookieFileGuard { path: None });
+        }
+        let target_url = referer.unwrap_or(url);
+        let (domain, is_https) = extract_host_and_scheme(target_url)
+            .or_else(|| extract_host_and_scheme(url))
+            .ok_or_else(|| "无法从 URL 或 Referer 解析域名".to_string())?;
+        let normalized = normalize_cookie_domain(&domain);
+        build_netscape_content(&pairs, &normalized, is_https)
+    };
 
     tokio::fs::create_dir_all(base_dir)
         .await
@@ -353,6 +447,122 @@ mod tests {
     fn parses_cookie_value_with_equals_sign() {
         let pairs = parse_cookie_header("data=base64=a=b");
         assert_eq!(pairs, vec![("data".to_string(), "base64=a=b".to_string())]);
+    }
+
+    #[test]
+    fn is_netscape_format_detects_netscape_header() {
+        assert!(is_netscape_format("# Netscape HTTP Cookie File\n.youtube.com\tTRUE\t/\tTRUE\t0\tsid\txyz"));
+    }
+
+    #[test]
+    fn is_netscape_format_detects_tab_separated_lines_without_header() {
+        // 没有 # Netscape 头但有 TAB 分隔 7 列的行也算
+        assert!(is_netscape_format(".youtube.com\tTRUE\t/\tTRUE\t0\tsid\txyz"));
+    }
+
+    #[test]
+    fn is_netscape_format_rejects_header_format() {
+        assert!(!is_netscape_format("sid=xyz; token=abc"));
+        assert!(!is_netscape_format(""));
+        assert!(!is_netscape_format("   "));
+    }
+
+    #[test]
+    fn netscape_to_cookie_header_converts_netscape_format_to_header_format() {
+        let netscape = "# Netscape HTTP Cookie File\n\
+            .youtube.com\tTRUE\t/\tTRUE\t1819208478\tSID\tabc123\n\
+            .youtube.com\tTRUE\t/\tTRUE\t1819208478\tLOGIN_INFO\txyz789\n";
+        let header = netscape_to_cookie_header(netscape);
+        assert_eq!(header, "SID=abc123; LOGIN_INFO=xyz789");
+    }
+
+    #[test]
+    fn netscape_to_cookie_header_passes_through_header_format_unchanged() {
+        // 非 Netscape 格式原样返回
+        let header = "SID=abc123; LOGIN_INFO=xyz789";
+        assert_eq!(netscape_to_cookie_header(header), header);
+    }
+
+    #[test]
+    fn netscape_to_cookie_header_skips_comment_and_short_lines() {
+        let netscape = "# Netscape HTTP Cookie File\n\
+            # 这是一个注释\n\
+            .youtube.com\tTRUE\t/\tTRUE\t0\tSID\tabc\n\
+            短行\n\
+            .youtube.com\tTRUE\t/\tTRUE\t0\tTOKEN\txyz\n";
+        let header = netscape_to_cookie_header(netscape);
+        assert_eq!(header, "SID=abc; TOKEN=xyz");
+    }
+
+    #[test]
+    fn netscape_to_cookie_header_handles_empty_name() {
+        // name 为空的行应被跳过
+        let netscape = ".youtube.com\tTRUE\t/\tTRUE\t0\t\tvalue\n\
+            .youtube.com\tTRUE\t/\tTRUE\t0\tSID\tabc\n";
+        let header = netscape_to_cookie_header(netscape);
+        assert_eq!(header, "SID=abc");
+    }
+
+    #[test]
+    fn netscape_to_cookie_header_returns_empty_for_empty_input() {
+        assert_eq!(netscape_to_cookie_header(""), "");
+    }
+
+    #[test]
+    fn netscape_to_cookie_header_preserves_value_with_equals_sign() {
+        // Cookie value 中可能含 = 字符（如 base64），应原样保留
+        let netscape = ".youtube.com\tTRUE\t/\tTRUE\t0\tdata\tbase64=a=b=c\n";
+        let header = netscape_to_cookie_header(netscape);
+        assert_eq!(header, "data=base64=a=b=c");
+    }
+
+    #[test]
+    fn should_skip_auto_sync_blocks_header_overwriting_netscape() {
+        // 已存在 Netscape 格式（用户手动导入），扩展自动同步发来头格式 → 必须跳过
+        let existing = "# Netscape HTTP Cookie File\n.youtube.com\tTRUE\t/\tTRUE\t0\tSID\txyz\n";
+        let incoming = "SID=rotated-by-youtube; LOGIN_INFO=abc";
+        assert!(
+            should_skip_auto_sync(existing, incoming),
+            "自动同步不得覆盖用户手动导入的 Netscape 格式凭证"
+        );
+    }
+
+    #[test]
+    fn should_skip_auto_sync_allows_header_overwriting_header() {
+        // 已存在头格式，扩展自动同步发来新头格式 → 允许覆盖（普通窗口 Cookie 轮换）
+        let existing = "SID=old; LOGIN_INFO=old";
+        let incoming = "SID=new; LOGIN_INFO=new";
+        assert!(
+            !should_skip_auto_sync(existing, incoming),
+            "头格式凭证可以被自动同步更新"
+        );
+    }
+
+    #[test]
+    fn should_skip_auto_sync_allows_netscape_overwriting_header() {
+        // 已存在头格式，incoming 是 Netscape → 允许（用户从其他渠道手动同步）
+        // 实际场景中自动同步不会发 Netscape，但函数逻辑上不应阻止
+        let existing = "SID=old";
+        let incoming = "# Netscape HTTP Cookie File\n.youtube.com\tTRUE\t/\tTRUE\t0\tSID\tnew\n";
+        assert!(
+            !should_skip_auto_sync(existing, incoming),
+            "incoming 为 Netscape 时应允许（可能是用户另一处手动同步"
+        );
+    }
+
+    #[test]
+    fn should_skip_auto_sync_allows_overwrite_when_existing_empty() {
+        // 已存在为空 → 允许覆盖（首次设置）
+        assert!(!should_skip_auto_sync("", "SID=abc"));
+    }
+
+    #[test]
+    fn normalize_cookie_domain_maps_short_urls_to_canonical_domain() {
+        assert_eq!(normalize_cookie_domain("youtu.be"), ".youtube.com");
+        assert_eq!(normalize_cookie_domain("www.youtube.com"), ".youtube.com");
+        assert_eq!(normalize_cookie_domain("x.com"), ".twitter.com");
+        assert_eq!(normalize_cookie_domain("b23.tv"), ".bilibili.com");
+        assert_eq!(normalize_cookie_domain("v.douyin.com"), ".douyin.com");
     }
 
     #[test]

@@ -67,6 +67,7 @@ pico-args = "0.5"
 tauri-plugin-single-instance = "2"
 
 [target.'cfg(windows)'.dependencies]
+winreg = "0.52"
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
     "Win32_Security",

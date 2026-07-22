@@ -346,6 +346,9 @@ async fn sync_media_credentials(
 
     let supported = [
         "douyin.com",
+        "iesdouyin.com",
+        "douyinvod.com",
+        "amemv.com",
         "tiktok.com",
         "bilibili.com",
         "weibo.com",
@@ -370,6 +373,15 @@ async fn sync_media_credentials(
     };
 
     if let Ok(Some(existing)) = state.manager.store.media_credential_get_matching(&domain).await {
+        // 保护用户手动配置：如果已存在的 Cookie 是 Netscape cookies.txt 格式
+        // （只能由用户从「导出 cookies.txt」按钮导出后手动导入，扩展自动同步
+        // 永远只发 HTTP 头格式），则不允许被自动同步覆盖。这避免了
+        // "用户导出无痕窗口 cookies.txt 导入 → 打开 youtube.com 网页 →
+        //   扩展自动同步把普通窗口 Cookie 覆盖掉手动配置" 的数据丢失场景。
+        // 参见 AGENTS.md §7：不得改变用户设置，除非操作由用户明确触发。
+        if crate::media_cookies::should_skip_auto_sync(&existing.cookie, &cred.cookie) {
+            return Ok(StatusCode::OK);
+        }
         cred.referer = existing.referer;
         cred.user_agent = existing.user_agent;
     }

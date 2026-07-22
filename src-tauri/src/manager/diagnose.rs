@@ -80,6 +80,10 @@ pub enum MediaPlatformError {
 ///   `age-restricted`、`login required`、`cookie(s) required`、`403`、`forbidden`
 ///   由 [`classify_twitter_error`] 识别（Task 39.3）
 /// - **YouTube 年龄限制**：`age-restricted`、`Sign in to confirm your age` → `LoginExpired`
+/// - **YouTube 机器人验证**：`Sign in to confirm you're not a bot`、
+///   `cookies-from-browser`、`cookies for the authentication` → `LoginExpired`
+///   （自 2024 年 YouTube 加强 PO Token 校验后常见，需用户在「设置 → 媒体凭证」
+///   提供 Cookie）
 /// - **B 站会员限制**：`premium only`、`VIP` → `LoginExpired`
 /// - **微博链接失效**：`404`、`deleted` → `LinkExpired`（已覆盖）
 ///
@@ -191,7 +195,11 @@ pub fn platform_error_to_chinese(error: MediaPlatformError, platform: MediaPlatf
             "Twitter/X 登录已失效，请重新获取 Cookie".into()
         }
         (MediaPlatformError::LoginExpired, MediaPlatform::YouTube) => {
-            "YouTube 登录已失效，请重新登录 Google 账号".into()
+            "YouTube 反爬虫验证失败（PO Token）。这是 YouTube 强制的反机器人机制，不是软件 bug。\n\
+             可尝试：1) 在「设置 → 媒体工具/高级」配置 YouTube PO Token 凭证；\n\
+             2) 用无痕窗口登录 YouTube 后访问 https://www.youtube.com/robots.txt，导出 Cookie 到「设置 → 媒体凭证」（此 Cookie 不会被轮换）；\n\
+             3) 稍后重试（PO Token 有时效，12 小时后可能自动恢复）；\n\
+             4) 升级 yt-dlp 到最新版（「设置 → 媒体工具 → 检查更新」）。".into()
         }
         (MediaPlatformError::LoginExpired, MediaPlatform::Bilibili) => {
             "哔哩哔哩登录已失效，请重新获取 Cookie".into()
@@ -1340,7 +1348,11 @@ mod tests {
     fn platform_error_to_chinese_youtube_login() {
         let msg =
             platform_error_to_chinese(MediaPlatformError::LoginExpired, MediaPlatform::YouTube);
-        assert_eq!(msg, "YouTube 登录已失效，请重新登录 Google 账号");
+        // 文案应明确告诉用户去「设置 → 媒体凭证」提供 YouTube Cookie，
+        // 而不是模糊的"请重新登录 Google 账号"（机器人验证场景用户可能从未登录过）
+        assert!(msg.contains("媒体凭证"));
+        assert!(msg.contains("Cookie"));
+        assert!(msg.contains("YouTube"));
     }
 
     #[test]
@@ -1513,6 +1525,42 @@ mod tests {
             classify_platform_error(MediaPlatform::YouTube, stderr3),
             MediaPlatformError::LoginExpired
         );
+    }
+
+    #[test]
+    fn classify_youtube_bot_check() {
+        // YouTube 机器人验证（PO Token 校验失败）：yt-dlp 输出形如
+        // "Sign in to confirm you're not a bot. Use --cookies-from-browser or
+        //  --cookies for the authentication."
+        // 此错误自 2024 年 YouTube 加强反爬虫后常见，统一识别为 LoginExpired
+        // 并通过中文文案引导用户提供 Cookie
+        let stderr1 = "ERROR: [youtube] abc: Sign in to confirm you're not a bot. \
+            Use --cookies-from-browser or --cookies for the authentication.";
+        assert_eq!(
+            classify_platform_error(MediaPlatform::YouTube, stderr1),
+            MediaPlatformError::LoginExpired
+        );
+        // 大小写不敏感
+        let stderr2 = "SIGN IN TO CONFIRM YOU'RE NOT A BOT";
+        assert_eq!(
+            classify_platform_error(MediaPlatform::YouTube, stderr2),
+            MediaPlatformError::LoginExpired
+        );
+        // 仅含 "cookies-from-browser" 提示也应识别（兜底匹配）
+        let stderr3 = "Use --cookies-from-browser to pass cookies";
+        assert_eq!(
+            classify_platform_error(MediaPlatform::YouTube, stderr3),
+            MediaPlatformError::LoginExpired
+        );
+        // 中文文案应引导用户到「设置 → 媒体凭证」，且不包含敏感字段
+        let msg = platform_error_to_chinese(
+            MediaPlatformError::LoginExpired,
+            MediaPlatform::YouTube,
+        );
+        assert!(msg.contains("媒体凭证"));
+        assert!(msg.contains("Cookie"));
+        // 与 Twitter 的 Cookie 文案区分（不应混淆平台）
+        assert!(!msg.contains("Twitter"));
     }
 
     #[test]

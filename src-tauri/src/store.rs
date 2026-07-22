@@ -1009,7 +1009,8 @@ impl Store {
         }
     }
 
-    /// Query credential matching domain or its parent domains (e.g. v.douyin.com -> douyin.com)
+    /// Query credential matching domain, its parent domains (e.g. v.douyin.com -> douyin.com)
+    /// or platform alias domains (e.g. youtu.be -> youtube.com, x.com -> twitter.com).
     pub async fn media_credential_get_matching(
         &self,
         domain: &str,
@@ -1025,6 +1026,14 @@ impl Store {
             let parent = parts[i..].join(".");
             if let Some(cred) = self.media_credential_get(&parent).await? {
                 return Ok(Some(cred));
+            }
+        }
+        let platform = crate::media_platforms::detect_platform(&format!("https://{domain}"));
+        for &alt_domain in platform.candidate_domains() {
+            if alt_domain != domain {
+                if let Some(cred) = self.media_credential_get(alt_domain).await? {
+                    return Ok(Some(cred));
+                }
             }
         }
         Ok(None)
@@ -1627,12 +1636,12 @@ fn seed_builtin_filename_cleanup_rules(connection: &Connection) -> Result<(), St
 /// Task 43: 在打开数据库时按 INSERT OR IGNORE 写入内置平台命名模板。
 ///
 /// 内置模板覆盖 6 个常用平台：
-/// - 抖音：`{author}_{title}_{date}`（与 `format_douyin_filename` 默认布局一致）
-/// - TikTok：`{author}_{title}_{date}`
-/// - Twitter/X：`{author}_{id}_{date}`（保留推文 ID 便于回溯）
-/// - YouTube：`{channel}_{title}_{id}`（频道名 + 标题 + 视频 ID）
-/// - B 站：`{author}_{title}_{bvid}`（BV 号是 B 站唯一标识）
-/// - 微博：`{author}_{title}_{date}`
+/// - 抖音：`{title}_{date}`
+/// - TikTok：`{title}_{date}`
+/// - Twitter/X：`{title}_{id}`（标题 + 推文 ID 便于回溯）
+/// - YouTube：`{title}_{id}`
+/// - B 站：`{title}_{bvid}`（BV 号是 B 站唯一标识）
+/// - 微博：`{title}_{date}`
 ///
 /// `INSERT OR IGNORE` 保证用户对内置模板的修改（同 id）不会被覆盖；
 /// 旧版本数据库首次升级时会一次性插入全部内置模板。
@@ -1643,7 +1652,7 @@ fn seed_builtin_platform_naming_templates(connection: &Connection) -> Result<(),
             r#"INSERT OR IGNORE INTO platform_naming_templates(id,platform,template,enabled,is_builtin) VALUES
               ('douyin-default','douyin','{title}_{date}',1,1),
               ('tiktok-default','tiktok','{title}_{date}',1,1),
-              ('twitter-default','twitter','{id}_{date}',1,1),
+              ('twitter-default','twitter','{title}_{id}',1,1),
               ('youtube-default','youtube','{title}_{id}',1,1),
               ('bilibili-default','bilibili','{title}_{bvid}',1,1),
               ('weibo-default','weibo','{title}_{date}',1,1);
@@ -1651,11 +1660,12 @@ fn seed_builtin_platform_naming_templates(connection: &Connection) -> Result<(),
         )
         .map_err(|e| e.to_string())?;
 
-    // 升级已存在但未被用户定制过的内置模板，移除作者/频道前缀
+    // 升级已存在但未被用户定制过的内置模板
     let migrations = [
         ("douyin-default", "{author}_{title}_{date}", "{title}_{date}"),
         ("tiktok-default", "{author}_{title}_{date}", "{title}_{date}"),
         ("twitter-default", "{author}_{id}_{date}", "{id}_{date}"),
+        ("twitter-default", "{id}_{date}", "{title}_{id}"),
         ("youtube-default", "{channel}_{title}_{id}", "{title}_{id}"),
         ("bilibili-default", "{author}_{title}_{bvid}", "{title}_{bvid}"),
         ("weibo-default", "{author}_{title}_{date}", "{title}_{date}"),
@@ -1684,8 +1694,8 @@ fn seed_builtin_platform_compatibility(connection: &Connection) -> Result<(), St
     // 这里使用 raw string + format! 便于阅读，并预转义中文 notes 中的双引号。
     // 各平台 known_issues 为空数组（暂无已知问题，后续可由前端编辑补充）。
     let rows: [(&str, &str, &str); 6] = [
-        ("bilibili", "verified", "哔哩哔哩普通视频、番剧、直播回放可正常下载"),
-        ("douyin", "experimental", "抖音短链、图集、单视频可下载，需提供 Cookie"),
+        ("bilibili", "verified", "哔哩哔哩普通视频、多P合集、番剧剧集与实时直播流均可正常下载"),
+        ("douyin", "verified", "抖音短链、图集、单视频及实时直播流全功能正常支持"),
         ("tiktok", "experimental", "TikTok 普通视频、图集可下载，部分内容受地区限制"),
         ("twitter", "experimental", "Twitter/X 普通推文视频可下载，需提供 Cookie"),
         ("weibo", "experimental", "微博普通视频、图集可下载，需提供 Cookie"),
@@ -1694,8 +1704,9 @@ fn seed_builtin_platform_compatibility(connection: &Connection) -> Result<(), St
     for (platform, level, notes) in rows {
         connection
             .execute(
-                "INSERT OR IGNORE INTO platform_compatibility(platform,level,notes,known_issues_json,last_tested_at) \
-                 VALUES(?1,?2,?3,'[]','')",
+                "INSERT INTO platform_compatibility(platform,level,notes,known_issues_json,last_tested_at) \
+                 VALUES(?1,?2,?3,'[]','') \
+                 ON CONFLICT(platform) DO UPDATE SET notes=?3 WHERE notes = '哔哩哔哩普通视频、番剧、直播回放可正常下载' OR notes = '抖音短链、图集、单视频全功能正常支持'",
                 params![platform, level, notes],
             )
             .map_err(|e| e.to_string())?;
@@ -3383,7 +3394,7 @@ mod tests {
             assert_eq!(list[0].platform, "bilibili");
             assert_eq!(list[0].level, SupportLevel::Verified);
             assert_eq!(list[1].platform, "douyin");
-            assert_eq!(list[1].level, SupportLevel::Experimental);
+            assert_eq!(list[1].level, SupportLevel::Verified);
             assert_eq!(list[2].platform, "tiktok");
             assert_eq!(list[2].level, SupportLevel::Experimental);
             assert_eq!(list[3].platform, "twitter");
@@ -3423,7 +3434,7 @@ mod tests {
                 .unwrap()
                 .expect("douyin record should exist");
             assert_eq!(douyin.platform, "douyin");
-            assert_eq!(douyin.level, SupportLevel::Experimental);
+            assert_eq!(douyin.level, SupportLevel::Verified);
         });
     }
 
@@ -3476,6 +3487,37 @@ mod tests {
                 .unwrap()
                 .expect("bilibili record should exist");
             assert_eq!(bilibili.level, SupportLevel::Verified);
+        });
+    }
+
+    #[test]
+    fn platform_compatibility_seed_updates_old_douyin_notes() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().to_path_buf();
+        {
+            let store = Store::open(path.clone()).unwrap();
+            let connection = store.connection.blocking_lock();
+            // 模拟旧版本数据库：设置为旧抖音文案
+            connection
+                .execute(
+                    "UPDATE platform_compatibility SET notes='抖音短链、图集、单视频全功能正常支持' WHERE platform='douyin'",
+                    [],
+                )
+                .unwrap();
+        }
+        // 重新打开数据库（执行增量升级 seed）
+        let store = Store::open(path).unwrap();
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        runtime.block_on(async {
+            let douyin = store
+                .platform_compatibility_get("douyin")
+                .await
+                .unwrap()
+                .expect("douyin record should exist");
+            assert_eq!(
+                douyin.notes,
+                "抖音短链、图集、单视频及实时直播流全功能正常支持"
+            );
         });
     }
 
@@ -3558,6 +3600,25 @@ mod tests {
         assert!(!stored.is_empty());
         // Windows 平台 DPAPI 密文是 base64；非 Windows 平台回退为 base64(plain)
         // 两种情况下密文都不应等于明文
+    }
+
+    #[test]
+    fn media_credential_get_matching_supports_platform_aliases() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::open(directory.path().to_path_buf()).unwrap();
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        runtime.block_on(async {
+            store
+                .media_credential_upsert(sample_credential("youtube.com", "LOGIN_INFO=yt_test_cookie"))
+                .await
+                .unwrap();
+            let matched = store
+                .media_credential_get_matching("youtu.be")
+                .await
+                .unwrap()
+                .expect("youtu.be should match youtube.com credential");
+            assert_eq!(matched.cookie, "LOGIN_INFO=yt_test_cookie");
+        });
     }
 
     /// Task 46：解密失败（密文损坏）时返回中文错误信息。

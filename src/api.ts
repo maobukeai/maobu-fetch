@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { AppInfo, AppSettings, CategoryRule, CategoryRuleTestResult, CompletionAction, DeepLinkReceivedPayload, DetectedMediaTools, DownloadPreset, DownloadTask, DuplicateCheckResult, ErrorDiagnosis, ExtensionCompatibilityResult, FilenameCleanupRule, MediaCredential, MediaPlatform, MediaProbeResult, MeteredNetworkDetectedPayload, NewTaskRequest, PairingInfo, PlatformCompatibility, PlatformNamingTemplate, PowerAction, PowerActionState, PrecheckRequest, PrecheckResult, ProxyAuth, ProxyTestResult, RestorePreview, RestoreStats, RetryPolicy, SelfcheckReport, Tag, TaskEvent, TaskNotificationPayload, TaskTagsMap, TaskTemplate, TaskTemplateTestResult, ToolComponent, ToolStatus, UpdateCheckResult, UrlHistoryEntry, WaitReason } from "./types";
+import type { AppInfo, AppSettings, CacheClearResult, CacheInspectResult, CategoryRule, CategoryRuleTestResult, CompletionAction, DeepLinkReceivedPayload, DetectedMediaTools, DownloadPreset, DownloadTask, DuplicateCheckResult, ErrorDiagnosis, ExtensionCompatibilityResult, FilenameCleanupRule, MediaCredential, MediaCredentialCheckResult, MediaPlatform, MediaProbeResult, MeteredNetworkDetectedPayload, NewTaskRequest, PairingInfo, PlatformCompatibility, PlatformNamingTemplate, PowerAction, PowerActionState, PrecheckRequest, PrecheckResult, ProxyAuth, ProxyTestResult, RestorePreview, RestoreStats, RetryPolicy, SelfcheckReport, Tag, TaskEvent, TaskNotificationPayload, TaskTagsMap, TaskTemplate, TaskTemplateTestResult, ToolComponent, ToolStatus, UpdateCheckResult, UrlHistoryEntry, WaitReason } from "./types";
 
 export const isDesktop = () => "__TAURI_INTERNALS__" in window;
 const call = <T>(command: string, args?: Record<string, unknown>): Promise<T> => isDesktop() ? invoke<T>(command, args) : Promise.reject(new Error("请运行猫步下载器桌面应用"));
@@ -45,6 +45,7 @@ export const api = {
   cancelPowerAction: () => call<PowerActionState>("power_action_cancel"),
   openFile: (id: string) => call<void>("task_open_file", { id }),
   openFolder: (id: string) => call<void>("task_open_folder", { id }),
+  openExternalUrl: (url: string) => call<void>("open_external_url", { url }),
   verify: (id: string) => call<string>("task_verify", { id }),
   logToBackend: (message: string) => call<void>("log_to_backend", { message }),
   diagnose: (id: string) => call<ErrorDiagnosis | null>("task_diagnose", { id }),
@@ -53,6 +54,10 @@ export const api = {
   /** 检测新任务是否与已有任务重复（Task 10）。`fileSize` 和 `sha256` 可选，用于 SameChecksum 检测。 */
   duplicateCheck: (url: string, targetPath: string, options?: { fileSize?: number; sha256?: string }) => call<DuplicateCheckResult>("duplicate_check", { url, targetPath, fileSize: options?.fileSize, sha256: options?.sha256 }),
   clearHistory: (includeCompleted: boolean) => call<void>("history_clear", { includeCompleted }),
+  /** 检查软件无用缓存（孤立分片、过期日志、媒体探测临时文件）的大小与数量。 */
+  cacheInspect: () => isDesktop() ? call<CacheInspectResult>("cache_inspect") : Promise.resolve({ total_bytes: 0, file_count: 0 }),
+  /** 安全清理无用缓存，返回释放的空间字节数。 */
+  cacheClear: () => isDesktop() ? call<CacheClearResult>("cache_clear") : Promise.resolve({ freed_bytes: 0, deleted_files_count: 0 }),
   pairing: () => call<PairingInfo>("pairing_info"),
   rotatePairing: () => call<PairingInfo>("pairing_rotate"),
   revokePairing: () => call<void>("pairing_revoke"),
@@ -118,6 +123,8 @@ export const api = {
   mediaCredentialGet: (domain: string) => call<MediaCredential | null>("media_credential_get", { domain }),
   /** 按 domain 删除单条凭证。不存在不算错误（幂等）。 */
   mediaCredentialDelete: (domain: string) => call<void>("media_credential_delete", { domain }),
+  /** 按 domain 在线检测凭证有效性。 */
+  mediaCredentialCheck: (domain: string) => call<MediaCredentialCheckResult>("media_credential_check", { domain }),
   // ===== Task 44: 平台兼容性矩阵（只读） =====
   /**
    * 列出全部平台兼容性记录，按 platform 升序返回。

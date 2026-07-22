@@ -463,9 +463,9 @@ mod tests {
 
     #[test]
     fn builtin_twitter_template_applies_correctly() {
-        let template = "{author}_{id}_{date}";
+        let template = "{title}_{id}";
         let result = apply_naming_template(template, &vars());
-        assert_eq!(result, "张三_7012345678901234567_20260720");
+        assert_eq!(result, "测试视频_7012345678901234567");
     }
 
     #[test]

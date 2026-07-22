@@ -131,44 +131,13 @@ body { margin: 0; min-width: 1024px; overflow: hidden; background: var(--surface
   box-shadow: inset -1px 0 0 var(--frost-highlight);
 }
 :root[data-window-style="frosted"] .settings-group-content,
-:root[data-window-style="frosted"] .dialog,
 :root[data-window-style="frosted"] .pair-card,
 :root[data-window-style="frosted"] .media-tools-card,
 :root[data-window-style="frosted"] .context-menu,
 :root[data-window-style="frosted"] .toast {
   box-shadow: inset 0 1px 0 var(--frost-highlight), var(--shadow);
 }
-:root[data-window-style="frosted"] .dialog-material {
-  overflow: hidden;
-  border-radius: 12px;
-  background: rgba(248, 250, 253, 0.58);
-  -webkit-backdrop-filter: blur(30px) saturate(170%);
-  backdrop-filter: blur(30px) saturate(170%);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.78), 0 18px 48px rgba(30, 38, 52, 0.22);
-}
-:root[data-window-style="frosted"] .dialog-material .dialog {
-  background: transparent;
-  box-shadow: none;
-}
-:root[data-window-style="frosted"] .power-action-dialog {
-  background: rgba(248, 250, 253, 0.68);
-  -webkit-backdrop-filter: blur(30px) saturate(170%);
-  backdrop-filter: blur(30px) saturate(170%);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.78), 0 18px 48px rgba(30, 38, 52, 0.22);
-}
-:root[data-window-style="frosted"] .modal-layer {
-  background: rgba(31, 38, 50, 0.10);
-  -webkit-backdrop-filter: none;
-  backdrop-filter: none;
-}
-:root[data-theme="dark"][data-window-style="frosted"] .dialog-material,
-:root[data-theme="dark"][data-window-style="frosted"] .power-action-dialog {
-  background: rgba(31, 33, 39, 0.60);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.16), 0 20px 52px rgba(0, 0, 0, 0.38);
-}
-:root[data-theme="dark"][data-window-style="frosted"] .modal-layer {
-  background: rgba(8, 10, 14, 0.16);
-}
+
 /* 磨砂玻璃：右键菜单与弹窗
    主窗口的磨砂感来自 OS Mica 效果，弹窗/菜单只需匹配色调 + 高不透明度
    0.94 不透明度 = 不透字、不透内容，但允许极微量 Mica 折射 */
@@ -193,39 +162,7 @@ body { margin: 0; min-width: 1024px; overflow: hidden; background: var(--surface
   border-color: rgba(255, 255, 255, 0.1) !important;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.10), var(--shadow) !important;
 }
-/* Modal 遮罩层：轻微变暗，不加模糊 */
-:root[data-window-style="frosted"] .modal-layer {
-  background: rgba(0, 0, 0, 0.12) !important;
-  backdrop-filter: none !important;
-  -webkit-backdrop-filter: none !important;
-}
-:root[data-theme="dark"][data-window-style="frosted"] .modal-layer {
-  background: rgba(0, 0, 0, 0.25) !important;
-  backdrop-filter: none !important;
-  -webkit-backdrop-filter: none !important;
-}
-/* 弹窗本体：同样的高不透明度 + 轻量模糊，与主窗口色调一致 */
-:root[data-window-style="frosted"] .modal-layer .dialog {
-  background: rgba(245, 246, 250, 0.94) !important;
-  -webkit-backdrop-filter: blur(20px) saturate(160%) !important;
-  backdrop-filter: blur(20px) saturate(160%) !important;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.85), 0 20px 56px rgba(30, 38, 52, 0.18) !important;
-  border-color: rgba(210, 212, 220, 0.6) !important;
-}
-:root[data-theme="dark"][data-window-style="frosted"] .modal-layer .dialog {
-  background: rgba(28, 29, 36, 0.96) !important;
-  -webkit-backdrop-filter: blur(20px) saturate(140%) !important;
-  backdrop-filter: blur(20px) saturate(140%) !important;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.10), 0 20px 56px rgba(0, 0, 0, 0.40) !important;
-  border-color: rgba(60, 62, 72, 0.8) !important;
-}
-/* 底部 Sticky 按钮区：同色，稍微更实，与弹窗融为一体 */
-:root[data-window-style="frosted"] .dialog-actions.new-task-actions {
-  background: rgba(245, 246, 250, 0.94) !important;
-}
-:root[data-theme="dark"][data-window-style="frosted"] .dialog-actions.new-task-actions {
-  background: rgba(28, 29, 36, 0.96) !important;
-}
+
 button, input, textarea, select { font: inherit; color: inherit; }
 button { border: 0; cursor: pointer; }
 button:disabled { opacity: .45; cursor: default; }
@@ -954,9 +891,49 @@ svg { flex: 0 0 auto; }
 .remote-changed-actions .remote-changed-redownload { border-color: var(--warning); color: var(--warning); }
 
 
-.modal-layer { position: fixed; inset: 0; z-index: 30; display: grid; place-items: center; padding: 24px; background: rgba(0,0,0,.35); backdrop-filter: blur(4px); }
-.dialog-material { width: max-content; max-width: calc(100vw - 48px); max-height: calc(100vh - 48px); border-radius: 12px; }
-.power-action-dialog { width: min(460px, calc(100vw - 48px)); padding: 16px; border: 1px solid var(--border); border-radius: 10px; color: var(--text); background: var(--surface-solid); box-shadow: var(--shadow); }
+.modal-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(0, 0, 0, 0.28);
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
+}
+.dialog-material {
+  width: max-content;
+  max-width: calc(100vw - 48px);
+  max-height: calc(100vh - 48px);
+  border-radius: 12px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.82);
+  -webkit-backdrop-filter: blur(24px) saturate(180%);
+  backdrop-filter: blur(24px) saturate(180%);
+  border: 1px solid rgba(0, 0, 0, 0.10);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.8), 0 20px 48px rgba(0, 0, 0, 0.14), 0 4px 12px rgba(0, 0, 0, 0.04);
+}
+.power-action-dialog {
+  width: min(460px, calc(100vw - 48px));
+  padding: 16px;
+  border-radius: 10px;
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.82);
+  -webkit-backdrop-filter: blur(24px) saturate(180%);
+  backdrop-filter: blur(24px) saturate(180%);
+  border: 1px solid rgba(0, 0, 0, 0.10);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.8), 0 20px 48px rgba(0, 0, 0, 0.14), 0 4px 12px rgba(0, 0, 0, 0.04);
+}
+/* 暗色模式：弹窗磨砂玻璃 */
+:root[data-theme="dark"] .dialog-material,
+:root[data-theme="dark"] .power-action-dialog {
+  background: rgba(28, 30, 38, 0.82);
+  -webkit-backdrop-filter: blur(24px) saturate(160%);
+  backdrop-filter: blur(24px) saturate(160%);
+  border-color: rgba(255, 255, 255, 0.10);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12), 0 24px 56px rgba(0, 0, 0, 0.48);
+}
 .power-action-dialog > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
 .power-action-dialog h2 { margin: 0; font-size: 16px; }
 .power-action-dialog p { margin: 4px 0 0; color: var(--muted); font-size: 11px; }
@@ -970,7 +947,11 @@ svg { flex: 0 0 auto; }
 .power-action-options small { color: var(--muted); font-size: 10px; line-height: 1.35; }
 .power-action-dialog > footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 14px; color: var(--muted); font-size: 10px; }
 .power-action-dialog .secondary-button { flex: none; min-height: 28px; padding: 0 10px; border: 1px solid var(--border-strong); border-radius: 5px; color: var(--text); background: var(--control); font-size: 11px; }
-.dialog { width: 480px; max-height: calc(100vh - 48px); overflow: auto; padding: 18px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface-solid); box-shadow: var(--shadow); }
+.dialog { width: 480px; max-height: calc(100vh - 48px); overflow: auto; padding: 18px; border: 1px solid rgba(0, 0, 0, 0.10); border-radius: 12px; background: rgba(255, 255, 255, 0.82); -webkit-backdrop-filter: blur(24px) saturate(180%); backdrop-filter: blur(24px) saturate(180%); box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.8), 0 20px 48px rgba(0, 0, 0, 0.14), 0 4px 12px rgba(0, 0, 0, 0.04); }
+:root[data-theme="dark"] .dialog { background: rgba(28, 30, 38, 0.82); -webkit-backdrop-filter: blur(24px) saturate(160%); backdrop-filter: blur(24px) saturate(160%); border-color: rgba(255, 255, 255, 0.10); box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12), 0 24px 56px rgba(0, 0, 0, 0.48); }
+/* 嵌套在 dialog-material 中时，内层 dialog 不提供自己的磨砂（由外层 dialog-material 统一提供） */
+.dialog-material .dialog,
+:root[data-theme="dark"] .dialog-material .dialog { background: transparent; box-shadow: none; border: 0; -webkit-backdrop-filter: none; backdrop-filter: none; }
 .dialog.wide { width: 660px; }
 .dialog > h2 { margin: 0 0 18px; font-size: 18px; font-weight: 600; }
 .new-task-form { display: flex; flex-direction: column; gap: 11px; }
@@ -1180,8 +1161,114 @@ svg { flex: 0 0 auto; }
 /* Task 20: 文件名清理规则面板，6 列布局（无 type 列）。 */
 .filename-cleanup-row { grid-template-columns: 60px minmax(140px, 1.4fr) minmax(160px, 2fr) minmax(120px, 1fr) 50px 132px; }
 /* Task 25: 媒体凭证管理面板，6 列布局。 */
-.media-credential-row { grid-template-columns: minmax(120px, 1.2fr) minmax(140px, 1.4fr) minmax(80px, 0.8fr) minmax(80px, 0.8fr) minmax(140px, 1.2fr) 90px; }
-.media-credential-row .category-rule-actions { gap: 8px; }
+.media-credential-row { grid-template-columns: minmax(110px, 1.1fr) minmax(120px, 1.2fr) minmax(70px, 0.7fr) minmax(70px, 0.7fr) minmax(130px, 1.2fr) 135px; }
+.media-credential-row .category-rule-actions { gap: 4px; }
+.media-credential-row .category-rule-actions button { padding: 0 6px; gap: 3px; font-size: 11px; }
+
+.media-cred-result-box {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+}
+.media-cred-result-box.valid {
+  background: rgba(46, 160, 67, 0.12);
+  color: #2da44e;
+  border: 1px solid rgba(46, 160, 67, 0.25);
+}
+.media-cred-result-box.invalid {
+  background: rgba(207, 34, 46, 0.12);
+  color: #cf222e;
+  border: 1px solid rgba(207, 34, 46, 0.25);
+}
+
+/* 媒体凭证获取指引 Modal 样式 */
+.media-cred-guide-container {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  max-height: 480px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+.media-cred-guide-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-alt);
+}
+.media-cred-guide-section h3 {
+  margin: 0;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text);
+}
+.media-cred-guide-steps {
+  margin: 0;
+  padding-left: 20px;
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--text);
+}
+.media-cred-guide-steps kbd {
+  font-family: var(--mono, monospace);
+  font-size: 10.5px;
+  padding: 1px 5px;
+  border: 1px solid var(--border-strong);
+  border-radius: 4px;
+  background: var(--surface-solid);
+}
+.media-cred-guide-platforms {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-top: 4px;
+}
+.platform-guide-card {
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-solid);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.platform-guide-card h4 {
+  margin: 0;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--text);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.platform-guide-card h4 code {
+  font-size: 10px;
+  color: var(--muted);
+}
+.platform-guide-card p {
+  margin: 0;
+  font-size: 11px;
+  color: var(--text);
+}
+.platform-guide-card p code {
+  font-family: var(--mono, monospace);
+  background: var(--surface-hover);
+  padding: 1px 4px;
+  border-radius: 3px;
+  font-size: 10.5px;
+  color: var(--accent, #0078d4);
+}
+.platform-guide-card .tip {
+  font-size: 10px;
+  color: var(--muted);
+}
 /* Task 20: 新建任务对话框中清理后文件名预览。 */
 .filename-cleanup-preview { display: flex; align-items: flex-start; flex-wrap: wrap; gap: 4px 6px; padding: 4px 2px 0; font-size: 10px; color: var(--muted); }
 .filename-cleanup-preview code { font-family: var(--mono, monospace); font-size: 10px; color: var(--accent, #0078d4); background: var(--surface-alt); padding: 1px 6px; border-radius: 4px; word-break: break-all; white-space: normal; }
@@ -1574,6 +1661,24 @@ svg { flex: 0 0 auto; }
   flex-direction: column;
   gap: 10px;
   box-shadow: 0 1px 2px rgba(0,0,0,0.02);
+}
+.episode-picker-toolbar {
+  flex-wrap: nowrap !important;
+  white-space: nowrap !important;
+}
+.episode-picker-toolbar .input-button {
+  height: 22px !important;
+  min-height: 22px !important;
+  padding: 0 6px !important;
+  font-size: 11px !important;
+  white-space: nowrap !important;
+  line-height: 22px !important;
+}
+.episode-picker-toolbar span,
+.episode-picker-toolbar div,
+.episode-picker-toolbar button,
+.episode-picker-toolbar select {
+  white-space: nowrap !important;
 }
 .media-result-header {
   display: flex;
@@ -3746,4 +3851,142 @@ svg { flex: 0 0 auto; }
 }
 .template-edit-grid .wide {
   grid-column: 1 / -1;
+}
+
+/* ==========================================================================
+   CustomSelect 通用自定义下拉菜单组件 (Win11 Fluent Style)
+   ========================================================================== */
+.custom-select-trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  height: 28px;
+  padding: 0 10px;
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--text);
+  background: var(--control);
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  cursor: pointer;
+  outline: none;
+  transition: border-color 0.15s ease, background-color 0.15s ease, box-shadow 0.15s ease;
+  user-select: none;
+  box-sizing: border-box;
+  text-align: left;
+}
+.custom-select-trigger:hover:not(:disabled) {
+  background: var(--surface-hover);
+  border-color: var(--accent);
+}
+.custom-select-trigger.active {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-light);
+}
+.custom-select-trigger:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.custom-select-label {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.custom-select-chevron {
+  color: var(--muted);
+  flex-shrink: 0;
+  transition: transform 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.custom-select-chevron.open {
+  transform: rotate(180deg);
+  color: var(--accent);
+}
+
+/* 下拉菜单弹出框 (Portal Level) - 磨砂玻璃质感（与弹窗共享同一套视觉参数） */
+.custom-select-dropdown {
+  background: rgba(255, 255, 255, 0.82);
+  -webkit-backdrop-filter: blur(24px) saturate(180%);
+  backdrop-filter: blur(24px) saturate(180%);
+  border: 1px solid rgba(0, 0, 0, 0.10);
+  border-radius: 8px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.8), 0 12px 32px rgba(0, 0, 0, 0.14), 0 2px 8px rgba(0, 0, 0, 0.04);
+  padding: 4px;
+  overflow: hidden;
+  box-sizing: border-box;
+  animation: selectDropdownFadeIn 0.15s cubic-bezier(0, 0, 0.2, 1);
+  transform-origin: top center;
+}
+.custom-select-dropdown.place-above {
+  transform-origin: bottom center;
+}
+
+:root[data-theme="dark"] .custom-select-dropdown {
+  background: rgba(28, 30, 38, 0.82);
+  -webkit-backdrop-filter: blur(24px) saturate(160%);
+  backdrop-filter: blur(24px) saturate(160%);
+  border-color: rgba(255, 255, 255, 0.10);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12), 0 16px 40px rgba(0, 0, 0, 0.48);
+}
+
+@keyframes selectDropdownFadeIn {
+  from {
+    opacity: 0;
+    transform: scale(0.96) translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+.custom-select-options {
+  max-height: 220px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.custom-select-options::-webkit-scrollbar {
+  width: 4px;
+}
+.custom-select-options::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: 2px;
+}
+
+.custom-select-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  height: 28px;
+  padding: 0 8px;
+  border-radius: 4px;
+  font-size: 12px;
+  color: var(--text);
+  cursor: pointer;
+  user-select: none;
+  transition: background-color 0.1s ease;
+}
+.custom-select-option:hover:not(.disabled) {
+  background: var(--surface-hover);
+}
+.custom-select-option.selected {
+  font-weight: 600;
+  color: var(--accent);
+  background: var(--accent-light);
+}
+.custom-select-option.disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.custom-select-option-label {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.custom-select-check {
+  color: var(--accent);
+  flex-shrink: 0;
 }

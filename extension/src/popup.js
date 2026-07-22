@@ -1,4 +1,4 @@
-import { sendWithCurrentPageAuth, buildCookieHeader } from "./auth-download.js";
+import { sendWithCurrentPageAuth, buildCookieHeader, exportCurrentPageCookies } from "./auth-download.js";
 
 const $ = (id) => document.getElementById(id);
 const [tab] = await chrome.tabs.query({ active: true, currentWindow: true }).catch(() => [null]);
@@ -138,7 +138,10 @@ if (isHttpTab) {
         let baseDomain = matchedDomain;
         if (baseDomain === "weibo.cn") baseDomain = "weibo.com";
         if (baseDomain === "x.com") baseDomain = "twitter.com";
-        const cookies = await chrome.cookies.getAll({ url: currentTabUrl }).catch(() => []);
+        // 显式传入 tab.cookieStoreId 以支持无痕窗口（无痕 Cookie 在独立 store 中）
+        const getAllParams = { url: currentTabUrl };
+        if (tab?.cookieStoreId) getAllParams.storeId = tab.cookieStoreId;
+        const cookies = await chrome.cookies.getAll(getAllParams).catch(() => []);
         const cookieHeader = buildCookieHeader(cookies);
         if (cookieHeader) {
           await call({ type: "sync-cookies", domain: baseDomain, cookie: cookieHeader }).catch(() => {});
@@ -148,34 +151,124 @@ if (isHttpTab) {
   })();
 }
 if (useAuthDownloadEl) {
-  useAuthDownloadEl.onclick = async () => {
+  const authMenuEl = $("authMenu");
+  const authOneShotEl = $("authOneShot");
+  const authExportCookiesEl = $("authExportCookies");
+
+  const closeAuthMenu = () => {
+    if (authMenuEl) authMenuEl.classList.add("hidden");
+    useAuthDownloadEl.setAttribute("aria-expanded", "false");
+  };
+  const toggleAuthMenu = () => {
+    if (!authMenuEl) return;
+    const willOpen = authMenuEl.classList.contains("hidden");
+    authMenuEl.classList.toggle("hidden", !willOpen);
+    useAuthDownloadEl.setAttribute("aria-expanded", willOpen ? "true" : "false");
+  };
+
+  useAuthDownloadEl.onclick = () => {
     if (!isHttpTab) {
       message("当前页面不是 HTTP/HTTPS 页面，无法获取登录态", true);
       return;
     }
-    if (!useAuthDownloadEl.disabled) useAuthDownloadEl.disabled = true;
-    try {
-      // 下载 URL 优先使用快速下载输入框的值（如有），否则使用当前页 URL。
-      const downloadUrl = urlEl?.value?.trim() || currentTabUrl;
-      message("正在发送登录态…");
-      const result = await sendWithCurrentPageAuth({
-        url: downloadUrl,
-        pageUrl: currentTabUrl,
-        userAgent: navigator.userAgent,
-        cookiesApi: chrome.cookies,
-        sendMessage: call,
-      });
-      if (result.ok) {
-        message("已发送登录态到桌面端");
-      } else {
-        message(`登录态发送失败：${result.error}`, true);
-      }
-    } catch (error) {
-      message(`登录态发送失败：${error?.message || error}`, true);
-    } finally {
-      useAuthDownloadEl.disabled = false;
-    }
+    toggleAuthMenu();
   };
+
+  // 点击下拉外部收起菜单
+  document.addEventListener("click", (event) => {
+    if (authMenuEl?.classList.contains("hidden")) return;
+    const dropdown = $("authDropdown");
+    if (dropdown && !dropdown.contains(event.target)) closeAuthMenu();
+  });
+  // ESC 收起
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") closeAuthMenu();
+  });
+
+  if (authOneShotEl) {
+    authOneShotEl.onclick = async () => {
+      closeAuthMenu();
+      if (!isHttpTab) {
+        message("当前页面不是 HTTP/HTTPS 页面，无法获取登录态", true);
+        return;
+      }
+      if (!useAuthDownloadEl.disabled) useAuthDownloadEl.disabled = true;
+      try {
+        // 下载 URL 优先使用快速下载输入框的值（如有），否则使用当前页 URL。
+        const downloadUrl = urlEl?.value?.trim() || currentTabUrl;
+        message("正在发送登录态…");
+        const result = await sendWithCurrentPageAuth({
+          url: downloadUrl,
+          pageUrl: currentTabUrl,
+          userAgent: navigator.userAgent,
+          cookiesApi: chrome.cookies,
+          sendMessage: call,
+          // 透传当前 tab 的 cookie store id：普通窗口为默认 store，无痕窗口为独立 store。
+          // 不传则 chrome.cookies.getAll 只读主 store，无痕窗口会拿到空 Cookie。
+          cookieStoreId: tab?.cookieStoreId,
+        });
+        if (result.ok) {
+          message("已发送登录态到桌面端");
+        } else {
+          message(`登录态发送失败：${result.error}`, true);
+        }
+      } catch (error) {
+        message(`登录态发送失败：${error?.message || error}`, true);
+      } finally {
+        useAuthDownloadEl.disabled = false;
+      }
+    };
+  }
+
+  if (authExportCookiesEl) {
+    authExportCookiesEl.onclick = async () => {
+      closeAuthMenu();
+      if (!isHttpTab) {
+        message("当前页面不是 HTTP/HTTPS 页面，无法获取登录态", true);
+        return;
+      }
+      if (!authExportCookiesEl.disabled) authExportCookiesEl.disabled = true;
+      try {
+        message("正在导出 cookies.txt…");
+        // 用 URL.createObjectURL + <a download> 触发下载。
+        // chrome.downloads 在 popup 关闭后可能被取消，且 service worker 才是更可靠的下载入口；
+        // 但 popup 内 <a download> 同步触发即可，文件已生成 blob 不依赖 popup 存活。
+        const triggerDownload = (content, fileName) => new Promise((resolve, reject) => {
+          try {
+            const blob = new Blob([content], { type: "text/plain" });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement("a");
+            a.href = url;
+            a.download = fileName;
+            document.body.appendChild(a);
+            a.click();
+            setTimeout(() => {
+              document.body.removeChild(a);
+              URL.revokeObjectURL(url);
+              resolve();
+            }, 100);
+          } catch (e) {
+            reject(e);
+          }
+        });
+        const result = await exportCurrentPageCookies({
+          pageUrl: currentTabUrl,
+          cookiesApi: chrome.cookies,
+          cookieStoreId: tab?.cookieStoreId,
+          triggerDownload,
+        });
+        if (result.ok) {
+          message(`已导出 ${result.fileName}，请在「设置 → 媒体凭证」中导入`);
+        } else {
+          message(`导出失败：${result.error}`, true);
+        }
+      } catch (error) {
+        message(`导出失败：${error?.message || error}`, true);
+      } finally {
+        authExportCookiesEl.disabled = false;
+      }
+    };
+  }
 }
 
 if (interceptEl) {

@@ -427,15 +427,16 @@ footer {
   background: var(--accent-light);
 }
 
-/* SubTask 45.1：临时登录态下载按钮 */
+/* SubTask 45.1：登录态下载下拉菜单（B 站收藏夹选择器风格） */
 .auth-download {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
   padding: 10px 12px;
 }
 
-.auth-download button {
+.auth-dropdown {
+  position: relative;
+}
+
+.auth-toggle {
   width: 100%;
   height: 32px;
   border: 1px solid var(--accent);
@@ -444,25 +445,85 @@ footer {
   background: var(--accent);
   font-size: 11px;
   font-weight: 600;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
   transition: background-color 0.15s, border-color 0.15s;
 }
 
-.auth-download button:hover {
+.auth-toggle:hover {
   background: var(--accent-hover);
   border-color: var(--accent-hover);
 }
 
-.auth-download button:disabled {
+.auth-toggle:disabled {
   color: var(--subtle);
   background: var(--border);
   border-color: var(--border);
   cursor: not-allowed;
 }
 
-.auth-download small {
-  color: var(--subtle);
+.auth-toggle .caret {
+  font-style: normal;
   font-size: 9px;
-  text-align: center;
+  transition: transform 0.15s;
+}
+
+.auth-toggle[aria-expanded="true"] .caret {
+  transform: rotate(180deg);
+}
+
+.auth-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  z-index: 10;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: var(--card-bg);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12), 0 2px 4px rgba(0, 0, 0, 0.06);
+  overflow: hidden;
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.auth-menu.hidden {
+  display: none;
+}
+
+.auth-item {
+  width: 100%;
+  padding: 8px 10px;
+  border-radius: 6px;
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  transition: background-color 0.12s;
+}
+
+.auth-item:hover {
+  background: var(--accent-light);
+}
+
+.auth-item:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.auth-item span {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text);
+}
+
+.auth-item small {
+  font-size: 9px;
+  color: var(--subtle);
 }
 
 footer button {

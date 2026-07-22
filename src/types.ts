@@ -323,6 +323,7 @@ export interface AppSettings {
   yt_dlp_path: string;
   ffmpeg_path: string;
   ffprobe_path: string;
+  youtube_po_token?: string;
   low_memory_mode: boolean;
   window_width?: number;
   window_height?: number;
@@ -437,8 +438,9 @@ export interface MediaFormat {
  * - `"gallery"`：图集（抖音 note、TikTok photo）
  * - `"mixed"`：混合内容
  */
-export type MediaType = "video" | "audio" | "gallery" | "mixed";
-export interface MediaProbeResult { title: string; thumbnail?: string; extractor?: string; duration?: number; formats: MediaFormat[]; subtitles: string[]; drm: boolean; media_type: MediaType; }
+export type MediaType = "video" | "audio" | "gallery" | "mixed" | "collection";
+export interface MediaEpisode { index: number; title: string; url: string; duration?: number; }
+export interface MediaProbeResult { title: string; thumbnail?: string; extractor?: string; duration?: number; formats: MediaFormat[]; subtitles: string[]; drm: boolean; media_type: MediaType; episodes?: MediaEpisode[]; }
 export interface TaskEvent { task: DownloadTask; event: string; }
 export type FilterKey = "all" | TaskStatus | "images" | "video" | "audio" | "documents" | "archives" | "apps";
 
@@ -948,6 +950,16 @@ export interface MediaCredential {
 }
 
 /**
+ * 媒体凭证在线检测结果。
+ */
+export interface MediaCredentialCheckResult {
+  domain: string;
+  valid: boolean;
+  message: string;
+  tested_at: string;
+}
+
+/**
  * Task 43：平台命名模板。
  *
  * 用于在媒体下载完成后按平台套用文件名模板。每条模板绑定一个 platform key
@@ -1001,6 +1013,16 @@ export interface PlatformCompatibility {
   notes?: string;
   known_issues?: string[];
   last_tested_at?: string;
+}
+
+export interface CacheInspectResult {
+  total_bytes: number;
+  file_count: number;
+}
+
+export interface CacheClearResult {
+  freed_bytes: number;
+  deleted_files_count: number;
 }
 
 /**

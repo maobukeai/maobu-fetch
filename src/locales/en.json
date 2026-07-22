@@ -320,6 +320,7 @@
     "languageZhCN": "Simplified Chinese",
     "languageEn": "English",
     "languageHint": "Language switch takes effect immediately; it does not affect saved tasks, settings, or the database.",
+    "autoStart": "Launch on system startup",
     "startMinimized": "Start minimized",
     "minimizeToTray": "Minimize to tray",
     "closeToTray": "Keep in tray when closed",

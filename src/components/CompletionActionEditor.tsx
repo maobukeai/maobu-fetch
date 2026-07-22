@@ -1,6 +1,7 @@
 import { useMemo } from "react";
 import { open as pickPath } from "@tauri-apps/plugin-dialog";
 import type { CompletionAction } from "../types";
+import { Select, SelectOption } from "./Select";
 import {
   completionActionKind,
   getCopyToData,
@@ -85,19 +86,28 @@ export function CompletionActionEditor({
     }
   };
 
+  const actionOptions: SelectOption<string>[] = useMemo(() => {
+    const opts: SelectOption<string>[] = [{ value: "none", label: "不执行操作" }];
+    if (allowRunFile) opts.push({ value: "open-folder", label: "打开文件夹" });
+    if (allowRunFile) opts.push({ value: "run-file", label: "运行文件（仅本次任务）" });
+    if (!hidePowerOptions) opts.push({ value: "shutdown", label: "关机（适合夜间下载）" });
+    if (!hidePowerOptions) opts.push({ value: "hibernate", label: "休眠" });
+    if (!hidePowerOptions) opts.push({ value: "quit", label: "退出猫步下载器" });
+    opts.push({ value: "run-command", label: "运行自定义命令" });
+    opts.push({ value: "copy-to", label: "复制到指定目录" });
+    opts.push({ value: "move-to", label: "移动到指定目录" });
+    return opts;
+  }, [allowRunFile, hidePowerOptions]);
+
   return (
     <div className="completion-action-editor">
-      <select value={kind} onChange={(e) => onKindChange(e.target.value)} style={{ width: "100%" }}>
-        <option value="none">不执行操作</option>
-        {allowRunFile && <option value="open-folder">打开文件夹</option>}
-        {allowRunFile && <option value="run-file">运行文件（仅本次任务）</option>}
-        {!hidePowerOptions && <option value="shutdown">关机（适合夜间下载）</option>}
-        {!hidePowerOptions && <option value="hibernate">休眠</option>}
-        {!hidePowerOptions && <option value="quit">退出猫步下载器</option>}
-        <option value="run-command">运行自定义命令</option>
-        <option value="copy-to">复制到指定目录</option>
-        <option value="move-to">移动到指定目录</option>
-      </select>
+      <Select
+        value={kind}
+        onChange={(nextKind) => onKindChange(nextKind)}
+        options={actionOptions}
+        style={{ width: "100%" }}
+        ariaLabel="完成后动作"
+      />
 
       {kind === "run-command" && (
         <div className="completion-action-fields">

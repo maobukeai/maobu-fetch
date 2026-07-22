@@ -1,10 +1,17 @@
+mod autostart;
 mod bridge;
+mod cache;
 pub mod cli;
 mod deep_link;
 mod logging;
 mod manager;
 mod media;
 mod media_cookies;
+// 纯 Rust 实现的 fragmented MP4 合并器。
+// 用于 Twitter/X 等平台：yt-dlp 在没有 FFmpeg 时下载视频和音频为两个独立的 fMP4 文件，
+// 本模块将其合并为单个 fMP4 文件（视频 track_id=1 + 音频 track_id=2），
+// 避免强制用户安装 FFmpeg。
+mod media_muxer;
 // Task 37 / 39：媒体平台识别与适配（抖音 / TikTok / Twitter/X 等）。
 // 提供 detect_platform / expand_short_url / classify_platform_error /
 // is_twitter_space / format_twitter_filename 等函数。
@@ -34,9 +41,10 @@ use manager::{
 use manager::{DownloadManager, ErrorContext, SharedManager};
 use media_tools::MediaTools;
 use models::{
-    AppSettings, BatchTaskRequest, CategoryRule, CategoryRuleTestResult, CollisionPolicy,
+    AppSettings, BatchTaskRequest, CacheClearResult, CacheInspectResult, CategoryRule, CategoryRuleTestResult, CollisionPolicy,
     CompletionAction, DetectedMediaTools, DownloadPreset, DownloadTask, DuplicateCheckResult,
     ErrorDiagnosis, ExtensionCompatibilityResult, FilenameCleanupRule, MediaCredential,
+    MediaCredentialCheckResult,
     MediaProbeResult, NewTaskRequest, PairingInfo, PlatformCompatibility, PlatformNamingTemplate,
     PowerAction, PowerActionState, PrecheckRequest, PrecheckResult, ProxyAuth, ProxyTestResult,
     RestorePreview, RestoreStats, RetryPolicy, Tag, TaskTemplate, TaskTemplateTestResult,
@@ -371,11 +379,38 @@ async fn task_open_folder(id: String, manager: State<'_, SharedManager>) -> Resu
 }
 
 #[tauri::command]
+async fn open_external_url(url: String) -> Result<(), String> {
+    if url.starts_with("http://") || url.starts_with("https://") {
+        open::that(url).map_err(|e| e.to_string())
+    } else {
+        Err("非法 URL".into())
+    }
+}
+
+#[tauri::command]
 async fn history_clear(
     include_completed: bool,
     manager: State<'_, SharedManager>,
 ) -> Result<(), String> {
     manager.store.clear_history(include_completed).await
+}
+
+#[tauri::command]
+async fn cache_inspect(
+    app: tauri::AppHandle,
+    manager: State<'_, SharedManager>,
+) -> Result<CacheInspectResult, String> {
+    let app_data_dir = portable::resolve_data_dir(&app);
+    cache::inspect_cache(&app_data_dir, &manager.store).await
+}
+
+#[tauri::command]
+async fn cache_clear(
+    app: tauri::AppHandle,
+    manager: State<'_, SharedManager>,
+) -> Result<CacheClearResult, String> {
+    let app_data_dir = portable::resolve_data_dir(&app);
+    cache::clear_cache(&app_data_dir, &manager.store).await
 }
 
 #[tauri::command]
@@ -401,7 +436,7 @@ async fn pairing_revoke(manager: State<'_, SharedManager>) -> Result<(), String>
 /// 调用方不需要感知错误。
 ///
 /// 不写日志，避免泄露 Cookie/Referer/UA 内容（AGENTS.md §3）。
-async fn resolve_media_credentials(
+pub(crate) async fn resolve_media_credentials(
     url: &str,
     cookie: Option<String>,
     referer: Option<String>,
@@ -520,6 +555,9 @@ async fn media_tools_install(
 ) -> Result<(), String> {
     let settings = manager.settings().await;
     let status = tools.status(&app, &settings).await;
+    if status.yt_dlp_available && status.ffmpeg_available {
+        return Ok(());
+    }
     let component = if !status.yt_dlp_available {
         ToolComponent::YtDlp
     } else {
@@ -859,6 +897,35 @@ async fn media_credential_list(
     manager: State<'_, SharedManager>,
 ) -> Result<Vec<MediaCredential>, String> {
     manager.store.media_credential_list().await
+}
+
+/// 按域名在线检测媒体凭证有效性。
+#[tauri::command]
+async fn media_credential_check(
+    domain: String,
+    manager: State<'_, SharedManager>,
+) -> Result<MediaCredentialCheckResult, String> {
+    let domain = domain.trim();
+    if domain.is_empty() {
+        return Err("域名不能为空".into());
+    }
+    let stored = manager.store.media_credential_get_matching(domain).await?;
+    let (cookie, referer, user_agent) = match stored {
+        Some(c) => (Some(c.cookie), c.referer, c.user_agent),
+        None => (None, None, None),
+    };
+    // 用户可能从「导出 cookies.txt」按钮导出 Netscape 格式后直接导入「媒体凭证」，
+    // 此时的 Cookie 字符串含 TAB/换行，不能直接作为 HTTP `Cookie:` 头值（reqwest 会报 builder error）。
+    // 在这里统一转换为 `name=value; name2=value2` 头格式。yt-dlp 下载路径仍走
+    // `write_cookie_file_in_dir`，那里同时兼容两种格式。
+    let cookie_for_check = cookie.map(|c| crate::media_cookies::netscape_to_cookie_header(&c));
+    media_platforms::check_media_credential(
+        domain,
+        cookie_for_check.as_deref(),
+        referer.as_deref(),
+        user_agent.as_deref(),
+    )
+    .await
 }
 
 /// Task 44：列出全部平台兼容性记录，按 platform 升序返回。
@@ -2498,7 +2565,10 @@ pub fn run() {
             task_wait_reason,
             task_open_file,
             task_open_folder,
+            open_external_url,
             history_clear,
+            cache_inspect,
+            cache_clear,
             pairing_info,
             pairing_rotate,
             pairing_revoke,
@@ -2530,6 +2600,7 @@ pub fn run() {
             media_credential_get,
             media_credential_delete,
             media_credential_list,
+            media_credential_check,
             platform_compatibility_list,
             platform_compatibility_get,
             filename_cleanup_rule_add,

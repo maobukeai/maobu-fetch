@@ -118,6 +118,7 @@ impl DownloadManager {
         let settings = store.get_settings().await?;
         let bandwidth_limit = settings.speed_limit_kbps * 1024;
         let client = build_client(&settings)?;
+        let auto_start = settings.auto_start;
         let manager = Arc::new(Self {
             store,
             settings: RwLock::new(settings),
@@ -133,6 +134,7 @@ impl DownloadManager {
         // Mark every Downloading task as Interrupted and validate shard files
         // before the scheduler starts. recover_interrupted still handles the
         // Verifying/WaitingNetwork paths so they re-enter the queue.
+        let _ = crate::autostart::sync_autostart(auto_start);
         let _ = manager.run_startup_selfcheck().await;
         manager.recover_interrupted().await?;
         let scheduler = manager.clone();
@@ -182,6 +184,7 @@ impl DownloadManager {
         *self.settings.write().await = settings.clone();
         self.bandwidth_scheduler
             .set_limit(settings.speed_limit_kbps * 1024);
+        let _ = crate::autostart::sync_autostart(settings.auto_start);
         self.dispatcher.notify_waiters();
         let _ = self.app.emit("settings-updated", settings);
         Ok(())
@@ -249,7 +252,7 @@ impl DownloadManager {
     }
 
     pub async fn add(
-        self: &SharedManager,
+        &self,
         mut request: NewTaskRequest,
     ) -> Result<DownloadTask, String> {
         let parsed = Url::parse(request.url.trim())
@@ -487,6 +490,9 @@ impl DownloadManager {
                 task.active_connections = 0;
                 if action == "retry" {
                     task.retry_count = 0;
+                    if task.media.is_some() {
+                        task.media = None;
+                    }
                 }
                 if was_paused_by_metered {
                     let mut settings = self.settings().await;
@@ -1073,6 +1079,17 @@ impl DownloadManager {
             .insert(task.id.clone(), Arc::new(RuntimeTaskOptions::new(&task)));
         task.status = TaskStatus::Downloading;
         task.error = None;
+        // 媒体任务标记为"正在解析/下载中"：设置 active_connections = 1 避免前端
+        // 在 media::download 设置真实连接数之前因 active_connections=0 误显示"解析中"。
+        // 普通下载任务会在 HTTP Range 路径中被覆盖为真实连接数。
+        // 注意：用户直接提交媒体 URL（不点"分析媒体"）时 task.media 可能为 None，
+        // 需要同时检查 URL 是否属于已知媒体平台（抖音/YouTube/TikTok 等）。
+        if task.media.is_some()
+            || crate::media_platforms::detect_platform(&task.url)
+                != crate::media_platforms::MediaPlatform::Unknown
+        {
+            task.active_connections = 1;
+        }
         let _ = self.store.upsert_task(&task).await;
         self.emit_task("updated", &task);
         let manager = self.clone();
@@ -1198,6 +1215,12 @@ impl DownloadManager {
                         }
                         task.status = TaskStatus::Downloading;
                         task.error = None;
+                        if task.media.is_some()
+                            || crate::media_platforms::detect_platform(&task.url)
+                                != crate::media_platforms::MediaPlatform::Unknown
+                        {
+                            task.active_connections = 1;
+                        }
                         let _ = manager.store.upsert_task(&task).await;
                         manager.emit_task("updated", &task);
                     }
@@ -1208,6 +1231,9 @@ impl DownloadManager {
                         attempt += 1;
                         task.retry_count = attempt;
                         task.active_connections = 0;
+                        if task.media.is_some() {
+                            task.media = None;
+                        }
                         task.error = Some(format!("{}，将在稍后重试", error));
                         let _ = manager.store.upsert_task(&task).await;
                         manager.emit_task("updated", &task);
@@ -1248,7 +1274,7 @@ impl DownloadManager {
     }
 
     async fn download_once(
-        &self,
+        self: &SharedManager,
         mut task: DownloadTask,
         token: CancellationToken,
     ) -> Result<DownloadTask, String> {
@@ -1310,8 +1336,83 @@ impl DownloadManager {
 
             match crate::media::probe(&self.app, &settings, &task.url, cookie, referer, user_agent).await {
                 Ok(media) => {
-                    if !media.formats.is_empty() {
-                        let selected_format = media.formats[0].clone();
+                    // 抖音图集自动拆分：用户直接提交抖音图集短链（未先点击"分析媒体"）时，
+                    // 自动 probe 识别为 Gallery 后，把每张图作为独立子任务，使用图片直链走 HTTP Range 路径。
+                    // 当前任务改为下载第一张图（保留原 task.id，task.media = None 跳过 media::download），
+                    // 剩余图片通过 self.add() 创建子任务并触发调度。
+                    // 这避免后续 media::download 用 yt-dlp 下载图集（只拿到 1 张图且文件名错误为 .mp4）。
+                    if media.media_type == crate::models::MediaType::Gallery {
+                        let image_formats: Vec<&crate::models::MediaFormat> = media
+                            .formats
+                            .iter()
+                            .filter(|f| f.image_url.is_some())
+                            .collect();
+                        if image_formats.is_empty() {
+                            return Err(
+                                "图集未识别到图片直链，请先点击\"分析媒体\"按钮选择图片后再下载".into(),
+                            );
+                        }
+                        // 文件名 stem：使用 probe 返回的 title（清理 hashtag 后）
+                        let raw_title = media.title.clone();
+                        let cleaned = regex::Regex::new(r"#[^\s#.]+")
+                            .map(|re| re.replace_all(&raw_title, "").to_string())
+                            .unwrap_or_else(|_| raw_title.clone());
+                        let cleaned = crate::manager::naming_template::sanitize_filename(&cleaned);
+                        let stem = if cleaned.trim().is_empty() {
+                            "gallery".to_string()
+                        } else {
+                            cleaned.trim().to_string()
+                        };
+                        // 第一张图作为当前任务（保留原 task.id），走 HTTP Range 路径
+                        let first = image_formats[0];
+                        let first_ext = first
+                            .extension
+                            .as_deref()
+                            .map(|e| e.trim_start_matches('.'))
+                            .filter(|e| !e.is_empty())
+                            .unwrap_or("jpg")
+                            .to_string();
+                        task.url = first.image_url.clone().unwrap();
+                        task.file_name = format!("{}_1.{}", stem, first_ext);
+                        task.media = None; // 走 HTTP Range 路径，不调用 yt-dlp
+                        task.total_bytes = 0;
+                        self.store.upsert_task(&task).await?;
+                        self.emit_task("updated", &task);
+                        // 剩余图片通过 self.add() 创建子任务，触发调度
+                        for (idx, fmt) in image_formats.iter().skip(1).enumerate() {
+                            let ext = fmt
+                                .extension
+                                .as_deref()
+                                .map(|e| e.trim_start_matches('.'))
+                                .filter(|e| !e.is_empty())
+                                .unwrap_or("jpg")
+                                .to_string();
+                            let new_req = NewTaskRequest {
+                                url: fmt.image_url.clone().unwrap(),
+                                file_name: Some(format!("{}_{}.{}", stem, idx + 2, ext)),
+                                destination: Some(task.destination.clone()),
+                                headers: task.headers.clone(),
+                                scheduled_at: None,
+                                priority: task.priority,
+                                expected_checksum: None,
+                                source: Some(task.source.clone()),
+                                 per_task_speed_limit: task.per_task_speed_limit,
+                                collision_policy: task.collision_policy.clone(),
+                                // 子任务不触发关机/打开文件夹等完成动作
+                                completion_action: CompletionAction::None,
+                                media: None,
+                                connection_count: Some(task.connection_count),
+                                start_paused: false,
+                                // 跳过自动文件名清理规则（已显式指定）
+                                user_edited_file_name: true,
+                            };
+                            if let Err(e) = self.add(new_req).await {
+                                tracing::warn!(error = %e, "创建图集子任务失败");
+                            }
+                        }
+                    } else if !media.formats.is_empty() {
+                        let direct = media.formats.iter().find(|item| item.has_video && !item.requires_ffmpeg && item.url.is_some());
+                        let selected_format = direct.unwrap_or(&media.formats[0]).clone();
                         task.media = Some(crate::models::MediaSelection {
                             extractor: media.extractor,
                             format_id: Some(selected_format.id.clone()),
@@ -1322,7 +1423,13 @@ impl DownloadManager {
                             url: selected_format.url.clone(),
                         });
 
-                        if task.file_name == "download" || task.file_name.starts_with("LHmt") || task.file_name.is_empty() {
+                        let is_default_name = task.file_name == "download"
+                            || task.file_name.starts_with("LHmt")
+                            || task.file_name.is_empty()
+                            || task.file_name.chars().all(|c| c.is_ascii_digit() || c == '.' || c == '_')
+                            || task.file_name.contains(&task.url);
+
+                        if is_default_name {
                             let ext = selected_format.extension.unwrap_or_else(|| "mp4".to_string()).replace(".", "");
                             let mut name_stem = media.title.clone();
                             if let Ok(rules) = self.store.filename_cleanup_rule_list().await {
@@ -1335,6 +1442,12 @@ impl DownloadManager {
                             task.file_name = format!("{}.{}", name, ext);
                         }
 
+                        // probe 完成后即将进入 media::download，确保 active_connections >= 1，
+                        // 避免前端在 probe 完成到 media::download 设置真实连接数之间
+                        // 因 active_connections=0 误显示"解析中"。
+                        if task.active_connections == 0 {
+                            task.active_connections = 1;
+                        }
                         self.store.upsert_task(&task).await?;
                         self.emit_task("updated", &task);
                     } else {
@@ -1350,7 +1463,9 @@ impl DownloadManager {
         let mut is_resolved_direct_media = false;
         let media_sel_opt = task.media.clone();
         if let Some(media_sel) = media_sel_opt {
-            if !media_sel.requires_ffmpeg {
+            // HLS m3u8 流切片需要特定解析器或 FFmpeg 拼接，其他直接 HTTP FLV/MP4 流统一走原生 download_stream。
+            let is_m3u8_live = task.url.contains("pull-hls-") || task.url.contains(".m3u8");
+            if !media_sel.requires_ffmpeg && !is_m3u8_live {
                 inject_media_credentials(&mut task, &self.store).await;
                 let settings = self.settings().await;
                 let cookie = task.headers.get("Cookie").map(|s| s.as_str());
@@ -1445,15 +1560,44 @@ impl DownloadManager {
             let total = task.total_bytes;
             let task_limiter = Arc::new(crate::manager::RateLimiter::new());
 
-            if total > 0 && conn_count > 1 {
-                task = self.download_segments(task, &temp_client, &temp, total, conn_count, token.clone(), task_limiter).await?;
+            let task_backup = task.clone();
+            let task_id_for_saved = task.id.clone();
+            let is_media = task.media.is_some();
+            let download_res = if total > 0 && conn_count > 1 {
+                self.download_segments(task, &temp_client, &temp, total, conn_count, token.clone(), task_limiter).await
             } else {
-                task = self.download_stream(task, &temp_client, &temp, token.clone(), task_limiter).await?;
+                self.download_stream(task, &temp_client, &temp, token.clone(), task_limiter).await
+            };
+
+            if token.is_cancelled() || download_res.is_err() {
+                let is_cancel = token.is_cancelled();
+                if (is_cancel || is_media) && temp.exists() {
+                    if let Ok(meta) = fs::metadata(&temp).await {
+                        if meta.len() > 0 {
+                            let final_output = output;
+                            if let Err(_) = fs::rename(&temp, &final_output).await {
+                                let _ = fs::copy(&temp, &final_output).await;
+                                let _ = fs::remove_file(&temp).await;
+                            }
+                            crate::media_tools::remux_flv_to_mp4_if_needed(&self.app, &settings, &final_output).await;
+                            let mut saved_task = match download_res {
+                                Ok(t) => t,
+                                Err(_) => self.store.get_task(&task_id_for_saved).await.ok().flatten().unwrap_or(task_backup),
+                            };
+                            saved_task.downloaded_bytes = meta.len();
+                            saved_task.total_bytes = meta.len();
+                            saved_task.status = TaskStatus::Completed;
+                            let _ = self.store.upsert_task(&saved_task).await;
+                            self.emit_task("updated", &saved_task);
+                            self.clear_parts(&saved_task).await;
+                            return Ok(saved_task);
+                        }
+                    }
+                }
+                return Err(download_res.err().unwrap_or_else(|| "任务已暂停".into()));
             }
 
-            if token.is_cancelled() {
-                return Err("任务已暂停".into());
-            }
+            task = download_res?;
             let final_output = if output.exists() && task.collision_policy == CollisionPolicy::Rename {
                 self.reserve_output_path(&mut task).await?
             } else {
@@ -1526,8 +1670,95 @@ impl DownloadManager {
                 .platform_naming_template_list()
                 .await
                 .unwrap_or_default();
-            return crate::media::download(&self.app, &settings, task, token, naming_templates)
-                .await;
+            // 直播任务（抖音直播等）暂停 = 结束录制 + 保存为已完成文件。
+            // 参考本项目 B 站直播流程（download_stream 暂停后的 1594-1619 逻辑）：
+            // media::download 暂停时只 kill yt-dlp 子进程并返回 Err("任务已暂停")，
+            // 这里检测到取消且有输出文件时，重命名 + remux + 标记 Completed。
+            // yt-dlp 实际写入的文件扩展名可能与 template 不同（如 xxx.ts 而非 xxx.mp4），
+            // 通过 media::find_live_output_file 扫描输出目录找到实际文件。
+            let is_live_task = crate::media_platforms::is_douyin_live(&task.url)
+                || task.url.contains("pull-hls-")
+                || task.url.contains("pull-flv-")
+                || task.url.contains(".m3u8");
+            let output = std::path::PathBuf::from(&task.destination).join(&task.file_name);
+            let output_dir = output
+                .parent()
+                .map(|p| p.to_path_buf())
+                .unwrap_or_else(|| std::path::PathBuf::from(&task.destination));
+            let task_backup = task.clone();
+            let task_id_for_saved = task.id.clone();
+            let download_res = crate::media::download(
+                &self.app,
+                &settings,
+                task,
+                token.clone(),
+                naming_templates,
+            )
+            .await;
+
+            if token.is_cancelled() && is_live_task {
+                // 手动结束/暂停录制：与 B 站直播 download_stream 暂停保存逻辑一致，
+                // 将已录制的片段保存并转封装为标准 MP4，然后将任务标记为已完成。
+                let live_file = crate::media::find_live_output_file(&output_dir, &task_backup.file_name).await;
+                let saved_file = match &live_file {
+                    Some(f) if f.exists() => Some(f.clone()),
+                    _ if output.exists() => Some(output.clone()),
+                    _ => None,
+                };
+                if let Some(file_path) = saved_file {
+                    if let Ok(meta) = fs::metadata(&file_path).await {
+                        if meta.len() > 0 {
+                            let clean_file_path = if file_path.to_string_lossy().ends_with(".part") {
+                                let non_part = file_path.with_extension("");
+                                let _ = fs::rename(&file_path, &non_part).await;
+                                non_part
+                            } else {
+                                file_path
+                            };
+
+                            let final_path = crate::media_tools::remux_flv_to_mp4_if_needed(
+                                &self.app, &settings, &clean_file_path,
+                            )
+                            .await;
+
+                            let final_size = fs::metadata(&final_path)
+                                .await
+                                .map(|m| m.len())
+                                .unwrap_or(meta.len());
+                            let mut saved_task = match download_res {
+                                Ok(t) => t,
+                                Err(_) => self
+                                    .store
+                                    .get_task(&task_id_for_saved)
+                                    .await
+                                    .ok()
+                                    .flatten()
+                                    .unwrap_or(task_backup),
+                            };
+                            if let Some(final_name) = final_path.file_name().and_then(|s| s.to_str()) {
+                                saved_task.file_name = final_name.to_string();
+                            }
+                            saved_task.downloaded_bytes = final_size;
+                            saved_task.total_bytes = final_size;
+                            saved_task.speed = 0;
+                            saved_task.eta_seconds = None;
+                            saved_task.active_connections = 0;
+                            saved_task.status = TaskStatus::Completed;
+                            saved_task.completed_at = Some(now());
+                            let _ = self.store.upsert_task(&saved_task).await;
+                            self.emit_task("updated", &saved_task);
+                            tracing::info!(
+                                task_id = %saved_task.id,
+                                file_size = final_size,
+                                file_name = %saved_task.file_name,
+                                "直播录制已手动停止并保存转码为已完成文件"
+                            );
+                            return Ok(saved_task);
+                        }
+                    }
+                }
+            }
+            return download_res;
         }
         // Task 31：任务级 proxy_override 优先于全局；仅在设置了覆盖时重建客户端，
         // 避免无覆盖任务每次都付出 settings 读 + client 构造开销。
@@ -4712,9 +4943,6 @@ async fn inject_media_credentials(task: &mut DownloadTask, store: &Arc<Store>) {
     }
     if !has_referer && is_douyin {
         task.headers.insert("Referer".to_string(), "https://www.douyin.com/".to_string());
-    }
-    if !has_cookie && is_douyin {
-        task.headers.insert("Cookie".to_string(), "passport_csrf_token=43b4f6208a54173872591b6197368d18; passport_csrf_token_default=43b4f6208a54173872591b6197368d18; ttwid=1%7CXFBh1bjNbUX5px8paL7ryFXgrs_rMmh_KQ_SJPKJLUo%7C1784608893%7C6c4fb3d007dd68448ed303b5110aa80cdc48bbfeefddd93e50c1489e59079adb".to_string());
     }
 }
 

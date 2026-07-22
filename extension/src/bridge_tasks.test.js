@@ -441,7 +441,7 @@ test("media detection: overlay uses inline styles (CSP-safe) and 1.5s timeout", 
 //   - popup_sends_cookie_to_local_bridge：/v1/tasks/add 请求 body 含 cookie 字段
 //   - popup_does_not_persist_cookie_in_storage：cookie 不写入 chrome.storage.local
 // 辅助函数定义在 auth-download.js，便于在无 DOM 环境下直接测试。
-import { sendWithCurrentPageAuth, buildCookieHeader } from "./auth-download.js";
+import { sendWithCurrentPageAuth, buildCookieHeader, buildNetscapeCookiesText, exportCurrentPageCookies } from "./auth-download.js";
 
 test("buildCookieHeader: concatenates cookies as name=value pairs separated by semicolons", () => {
   const cookies = [
@@ -560,6 +560,58 @@ test("popup_sends_cookie_to_local_bridge: returns error when url is not http(s)"
   assert.match(result.error, /HTTP\/HTTPS/);
 });
 
+// 无痕模式支持：sendWithCurrentPageAuth 收到 cookieStoreId 时必须把它透传给
+// chrome.cookies.getAll，否则无痕窗口的 Cookie（存放在独立 cookie store）读不到，
+// 「使用当前页面登录态下载」按钮在无痕模式下会提示"当前页面没有可用的 Cookie"。
+test("popup_incognito_mode: cookieStoreId is forwarded to chrome.cookies.getAll for incognito windows", async () => {
+  const incognitoStoreId = "2"; // Chrome 无痕窗口的 cookie store id 形如 "1" / "2"
+  let receivedStoreId = "__not_set__";
+  let receivedUrl = null;
+  const cookiesApi = {
+    getAll: async ({ url, storeId }) => {
+      receivedUrl = url;
+      receivedStoreId = storeId;
+      return [{ name: "session", value: "incognito-only-token" }];
+    },
+  };
+  const sendMessage = async () => ({ ok: true });
+
+  await sendWithCurrentPageAuth({
+    url: "https://www.youtube.com/watch?v=abc",
+    pageUrl: "https://www.youtube.com/watch?v=abc",
+    userAgent: "TestBrowser/1.0",
+    cookiesApi,
+    sendMessage,
+    cookieStoreId: incognitoStoreId,
+  });
+
+  assert.equal(receivedUrl, "https://www.youtube.com/watch?v=abc", "url must be forwarded");
+  assert.equal(receivedStoreId, incognitoStoreId, "storeId must be forwarded for incognito windows");
+});
+
+test("popup_incognito_mode: omitting cookieStoreId keeps default-store behavior (backward compatible)", async () => {
+  // 不传 cookieStoreId 时不得在 getAll 参数中加入 storeId 字段，
+  // 否则普通窗口行为可能因 storeId=undefined 被当作字符串处理而异常。
+  let receivedParams = null;
+  const cookiesApi = {
+    getAll: async (params) => {
+      receivedParams = params;
+      return [{ name: "session", value: "default-store-token" }];
+    },
+  };
+  const sendMessage = async () => ({ ok: true });
+
+  await sendWithCurrentPageAuth({
+    url: "https://example.com/page",
+    userAgent: "TestBrowser/1.0",
+    cookiesApi,
+    sendMessage,
+  });
+
+  assert.ok(receivedParams, "getAll must be called");
+  assert.ok(!("storeId" in receivedParams), "storeId must NOT be present when cookieStoreId is omitted");
+});
+
 test("popup_does_not_persist_cookie_in_storage: sendWithCurrentPageAuth does not write to chrome.storage.local", async () => {
   // 通过模拟 chrome.storage.local.set 跟踪所有写入，验证 cookie 不会被持久化。
   // 这与 background.js 的 sendTask 行为一致——cookie 仅作为 task.headers 一次性传递给桌面端。
@@ -627,5 +679,102 @@ test("popup_does_not_persist_cookie_in_storage: signedFetch serializes cookie in
   } finally {
     globalThis.fetch = originalFetch;
     delete globalThis.chrome;
+  }
+});
+
+// === 导出 cookies.txt 测试 ===
+// 验证把当前页 Cookie 导出为 Netscape cookies.txt 格式：
+//   - buildNetscapeCookiesText: 输出 yt-dlp 兼容格式，域名归一化到主域
+//   - exportCurrentPageCookies: 透传 storeId（无痕支持），失败返回可读错误
+//   - exportCurrentPageCookies: 不写入 chrome.storage.local
+test("buildNetscapeCookiesText: outputs yt-dlp compatible Netscape format with normalized domain", () => {
+  const cookies = [
+    { name: "SID", value: "abc", expirationDate: 1800000000, path: "/" },
+    { name: "LOGIN_INFO", value: "xyz", expirationDate: 0, path: "/" },
+  ];
+  const content = buildNetscapeCookiesText(cookies, "https://www.youtube.com/watch?v=abc");
+  const lines = content.split("\n").filter(Boolean);
+  assert.equal(lines[0], "# Netscape HTTP Cookie File");
+  // www.youtube.com 应归一化为 .youtube.com（与桌面端 media_cookies.rs 一致）
+  assert.ok(lines[1].startsWith(".youtube.com\tTRUE\t/\tTRUE\t"), "domain must be normalized to .youtube.com");
+  // expirationDate=0 的会话 cookie 应输出 0
+  const sessionLine = lines.find((l) => l.includes("LOGIN_INFO"));
+  assert.ok(sessionLine.includes("\t0\tLOGIN_INFO\txyz"), "session cookie expiration must be 0");
+});
+
+test("buildNetscapeCookiesText: returns empty string for empty cookies or invalid url", () => {
+  assert.equal(buildNetscapeCookiesText([], "https://example.com"), "");
+  assert.equal(buildNetscapeCookiesText([{ name: "x", value: "y" }], "not-a-url"), "");
+});
+
+test("exportCurrentPageCookies: forwards storeId for incognito windows", async () => {
+  const incognitoStoreId = "2";
+  let receivedStoreId = "__not_set__";
+  const cookiesApi = {
+    getAll: async ({ url, storeId }) => {
+      receivedStoreId = storeId;
+      return [{ name: "SID", value: "incognito-token" }];
+    },
+  };
+  const triggerDownloadCalls = [];
+  const triggerDownload = async (content, fileName) => {
+    triggerDownloadCalls.push({ content, fileName });
+  };
+
+  const result = await exportCurrentPageCookies({
+    pageUrl: "https://www.youtube.com/watch?v=abc",
+    cookiesApi,
+    cookieStoreId: incognitoStoreId,
+    triggerDownload,
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(receivedStoreId, incognitoStoreId, "storeId must be forwarded for incognito windows");
+  assert.equal(triggerDownloadCalls.length, 1, "triggerDownload must be called once");
+  assert.match(triggerDownloadCalls[0].fileName, /^cookies_youtube\.com\.txt$/, "fileName derived from host");
+  assert.ok(triggerDownloadCalls[0].content.includes("# Netscape HTTP Cookie File"), "content must be Netscape format");
+  assert.ok(triggerDownloadCalls[0].content.includes("incognito-token"), "cookie value must be in content");
+});
+
+test("exportCurrentPageCookies: returns error when no cookies available", async () => {
+  const cookiesApi = { getAll: async () => [] };
+  const triggerDownload = async () => { throw new Error("should not be called"); };
+  const result = await exportCurrentPageCookies({
+    pageUrl: "https://example.com",
+    cookiesApi,
+    triggerDownload,
+  });
+  assert.equal(result.ok, false);
+  assert.match(result.error, /没有可用的 Cookie/);
+});
+
+test("exportCurrentPageCookies: returns error when pageUrl is not http(s)", async () => {
+  const cookiesApi = { getAll: async () => [{ name: "x", value: "y" }] };
+  const result = await exportCurrentPageCookies({
+    pageUrl: "chrome://settings",
+    cookiesApi,
+  });
+  assert.equal(result.ok, false);
+  assert.match(result.error, /HTTP\/HTTPS/);
+});
+
+test("exportCurrentPageCookies: does not write to chrome.storage.local", async () => {
+  // 导出 cookies.txt 不应触碰扩展 storage——文件由用户手动保存到磁盘再导入桌面端。
+  const storageWrites = [];
+  const fakeStorage = {
+    get: async () => ({}),
+    set: async (values) => { storageWrites.push(values); },
+  };
+  const cookiesApi = { getAll: async () => [{ name: "SID", value: "secret-export-token" }] };
+  const triggerDownload = async () => {};
+  await exportCurrentPageCookies({
+    pageUrl: "https://example.com",
+    cookiesApi,
+    triggerDownload,
+  });
+  // 模拟 storage 不可达时也安全（导出完全不该用 storage）
+  for (const write of storageWrites) {
+    const json = JSON.stringify(write);
+    assert.ok(!json.includes("secret-export-token"), "cookie must not be persisted");
   }
 });

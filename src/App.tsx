@@ -2,11 +2,11 @@ import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, 
 import { open as pickPath, save as savePath } from "@tauri-apps/plugin-dialog";
 import { open as openUrl } from "@tauri-apps/plugin-shell";
 import {
-  AlertCircle, AlertTriangle, Archive, ArrowLeft, Bookmark, Check, CheckCircle2, ChevronDown, ChevronUp, ChevronsDown, ChevronsUp, CirclePause, Clock, Copy,
+  AlertCircle, AlertTriangle, Archive, ArrowLeft, Bookmark, Check, CheckCircle2, CheckSquare, ChevronDown, ChevronUp, ChevronsDown, ChevronsUp, CirclePause, Clock, Copy,
   Download, ExternalLink, File, FileAudio, FileImage, FileText, Film, FolderOpen,
-  Gauge, Globe2, Info, ListFilter, LoaderCircle, MonitorDown, MoreHorizontal, Network,
+  Gauge, Globe2, HelpCircle, Info, ListFilter, LoaderCircle, MonitorDown, MoreHorizontal, Network,
   PanelRightClose, PanelRightOpen, Pause, Play, Plus, RefreshCw, RotateCcw, Save, Search, Settings, Keyboard,
-  ShieldCheck, SlidersHorizontal, Sparkles, Tag as TagIcon, Trash2, Unplug, Video, X, Zap,
+  ShieldCheck, SlidersHorizontal, Sparkles, Square, Tag as TagIcon, Trash2, Unplug, Video, X, Zap,
 } from "lucide-react";
 import { api, isDesktop } from "./api";
 import { Effect, getCurrentWindow } from "@tauri-apps/api/window";
@@ -15,7 +15,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { LogicalSize } from "@tauri-apps/api/dpi";
 import type {
-  AdvancedFilter, AppInfo, AppSettings, BackoffStrategy, CategoryRule, CategoryRuleType, CollisionPolicy, ColorScheme, CompletionAction, ConnectionState, DeepLinkReceivedPayload, DownloadPreset, DownloadTask, DuplicateCheckResult, DuplicateMatch, DuplicateType, ExtensionCompatibilityResult, FilenameCleanupRule, FilterKey, MediaCredential, MediaFormat, MediaPlatform, MediaProbeResult, MeteredNetworkDetectedPayload,
+  AdvancedFilter, AppInfo, AppSettings, BackoffStrategy, CategoryRule, CategoryRuleType, CollisionPolicy, ColorScheme, CompletionAction, ConnectionState, DeepLinkReceivedPayload, DownloadPreset, DownloadTask, DuplicateCheckResult, DuplicateMatch, DuplicateType, ExtensionCompatibilityResult, FilenameCleanupRule, FilterKey, MediaCredential, MediaCredentialCheckResult, MediaFormat, MediaPlatform, MediaProbeResult, MeteredNetworkDetectedPayload,
   NewTaskRequest, PairingInfo, PlatformCompatibility, PlatformNamingTemplate, PowerAction, PowerActionState, PrecheckResult, ProxyAuth, QuickView, RestorePreview, RetryPolicy, SegmentStatus, SelfcheckReport, Tag,
   TaskConnectionsEvent, TaskNotificationPayload, TaskStatus, TaskTagsMap, TaskTemplate, TaskTemplateTestResult, ToolComponent, ToolStatus, UpdateCheckResult, UrlHistoryEntry, WaitReason, ShortcutKeys,
 } from "./types";
@@ -32,11 +32,14 @@ import {
   TEMPLATE_VARIABLES,
 } from "./types";
 import { defaultHistoryDateRange, HistoryDateFilter, matchesHistoryDate } from "./components/HistoryDateFilter";
+import { Select, SelectOption } from "./components/Select";
 import { PowerActionBanner, PowerActionButton } from "./components/PowerActionControl";
 import { PrecheckPanel } from "./components/PrecheckPanel";
 import { DiagnosisPanel } from "./components/DiagnosisPanel";
+import { YouTubeCredentialsModal } from "./components/YouTubeCredentialsModal";
 import { CompletionActionEditor, completionActionLabel } from "./components/CompletionActionEditor";
 import { BackupRestoreModal } from "./components/BackupRestoreModal";
+import { EpisodePicker } from "./components/EpisodePicker";
 import { t, setLocale, useLocale } from "./i18n";
 import { reorderTaskIdsWithinPriority, TASK_PRIORITY_PRESETS } from "./priority";
 
@@ -170,7 +173,7 @@ function getConnectionStateLabel(): Record<ConnectionState, string> {
 const defaults: AppSettings = {
   download_dir: "", concurrent_downloads: 3, connections_per_download: 8,
   speed_limit_kbps: 0, start_minimized: false, minimize_to_tray: true,
-  close_to_tray: false, notifications: true, auto_start: false, theme: "system",
+  close_to_tray: false, notifications: true, auto_start: true, theme: "system",
   accent_color: "blue",
   frosted_glass: false,
   language: "zh-CN", intercept_browser_downloads: true, min_file_size_mb: 1,
@@ -178,7 +181,7 @@ const defaults: AppSettings = {
   proxy_password: "", user_agent: "MaobuFetch/0.5", default_collision_policy: "rename", default_completion_action: "none",
   max_retries: 3, retry_base_seconds: 2, verify_after_download: false,
   media_tool_auto_update: true,
-  yt_dlp_path: "", ffmpeg_path: "", ffprobe_path: "",
+  yt_dlp_path: "", ffmpeg_path: "", ffprobe_path: "", youtube_po_token: "",
   low_memory_mode: false,
   window_width: 1024,
   window_height: 720,
@@ -425,6 +428,7 @@ export default function App() {
   const [speedLimitTarget, setSpeedLimitTarget] = useState<DownloadTask | null>(null);
   // Task 30：失败通知 toast（带"一键重试"按钮）。仅在收到 failed kind 的 task-notification 事件时显示。
   const [failureToast, setFailureToast] = useState<{ taskId: string; title: string; body: string } | undefined>();
+  const [youtubeModalTaskId, setYoutubeModalTaskId] = useState<string | null>(null);
   // Task 25: 标签 + 任务-标签关联 + 高级筛选 + 快捷视图。
   // - tags: 全部标签列表（按 name 升序）
   // - taskTags: task_id -> Tag[] 映射，用于任务行 chip 和详情页编辑
@@ -1238,22 +1242,32 @@ export default function App() {
           {view === "history" ? (
             <div className="history-filter-bar" aria-label={t("historyFilter.status")}>
               <span>{t("historyFilter.status")}</span>
-              <select value={historyStatusFilter} onChange={(event) => setHistoryStatusFilter(event.target.value as TaskStatus | "all")}>
-                <option value="all">{t("historyFilter.allStatuses")}</option>
-                <option value="completed">{t("status.completed")}</option>
-                <option value="failed">{t("status.failed")}</option>
-                <option value="cancelled">{t("status.cancelled")}</option>
-                <option value="interrupted">{t("status.interrupted")}</option>
-              </select>
+              <Select
+                value={historyStatusFilter}
+                onChange={(val: any) => setHistoryStatusFilter(val as TaskStatus | "all")}
+                options={[
+                  { value: "all", label: t("historyFilter.allStatuses") },
+                  { value: "completed", label: t("status.completed") },
+                  { value: "failed", label: t("status.failed") },
+                  { value: "cancelled", label: t("status.cancelled") },
+                  { value: "interrupted", label: t("status.interrupted") },
+                ]}
+                ariaLabel={t("historyFilter.status")}
+              />
               <span className="history-filter-separator" aria-hidden="true">·</span>
               <span>{t("historyFilter.completionDate")}</span>
-              <select value={historyDate.preset} onChange={(event) => setHistoryDate({ ...historyDate, preset: event.target.value as typeof historyDate.preset })}>
-                <option value="all">{t("historyFilter.allTime")}</option>
-                <option value="today">{t("historyFilter.today")}</option>
-                <option value="7-days">{t("historyFilter.last7Days")}</option>
-                <option value="30-days">{t("historyFilter.last30Days")}</option>
-                <option value="custom">{t("historyFilter.customRange")}</option>
-              </select>
+              <Select
+                value={historyDate.preset}
+                onChange={(val: any) => setHistoryDate({ ...historyDate, preset: val as typeof historyDate.preset })}
+                options={[
+                  { value: "all", label: t("historyFilter.allTime") },
+                  { value: "today", label: t("historyFilter.today") },
+                  { value: "7-days", label: t("historyFilter.last7Days") },
+                  { value: "30-days", label: t("historyFilter.last30Days") },
+                  { value: "custom", label: t("historyFilter.customRange") },
+                ]}
+                ariaLabel={t("historyFilter.completionDate")}
+              />
               {historyDate.preset === "custom" && <>
                 <input type="date" aria-label={t("historyFilter.startDate")} value={historyDate.start} onChange={(event) => setHistoryDate({ ...historyDate, start: event.target.value })} />
                 <span>{t("historyFilter.to")}</span>
@@ -1288,7 +1302,7 @@ export default function App() {
               <div className="table-header"><label><input type="checkbox" aria-label={t("toolbar.selectAll")} checked={visible.length > 0 && visible.every((task) => selected.has(task.id))} onChange={() => setSelected(visible.every((task) => selected.has(task.id)) ? new Set() : new Set(visible.map((task) => task.id)))} /></label>{[["file_name",t("table.fileName"),""],["total_bytes",t("table.size"),"size"],["status",t("table.status"),"status"],["connection_count",t("table.connection"),"connection"],["downloaded_bytes",t("table.progress"),"progress"],["speed",t("table.speed"),"speed"],["eta_seconds",t("table.eta"),"eta"],[showCompletedAt ? "completed_at" : "created_at",showCompletedAt ? t("table.completedAt") : t("table.createdAt"),"created"]].map(([key,label,widthKey]) => <span key={key} onClick={() => setSort((current) => ({ key: key as keyof DownloadTask, desc: current.key === key ? !current.desc : ["created_at", "completed_at"].includes(key) }))}>{label}{widthKey && <i className="column-resizer" onMouseDown={(event) => beginResize(widthKey, event)} />}</span>)}<span /></div>
               <div className="task-rows">{loading ? <div className="center-state"><LoaderCircle className="spin" /></div> : visible.length === 0 ? <EmptyState filter={filter} view={view} onAdd={() => setNewOpen(true)} /> : visible.map((task) => <TaskRow key={task.id} task={task} showCompletedAt={showCompletedAt} taskTagList={taskTags[task.id] ?? []} selected={selected.has(task.id)} onSelect={() => { setPrimaryTaskId(task.id); setSelected((current) => { const next = new Set(current); next.has(task.id) ? next.delete(task.id) : next.add(task.id); return next; }); }} onOpen={() => task.status === "completed" && void api.openFile(task.id)} onContext={(event) => { event.preventDefault(); setPrimaryTaskId(task.id); setContext({ x: event.clientX, y: event.clientY, id: task.id }); if (!selected.has(task.id)) setSelected(new Set([task.id])); }} onMouseDown={(taskItem, evt) => { setPrimaryTaskId(taskItem.id); handleTaskMouseDown(taskItem, evt); }} onCheckboxMouseDown={(evt) => handleCheckboxMouseDown(task.id, selected.has(task.id), evt)} onCheckboxMouseEnter={() => handleCheckboxMouseEnter(task.id)} />)}</div>
             </div></div>
-            {showDetails && <Details task={activeTask} onClose={() => setShowDetails(false)} notify={notify} selectedCount={selected.size} onOpenProxySettings={() => { setSettingsOpen(true); }} onTagsChanged={refreshTags} />}
+            {showDetails && <Details task={activeTask} onClose={() => setShowDetails(false)} notify={notify} selectedCount={selected.size} onOpenProxySettings={() => { setSettingsOpen(true); }} onOpenYouTubeModal={() => setYoutubeModalTaskId(activeTask?.id || "")} onTagsChanged={refreshTags} />}
           </section>
         </main>
         {newOpen && <NewTaskDialog settings={settings} allTasks={tasks} onClose={() => { setNewOpen(false); setInitialUrlFromClipboard(""); }} onCreated={(created) => {
@@ -1408,12 +1422,33 @@ export default function App() {
                 >
                   {t("toasts.viewDetails")}
                 </button>
+                {failureToast.body.includes("YouTube") && (
+                  <button
+                    className="toast-action-btn toast-action-btn-secondary"
+                    onClick={() => {
+                      const taskId = failureToast.taskId;
+                      setFailureToast(undefined);
+                      setYoutubeModalTaskId(taskId);
+                    }}
+                  >
+                    <ShieldCheck size={11} />
+                    同步/配置凭证
+                  </button>
+                )}
               </div>
             </div>
             <button className="toast-close-btn" onClick={() => setFailureToast(undefined)} aria-label={t("common.close")}>
               <X size={11} />
             </button>
           </div>
+        )}
+        {youtubeModalTaskId !== null && (
+          <YouTubeCredentialsModal
+            taskId={youtubeModalTaskId || undefined}
+            onClose={() => setYoutubeModalTaskId(null)}
+            notify={notify}
+            onSuccessRetry={() => void refreshRef.current()}
+          />
         )}
         {showCloseConfirm && <CloseConfirmDialog onClose={() => setShowCloseConfirm(false)} onConfirm={handleCloseConfirm} />}
         {aboutOpen && (
@@ -1474,7 +1509,7 @@ export default function App() {
 function isMediaTask(task: DownloadTask): boolean {
   if (task.media) return true;
   const mediaDomains = [
-    "youtube.com", "youtu.be", "bilibili.com", "b23.tv", "douyin.com",
+    "youtube.com", "youtu.be", "bilibili.com", "b23.tv", "douyin.com", "iesdouyin.com", "douyinvod.com",
     "vimeo.com", "tiktok.com", "twitter.com", "x.com", "weibo.com"
   ];
   try {
@@ -1538,9 +1573,9 @@ function TaskRow({ task, selected, showCompletedAt, taskTagList, onSelect, onOpe
         </small>
       </div>
     </div>
-    <span>{task.total_bytes ? formatBytes(task.total_bytes) : "—"}</span>
+    <span>{task.total_bytes ? formatBytes(task.total_bytes) : task.downloaded_bytes ? formatBytes(task.downloaded_bytes) : "—"}</span>
     <span className={`task-status ${task.status}`}>
-      {task.status === "downloading" && isMediaTask(task) && task.downloaded_bytes === 0 && task.active_connections === 0
+      {task.status === "downloading" && isMediaTask(task) && task.downloaded_bytes === 0 && task.active_connections === 0 && !task.error
         ? statusText.parsing
         : statusText[task.status]}
       {canControl && (
@@ -1614,7 +1649,7 @@ function EmptyState({ filter, view, onAdd }: { filter: FilterKey; view: "main" |
 
 const DIAGNOSIS_TAB_STATUSES: TaskStatus[] = ["failed", "interrupted", "remote-changed", "paused-by-low-disk"];
 
-function Details({ task, onClose, notify, selectedCount, onOpenProxySettings, onTagsChanged }: { task?: DownloadTask; onClose: () => void; notify: (text: string, kind?: "ok" | "error") => void; selectedCount: number; onOpenProxySettings?: () => void; onTagsChanged?: () => void }) {
+function Details({ task, onClose, notify, selectedCount, onOpenProxySettings, onOpenYouTubeModal, onTagsChanged }: { task?: DownloadTask; onClose: () => void; notify: (text: string, kind?: "ok" | "error") => void; selectedCount: number; onOpenProxySettings?: () => void; onOpenYouTubeModal?: () => void; onTagsChanged?: () => void }) {
   // Task 33: 订阅 locale 变化，语言切换时详情面板文案同步刷新。
   useLocale();
   const [showMore, setShowMore] = useState(false);
@@ -1742,6 +1777,7 @@ function Details({ task, onClose, notify, selectedCount, onOpenProxySettings, on
           status={task.status}
           notify={notify}
           onOpenProxySettings={onOpenProxySettings}
+          onOpenYouTubeModal={onOpenYouTubeModal}
           onTaskChanged={() => { /* 任务事件流会自动更新列表，无需手动刷新 */ }}
         />
       )}
@@ -2077,7 +2113,7 @@ function DetailsInfoTab({ task, showMore, onToggleMore, notify, action, onTagsCh
 
   return <>
     <dl>
-      <div><dt>{t("details.status")}</dt><dd>{task.status === "downloading" && isMediaTask(task) && task.downloaded_bytes === 0 && task.active_connections === 0 ? statusText.parsing : statusText[task.status]}</dd></div>
+      <div><dt>{t("details.status")}</dt><dd>{task.status === "downloading" && isMediaTask(task) && task.downloaded_bytes === 0 && task.active_connections === 0 && !task.error ? statusText.parsing : statusText[task.status]}</dd></div>
       <div><dt>{t("details.size")}</dt><dd>{task.total_bytes ? formatBytes(task.total_bytes) : "—"}</dd></div>
       <div><dt>{t("details.speed")}</dt><dd>{task.speed ? `${formatBytes(task.speed)}/s` : "—"}</dd></div>
       <div><dt>{t("details.eta")}</dt><dd>{task.eta_seconds ? formatDuration(task.eta_seconds) : "—"}</dd></div>
@@ -2249,21 +2285,22 @@ function DetailsInfoTab({ task, showMore, onToggleMore, notify, action, onTagsCh
               <input value={tplDraft.domain_pattern} onChange={(e) => setTplDraft({ ...tplDraft, domain_pattern: e.target.value })} placeholder="github.com 或 *.github.com" />
             </Field>
             <Field label="连接数（留空表示不覆盖；仅允许 1 / 2 / 4 / 8 / 16 / 32）">
-              <select
+              <Select
                 value={tplDraft.connections ?? ""}
-                onChange={(e) => {
-                  const v = e.target.value;
-                  setTplDraft({ ...tplDraft, connections: v === "" ? null : +v });
+                onChange={(val: any) => {
+                  setTplDraft({ ...tplDraft, connections: val === "" ? null : +val });
                 }}
-              >
-                <option value="">不覆盖</option>
-                <option value={1}>1 路</option>
-                <option value={2}>2 路</option>
-                <option value={4}>4 路</option>
-                <option value={8}>8 路</option>
-                <option value={16}>16 路</option>
-                <option value={32}>32 路</option>
-              </select>
+                options={[
+                  { value: "", label: "不覆盖" },
+                  { value: 1, label: "1 路" },
+                  { value: 2, label: "2 路" },
+                  { value: 4, label: "4 路" },
+                  { value: 8, label: "8 路" },
+                  { value: 16, label: "16 路" },
+                  { value: 32, label: "32 路" },
+                ]}
+                ariaLabel="连接数"
+              />
             </Field>
             <Field label="单任务限速（KB/s，0 或留空表示不限速）">
               <input
@@ -2399,17 +2436,19 @@ function RetryPolicyEditor({ value, onChange, disabled, compact }: { value: Retr
   return (
     <div className="settings-group-content">
       <SettingRow label="重试预设">
-        <select
+        <Select
           value={localPreset}
           disabled={disabled}
-          onChange={(e) => handlePresetChange(e.target.value)}
-        >
-          <option value="standard">标准重试 (默认)</option>
-          <option value="quick">快速重试 (针对不稳定 CDN)</option>
-          <option value="persistent">顽固重试 (挂机且网络极差)</option>
-          <option value="none">不自动重试</option>
-          <option value="custom">自定义配置...</option>
-        </select>
+          onChange={(val: any) => handlePresetChange(val as string)}
+          options={[
+            { value: "standard", label: "标准重试 (默认)" },
+            { value: "quick", label: "快速重试 (针对不稳定 CDN)" },
+            { value: "persistent", label: "顽固重试 (挂机且网络极差)" },
+            { value: "none", label: "不自动重试" },
+            { value: "custom", label: "自定义配置..." },
+          ]}
+          ariaLabel="重试预设"
+        />
       </SettingRow>
       <div className="retry-policy-advanced-fields">
         <SettingRow label={compact ? "单连接超时(秒)" : "单连接超时（秒）"}><input type="number" min="1" max="600" value={value.connection_timeout_secs} disabled={isInputsDisabled} onChange={(e) => update("connection_timeout_secs", Math.max(1, +e.target.value || 1))} /></SettingRow>
@@ -3119,6 +3158,8 @@ function GalleryPicker({ formats, thumbnail, selectedIds, onChange }: {
   onChange: (next: Set<string>) => void;
 }) {
   const imageItems = useMemo(() => formats.filter((item) => item.image_url), [formats]);
+  const allSelected = imageItems.length > 0 && selectedIds.size === imageItems.length;
+
   const toggle = (id: string) => {
     const next = new Set(selectedIds);
     if (next.has(id)) next.delete(id);
@@ -3133,6 +3174,30 @@ function GalleryPicker({ formats, thumbnail, selectedIds, onChange }: {
     }
     onChange(next);
   };
+
+  // 拖拽多选（与 EpisodePicker 一致）：按下鼠标左键拖过条目可批量选择/取消
+  const isDraggingRef = useRef(false);
+  const dragTargetStateRef = useRef(true);
+  useEffect(() => {
+    const handleMouseUp = () => { isDraggingRef.current = false; };
+    window.addEventListener("mouseup", handleMouseUp);
+    return () => window.removeEventListener("mouseup", handleMouseUp);
+  }, []);
+  const handleMouseDownItem = (e: React.MouseEvent, id: string) => {
+    if (e.button !== 0) return;
+    isDraggingRef.current = true;
+    const willSelect = !selectedIds.has(id);
+    dragTargetStateRef.current = willSelect;
+    toggle(id);
+  };
+  const handleMouseEnterItem = (id: string) => {
+    if (!isDraggingRef.current) return;
+    const targetState = dragTargetStateRef.current;
+    if (selectedIds.has(id) !== targetState) {
+      toggle(id);
+    }
+  };
+
   if (imageItems.length === 0) {
     return (
       <div className="media-empty-hint">
@@ -3141,62 +3206,171 @@ function GalleryPicker({ formats, thumbnail, selectedIds, onChange }: {
     );
   }
   return (
-    <div>
-      <div className="media-gallery-toolbar">
-        <span className="gallery-count">
-          共 {imageItems.length} 张图片，已选 {selectedIds.size} 张
-        </span>
-        <button type="button" onClick={selectAll} disabled={selectedIds.size === imageItems.length}>
-          全选
-        </button>
-        <button type="button" onClick={invert} disabled={imageItems.length === 0}>
-          反选
-        </button>
+    <div className="episode-picker-container" style={{ display: "flex", flexDirection: "column", gap: "8px", marginTop: "4px" }}>
+      <div
+        className="episode-picker-toolbar"
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          flexWrap: "nowrap",
+          whiteSpace: "nowrap",
+          gap: "8px",
+          padding: "4px 8px",
+          background: "var(--card-bg, rgba(255, 255, 255, 0.04))",
+          borderRadius: "6px",
+          border: "1px solid var(--border-color, rgba(255, 255, 255, 0.08))",
+          fontSize: "11.5px",
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", gap: "6px", flexWrap: "nowrap", flexShrink: 0 }}>
+          <span style={{ fontWeight: 600, color: "var(--text-primary)", whiteSpace: "nowrap", fontSize: "11px" }}>
+            已选 <span style={{ color: "var(--accent, #0078d4)" }}>{selectedIds.size}</span>/{imageItems.length} 张
+          </span>
+          <div style={{ display: "flex", gap: "4px" }}>
+            <button
+              type="button"
+              className="input-button compact"
+              onClick={selectAll}
+              disabled={allSelected}
+              style={{
+                padding: "0 6px",
+                fontSize: "11px",
+                whiteSpace: "nowrap",
+                height: "22px",
+                minHeight: "22px",
+                lineHeight: "22px",
+                cursor: "pointer",
+              }}
+            >
+              {allSelected ? "取消全选" : "全选"}
+            </button>
+            <button
+              type="button"
+              className="input-button compact"
+              onClick={invert}
+              disabled={imageItems.length === 0}
+              style={{
+                padding: "0 6px",
+                fontSize: "11px",
+                whiteSpace: "nowrap",
+                height: "22px",
+                minHeight: "22px",
+                lineHeight: "22px",
+                cursor: "pointer",
+              }}
+            >
+              反选
+            </button>
+          </div>
+        </div>
       </div>
-      <div className="media-gallery-grid" role="group" aria-label="图集图片选择">
+      <div
+        className="episode-picker-list"
+        style={{
+          maxHeight: "180px",
+          overflowY: "auto",
+          display: "flex",
+          flexDirection: "column",
+          gap: "4px",
+          paddingRight: "4px",
+          userSelect: "none",
+          WebkitUserSelect: "none",
+        }}
+        role="group"
+        aria-label="图集图片选择"
+      >
         {imageItems.map((item, index) => {
           const selected = selectedIds.has(item.id);
           const thumbSrc = item.image_url ?? thumbnail ?? "";
           return (
-            <label
+            <div
               key={item.id}
-              className={`media-gallery-item${selected ? " selected" : ""}`}
+              onMouseDown={(e) => handleMouseDownItem(e, item.id)}
+              onMouseEnter={() => handleMouseEnterItem(item.id)}
               title={item.label || `图片 ${index + 1}`}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: "8px",
+                padding: "6px 10px",
+                borderRadius: "5px",
+                background: selected ? "var(--accent-bg-subtle, rgba(0, 120, 212, 0.1))" : "var(--item-bg, rgba(255, 255, 255, 0.02))",
+                border: selected ? "1px solid var(--accent, #0078d4)" : "1px solid var(--border-color, rgba(255, 255, 255, 0.05))",
+                cursor: "pointer",
+                transition: "all 0.15s ease",
+                userSelect: "none",
+              }}
             >
-              <input
-                type="checkbox"
-                checked={selected}
-                onChange={() => toggle(item.id)}
-                aria-label={`选择第 ${index + 1} 张图片`}
-              />
+              <div style={{ color: selected ? "var(--accent, #0078d4)" : "var(--text-tertiary)", display: "flex", alignItems: "center" }}>
+                {selected ? <CheckSquare size={14} /> : <Square size={14} />}
+              </div>
+              <span
+                style={{
+                  padding: "1px 6px",
+                  borderRadius: "3px",
+                  fontSize: "10px",
+                  fontWeight: 600,
+                  background: selected ? "var(--accent, #0078d4)" : "rgba(255, 255, 255, 0.1)",
+                  color: selected ? "#fff" : "var(--text-secondary)",
+                }}
+              >
+                #{index + 1}
+              </span>
               {thumbSrc ? (
                 <img
-                  className="media-gallery-thumb"
                   src={thumbSrc}
                   alt={item.label || `图片 ${index + 1}`}
                   loading="lazy"
                   referrerPolicy="no-referrer"
+                  style={{
+                    width: "32px",
+                    height: "32px",
+                    objectFit: "cover",
+                    borderRadius: "3px",
+                    flexShrink: 0,
+                    background: "var(--card-bg, rgba(255,255,255,0.04))",
+                  }}
                   onError={(e) => {
-                    // 加载失败时显示占位，避免破图（AGENTS.md §4 错误状态需明确反馈）
+                    // 加载失败时隐藏缩略图，避免破图（AGENTS.md §4 错误状态需明确反馈）
                     const target = e.currentTarget;
-                    target.style.display = "none";
-                    const fallback = document.createElement("div");
-                    fallback.className = "media-gallery-fallback";
-                    fallback.textContent = "无法预览";
-                    target.parentElement?.appendChild(fallback);
+                    target.style.visibility = "hidden";
                   }}
                 />
               ) : (
-                <div className="media-gallery-fallback">
-                  <FileImage size={20} />
+                <div
+                  style={{
+                    width: "32px",
+                    height: "32px",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    borderRadius: "3px",
+                    background: "var(--card-bg, rgba(255,255,255,0.04))",
+                    color: "var(--text-tertiary)",
+                    flexShrink: 0,
+                  }}
+                >
+                  <FileImage size={14} />
                 </div>
               )}
-              <div className="media-gallery-meta">
-                #{index + 1}
-                {item.extension ? ` · ${item.extension}` : ""}
+              <span
+                style={{
+                  flex: 1,
+                  fontSize: "12px",
+                  color: selected ? "var(--text-primary)" : "var(--text-secondary)",
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {item.label || `图片 ${index + 1}`}
+              </span>
+              <span style={{ fontSize: "11px", color: "var(--text-tertiary)", whiteSpace: "nowrap" }}>
+                {item.extension ? `${item.extension.toUpperCase()}` : ""}
                 {item.file_size ? ` · ${formatBytes(item.file_size)}` : ""}
-              </div>
-            </label>
+              </span>
+            </div>
           );
         })}
       </div>
@@ -3252,6 +3426,9 @@ function NewTaskDialog({ settings, allTasks, onClose, onCreated, defaultUrl, onL
   const [media, setMedia] = useState<MediaProbeResult>(); const [format, setFormat] = useState("");
   // Task 42：图集场景下用户选中的图片 format id 集合。默认全选，用户可取消勾选。
   const [selectedImageIds, setSelectedImageIds] = useState<Set<string>>(new Set());
+  // Task 47：合集/多 P 场景下用户选中的分 P 序号集合与画质偏好。
+  const [selectedEpisodeIndices, setSelectedEpisodeIndices] = useState<Set<number>>(new Set());
+  const [collectionQualityPreference, setCollectionQualityPreference] = useState<string>("best");
   const [toolStatus, setToolStatus] = useState<ToolStatus>();
   // 预检状态（SubTask 9.1）
   const [precheck, setPrecheck] = useState<PrecheckResult>();
@@ -3589,9 +3766,10 @@ function NewTaskDialog({ settings, allTasks, onClose, onCreated, defaultUrl, onL
 
   const hasConflicts = activeConflicts.length > 0;
   const hasDuplicates = Boolean(duplicateResult?.matches?.length);
-  // Task 42：图集场景下，提交按钮需在未选中任何图片时禁用。
+  // Task 42 / Task 47：图集与合集场景下，提交按钮需在未选中任何子项时禁用。
   const isGalleryWithoutSelection =
-    media?.media_type === "gallery" && selectedImageIds.size === 0;
+    (media?.media_type === "gallery" && selectedImageIds.size === 0) ||
+    (media?.media_type === "collection" && selectedEpisodeIndices.size === 0);
   const showConflictOptions = hasConflicts && !hasDuplicates;
 
   // 聚合当前目标盘同卷已排队/下载任务的空间需求
@@ -3668,6 +3846,12 @@ function NewTaskDialog({ settings, allTasks, onClose, onCreated, defaultUrl, onL
         const imageItems = result.formats.filter((item) => item.image_url);
         setSelectedImageIds(new Set(imageItems.map((item) => item.id)));
         if (!fileName) setFileName(safeDisplayName(result.title));
+      } else if (result.media_type === "collection") {
+        setFormat("");
+        // 合集/多 P 默认全选所有分 P
+        const eps = result.episodes || [];
+        setSelectedEpisodeIndices(new Set(eps.map((e) => e.index)));
+        if (!fileName) setFileName(safeDisplayName(result.title));
       } else if (result.media_type === "audio") {
         const audioFormats = result.formats
           .filter((item) => item.has_audio && !item.has_video)
@@ -3676,10 +3860,19 @@ function NewTaskDialog({ settings, allTasks, onClose, onCreated, defaultUrl, onL
         setFormat(selected?.id ?? "");
         if (!fileName) setFileName(`${safeDisplayName(result.title)}.m4a`);
       } else {
-        // video / mixed：保持原有视频默认选择逻辑
+        // video / mixed：默认格式选择优先级：
+        // 1. 合并格式（has_video && has_audio && requires_ffmpeg）—— 最高画质原始流合并
+        //    Twitter/X 的 hls-* 原始流画质优于 http-* progressive 二次压缩流，
+        //    yt-dlp 默认也推荐 bestvideo*+bestaudio/best 合并格式。
+        //    后端在 FFmpeg 可用时调用 FFmpeg 合并，FFmpeg 不可用时调用内置 media_muxer
+        //    （纯 Rust 实现的 fMP4 合并器）合并，因此前端无需根据 FFmpeg 状态切换默认格式。
+        // 2. 有声视频直链（has_video && has_audio && !requires_ffmpeg）—— progressive 流回退
+        // 3. 无声视频（has_video && !has_audio && !requires_ffmpeg）—— 最后回退
+        // 4. 其它首项
+        const merged = result.formats.filter((item) => item.has_video && item.has_audio && item.requires_ffmpeg).sort((a, b) => (b.height ?? 0) - (a.height ?? 0));
         const direct = result.formats.filter((item) => item.has_video && item.has_audio && !item.requires_ffmpeg).sort((a, b) => (b.height ?? 0) - (a.height ?? 0));
         const video = result.formats.filter((item) => item.has_video && !item.requires_ffmpeg).sort((a, b) => (b.height ?? 0) - (a.height ?? 0));
-        const selected = direct[0] ?? video[0] ?? result.formats[0];
+        const selected = merged[0] ?? direct[0] ?? video[0] ?? result.formats[0];
         setFormat(selected?.id ?? "");
         if (!fileName) setFileName(`${safeDisplayName(result.title)}.mp4`);
       }
@@ -3705,6 +3898,55 @@ function NewTaskDialog({ settings, allTasks, onClose, onCreated, defaultUrl, onL
     const selectedFormat = media?.formats.find((item) => item.id === format);
     if (selectedFormat?.requires_ffmpeg && !toolStatus?.ffmpeg_available) {
       setError("当前最高画质需要先安装 FFmpeg 高清合并组件");
+      setBusy(false);
+      return;
+    }
+    // Task 47：合集/多 P 类型，每个选中的分 P 作为独立子任务。
+    // 文件名按 `{合集名称}_P{序号}_{分P标题}.mp4` 模式，自动排队下载。
+    if (media?.media_type === "collection") {
+      const eps = (media.episodes || []).filter((e) => selectedEpisodeIndices.has(e.index));
+      if (eps.length === 0) {
+        setError("请至少选择一集再开始下载");
+        setBusy(false);
+        return;
+      }
+      const collectionTitleBase = safeDisplayName(activeFileName || media.title);
+      const baseTemplate: Omit<NewTaskRequest, "url" | "file_name"> = {
+        destination, headers,
+        scheduled_at: schedule ? new Date(schedule).getTime() : undefined,
+        priority, expected_checksum: checksum || undefined, source: "desktop",
+        per_task_speed_limit: limit * 1024, collision_policy: policy,
+        completion_action: eps.length > 1 ? "none" : completionAction,
+        connection_count: connections,
+        media: undefined,
+        user_edited_file_name: userEditedFileName.current || overrideFileName !== undefined,
+      };
+      try {
+        const results = await Promise.allSettled(
+          eps.map((ep) => {
+            const epTitle = safeDisplayName(ep.title);
+            const file_name = `${collectionTitleBase}_P${ep.index}_${epTitle}.mp4`;
+            return api.add({ url: ep.url, file_name, ...baseTemplate });
+          })
+        );
+        const fulfilled: DownloadTask[] = [];
+        let firstError: string | undefined;
+        for (const r of results) {
+          if (r.status === "fulfilled") fulfilled.push(r.value);
+          else if (!firstError) firstError = String(r.reason);
+        }
+        void api.urlHistoryAdd(lines[0]).then(reloadHistory).catch(() => {});
+        if (fulfilled.length > 0) {
+          onCreated(fulfilled.length === 1 ? fulfilled[0] : fulfilled);
+        }
+        if (firstError) {
+          setError(
+            fulfilled.length === 0
+              ? firstError
+              : `部分集数创建失败：${firstError}（成功 ${fulfilled.length}/${eps.length}）`
+          );
+        }
+      } catch (reason) { setError(String(reason)); }
       setBusy(false);
       return;
     }
@@ -3848,31 +4090,23 @@ function NewTaskDialog({ settings, allTasks, onClose, onCreated, defaultUrl, onL
             <label className="form-field grow">
               <span>下载预设</span>
               <div className="input-group">
-                <select
+                <Select
                   value={selectedPresetId}
-                  onChange={(e) => {
-                    const id = e.target.value;
+                  onChange={(val: any) => {
+                    const id = String(val);
                     setSelectedPresetId(id);
                     const preset = presets.find((p) => p.id === id);
                     applyPreset(preset);
                   }}
-                  aria-label="选择下载预设"
-                >
-                  <option value="">不使用预设</option>
-                  {presets.map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.name}
-                      {p.is_builtin ? "（内置）" : ""}
-                      {" · "}
-                      {p.connections} 连接
-                      {p.speed_limit ? ` · 限速 ${Math.round(p.speed_limit / 1024)} KB/s` : ""}
-                      {p.completion_action && p.completion_action !== "none"
-                        ? ` · ${p.completion_action === "open-folder" ? "打开文件夹" : p.completion_action === "run-file" ? "运行文件" : p.completion_action === "shutdown" ? "完成后关机" : "完成后休眠"}`
-                        : ""}
-                      {p.scheduled_at ? ` · 计划 ${p.scheduled_at}` : ""}
-                    </option>
-                  ))}
-                </select>
+                  options={[
+                    { value: "", label: "不使用预设" },
+                    ...presets.map((p) => ({
+                      value: p.id,
+                      label: `${p.name}${p.is_builtin ? "（内置）" : ""} · ${p.connections} 连接${p.speed_limit ? ` · 限速 ${Math.round(p.speed_limit / 1024)} KB/s` : ""}${p.completion_action && p.completion_action !== "none" ? ` · ${p.completion_action === "open-folder" ? "打开文件夹" : p.completion_action === "run-file" ? "运行文件" : p.completion_action === "shutdown" ? "完成后关机" : "完成后休眠"}` : ""}${p.scheduled_at ? ` · 计划 ${p.scheduled_at}` : ""}`,
+                    })),
+                  ]}
+                  ariaLabel="选择下载预设"
+                />
               </div>
             </label>
           </div>
@@ -4208,35 +4442,46 @@ function NewTaskDialog({ settings, allTasks, onClose, onCreated, defaultUrl, onL
                 selectedIds={selectedImageIds}
                 onChange={setSelectedImageIds}
               />
+            ) : media.media_type === "collection" ? (
+              <EpisodePicker
+                episodes={media.episodes || []}
+                selectedIndices={selectedEpisodeIndices}
+                onChange={setSelectedEpisodeIndices}
+                qualityPreference={collectionQualityPreference}
+                onQualityChange={setCollectionQualityPreference}
+              />
             ) : media.media_type === "audio" ? (
               <div className="media-format-select-row">
-                <select value={format} onChange={(e) => setFormat(e.target.value)}>
-                  {media.formats
+                <Select
+                  value={format}
+                  onChange={(val: any) => setFormat(String(val))}
+                  options={media.formats
                     .filter((item) => item.has_audio && !item.has_video)
-                    .map((item) => (
-                      <option key={item.id} value={item.id}>
-                        {item.label}
-                        {item.file_size ? ` (${formatBytes(item.file_size)})` : ""}
-                      </option>
-                    ))}
-                </select>
+                    .map((item) => ({
+                      value: item.id,
+                      label: `${item.label}${item.file_size ? ` (${formatBytes(item.file_size)})` : ""}`,
+                    }))}
+                  ariaLabel="音频格式选择"
+                  style={{ width: "100%" }}
+                />
                 {media.formats.filter((item) => item.has_audio && !item.has_video).length === 0 && (
                   <div className="media-empty-hint">未识别到独立音频流，将尝试使用默认格式下载</div>
                 )}
               </div>
             ) : (
               <div className="media-format-select-row">
-                <select value={format} onChange={(e) => setFormat(e.target.value)}>
-                  {media.formats
+                <Select
+                  value={format}
+                  onChange={(val: any) => setFormat(String(val))}
+                  options={media.formats
                     .filter((item) => item.has_video || item.has_audio)
-                    .map((item) => (
-                      <option key={item.id} value={item.id}>
-                        {item.label}
-                        {item.file_size ? ` (${formatBytes(item.file_size)})` : ""}
-                        {!item.requires_ffmpeg && item.has_video && item.has_audio ? " · 轻量单文件" : ""}
-                      </option>
-                    ))}
-                </select>
+                    .map((item) => ({
+                      value: item.id,
+                      label: `${item.label}${item.file_size ? ` (${formatBytes(item.file_size)})` : ""}${!item.requires_ffmpeg && item.has_video && item.has_audio ? " · 轻量单文件" : ""}`,
+                    }))}
+                  ariaLabel="视频格式选择"
+                  style={{ width: "100%" }}
+                />
               </div>
             )}
           </div>
@@ -4275,11 +4520,17 @@ function NewTaskDialog({ settings, allTasks, onClose, onCreated, defaultUrl, onL
                 </div>
               </Field>
               <Field label="任务优先级（排队与带宽）">
-                <select value={priority} onChange={(e) => setPriority(+e.target.value)}>
-                  <option value={TASK_PRIORITY_PRESETS.high}>高优先级</option>
-                  <option value={TASK_PRIORITY_PRESETS.normal}>普通</option>
-                  <option value={TASK_PRIORITY_PRESETS.low}>低优先级</option>
-                </select>
+                <Select
+                  value={priority}
+                  onChange={(val: any) => setPriority(+val)}
+                  options={[
+                    { value: TASK_PRIORITY_PRESETS.high, label: "高优先级" },
+                    { value: TASK_PRIORITY_PRESETS.normal, label: "普通" },
+                    { value: TASK_PRIORITY_PRESETS.low, label: "低优先级" },
+                  ]}
+                  ariaLabel="任务优先级"
+                  style={{ width: "100%" }}
+                />
               </Field>
               <Field label="自定义 Referer">
                 <input
@@ -4733,6 +4984,35 @@ function SettingsPage({ value, onChange, onClose, notify, totalSpeed = 0, active
       applyTemporarySize(draft.window_width, val);
     }
   };
+  const [cacheSizeBytes, setCacheSizeBytes] = useState<number | null>(null);
+  const [cacheSizeLoading, setCacheSizeLoading] = useState(false);
+  const [cacheCleaning, setCacheCleaning] = useState(false);
+
+  const handleInspectCache = useCallback(() => {
+    setCacheSizeLoading(true);
+    api.cacheInspect()
+      .then((res) => setCacheSizeBytes(res.total_bytes))
+      .catch((err) => notify(String(err), "error"))
+      .finally(() => setCacheSizeLoading(false));
+  }, [notify]);
+
+  const handleClearCache = useCallback(() => {
+    setCacheCleaning(true);
+    api.cacheClear()
+      .then((res) => {
+        notify(`清理完成，已释放 ${formatBytes(res.freed_bytes)} 磁盘空间`);
+        setCacheSizeBytes(0);
+      })
+      .catch((err) => notify(String(err), "error"))
+      .finally(() => setCacheCleaning(false));
+  }, [notify]);
+
+  useEffect(() => {
+    if (section === "advanced" && cacheSizeBytes === null) {
+      handleInspectCache();
+    }
+  }, [section, cacheSizeBytes, handleInspectCache]);
+
   useEffect(() => { let unlisten: (() => void) | undefined; if (section === "browser") void api.pairing().then(setPair); if (section === "media") { void api.toolStatus().then(setTools); void api.subscribeMediaTools(setTools).then((value) => { unlisten = value; }); } return () => unlisten?.(); }, [section]);
   useEffect(() => {
     const applyDraftColorScheme = () => {
@@ -4805,23 +5085,24 @@ function SettingsPage({ value, onChange, onClose, notify, totalSpeed = 0, active
       <SettingsGroup title={t("settings.groupLanguage")}>
         <div className="settings-group-content">
           <SettingRow label={t("settings.languageLabel")}>
-            <select
+            <Select
               value={draft.language || "zh-CN"}
-              onChange={(e) => {
-                const next = e.target.value;
+              onChange={(nextVal) => {
+                const next = String(nextVal);
                 set("language", next);
-                // Task 33: 立即切换 i18n locale，让用户实时预览语言变化（无需先点保存）。
                 setLocale(next);
               }}
-            >
-              <option value="zh-CN">{t("settings.languageZhCN")}</option>
-              <option value="en">{t("settings.languageEn")}</option>
-            </select>
+              options={[
+                { value: "zh-CN", label: t("settings.languageZhCN") },
+                { value: "en", label: t("settings.languageEn") },
+              ]}
+              ariaLabel={t("settings.languageLabel")}
+            />
           </SettingRow>
         </div>
         <p className="settings-note">{t("settings.languageHint")}</p>
       </SettingsGroup>
-      <SettingsGroup title={t("settings.groupAppBehavior")}><div className="settings-group-content"><Toggle label={t("settings.startMinimized")} checked={draft.start_minimized} onChange={(v) => set("start_minimized", v)} /><Toggle label={t("settings.minimizeToTray")} checked={draft.minimize_to_tray} onChange={(v) => set("minimize_to_tray", v)} /><Toggle label={t("settings.closeToTray")} checked={draft.close_to_tray} onChange={(v) => set("close_to_tray", v)} /><Toggle label={t("settings.notifyComplete")} checked={draft.notifications} onChange={(v) => set("notifications", v)} /><Toggle label={t("settings.monitorClipboard")} checked={draft.clipboard_monitor} onChange={(v) => set("clipboard_monitor", v)} /></div></SettingsGroup>
+      <SettingsGroup title={t("settings.groupAppBehavior")}><div className="settings-group-content"><Toggle label={t("settings.autoStart")} checked={draft.auto_start} onChange={(v) => set("auto_start", v)} /><Toggle label={t("settings.startMinimized")} checked={draft.start_minimized} onChange={(v) => set("start_minimized", v)} /><Toggle label={t("settings.minimizeToTray")} checked={draft.minimize_to_tray} onChange={(v) => set("minimize_to_tray", v)} /><Toggle label={t("settings.closeToTray")} checked={draft.close_to_tray} onChange={(v) => set("close_to_tray", v)} /><Toggle label={t("settings.notifyComplete")} checked={draft.notifications} onChange={(v) => set("notifications", v)} /><Toggle label={t("settings.monitorClipboard")} checked={draft.clipboard_monitor} onChange={(v) => set("clipboard_monitor", v)} /></div></SettingsGroup>
       <SettingsGroup title={t("settings.groupNotifications")}>
         <div className="settings-group-content">
           <Toggle label={t("settings.notifyOnComplete")} checked={draft.notify_on_complete} onChange={(v) => set("notify_on_complete", v)} />
@@ -4855,7 +5136,18 @@ function SettingsPage({ value, onChange, onClose, notify, totalSpeed = 0, active
     {section === "network" && <>
       <SettingsGroup title="代理设置">
         <div className="settings-group-content">
-          <SettingRow label="代理模式"><select value={draft.proxy_mode} onChange={(e) => set("proxy_mode", e.target.value as AppSettings["proxy_mode"])}><option value="system">跟随系统</option><option value="none">不使用代理</option><option value="manual">手动代理</option></select></SettingRow>
+          <SettingRow label="代理模式">
+            <Select
+              value={draft.proxy_mode}
+              onChange={(val: any) => set("proxy_mode", val as AppSettings["proxy_mode"])}
+              options={[
+                { value: "system", label: "跟随系统" },
+                { value: "none", label: "不使用代理" },
+                { value: "manual", label: "手动代理" },
+              ]}
+              ariaLabel="代理模式"
+            />
+          </SettingRow>
           {draft.proxy_mode === "manual" && <>
             <SettingRow label="代理地址"><input value={draft.proxy_url} onChange={(e) => set("proxy_url", e.target.value)} placeholder="http://host:port 或 socks5://host:port" /></SettingRow>
             <SettingRow label="用户名"><input value={draft.proxy_username} onChange={(e) => set("proxy_username", e.target.value)} placeholder="匿名代理可留空" /></SettingRow>
@@ -4889,7 +5181,7 @@ function SettingsPage({ value, onChange, onClose, notify, totalSpeed = 0, active
       </SettingsGroup>
     </>}
     {section === "browser" && <><SettingsGroup title="下载接管"><div className="settings-group-content"><Toggle label="允许浏览器扩展接管下载" checked={draft.intercept_browser_downloads} onChange={(v) => set("intercept_browser_downloads", v)} /><SettingRow label="最小文件大小（MB）"><input type="number" min="0" value={draft.min_file_size_mb} onChange={(e) => set("min_file_size_mb", +e.target.value)} /></SettingRow></div></SettingsGroup><SettingsGroup title="安全配对">{pair ? <div className="pair-card"><p>在扩展中输入一次性配对码（10 分钟有效）</p><div className="pair-code-wrapper"><code>{pair.code}</code><button className="copy-code-btn" onClick={() => { void navigator.clipboard.writeText(pair.code); notify("配对码已复制到剪贴板"); }} title="复制配对码"><Copy size={13} /><span>复制</span></button></div>{pair.paired_extension && <p>已配对：{pair.paired_extension.slice(0, 16)}…</p>}<div className="maintenance"><button onClick={() => void api.rotatePairing().then(setPair)}>更换配对码</button>{pair.paired_extension && <button onClick={() => void api.revokePairing().then(() => api.pairing().then(setPair))}>撤销配对</button>}</div></div> : <LoaderCircle className="spin" />}</SettingsGroup></>}
-    {section === "media" && <SettingsGroup title="媒体组件"><p className="settings-note">按“自定义路径 → 应用安装 → Windows PATH”顺序查找组件。外部组件只会被引用，猫步下载器不会复制、更新或删除它们。</p>{tools ? <MediaToolsCard status={tools} onStatus={setTools} /> : <LoaderCircle className="spin" />}<MediaPathSettings value={draft} onChange={(patch) => setDraft((current) => ({ ...current, ...patch }))} /><div className="settings-group-content"><Toggle label="自动检查媒体工具更新" checked={draft.media_tool_auto_update} onChange={(v) => set("media_tool_auto_update", v)} /></div></SettingsGroup>}
+    {section === "media" && <SettingsGroup title="媒体组件"><p className="settings-note">按“自定义路径 → 应用安装 → Windows PATH”顺序查找组件。外部组件只会被引用，猫步下载器不会复制、更新或删除它们。</p>{tools ? <MediaToolsCard status={tools} onStatus={setTools} /> : <LoaderCircle className="spin" />}<MediaPathSettings value={draft} onChange={(patch) => setDraft((current) => ({ ...current, ...patch }))} /><MediaToolsUpdateRow tools={tools} onStatus={setTools} /></SettingsGroup>}
     {section === "rules" && <CategoryRulesPanel notify={notify} />}
     {section === "filename-cleanup" && <FilenameCleanupPanel notify={notify} />}
     {section === "naming-template" && <PlatformNamingTemplatePanel notify={notify} />}
@@ -4903,14 +5195,55 @@ function SettingsPage({ value, onChange, onClose, notify, totalSpeed = 0, active
           <SettingRow label="颜色方案"><div className="fluent-segmented-control settings-segmented"><button type="button" className={draft.color_scheme === "system" ? "active" : ""} onClick={() => setColorScheme("system")}>跟随系统</button><button type="button" className={draft.color_scheme === "light" ? "active" : ""} onClick={() => setColorScheme("light")}>浅色</button><button type="button" className={draft.color_scheme === "dark" ? "active" : ""} onClick={() => setColorScheme("dark")}>深色</button></div></SettingRow>
           <SettingRow label="行高"><div className="fluent-segmented-control settings-segmented"><button type="button" className={!draft.row_compact ? "active" : ""} onClick={() => set("row_compact", false)}>标准 (36px)</button><button type="button" className={draft.row_compact ? "active" : ""} onClick={() => set("row_compact", true)}>紧凑 (32px)</button></div></SettingRow>
           <Toggle label="详情栏默认折叠（切换任务时）" checked={draft.detail_default_collapsed} onChange={(v) => set("detail_default_collapsed", v)} />
-          <SettingRow label="强调色"><select value={draft.accent_color} onChange={(e) => set("accent_color", e.target.value as AppSettings["accent_color"])}><option value="system">跟随 Windows</option><option value="blue">猫步蓝</option><option value="cyan">青色</option><option value="green">绿色</option><option value="purple">紫色</option><option value="orange">橙色</option></select></SettingRow>
+          <SettingRow label="强调色">
+            <Select
+              value={draft.accent_color}
+              onChange={(val: any) => set("accent_color", val as AppSettings["accent_color"])}
+              options={[
+                { value: "system", label: "跟随 Windows" },
+                { value: "blue", label: "猫步蓝" },
+                { value: "cyan", label: "青色" },
+                { value: "green", label: "绿色" },
+                { value: "purple", label: "紫色" },
+                { value: "orange", label: "橙色" },
+              ]}
+              ariaLabel="强调色"
+            />
+          </SettingRow>
           <Toggle label="磨砂玻璃" checked={draft.frosted_glass} onChange={(v) => set("frosted_glass", v)} />
         </div>
         <p className="settings-note">在此设置颜色方案、行高大小、强调色以及详情栏折叠与磨砂玻璃等外观偏好。</p>
       </SettingsGroup>
       <SettingsGroup title="窗口大小">
         <div className="settings-group-content">
-          <SettingRow label="窗口大小"><div className="window-size-setting-row"><input type="number" placeholder="宽度 (如 800)" value={draft.window_width || ""} onChange={(e) => changeWidth(e.target.value ? +e.target.value : undefined)} className="window-size-input" /><span>×</span><input type="number" placeholder="高度 (如 600)" value={draft.window_height || ""} onChange={(e) => changeHeight(e.target.value ? +e.target.value : undefined)} className="window-size-input" /><select value={draft.window_width && draft.window_height ? `${draft.window_width}x${draft.window_height}` : ""} onChange={(e) => { if (!e.target.value) return; const [w, h] = e.target.value.split("x").map(Number); set("window_width", w); set("window_height", h); applyTemporarySize(w, h); }} className="window-size-preset-select"><option value="">选择常用预设...</option><option value="800x600">800 × 600 (迷你紧凑)</option><option value="960x640">960 × 640 (精致比例)</option><option value="1024x720">1024 × 720 (默认标准)</option><option value="1120x760">1120 × 760 (舒适格局)</option><option value="1280x800">1280 × 800 (高效宽屏)</option><option value="1440x900">1440 × 900 (专业超宽)</option></select></div></SettingRow>
+          <SettingRow label="窗口大小">
+            <div className="window-size-setting-row">
+              <input type="number" placeholder="宽度 (如 800)" value={draft.window_width || ""} onChange={(e) => changeWidth(e.target.value ? +e.target.value : undefined)} className="window-size-input" />
+              <span>×</span>
+              <input type="number" placeholder="高度 (如 600)" value={draft.window_height || ""} onChange={(e) => changeHeight(e.target.value ? +e.target.value : undefined)} className="window-size-input" />
+              <Select
+                value={draft.window_width && draft.window_height ? `${draft.window_width}x${draft.window_height}` : ""}
+                onChange={(val: any) => {
+                  if (!val) return;
+                  const [w, h] = String(val).split("x").map(Number);
+                  set("window_width", w);
+                  set("window_height", h);
+                  applyTemporarySize(w, h);
+                }}
+                options={[
+                  { value: "", label: "选择常用预设..." },
+                  { value: "800x600", label: "800 × 600 (迷你紧凑)" },
+                  { value: "960x640", label: "960 × 640 (精致比例)" },
+                  { value: "1024x720", label: "1024 × 720 (默认标准)" },
+                  { value: "1120x760", label: "1120 × 760 (舒适格局)" },
+                  { value: "1280x800", label: "1280 × 800 (高效宽屏)" },
+                  { value: "1440x900", label: "1440 × 900 (专业超宽)" },
+                ]}
+                ariaLabel="预设窗口大小"
+                className="window-size-preset-select"
+              />
+            </div>
+          </SettingRow>
           <Toggle label="自适应缩放" checked={draft.auto_scale_ui || false} onChange={(v) => set("auto_scale_ui", v)} />
         </div>
         <p className="settings-note">磨砂玻璃使用 Windows 10/11 原生 Acrylic 材质；自适应缩放根据窗口宽度自动放大 UI。</p>
@@ -4925,7 +5258,30 @@ function SettingsPage({ value, onChange, onClose, notify, totalSpeed = 0, active
         />
       </SettingsGroup>
     )}
-    {section === "advanced" && <><SettingsGroup title="任务迁移"><div className="maintenance"><button onClick={() => void exportTasks()}>导出任务 JSON</button><button onClick={() => void importTasks()}>导入任务 JSON</button></div><p className="settings-note">导出文件不含请求头、凭据和下载进度；导入任务将统一暂停并保存到指定目录。</p></SettingsGroup><SettingsGroup title="备份与恢复"><div className="maintenance"><button onClick={() => setBackupOpen(true)}>创建完整备份</button><button onClick={() => setRestoreOpen(true)}>从备份恢复</button></div><p className="settings-note">备份包含设置、规则与任务列表。勾选“包含认证信息”后将加密保护。恢复时已存在任务会自动跳过。</p></SettingsGroup><SettingsGroup title="日志"><div className="maintenance"><button onClick={() => void openLogsDir()}>打开日志目录</button><button onClick={() => void exportRecentLogs()}>导出最近 24 小时日志</button></div><p className="settings-note">日志滚动保留 7 天，敏感凭证已自动脱敏。出于安全考虑，日志目录路径不对前端公开。</p></SettingsGroup><SettingsGroup title="维护"><div className="maintenance"><button onClick={() => void api.clearHistory(false).then(() => notify("已清理取消的任务"))}>清理取消任务</button><button onClick={() => void api.clearHistory(true).then(() => notify("下载历史已清理"))}>清理完成和取消任务</button></div></SettingsGroup></>}
+    {section === "advanced" && <><SettingsGroup title="任务迁移"><div className="maintenance"><button onClick={() => void exportTasks()}>导出任务 JSON</button><button onClick={() => void importTasks()}>导入任务 JSON</button></div><p className="settings-note">导出文件不含请求头、凭据和下载进度；导入任务将统一暂停并保存到指定目录。</p></SettingsGroup><SettingsGroup title="备份与恢复"><div className="maintenance"><button onClick={() => setBackupOpen(true)}>创建完整备份</button><button onClick={() => setRestoreOpen(true)}>从备份恢复</button></div><p className="settings-note">备份包含设置、规则与任务列表。勾选“包含认证信息”后将加密保护。恢复时已存在任务会自动跳过。</p></SettingsGroup><SettingsGroup title="日志"><div className="maintenance"><button onClick={() => void openLogsDir()}>打开日志目录</button><button onClick={() => void exportRecentLogs()}>导出最近 24 小时日志</button></div><p className="settings-note">日志滚动保留 7 天，敏感凭证已自动脱敏。出于安全考虑，日志目录路径不对前端公开。</p></SettingsGroup><SettingsGroup title="维护">
+  <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+    <div className="maintenance">
+      <button onClick={() => void api.clearHistory(false).then(() => notify("已清理取消的任务"))}>清理取消任务</button>
+      <button onClick={() => void api.clearHistory(true).then(() => notify("下载历史已清理"))}>清理完成和取消任务</button>
+    </div>
+    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", paddingTop: "10px", borderTop: "1px solid var(--border)" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: "8px", fontSize: "12px", color: "var(--text)" }}>
+        <span>软件缓存：</span>
+        <strong style={{ color: "var(--primary)" }}>
+          {cacheSizeLoading ? "计算中..." : cacheSizeBytes !== null ? formatBytes(cacheSizeBytes) : "—"}
+        </strong>
+      </div>
+      <div className="maintenance" style={{ marginTop: 0 }}>
+        <button onClick={() => void handleInspectCache()} disabled={cacheSizeLoading || cacheCleaning}>
+          检查缓存
+        </button>
+        <button onClick={() => void handleClearCache()} disabled={cacheCleaning || cacheSizeBytes === 0 || cacheSizeBytes === null}>
+          {cacheCleaning ? "清理中..." : "清理软件缓存"}
+        </button>
+      </div>
+    </div>
+  </div>
+</SettingsGroup></>}
     <BackupRestoreModal notify={notify} backupOpen={backupOpen} setBackupOpen={setBackupOpen} restoreOpen={restoreOpen} setRestoreOpen={setRestoreOpen} />
     {section === "about" && (
       <SettingsGroup title={t("settings.groupAboutMaobu")}>
@@ -4987,26 +5343,27 @@ function SettingsPage({ value, onChange, onClose, notify, totalSpeed = 0, active
             </ul>
           </div>
 
-          <div style={{ borderTop: "1px solid var(--border)", paddingTop: "14px", display: "grid", gridTemplateColumns: "1fr 1fr", gap: "20px" }}>
+          <div style={{ borderTop: "1px solid var(--border)", paddingTop: "14px", display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: "16px" }}>
+            {/* 1. 应用更新检查 */}
             <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
               <h3 style={{ margin: "0", fontSize: "12px", fontWeight: 600, color: "var(--text)" }}>应用更新检查</h3>
-              <p style={{ margin: 0, fontSize: "11px", color: "var(--muted)", lineHeight: 1.5 }}>
-                检查更新将向 GitHub Releases 查询最新版本；更新需手动下载并校验 SHA-256。
+              <p style={{ margin: 0, fontSize: "11px", color: "var(--muted)", lineHeight: 1.4 }}>
+                查询 Releases 最新版本并手动校验。
               </p>
-              <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap", marginTop: "auto", paddingTop: "4px" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap", marginTop: "auto", paddingTop: "4px" }}>
                 <button
                   className="input-button"
                   disabled={updateChecking}
                   onClick={() => void checkAppUpdate()}
-                  style={{ display: "inline-flex", alignItems: "center", gap: "6px", height: "28px", padding: "0 14px", fontSize: "11px", fontWeight: 500, cursor: updateChecking ? "default" : "pointer", borderRadius: "6px", border: "1px solid var(--border)", background: "var(--accent)", color: "white" }}
+                  style={{ display: "inline-flex", alignItems: "center", gap: "6px", height: "28px", padding: "0 12px", fontSize: "11px", fontWeight: 500, cursor: updateChecking ? "default" : "pointer", borderRadius: "6px", border: "1px solid var(--border)", background: "var(--accent)", color: "white" }}
                 >
                   {updateChecking ? <LoaderCircle size={12} className="spin" /> : <RefreshCw size={12} />}
                   {updateChecking ? "检查中…" : "检查更新"}
                 </button>
-                <span style={{ fontSize: "11px", color: "var(--muted)" }}>当前版本 v0.5.7</span>
+                <span style={{ fontSize: "11px", color: "var(--muted)" }}>v0.5.7</span>
               </div>
               {updateResult && !updateResult.error && (
-                <div style={{ marginTop: "6px", fontSize: "11px", lineHeight: 1.6, color: "var(--muted)", padding: "8px 10px", background: "var(--bg-alt, rgba(0,0,0,0.03))", borderRadius: "6px", border: "1px solid var(--border)" }}>
+                <div style={{ marginTop: "6px", fontSize: "11px", lineHeight: 1.5, color: "var(--muted)", padding: "8px 10px", background: "var(--bg-alt, rgba(0,0,0,0.03))", borderRadius: "6px", border: "1px solid var(--border)" }}>
                   {updateResult.has_update && updateResult.latest ? (
                     <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
                       <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
@@ -5036,7 +5393,7 @@ function SettingsPage({ value, onChange, onClose, notify, totalSpeed = 0, active
                   ) : (
                     <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
                       <Check size={12} color="#22c55e" />
-                      <span>当前已是最新版本{updateResult.latest ? `（远端 v${updateResult.latest.version}）` : ""}</span>
+                      <span>已是最新版{updateResult.latest ? ` (v${updateResult.latest.version})` : ""}</span>
                     </div>
                   )}
                 </div>
@@ -5049,30 +5406,31 @@ function SettingsPage({ value, onChange, onClose, notify, totalSpeed = 0, active
               )}
             </div>
 
+            {/* 2. 扩展版本兼容性 */}
             <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
               <h3 style={{ margin: "0", fontSize: "12px", fontWeight: 600, color: "var(--text)" }}>扩展版本兼容性</h3>
-              <p style={{ margin: 0, fontSize: "11px", color: "var(--muted)", lineHeight: 1.5 }}>
-                在此输入浏览器扩展版本号以验证兼容性。策略要求扩展版本与桌面端保持一致。
+              <p style={{ margin: 0, fontSize: "11px", color: "var(--muted)", lineHeight: 1.4 }}>
+                输入扩展版本号，验证与桌面端兼容性。
               </p>
-              <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap", marginTop: "auto", paddingTop: "4px" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap", marginTop: "auto", paddingTop: "4px" }}>
                 <input
                   value={extVersion}
                   onChange={(e) => setExtVersion(e.target.value)}
                   placeholder="如 0.5.7"
-                  style={{ height: "28px", padding: "0 8px", fontSize: "11px", borderRadius: "6px", border: "1px solid var(--border)", background: "var(--bg)", color: "var(--text)", width: "120px" }}
+                  style={{ height: "28px", padding: "0 8px", fontSize: "11px", borderRadius: "6px", border: "1px solid var(--border)", background: "var(--bg)", color: "var(--text)", width: "85px" }}
                 />
                 <button
                   className="input-button"
                   disabled={extChecking}
                   onClick={() => void checkExtCompat()}
-                  style={{ display: "inline-flex", alignItems: "center", gap: "6px", height: "28px", padding: "0 12px", fontSize: "11px", fontWeight: 500, cursor: extChecking ? "default" : "pointer", borderRadius: "6px", border: "1px solid var(--border)", background: "var(--bg)", color: "var(--text)" }}
+                  style={{ display: "inline-flex", alignItems: "center", gap: "6px", height: "28px", padding: "0 10px", fontSize: "11px", fontWeight: 500, cursor: extChecking ? "default" : "pointer", borderRadius: "6px", border: "1px solid var(--border)", background: "var(--bg)", color: "var(--text)" }}
                 >
                   {extChecking ? <LoaderCircle size={11} className="spin" /> : <ShieldCheck size={11} />}
                   {extChecking ? "检查中…" : "检查兼容性"}
                 </button>
               </div>
               {extResult && (
-                <div style={{ marginTop: "6px", fontSize: "11px", lineHeight: 1.6, padding: "8px 10px", borderRadius: "6px", border: extResult.compatible ? "1px solid rgba(34,197,94,0.3)" : "1px solid rgba(239,68,68,0.3)", background: extResult.compatible ? "rgba(34,197,94,0.08)" : "rgba(239,68,68,0.08)", color: "var(--muted)" }}>
+                <div style={{ marginTop: "6px", fontSize: "11px", lineHeight: 1.5, padding: "8px 10px", borderRadius: "6px", border: extResult.compatible ? "1px solid rgba(34,197,94,0.3)" : "1px solid rgba(239,68,68,0.3)", background: extResult.compatible ? "rgba(34,197,94,0.08)" : "rgba(239,68,68,0.08)", color: "var(--muted)" }}>
                   <div style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: "4px" }}>
                     {extResult.compatible ? <Check size={12} color="#22c55e" /> : <AlertCircle size={12} color="#ef4444" />}
                     <strong style={{ color: "var(--text)" }}>
@@ -5084,41 +5442,42 @@ function SettingsPage({ value, onChange, onClose, notify, totalSpeed = 0, active
                 </div>
               )}
             </div>
-          </div>
 
-          <div style={{ borderTop: "1px solid var(--border)", paddingTop: "14px", display: "flex", flexDirection: "column", gap: "10px" }}>
-            <h3 style={{ margin: "0", fontSize: "12px", fontWeight: 600, color: "var(--text)" }}>开源项目主页</h3>
-            <p style={{ margin: 0, fontSize: "11px", color: "var(--muted)", lineHeight: 1.5 }}>
-              本软件为开源项目，欢迎访问 GitHub 获取最新版本或参与代码贡献：
-            </p>
-            <div>
-              <button
-                className="dialog-actions-btn primary"
-                style={{
-                  display: "inline-flex",
-                  alignItems: "center",
-                  gap: "6px",
-                  height: "28px",
-                  padding: "0 14px",
-                  fontSize: "11px",
-                  fontWeight: 500,
-                  cursor: "pointer",
-                  borderRadius: "6px",
-                  border: "none",
-                  background: "var(--accent)",
-                  color: "white"
-                }}
-                onClick={async () => {
-                  try {
-                    await openUrl("https://github.com/maobukeai/maobu-fetch");
-                  } catch (err) {
-                    notify(String(err), "error");
-                  }
-                }}
-              >
-                <ExternalLink size={12} />
-                访问 GitHub 获取最新更新
-              </button>
+            {/* 3. 开源项目主页 */}
+            <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+              <h3 style={{ margin: "0", fontSize: "12px", fontWeight: 600, color: "var(--text)" }}>开源项目主页</h3>
+              <p style={{ margin: 0, fontSize: "11px", color: "var(--muted)", lineHeight: 1.4 }}>
+                访问 GitHub 仓库获取最新源码与参与贡献。
+              </p>
+              <div style={{ display: "flex", alignItems: "center", gap: "8px", marginTop: "auto", paddingTop: "4px" }}>
+                <button
+                  className="input-button"
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: "6px",
+                    height: "28px",
+                    padding: "0 12px",
+                    fontSize: "11px",
+                    fontWeight: 500,
+                    cursor: "pointer",
+                    borderRadius: "6px",
+                    border: "1px solid var(--border)",
+                    background: "var(--accent)",
+                    color: "white"
+                  }}
+                  onClick={async () => {
+                    try {
+                      await openUrl("https://github.com/maobukeai/maobu-fetch");
+                    } catch (err) {
+                      notify(String(err), "error");
+                    }
+                  }}
+                >
+                  <ExternalLink size={12} />
+                  访问 GitHub
+                </button>
+              </div>
             </div>
           </div>
 
@@ -5324,7 +5683,7 @@ function MediaPathSettings({ value, onChange }: { value: AppSettings; onChange: 
     {detectionMessage && <p className="media-detect-result" role="status">{detectionMessage}</p>}
     <SettingRow label="自定义 yt-dlp.exe"><div className="input-group"><input value={value.yt_dlp_path} onChange={(event) => onChange({ yt_dlp_path: event.target.value })} placeholder="留空则自动检测" /><button className="input-button" onClick={() => void chooseYtDlp()}>选择文件</button>{value.yt_dlp_path && <button className="input-button" onClick={() => onChange({ yt_dlp_path: "" })}>清除</button>}</div></SettingRow>
     <SettingRow label="自定义 ffmpeg.exe"><div className="input-group"><input value={value.ffmpeg_path} onChange={(event) => onChange({ ffmpeg_path: event.target.value })} placeholder="留空则自动检测" /><button className="input-button" onClick={() => void chooseFfmpeg()}>选择文件</button>{value.ffmpeg_path && <button className="input-button" onClick={() => onChange({ ffmpeg_path: "", ffprobe_path: "" })}>清除</button>}</div></SettingRow>
-    {value.ffmpeg_path && <SettingRow label="配套 ffprobe.exe"><input value={value.ffprobe_path} onChange={(event) => onChange({ ffprobe_path: event.target.value })} /></SettingRow>}
+    <SettingRow label="YouTube PO Token"><div className="input-group"><input value={value.youtube_po_token || ""} onChange={(event) => onChange({ youtube_po_token: event.target.value })} placeholder="格式如 mweb.gvs+... 留空使用默认回退" />{value.youtube_po_token && <button className="input-button" onClick={() => onChange({ youtube_po_token: "" })}>清除</button>}</div></SettingRow>
   </div>;
 }
 function MediaToolsCard({ status, onStatus, compact = false, required }: { status: ToolStatus; onStatus: (value: ToolStatus) => void; compact?: boolean; required?: ToolComponent }) {
@@ -5335,6 +5694,7 @@ function MediaToolsCard({ status, onStatus, compact = false, required }: { statu
 }
 
 function MediaToolComponentCard({ component, status, onStatus, compact }: { component: ToolComponent; status: ToolStatus; onStatus: (value: ToolStatus) => void; compact: boolean }) {
+  const [successMsg, setSuccessMsg] = useState("");
   const isYtDlp = component === "yt-dlp";
   const available = isYtDlp ? status.yt_dlp_available : status.ffmpeg_available;
   const operationForThis = status.active_component === component;
@@ -5346,12 +5706,37 @@ function MediaToolComponentCard({ component, status, onStatus, compact }: { comp
   const installedBytes = isYtDlp ? status.yt_dlp_installed_bytes : status.ffmpeg_installed_bytes;
   const version = isYtDlp ? status.yt_dlp_version : status.ffmpeg_version;
   const source = isYtDlp ? status.yt_dlp_source : status.ffmpeg_source;
-  const sourceLabel = source === "custom" ? "自定义路径" : source === "system" ? "系统 PATH" : source === "bundled" ? "应用安装" : "未安装";
+  const sourceLabel = source === "custom" ? (isYtDlp ? "自定义路径(更新覆盖)" : "自定义路径(只读保护)") : source === "system" ? "系统 PATH(只读保护)" : source === "bundled" ? "应用安装" : "未安装";
   const title = isYtDlp ? "yt-dlp 基础媒体组件" : "FFmpeg 高清合并组件";
   const description = isYtDlp ? "媒体分析、单文件视频和音频下载" : "最高画质音视频合并、转码与格式处理";
   const progress = status.total_bytes ? Math.min(100, status.downloaded_bytes / status.total_bytes * 100) : 0;
-  const install = async () => { try { await api.installMediaTool(component); onStatus(await api.toolStatus()); } catch (error) { onStatus({ ...status, active_component: component, state: "failed", error: String(error) }); } };
+  const latestTargetVersion = isYtDlp ? "2026.07.04" : "8.1.2";
+  const isLatest = available && version.includes(latestTargetVersion);
+
+  const prevActiveRef = useRef(false);
+  useEffect(() => {
+    if (prevActiveRef.current && !active && !status.error && available) {
+      if (isYtDlp && source === "custom") {
+        setSuccessMsg("✓ 已成功下载并覆盖更新至自定义路径下的 yt-dlp.exe");
+      } else {
+        setSuccessMsg("✓ 组件已成功下载安装并投入使用");
+      }
+    }
+    prevActiveRef.current = active;
+  }, [active, status.error, available, isYtDlp, source]);
+
+  const install = async () => {
+    setSuccessMsg("");
+    try {
+      await api.installMediaTool(component);
+      onStatus(await api.toolStatus());
+    } catch (error) {
+      onStatus({ ...status, active_component: component, state: "failed", error: String(error) });
+    }
+  };
+
   const remove = async () => { try { await api.removeMediaTool(component); onStatus(await api.toolStatus()); } catch (error) { onStatus({ ...status, active_component: component, state: "failed", error: String(error) }); } };
+
   return <div className={compact ? "media-tools-card compact" : "media-tools-card"}>
     <div className="media-tools-card-main">
       <div className="tool-summary">
@@ -5359,11 +5744,64 @@ function MediaToolComponentCard({ component, status, onStatus, compact }: { comp
         <div><strong>{title}</strong><small>{description} · {version}{available ? source === "bundled" ? ` · 应用占用 ${formatBytes(installedBytes)}` : ` · 使用${sourceLabel}` : ` · 下载约 ${formatBytes(downloadBytes)} · 安装约 ${formatBytes(installEstimate)}`}</small></div>
       </div>
       <div className="tool-actions">
-        {active ? <button onClick={() => void api.cancelMediaTools()}>取消安装</button> : available && source === "bundled" ? <button className="danger" disabled={someInstallActive} onClick={() => void remove()}>卸载</button> : available ? <button disabled>已使用外部组件</button> : <button className="primary" disabled={someInstallActive} onClick={() => void install()}>下载并安装</button>}
+        {active ? <button onClick={() => void api.cancelMediaTools()}>取消安装</button> : available && source === "bundled" ? <>
+          <button className="danger" disabled={someInstallActive} onClick={() => void remove()}>卸载</button>
+          <button className="primary" disabled={someInstallActive} onClick={() => void install()}>{isLatest ? "已是最新版 (重新下载)" : "更新组件"}</button>
+        </> : available && isYtDlp && source === "custom" ? (
+          isLatest ? <button className="input-button" disabled={someInstallActive} title="当前组件已是最新版本，点击可强制重新下载并覆盖自定义文件" onClick={() => void install()}>已是最新版本 (点击重新覆盖)</button>
+          : <button className="primary" disabled={someInstallActive} title="发现新版本，点击将下载并覆盖您的自定义路径 yt-dlp.exe" onClick={() => void install()}>覆盖更新自定义</button>
+        ) : available ? <button disabled title="已使用第三方外部组件，软件将保持原样，不修改外部文件">使用外部组件</button> : <button className="primary" disabled={someInstallActive} onClick={() => void install()}>下载并安装</button>}
       </div>
     </div>
     {active && <div className="tool-progress"><div><i style={{ width: `${progress}%` }} /></div><span>{status.state === "verifying" ? "正在校验 SHA-256" : status.state === "extracting" ? "正在安全解压" : `${formatBytes(status.downloaded_bytes)} / ${formatBytes(status.total_bytes)}`}</span></div>}
+    {successMsg && <p className="tool-success" style={{ color: "#10b981", fontSize: "12px", marginTop: "6px", fontWeight: 500 }}>{successMsg}</p>}
     {operationForThis && status.error && <p className="tool-error">{status.error}</p>}
+  </div>;
+}
+
+function MediaToolsUpdateRow({ tools, onStatus }: { tools: ToolStatus | null | undefined; onStatus: (status: ToolStatus) => void }) {
+  const [checking, setChecking] = useState(false);
+  const [updateMsg, setUpdateMsg] = useState("");
+
+  const handleManualCheck = async () => {
+    setChecking(true);
+    setUpdateMsg("");
+    try {
+      const currentStatus = await api.toolStatus();
+      onStatus(currentStatus);
+      const isYtCustom = currentStatus.yt_dlp_source === "custom";
+      const isFfExternal = currentStatus.ffmpeg_source === "custom" || currentStatus.ffmpeg_source === "system";
+
+      const ytLocal = currentStatus.yt_dlp_version || "未安装";
+      const ytLatest = "2026.07.04";
+      const ytIsLatest = currentStatus.yt_dlp_available && ytLocal.includes(ytLatest);
+      const ytMsg = `yt-dlp (本地版本: ${ytLocal} / 最新版本: ${ytLatest} · ${ytIsLatest ? (isYtCustom ? "已是最新版，使用自定义路径" : "已是最新版") : currentStatus.yt_dlp_available ? "可更新" : "未安装"})`;
+
+      const ffLocal = currentStatus.ffmpeg_version || "未安装";
+      const ffLatest = "8.1.2 essentials";
+      const ffIsLatest = currentStatus.ffmpeg_available && ffLocal.includes("8.1.2");
+      const ffSourceTag = currentStatus.ffmpeg_source === "system" ? "系统 PATH 自动检测到，已自动复用" : currentStatus.ffmpeg_source === "custom" ? "自定义路径只读保护" : ffIsLatest ? "已是最新版" : "未安装";
+      const ffMsg = `FFmpeg (本地检测: ${ffLocal} / 软件推荐: ${ffLatest} · ${ffSourceTag})`;
+
+      setUpdateMsg(`检测完成：${ytMsg}；${ffMsg}`);
+    } catch (error) {
+      setUpdateMsg(`检测失败：${String(error)}`);
+    } finally {
+      setChecking(false);
+    }
+  };
+
+  return <div className="settings-group-content media-path-settings" style={{ marginTop: "12px" }}>
+    <div className="media-detect-row">
+      <div>
+        <strong>检查媒体组件更新</strong>
+        <span className="media-detect-desc">手动检测本地与最新版本对比，并识别更新覆盖规则</span>
+      </div>
+      <button className="input-button primary" disabled={checking || Boolean(tools?.active_component)} onClick={() => void handleManualCheck()}>
+        {checking ? "检查中…" : "手动检查是否最新版"}
+      </button>
+    </div>
+    {updateMsg && <p className="media-detect-result" role="status" style={{ width: "100%", marginTop: "8px" }}>{updateMsg}</p>}
   </div>;
 }
 
@@ -5562,11 +6000,16 @@ function CategoryRulesPanel({ notify }: { notify: (text: string, kind?: "ok" | "
               <input value={editing.name} onChange={(e) => setEditing({ ...editing, name: e.target.value })} placeholder="例如：GitHub 仓库" />
             </Field>
             <Field label="匹配类型">
-              <select value={editing.rule_type} onChange={(e) => setEditing({ ...editing, rule_type: e.target.value as CategoryRuleType })}>
-                <option value="domain">域名（支持子域名）</option>
-                <option value="mime">MIME 主类型</option>
-                <option value="regex">文件名正则</option>
-              </select>
+              <Select
+                value={editing.rule_type}
+                onChange={(val: any) => setEditing({ ...editing, rule_type: val as CategoryRuleType })}
+                options={[
+                  { value: "domain", label: "域名（支持子域名）" },
+                  { value: "mime", label: "MIME 主类型" },
+                  { value: "regex", label: "文件名正则" },
+                ]}
+                ariaLabel="匹配类型"
+              />
             </Field>
           </div>
 
@@ -6058,11 +6501,15 @@ function PlatformNamingTemplatePanel({ notify }: { notify: (text: string, kind?:
       <Modal title={isNew ? "新增平台命名模板" : "编辑平台命名模板"} onClose={() => setEditing(null)} style={{ width: "540px" }}>
         <div className="category-rule-edit-form">
           <Field label="平台">
-            <select value={editing.platform} onChange={(e) => setEditing({ ...editing, platform: e.target.value })}>
-              {PLATFORM_LABELS.map(([key, label]) => (
-                <option key={key} value={key}>{label}</option>
-              ))}
-            </select>
+            <Select
+              value={editing.platform}
+              onChange={(val: any) => setEditing({ ...editing, platform: String(val) })}
+              options={PLATFORM_LABELS.map(([key, label]) => ({
+                value: key,
+                label,
+              }))}
+              ariaLabel="平台"
+            />
           </Field>
           <Field label="模板字符串">
             <input value={editing.template} onChange={(e) => setEditing({ ...editing, template: e.target.value })} placeholder="{author}_{title}_{date}" />
@@ -6234,14 +6681,19 @@ function PresetsPanel({ notify }: { notify: (text: string, kind?: "ok" | "error"
             <input value={editing.name} onChange={(e) => setEditing({ ...editing, name: e.target.value })} placeholder="例如：影视下载" />
           </Field>
           <Field label="连接数（仅允许 1 / 2 / 4 / 8 / 16 / 32）">
-            <select value={editing.connections} onChange={(e) => setEditing({ ...editing, connections: +e.target.value })}>
-              <option value={1}>1 路（单连接）</option>
-              <option value={2}>2 路</option>
-              <option value={4}>4 路</option>
-              <option value={8}>8 路（默认）</option>
-              <option value={16}>16 路</option>
-              <option value={32}>32 路（大文件）</option>
-            </select>
+            <Select
+              value={editing.connections}
+              onChange={(val: any) => setEditing({ ...editing, connections: +val })}
+              options={[
+                { value: 1, label: "1 路（单连接）" },
+                { value: 2, label: "2 路" },
+                { value: 4, label: "4 路" },
+                { value: 8, label: "8 路（默认）" },
+                { value: 16, label: "16 路" },
+                { value: 32, label: "32 路（大文件）" },
+              ]}
+              ariaLabel="连接数"
+            />
           </Field>
           <Field label="单任务限速（KB/s，0 表示不限速）">
             <input type="number" min="0" value={editing.speed_limit ? Math.round(editing.speed_limit / 1024) : 0} onChange={(e) => setEditing({ ...editing, speed_limit: +e.target.value ? +e.target.value * 1024 : null })} />
@@ -6529,21 +6981,22 @@ function TaskTemplatesPanel({ notify }: { notify: (text: string, kind?: "ok" | "
               <input type="number" value={editing.priority} onChange={(e) => setEditing({ ...editing, priority: +e.target.value })} />
             </Field>
             <Field label="连接数（留空表示不覆盖；仅允许 1 / 2 / 4 / 8 / 16 / 32）">
-              <select
+              <Select
                 value={editing.connections ?? ""}
-                onChange={(e) => {
-                  const v = e.target.value;
-                  setEditing({ ...editing, connections: v === "" ? null : +v });
+                onChange={(val: any) => {
+                  setEditing({ ...editing, connections: val === "" ? null : +val });
                 }}
-              >
-                <option value="">不覆盖</option>
-                <option value={1}>1 路（单连接）</option>
-                <option value={2}>2 路</option>
-                <option value={4}>4 路</option>
-                <option value={8}>8 路</option>
-                <option value={16}>16 路</option>
-                <option value={32}>32 路</option>
-              </select>
+                options={[
+                  { value: "", label: "不覆盖" },
+                  { value: 1, label: "1 路（单连接）" },
+                  { value: 2, label: "2 路" },
+                  { value: 4, label: "4 路" },
+                  { value: 8, label: "8 路" },
+                  { value: 16, label: "16 路" },
+                  { value: 32, label: "32 路" },
+                ]}
+                ariaLabel="连接数"
+              />
             </Field>
             <Field label="单任务限速（KB/s，0 或留空表示不限速）">
               <input
@@ -6776,6 +7229,61 @@ function TagManagementPanel({ notify }: { notify: (text: string, kind?: "ok" | "
     </SettingsGroup>
   );
 }
+function MediaCredentialsGuideModal({ onClose }: { onClose: () => void }) {
+  return (
+    <Modal title="凭证获取指引与平台关键 Key 说明" onClose={onClose} style={{ width: "620px" }}>
+      <div className="media-cred-guide-container">
+        <div className="media-cred-guide-section">
+          <h3>📌 如何通过浏览器开发者工具 (F12) 获取凭证</h3>
+          <ol className="media-cred-guide-steps">
+            <li>在 <b>Chrome / Edge</b> 浏览器中打开目标网站（如 B站、抖音、Twitter、YouTube）并登录您的账号。</li>
+            <li>按键盘 <kbd>F12</kbd> 打开<b>开发者工具</b>，切换到 <b>Network (网络)</b> 标签页。</li>
+            <li><b>刷新页面</b>或播放网页视频，在左侧请求列表中选中顶部任意主页面请求或 API 请求。</li>
+            <li>在右侧 <b>Headers (请求头)</b> 区域找到 <code>Cookie</code>、<code>Referer</code> 和 <code>User-Agent</code> 字段。右键复制其完整值并粘贴至本软件。</li>
+          </ol>
+        </div>
+
+        <div className="media-cred-guide-section">
+          <h3>🔑 四大平台核心凭证 Key 校验指南</h3>
+          <div className="media-cred-guide-platforms">
+            <div className="platform-guide-card">
+              <h4>哔哩哔哩 <code>bilibili.com</code></h4>
+              <p>必须包含 <code>SESSDATA</code>、<code>bili_jct</code>、<code>DedeUserID</code></p>
+              <span className="tip">支持获取 1080P+ 高清画质及大会员专属音轨。</span>
+            </div>
+            <div className="platform-guide-card">
+              <h4>抖音 <code>douyin.com</code></h4>
+              <p>必须包含 <code>sessionid</code> (或 <code>sessionid_ss</code>)、<code>passport_csrf_token</code>、<code>ttwid</code></p>
+              <span className="tip">支持获取 4K/2K 无水印视频及高级高清源。</span>
+            </div>
+            <div className="platform-guide-card">
+              <h4>Twitter / X <code>twitter.com / x.com</code></h4>
+              <p>必须包含 <code>auth_token</code> 和 <code>ct0</code></p>
+              <span className="tip"><code>ct0</code> 用于 x-csrf-token 鉴权，缺一不可。</span>
+            </div>
+            <div className="platform-guide-card">
+              <h4>YouTube <code>youtube.com</code></h4>
+              <p>必须包含 <code>LOGIN_INFO</code>、<code>SID</code>、<code>HSID</code>、<code>SSID</code>、<code>APISID</code>、<code>SAPISID</code></p>
+              <span className="tip">用于突破年龄限制及会员专属视频下载。</span>
+            </div>
+          </div>
+        </div>
+
+        <div className="media-cred-guide-section">
+          <h3>🧩 扩展程序自动同步说明</h3>
+          <p className="settings-note" style={{ margin: 0 }}>
+            若您已安装并配对<b>猫步下载器浏览器扩展</b>，在浏览器访问目标网页时，扩展也可自动捕获当前页面的凭证进行透传，无需频繁手动复制。
+          </p>
+        </div>
+
+        <div className="dialog-actions">
+          <button className="primary" onClick={onClose}>知道了</button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
 /**
  * Task 46：媒体凭证管理面板。
  *
@@ -6793,6 +7301,14 @@ function MediaCredentialsPanel({ notify }: { notify: (text: string, kind?: "ok" 
   const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState<MediaCredential | null>(null);
   const [isNew, setIsNew] = useState(false);
+  const [guideOpen, setGuideOpen] = useState(false);
+
+  const [checkingDomains, setCheckingDomains] = useState<Record<string, boolean>>({});
+  const [checkResults, setCheckResults] = useState<Record<string, MediaCredentialCheckResult>>({});
+  const [checkingAll, setCheckingAll] = useState(false);
+
+  const [editingCheckResult, setEditingCheckResult] = useState<MediaCredentialCheckResult | null>(null);
+  const [editingChecking, setEditingChecking] = useState(false);
 
   const reload = async () => {
     setLoading(true);
@@ -6811,11 +7327,92 @@ function MediaCredentialsPanel({ notify }: { notify: (text: string, kind?: "ok" 
   const startAdd = () => {
     setEditing({ domain: "", cookie: "", referer: null, user_agent: null, updated_at: "" });
     setIsNew(true);
+    setEditingCheckResult(null);
   };
 
   const startEdit = (cred: MediaCredential) => {
     setEditing({ ...cred });
     setIsNew(false);
+    setEditingCheckResult(null);
+  };
+
+  const checkCredential = async (domain: string) => {
+    setCheckingDomains((prev) => ({ ...prev, [domain]: true }));
+    try {
+      const res = await api.mediaCredentialCheck(domain);
+      setCheckResults((prev) => ({ ...prev, [domain]: res }));
+      if (res.valid) {
+        notify(res.message);
+      } else {
+        notify(res.message, "error");
+      }
+    } catch (error) {
+      notify(String(error), "error");
+    } finally {
+      setCheckingDomains((prev) => ({ ...prev, [domain]: false }));
+    }
+  };
+
+  const checkAllCredentials = async () => {
+    if (credentials.length === 0) return;
+    setCheckingAll(true);
+    notify("开始在线检测已保存的媒体凭证...");
+    try {
+      await Promise.all(
+        credentials.map(async (c) => {
+          setCheckingDomains((prev) => ({ ...prev, [c.domain]: true }));
+          try {
+            const res = await api.mediaCredentialCheck(c.domain);
+            setCheckResults((prev) => ({ ...prev, [c.domain]: res }));
+          } catch {
+            // 忽略单个网络错误，保留在结果集
+          } finally {
+            setCheckingDomains((prev) => ({ ...prev, [c.domain]: false }));
+          }
+        })
+      );
+      notify("所有媒体凭证检测完毕");
+    } finally {
+      setCheckingAll(false);
+    }
+  };
+
+  const checkEditingCredential = async () => {
+    if (!editing) return;
+    const domain = editing.domain.trim();
+    if (!domain) {
+      notify("域名不能为空", "error");
+      return;
+    }
+    setEditingChecking(true);
+    setEditingCheckResult(null);
+    try {
+      const res = await invoke<MediaCredentialCheckResult>("media_credential_check", { domain });
+      setEditingCheckResult(res);
+      if (res.valid) {
+        notify(res.message);
+      } else {
+        notify(res.message, "error");
+      }
+    } catch (error) {
+      notify(String(error), "error");
+    } finally {
+      setEditingChecking(false);
+    }
+  };
+
+  const onDomainChange = (val: string) => {
+    if (!editing) return;
+    const next = { ...editing, domain: val };
+    // 域名输入时自动建议默认 Referer (若目前为空)
+    const lower = val.trim().toLowerCase();
+    if (!editing.referer) {
+      if (lower.includes("bilibili.com")) next.referer = "https://www.bilibili.com/";
+      else if (lower.includes("douyin.com")) next.referer = "https://www.douyin.com/";
+      else if (lower.includes("twitter.com") || lower.includes("x.com")) next.referer = "https://x.com/";
+      else if (lower.includes("youtube.com")) next.referer = "https://www.youtube.com/";
+    }
+    setEditing(next);
   };
 
   const saveEdit = async () => {
@@ -6842,6 +7439,8 @@ function MediaCredentialsPanel({ notify }: { notify: (text: string, kind?: "ok" 
       notify(isNew ? "已保存媒体凭证" : "已更新媒体凭证");
       setEditing(null);
       await reload();
+      // 自动触发一次检测，增强反馈
+      void checkCredential(domain);
     } catch (error) {
       notify(String(error), "error");
     }
@@ -6852,6 +7451,11 @@ function MediaCredentialsPanel({ notify }: { notify: (text: string, kind?: "ok" 
     try {
       await api.mediaCredentialDelete(domain);
       notify("已删除媒体凭证");
+      setCheckResults((prev) => {
+        const next = { ...prev };
+        delete next[domain];
+        return next;
+      });
       await reload();
     } catch (error) {
       notify(String(error), "error");
@@ -6860,7 +7464,6 @@ function MediaCredentialsPanel({ notify }: { notify: (text: string, kind?: "ok" 
 
   const fmtUpdated = (v?: string): string => {
     if (!v) return "—";
-    // 后端返回 ISO 8601 UTC，前端按本地时间友好展示
     try {
       const d = new Date(v);
       if (Number.isNaN(d.getTime())) return v;
@@ -6878,11 +7481,20 @@ function MediaCredentialsPanel({ notify }: { notify: (text: string, kind?: "ok" 
 
   return <SettingsGroup title="媒体凭证管理">
     <p className="settings-note">
-      按域名保存 Cookie 和 Referer 等凭证以在下载时自动附带。Cookie 使用 Windows DPAPI 加密存储。
+      按域名保存 Cookie 和 Referer 等凭证以在下载时自动附带。Cookie 使用 Windows DPAPI 加密存储。深度支持 Bilibili / 抖音 / Twitter(X) / YouTube 在线有效性检测。
     </p>
     <div className="category-rules-toolbar">
       <button className="input-button" onClick={startAdd}><Plus size={13} /><span>新增凭证</span></button>
+      <button className="input-button" onClick={() => setGuideOpen(true)}><HelpCircle size={13} /><span>凭证获取指引</span></button>
       <button className="input-button" onClick={() => void reload()}><RefreshCw size={13} /><span>刷新</span></button>
+      <button
+        className="input-button"
+        disabled={credentials.length === 0 || checkingAll}
+        onClick={() => void checkAllCredentials()}
+      >
+        {checkingAll ? <LoaderCircle size={13} className="spin" /> : <ShieldCheck size={13} />}
+        <span>{checkingAll ? "检测中..." : "批量检测"}</span>
+      </button>
     </div>
     {loading ? <LoaderCircle className="spin" /> : credentials.length === 0 ? <p className="settings-note">暂无已保存的媒体凭证。</p> : (
       <div className="category-rules-list" role="table">
@@ -6894,28 +7506,49 @@ function MediaCredentialsPanel({ notify }: { notify: (text: string, kind?: "ok" 
           <span>更新时间</span>
           <span className="category-rule-actions">操作</span>
         </div>
-        {credentials.map((cred) => (
-          <div key={cred.domain} className="category-rule-row media-credential-row" role="row">
-            <span className="category-rule-name" role="cell" title={cred.domain}><code>{cred.domain}</code></span>
-            <span className="category-rule-pattern" role="cell">{maskCookie(cred.cookie)}</span>
-            <span role="cell" title={cred.referer ?? ""}>{cred.referer ? "已设置" : "—"}</span>
-            <span role="cell" title={cred.user_agent ?? ""}>{cred.user_agent ? "已设置" : "—"}</span>
-            <span role="cell">{fmtUpdated(cred.updated_at)}</span>
-            <span className="category-rule-actions" role="cell">
-              <button title="编辑" onClick={() => startEdit(cred)}>编辑</button>
-              <button title="删除" className="danger" onClick={() => void removeCredential(cred.domain)}><Trash2 size={13} /></button>
-            </span>
-          </div>
-        ))}
+        {credentials.map((cred) => {
+          const res = checkResults[cred.domain];
+          const isChecking = !!checkingDomains[cred.domain];
+          return (
+            <div key={cred.domain} style={{ display: "flex", flexDirection: "column" }}>
+              <div className="category-rule-row media-credential-row" role="row">
+                <span className="category-rule-name" role="cell" title={cred.domain}><code>{cred.domain}</code></span>
+                <span className="category-rule-pattern" role="cell">{maskCookie(cred.cookie)}</span>
+                <span role="cell" title={cred.referer ?? ""}>{cred.referer ? "已设置" : "—"}</span>
+                <span role="cell" title={cred.user_agent ?? ""}>{cred.user_agent ? "已设置" : "—"}</span>
+                <span role="cell">{fmtUpdated(cred.updated_at)}</span>
+                <span className="category-rule-actions" role="cell">
+                  <button
+                    title="在线检测凭证有效性"
+                    disabled={isChecking}
+                    onClick={() => void checkCredential(cred.domain)}
+                  >
+                    {isChecking ? <LoaderCircle size={12} className="spin" /> : <ShieldCheck size={12} />}
+                    <span>检测</span>
+                  </button>
+                  <button title="编辑" onClick={() => startEdit(cred)}>编辑</button>
+                  <button title="删除" className="danger" onClick={() => void removeCredential(cred.domain)}><Trash2 size={12} /></button>
+                </span>
+              </div>
+              {res && (
+                <div className={`media-cred-result-box ${res.valid ? "valid" : "invalid"}`}>
+                  {res.valid ? <CheckCircle2 size={13} /> : <AlertCircle size={13} />}
+                  <span>{res.message}</span>
+                </div>
+              )}
+            </div>
+          );
+        })}
       </div>
     )}
+    {guideOpen && <MediaCredentialsGuideModal onClose={() => setGuideOpen(false)} />}
     {editing && (
       <Modal title={isNew ? "新增媒体凭证" : "编辑媒体凭证"} onClose={() => setEditing(null)} style={{ width: "560px" }}>
         <div className="category-rule-edit-form">
           <Field label="域名">
             <input
               value={editing.domain}
-              onChange={(e) => setEditing({ ...editing, domain: e.target.value })}
+              onChange={(e) => onDomainChange(e.target.value)}
               placeholder="如 bilibili.com (裸域名，不含 http:// 或 https:// 协议前缀)"
               disabled={!isNew}
             />
@@ -6942,8 +7575,45 @@ function MediaCredentialsPanel({ notify }: { notify: (text: string, kind?: "ok" 
               onChange={(e) => setEditing({ ...editing, user_agent: e.target.value || null })}
               placeholder="Mozilla/5.0 ... (选填，使用自定义 User-Agent；留空表示使用软件默认)"
             />
+            <button
+              type="button"
+              className="input-button"
+              style={{ fontSize: "11px", padding: "2px 8px", alignSelf: "flex-start", marginTop: "2px" }}
+              onClick={() => setEditing({ ...editing, user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36" })}
+            >
+              <span>填充默认 UA</span>
+            </button>
           </Field>
-          <div className="dialog-actions"><button onClick={() => setEditing(null)}>取消</button><button className="primary" onClick={() => void saveEdit()}>保存</button></div>
+
+          <details className="category-rule-test-details" style={{ marginTop: "4px" }}>
+            <summary><Info size={12} /><span>如何获取 Cookie 与四大平台关键 Key 提示</span></summary>
+            <div className="category-rule-test-body" style={{ fontSize: "11px", lineHeight: "1.5" }}>
+              <p style={{ margin: 0 }}><b>F12 抓包方法</b>：打开 Chrome/Edge → 登录网站 → F12 → Network 页签 → 刷新页面点任意请求 → 复制 Headers 里的 Cookie 值。</p>
+              {editing.domain.includes("bilibili") && <p style={{ margin: "4px 0 0", color: "var(--accent)" }}>💡 <b>B站关键 Key</b>：请确保包含 <code>SESSDATA</code>、<code>bili_jct</code>、<code>DedeUserID</code>。</p>}
+              {editing.domain.includes("douyin") && <p style={{ margin: "4px 0 0", color: "var(--accent)" }}>💡 <b>抖音关键 Key</b>：请确保包含 <code>sessionid</code> (或 <code>sessionid_ss</code>) 和 <code>ttwid</code>。</p>}
+              {(editing.domain.includes("twitter") || editing.domain.includes("x.com")) && <p style={{ margin: "4px 0 0", color: "var(--accent)" }}>💡 <b>Twitter/X 关键 Key</b>：请确保包含 <code>auth_token</code> 和 <code>ct0</code>。</p>}
+              {editing.domain.includes("youtube") && <p style={{ margin: "4px 0 0", color: "var(--accent)" }}>💡 <b>YouTube 关键 Key</b>：请确保包含 <code>LOGIN_INFO</code> 和 <code>SID</code>。</p>}
+            </div>
+          </details>
+
+          {editingCheckResult && (
+            <div className={`media-cred-result-box ${editingCheckResult.valid ? "valid" : "invalid"}`}>
+              {editingCheckResult.valid ? <CheckCircle2 size={13} /> : <AlertCircle size={13} />}
+              <span>{editingCheckResult.message}</span>
+            </div>
+          )}
+          <div className="dialog-actions">
+            <button
+              type="button"
+              disabled={editingChecking || !editing.domain.trim()}
+              onClick={() => void checkEditingCredential()}
+            >
+              {editingChecking ? <LoaderCircle size={13} className="spin" /> : <ShieldCheck size={13} />}
+              <span>检测凭证</span>
+            </button>
+            <button onClick={() => setEditing(null)}>取消</button>
+            <button className="primary" onClick={() => void saveEdit()}>保存</button>
+          </div>
         </div>
       </Modal>
     )}
@@ -7080,6 +7750,7 @@ function ContextMenu({ x, y, task, selectedTaskIds, allTasks = [], close, notify
       if (targetTaskIds.size <= 1) {
         sections.push(<button key="verify" onClick={() => void api.verify(task.id).then(() => { notify("文件校验完成"); close(); }).catch((e) => notify(String(e), "error"))}><ShieldCheck size={13} />校验 SHA-256</button>);
       }
+      sections.push(<button key="redownload" onClick={() => void action("redownload")}><RefreshCw size={13} />重新下载{countTag}</button>);
       break;
     case "queued":
     case "scheduled":
@@ -7290,7 +7961,7 @@ function SpeedLimitDialog({
 
 
 
-function Modal({ title, onClose, wide, children, style, headerAction }: { title: string; onClose: () => void; wide?: boolean; children: ReactNode; style?: CSSProperties; headerAction?: ReactNode }) {
+export function Modal({ title, onClose, wide, children, style, headerAction }: { title: string; onClose: () => void; wide?: boolean; children: ReactNode; style?: CSSProperties; headerAction?: ReactNode }) {
   return (
     <div className="modal-layer" onMouseDown={onClose}>
       <div className="dialog-material" onMouseDown={(e) => e.stopPropagation()}>
@@ -7438,7 +8109,7 @@ function isDownloadableUrl(url: string): boolean {
 
     // 4. 音视频分享网站，放行
     const mediaDomains = [
-      "youtube.com", "youtu.be", "bilibili.com", "b23.tv", "douyin.com", 
+      "youtube.com", "youtu.be", "bilibili.com", "b23.tv", "douyin.com", "iesdouyin.com", "douyinvod.com",
       "vimeo.com", "tiktok.com", "twitter.com", "x.com", "weibo.com"
     ];
     const hostname = parsed.hostname.toLowerCase();
