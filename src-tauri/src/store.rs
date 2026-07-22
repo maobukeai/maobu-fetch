@@ -1699,14 +1699,14 @@ fn seed_builtin_platform_compatibility(connection: &Connection) -> Result<(), St
         ("tiktok", "experimental", "TikTok 普通视频、图集可下载，部分内容受地区限制"),
         ("twitter", "experimental", "Twitter/X 普通推文视频可下载，需提供 Cookie"),
         ("weibo", "experimental", "微博普通视频、图集可下载，需提供 Cookie"),
-        ("youtube", "verified", "YouTube 普通视频、直播回放、短视频可正常下载"),
+        ("youtube", "experimental", "YouTube 普通视频、直播回放、短视频受反爬机制影响"),
     ];
     for (platform, level, notes) in rows {
         connection
             .execute(
                 "INSERT INTO platform_compatibility(platform,level,notes,known_issues_json,last_tested_at) \
                  VALUES(?1,?2,?3,'[]','') \
-                 ON CONFLICT(platform) DO UPDATE SET notes=?3 WHERE notes = '哔哩哔哩普通视频、番剧、直播回放可正常下载' OR notes = '抖音短链、图集、单视频全功能正常支持'",
+                 ON CONFLICT(platform) DO UPDATE SET level=?2, notes=?3 WHERE notes = '哔哩哔哩普通视频、番剧、直播回放可正常下载' OR notes = '抖音短链、图集、单视频全功能正常支持' OR notes = 'YouTube 普通视频、直播回放、短视频可正常下载'",
                 params![platform, level, notes],
             )
             .map_err(|e| e.to_string())?;
@@ -3402,7 +3402,7 @@ mod tests {
             assert_eq!(list[4].platform, "weibo");
             assert_eq!(list[4].level, SupportLevel::Experimental);
             assert_eq!(list[5].platform, "youtube");
-            assert_eq!(list[5].level, SupportLevel::Verified);
+            assert_eq!(list[5].level, SupportLevel::Experimental);
             // notes 不为空（含中文说明）
             assert!(!list[0].notes.is_empty());
             assert!(!list[5].notes.is_empty());
@@ -3424,7 +3424,7 @@ mod tests {
                 .unwrap()
                 .expect("youtube record should exist");
             assert_eq!(youtube.platform, "youtube");
-            assert_eq!(youtube.level, SupportLevel::Verified);
+            assert_eq!(youtube.level, SupportLevel::Experimental);
             assert!(youtube.notes.contains("YouTube"));
             assert!(youtube.known_issues.is_empty());
 
@@ -3461,10 +3461,10 @@ mod tests {
         {
             let store = Store::open(path.clone()).unwrap();
             let connection = store.connection.blocking_lock();
-            // 模拟用户修改：将 youtube 的 level 改为 unsupported
+            // 模拟用户修改：将 youtube 的 level 改为 unsupported 并设置自定义说明
             connection
                 .execute(
-                    "UPDATE platform_compatibility SET level='unsupported' WHERE platform='youtube'",
+                    "UPDATE platform_compatibility SET level='unsupported', notes='用户自定义说明' WHERE platform='youtube'",
                     [],
                 )
                 .unwrap();

@@ -1411,8 +1411,18 @@ impl DownloadManager {
                             }
                         }
                     } else if !media.formats.is_empty() {
-                        let direct = media.formats.iter().find(|item| item.has_video && !item.requires_ffmpeg && item.url.is_some());
-                        let selected_format = direct.unwrap_or(&media.formats[0]).clone();
+                        let direct = media.formats.iter()
+                            .filter(|item| item.has_video && !item.requires_ffmpeg && item.url.is_some())
+                            .max_by_key(|item| item.height.unwrap_or(0));
+                        let has_ffmpeg = crate::media_tools::resolve_ffmpeg(&self.app, &settings).is_some();
+                        let merged = if has_ffmpeg {
+                            media.formats.iter()
+                                .filter(|item| item.has_video && item.has_audio && item.requires_ffmpeg)
+                                .max_by_key(|item| item.height.unwrap_or(0))
+                        } else {
+                            None
+                        };
+                        let selected_format = direct.or(merged).unwrap_or(&media.formats[0]).clone();
                         task.media = Some(crate::models::MediaSelection {
                             extractor: media.extractor,
                             format_id: Some(selected_format.id.clone()),
@@ -1423,9 +1433,14 @@ impl DownloadManager {
                             url: selected_format.url.clone(),
                         });
 
+                        let is_bilibili_or_media_id = task.file_name.starts_with("BV")
+                            || task.file_name.starts_with("av")
+                            || task.file_name.starts_with("ep")
+                            || task.file_name.starts_with("ss");
                         let is_default_name = task.file_name == "download"
                             || task.file_name.starts_with("LHmt")
                             || task.file_name.is_empty()
+                            || is_bilibili_or_media_id
                             || task.file_name.chars().all(|c| c.is_ascii_digit() || c == '.' || c == '_')
                             || task.file_name.contains(&task.url);
 
@@ -1482,7 +1497,9 @@ impl DownloadManager {
                     &task.url
                 };
 
-                let play_url = if let Ok(probe_res) = crate::media::probe(&self.app, &settings, target_probe_url, cookie, referer, user_agent).await {
+                let play_url = if let Some(u) = media_sel.url.as_deref().filter(|s| !s.is_empty()) {
+                    Some(u.to_string())
+                } else if let Ok(probe_res) = crate::media::probe(&self.app, &settings, target_probe_url, cookie, referer, user_agent).await {
                     if !probe_res.title.trim().is_empty() {
                         let raw_title = probe_res.title.clone();
                         let cleaned = crate::manager::naming_template::sanitize_filename(&regex::Regex::new(r"#[^\s#.]+")
@@ -1498,7 +1515,7 @@ impl DownloadManager {
                         probe_res.formats.first().and_then(|f| f.url.clone())
                     }
                 } else {
-                    media_sel.url.clone()
+                    None
                 };
 
                 if let Some(purl) = play_url {
@@ -1508,7 +1525,16 @@ impl DownloadManager {
                         self.client.read().await.clone()
                     };
 
-                    let mut req = temp_client.get(&purl).header(ACCEPT_ENCODING, "identity").header("Range", "bytes=0-0");
+                    let mut req = temp_client.get(&purl).header(ACCEPT_ENCODING, "identity").header(RANGE, "bytes=0-0");
+                    if !task.headers.keys().any(|k| k.eq_ignore_ascii_case("User-Agent")) {
+                        req = req.header(reqwest::header::USER_AGENT, &settings.user_agent);
+                    }
+                    if !task.headers.keys().any(|k| k.eq_ignore_ascii_case("Referer")) {
+                        if purl.contains("bilibili.com") || purl.contains("bilivideo.com") || task.url.contains("bilibili.com") {
+                            req = req.header(reqwest::header::REFERER, "https://www.bilibili.com/");
+                            task.headers.insert("Referer".to_string(), "https://www.bilibili.com/".to_string());
+                        }
+                    }
                     for (name, value) in &task.headers {
                         req = req.header(name, value);
                     }
@@ -4022,7 +4048,7 @@ impl AdaptiveConnectionGate {
         let max = max.clamp(1, 32);
         Self {
             max,
-            target: AtomicU8::new(max.min(4)),
+            target: AtomicU8::new(max),
             active: AtomicU8::new(0),
             epoch: AtomicU64::new(0),
             baseline_speed: AtomicU64::new(0),
@@ -5468,49 +5494,21 @@ mod tests {
     }
 
     #[test]
-    fn adaptive_connections_ramp_only_when_throughput_improves() {
+    fn adaptive_connections_start_full_and_fallback_on_degradation() {
         let gate = AdaptiveConnectionGate::new(32);
-        assert_eq!(gate.target.load(Ordering::Relaxed), 4);
-        for _ in 0..4 {
-            gate.observe(64 * 1024 * 1024);
-        }
-        assert_eq!(gate.target.load(Ordering::Relaxed), 8);
-        assert_eq!(gate.probing.load(Ordering::Relaxed), 1);
-        for _ in 0..3 {
-            gate.observe(80 * 1024 * 1024);
-        }
-        assert_eq!(gate.target.load(Ordering::Relaxed), 8);
-        assert_eq!(gate.probing.load(Ordering::Relaxed), 0);
-        for _ in 0..4 {
-            gate.observe(80 * 1024 * 1024);
+        assert_eq!(gate.target.load(Ordering::Relaxed), 32);
+        gate.observe(80 * 1024 * 1024);
+        for _ in 0..8 {
+            gate.observe(10 * 1024 * 1024);
         }
         assert_eq!(gate.target.load(Ordering::Relaxed), 16);
-        for _ in 0..4 {
-            gate.observe(20 * 1024 * 1024);
-        }
-        assert_eq!(gate.target.load(Ordering::Relaxed), 8);
-        assert_eq!(gate.disabled.load(Ordering::Relaxed), 1);
-    }
-
-    #[test]
-    fn adaptive_connections_reject_extra_connections_without_a_gain() {
-        let gate = AdaptiveConnectionGate::new(16);
-        for _ in 0..4 {
-            gate.observe(64 * 1024 * 1024);
-        }
-        assert_eq!(gate.target.load(Ordering::Relaxed), 8);
-        for _ in 0..10 {
-            gate.observe(64 * 1024 * 1024);
-        }
-        assert_eq!(gate.target.load(Ordering::Relaxed), 4);
         assert_eq!(gate.disabled.load(Ordering::Relaxed), 1);
     }
 
     #[test]
     fn adaptive_connections_keep_falling_back_after_a_late_cdn_slowdown() {
         let gate = AdaptiveConnectionGate::new(32);
-        gate.target.store(32, Ordering::Relaxed);
-        gate.disabled.store(1, Ordering::Relaxed);
+        assert_eq!(gate.target.load(Ordering::Relaxed), 32);
         gate.observe(70 * 1024 * 1024);
         for expected in [16, 8, 4] {
             for _ in 0..8 {

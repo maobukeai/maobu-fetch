@@ -3869,10 +3869,14 @@ function NewTaskDialog({ settings, allTasks, onClose, onCreated, defaultUrl, onL
         // 2. 有声视频直链（has_video && has_audio && !requires_ffmpeg）—— progressive 流回退
         // 3. 无声视频（has_video && !has_audio && !requires_ffmpeg）—— 最后回退
         // 4. 其它首项
-        const merged = result.formats.filter((item) => item.has_video && item.has_audio && item.requires_ffmpeg).sort((a, b) => (b.height ?? 0) - (a.height ?? 0));
-        const direct = result.formats.filter((item) => item.has_video && item.has_audio && !item.requires_ffmpeg).sort((a, b) => (b.height ?? 0) - (a.height ?? 0));
-        const video = result.formats.filter((item) => item.has_video && !item.requires_ffmpeg).sort((a, b) => (b.height ?? 0) - (a.height ?? 0));
-        const selected = merged[0] ?? direct[0] ?? video[0] ?? result.formats[0];
+        const hasFfmpeg = toolStatus?.ffmpeg_available ?? false;
+        const directOrVideo = result.formats
+          .filter((item) => item.has_video && !item.requires_ffmpeg)
+          .sort((a, b) => (b.height ?? 0) - (a.height ?? 0));
+        const merged = hasFfmpeg
+          ? result.formats.filter((item) => item.has_video && item.has_audio && item.requires_ffmpeg).sort((a, b) => (b.height ?? 0) - (a.height ?? 0))
+          : [];
+        const selected = directOrVideo[0] ?? merged[0] ?? result.formats[0];
         setFormat(selected?.id ?? "");
         if (!fileName) setFileName(`${safeDisplayName(result.title)}.mp4`);
       }
