@@ -14,17 +14,17 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 
-const DIRECTORY: &str = "2026.06.09-ffmpeg-8.1.2";
-const YT_VERSION: &str = "2026.06.09";
+const DIRECTORY: &str = "2026.07.04-ffmpeg-8.1.2";
+const YT_VERSION: &str = "2026.07.04";
 const FF_VERSION: &str = "8.1.2 essentials";
-const YT_URL: &str = "https://github.com/yt-dlp/yt-dlp/releases/download/2026.06.09/yt-dlp.exe";
-const YT_HASH: &str = "3a48cb955d55c8821b60ccbdbbc6f61bc958f2f3d3b7ad5eaf3d83a543293a27";
+const YT_URL: &str = "https://github.com/yt-dlp/yt-dlp/releases/download/2026.07.04/yt-dlp.exe";
+const YT_HASH: &str = "52fe3c26dcf71fbdc85b528589020bb0b8e383155cfa81b64dd447bbe35e24b8";
 const FF_URL: &str =
     "https://www.gyan.dev/ffmpeg/builds/packages/ffmpeg-8.1.2-essentials_build.zip";
 const FF_HASH: &str = "db580001caa24ac104c8cb856cd113a87b0a443f7bdf47d8c12b1d740584a2ec";
-const YT_DOWNLOAD_BYTES: u64 = 18_202_192;
+const YT_DOWNLOAD_BYTES: u64 = 18_226_085;
 const FF_DOWNLOAD_BYTES: u64 = 109_728_040;
-const YT_INSTALL_BYTES: u64 = 18_202_192;
+const YT_INSTALL_BYTES: u64 = 18_226_085;
 const FF_INSTALL_BYTES: u64 = 199 * 1024 * 1024;
 
 #[derive(Clone)]
@@ -63,9 +63,6 @@ impl MediaTools {
         let mut cancellation = self.cancellation.lock().await;
         if cancellation.is_some() {
             return Err("另一个媒体组件正在安装".into());
-        }
-        if component_available(&self.status(&app, &settings).await, component) {
-            return Ok(());
         }
         ensure_space(&app, component)?;
         let token = CancellationToken::new();
@@ -155,7 +152,7 @@ impl MediaTools {
         let download_path = staging.join("yt-dlp.exe.download");
         let client = client(settings)?;
         let result = async {
-            download(
+            download_with_fallback(
                 &client,
                 YT_URL,
                 &download_path,
@@ -184,11 +181,18 @@ impl MediaTools {
             .await;
             verify(&download_path, YT_HASH).await?;
             check_cancelled(&token)?;
-            let directory = tools_directory(app)?;
-            tokio::fs::create_dir_all(&directory)
-                .await
-                .map_err(|error| error.to_string())?;
-            replace_file(download_path, directory.join("yt-dlp.exe")).await
+            let target_file = if !settings.yt_dlp_path.is_empty()
+                && existing_file(&settings.yt_dlp_path).is_some()
+            {
+                PathBuf::from(&settings.yt_dlp_path)
+            } else {
+                let directory = tools_directory(app)?;
+                tokio::fs::create_dir_all(&directory)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                directory.join("yt-dlp.exe")
+            };
+            replace_file(download_path, target_file).await
         }
         .await;
         handle_staging_result(&staging, &result).await;
@@ -208,7 +212,7 @@ impl MediaTools {
         let archive = staging.join("ffmpeg.zip.download");
         let client = client(settings)?;
         let result = async {
-            download(&client, FF_URL, &archive, &token, |received| async move {
+            download_with_fallback(&client, FF_URL, &archive, &token, |received| async move {
                 self.set_operation(
                     app,
                     settings,
@@ -397,13 +401,20 @@ fn system_tool_directories() -> Vec<PathBuf> {
                 .join("Packages"),
             &mut directories,
         );
-        add_directory(
-            &mut directories,
-            local_app_data.join("Programs").join("ffmpeg").join("bin"),
-        );
+        for sub in ["ffmpeg/bin", "ffmpeg", "Programs/ffmpeg/bin", "Programs/ffmpeg"] {
+            add_directory(&mut directories, local_app_data.join(sub));
+        }
     }
     if let Some(app_data) = std::env::var_os("APPDATA").map(PathBuf::from) {
         add_python_script_directories(&app_data.join("Python"), &mut directories);
+        for sub in [
+            "bilibili/ffmpeg",
+            "bilibili",
+            "anythingllm-desktop/storage/engines/ffmpeg/windows-x64",
+            "FormatFactory/FFModules/Encoder",
+        ] {
+            add_directory(&mut directories, app_data.join(sub));
+        }
     }
     if let Some(user_profile) = std::env::var_os("USERPROFILE").map(PathBuf::from) {
         let scoop = std::env::var_os("SCOOP")
@@ -417,12 +428,26 @@ fn system_tool_directories() -> Vec<PathBuf> {
         ] {
             add_directory(&mut directories, scoop.join(relative));
         }
-        add_directory(&mut directories, user_profile.join(".local").join("bin"));
-        add_directory(&mut directories, user_profile.join("bin"));
-        add_directory(&mut directories, user_profile.join("ffmpeg").join("bin"));
+        for sub in [
+            ".local/bin",
+            ".local/ffmpeg/bin",
+            ".local/ffmpeg",
+            "bin",
+            "ffmpeg/bin",
+            "ffmpeg",
+        ] {
+            add_directory(&mut directories, user_profile.join(sub));
+        }
     }
     if let Some(program_files) = std::env::var_os("ProgramFiles").map(PathBuf::from) {
-        add_directory(&mut directories, program_files.join("ffmpeg").join("bin"));
+        for sub in ["ffmpeg/bin", "ffmpeg", "FormatFactory/FFModules/Encoder"] {
+            add_directory(&mut directories, program_files.join(sub));
+        }
+    }
+    if let Some(program_files_x86) = std::env::var_os("ProgramFiles(x86)").map(PathBuf::from) {
+        for sub in ["ffmpeg/bin", "ffmpeg", "FormatFactory/FFModules/Encoder"] {
+            add_directory(&mut directories, program_files_x86.join(sub));
+        }
     }
     let chocolatey = std::env::var_os("ChocolateyInstall")
         .map(PathBuf::from)
@@ -432,7 +457,31 @@ fn system_tool_directories() -> Vec<PathBuf> {
     if let Some(chocolatey) = chocolatey {
         add_directory(&mut directories, chocolatey.join("bin"));
     }
+
+    add_common_drive_directories(&mut directories);
+
     directories
+}
+
+fn add_common_drive_directories(directories: &mut Vec<PathBuf>) {
+    for drive_letter in b'A'..=b'Z' {
+        let drive = format!("{}:\\", drive_letter as char);
+        let drive_path = Path::new(&drive);
+        if drive_path.exists() {
+            for sub in [
+                "ffmpeg\\bin",
+                "ffmpeg",
+                "tools\\ffmpeg\\bin",
+                "tools\\ffmpeg",
+                "tools",
+                "tools\\bin",
+                "software\\ffmpeg\\bin",
+                "software\\ffmpeg",
+            ] {
+                add_directory(directories, drive_path.join(sub));
+            }
+        }
+    }
 }
 
 fn add_python_script_directories(root: &Path, directories: &mut Vec<PathBuf>) {
@@ -483,10 +532,52 @@ fn add_directory(directories: &mut Vec<PathBuf>, directory: PathBuf) {
 }
 
 fn detect_tools_in_directories(directories: &[PathBuf]) -> DetectedMediaTools {
-    DetectedMediaTools {
+    let mut detected = DetectedMediaTools {
         yt_dlp_path: detected_path_in_directories("yt-dlp.exe", directories),
         ffmpeg_path: detected_path_in_directories("ffmpeg.exe", directories),
         ffprobe_path: detected_path_in_directories("ffprobe.exe", directories),
+    };
+
+    let mut related_dirs = Vec::new();
+    if let Some(ref yt_path) = detected.yt_dlp_path {
+        add_related_directories(Path::new(yt_path), &mut related_dirs);
+    }
+    if let Some(ref ff_path) = detected.ffmpeg_path {
+        add_related_directories(Path::new(ff_path), &mut related_dirs);
+    }
+
+    if !related_dirs.is_empty() {
+        if detected.yt_dlp_path.is_none() {
+            detected.yt_dlp_path = detected_path_in_directories("yt-dlp.exe", &related_dirs);
+        }
+        if detected.ffmpeg_path.is_none() {
+            detected.ffmpeg_path = detected_path_in_directories("ffmpeg.exe", &related_dirs);
+        }
+        if detected.ffprobe_path.is_none() {
+            detected.ffprobe_path = detected_path_in_directories("ffprobe.exe", &related_dirs);
+        }
+    }
+
+    detected
+}
+
+fn add_related_directories(file_path: &Path, directories: &mut Vec<PathBuf>) {
+    if let Some(parent) = file_path.parent() {
+        add_directory(directories, parent.to_path_buf());
+        if let Some(grandparent) = parent.parent() {
+            add_directory(directories, grandparent.to_path_buf());
+            for sub in [
+                "bin",
+                "ffmpeg",
+                "ffmpeg/bin",
+                "tools",
+                "tools/ffmpeg",
+                "tools/ffmpeg/bin",
+                "FFModules/Encoder",
+            ] {
+                add_directory(directories, grandparent.join(sub));
+            }
+        }
     }
 }
 
@@ -579,6 +670,7 @@ fn file_size(path: Option<PathBuf>) -> u64 {
         .unwrap_or(0)
 }
 
+#[allow(dead_code)]
 fn component_available(status: &ToolStatus, component: ToolComponent) -> bool {
     match component {
         ToolComponent::YtDlp => status.yt_dlp_available,
@@ -706,6 +798,51 @@ fn client(settings: &AppSettings) -> Result<reqwest::Client, String> {
     builder.build().map_err(|error| error.to_string())
 }
 
+fn get_fallback_urls(original_url: &str) -> Vec<String> {
+    let mut urls = vec![original_url.to_string()];
+    if original_url.contains("github.com") {
+        urls.push(format!("https://ghproxy.net/{original_url}"));
+        urls.push(format!("https://gh-proxy.com/{original_url}"));
+        urls.push(format!("https://ghproxy.cn/{original_url}"));
+        urls.push(format!("https://edge.ghproxy.net/{original_url}"));
+    }
+    urls
+}
+
+async fn download_with_fallback<F, Fut>(
+    client: &reqwest::Client,
+    original_url: &str,
+    path: &Path,
+    token: &CancellationToken,
+    progress: F,
+) -> Result<u64, String>
+where
+    F: Fn(u64) -> Fut + Copy,
+    Fut: std::future::Future<Output = ()>,
+{
+    let candidates = get_fallback_urls(original_url);
+    let mut last_error = String::new();
+
+    for (index, candidate_url) in candidates.iter().enumerate() {
+        check_cancelled(token)?;
+        let download_result = download(client, candidate_url, path, token, progress).await;
+        match download_result {
+            Ok(received) => return Ok(received),
+            Err(err) => {
+                if err == "已取消安装" {
+                    return Err(err);
+                }
+                last_error = err;
+                if index + 1 < candidates.len() {
+                    let _ = tokio::fs::remove_file(path).await;
+                }
+            }
+        }
+    }
+
+    Err(last_error)
+}
+
 async fn download<F, Fut>(
     client: &reqwest::Client,
     url: &str,
@@ -808,6 +945,77 @@ fn extract_ffmpeg(archive: &Path, target: &Path) -> Result<(), String> {
     }
 }
 
+pub async fn remux_flv_to_mp4_if_needed(app: &AppHandle, settings: &AppSettings, file_path: &Path) -> PathBuf {
+    if !file_path.exists() {
+        return file_path.to_path_buf();
+    }
+    let ext = file_path
+        .extension()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+
+    let target_mp4 = file_path.with_extension("mp4");
+    let is_flv = ext == "flv" || ext == "ts" || ext == "mkv";
+    let is_mp4 = ext == "mp4";
+
+    if !is_flv && !is_mp4 {
+        return file_path.to_path_buf();
+    }
+
+    let mut needs_remux = is_flv;
+    if is_mp4 {
+        if let Ok(mut f) = tokio::fs::File::open(file_path).await {
+            use tokio::io::AsyncReadExt;
+            let mut buf = [0u8; 64];
+            if let Ok(n) = f.read(&mut buf).await {
+                let slice = &buf[..n];
+                // 如果文件前64字节中不包含 ftyp (标准 MP4 必须有 ftyp 标识)，说明是未封装的 FLV/TS 原始流
+                needs_remux = !slice.windows(4).any(|w| w == b"ftyp");
+            }
+        }
+    }
+
+    if needs_remux {
+        if let Some(ffmpeg) = resolve_ffmpeg(app, settings) {
+            let temp_remux = file_path.with_extension("remux_tmp.mp4");
+            let mut cmd = tokio::process::Command::new(&ffmpeg.ffmpeg);
+            cmd.args(&[
+                "-y",
+                "-i",
+                file_path.to_str().unwrap_or_default(),
+                "-c:v",
+                "copy",
+                "-c:a",
+                "aac",
+                "-movflags",
+                "+faststart",
+                temp_remux.to_str().unwrap_or_default(),
+            ]);
+            #[cfg(windows)]
+            cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+            if let Ok(status) = cmd.status().await {
+                if status.success() && temp_remux.exists() {
+                    if file_path != target_mp4 {
+                        let _ = tokio::fs::remove_file(file_path).await;
+                    }
+                    if tokio::fs::rename(&temp_remux, &target_mp4).await.is_ok() {
+                        return target_mp4;
+                    }
+                } else {
+                    let _ = tokio::fs::remove_file(&temp_remux).await;
+                }
+            }
+        } else if is_mp4 {
+            let flv_path = file_path.with_extension("flv");
+            if tokio::fs::rename(file_path, &flv_path).await.is_ok() {
+                return flv_path;
+            }
+        }
+    }
+    file_path.to_path_buf()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -860,6 +1068,34 @@ mod tests {
             .as_deref()
             .unwrap()
             .ends_with("ffprobe.exe"));
+    }
+
+    #[test]
+    fn generates_github_fallback_urls() {
+        let original = "https://github.com/yt-dlp/yt-dlp/releases/download/2026.07.04/yt-dlp.exe";
+        let candidates = get_fallback_urls(original);
+        assert_eq!(candidates[0], original);
+        assert!(candidates.len() > 1);
+        assert!(candidates[1].contains("ghproxy.net"));
+    }
+
+    #[test]
+    fn infers_missing_ffmpeg_from_yt_dlp_related_directory() {
+        let root = tempfile::tempdir().unwrap();
+        let yt_dir = root.path().join("tools").join("yt-dlp");
+        let ff_dir = root.path().join("tools").join("ffmpeg").join("bin");
+        std::fs::create_dir_all(&yt_dir).unwrap();
+        std::fs::create_dir_all(&ff_dir).unwrap();
+
+        std::fs::write(yt_dir.join("yt-dlp.exe"), b"tool").unwrap();
+        std::fs::write(ff_dir.join("ffmpeg.exe"), b"tool").unwrap();
+        std::fs::write(ff_dir.join("ffprobe.exe"), b"tool").unwrap();
+
+        // 仅向目录列表提供 yt_dir，未提供 ff_dir
+        let detected = detect_tools_in_directories(&[yt_dir]);
+        assert!(detected.yt_dlp_path.is_some());
+        assert!(detected.ffmpeg_path.is_some());
+        assert!(detected.ffprobe_path.is_some());
     }
 
     #[test]

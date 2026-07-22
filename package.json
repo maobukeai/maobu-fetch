@@ -10,12 +10,13 @@
     "tauri": "tauri",
     "desktop:dev": "scripts\\run-dev.cmd",
     "extension:build": "pnpm --dir extension build",
-    "check": "tsc --noEmit && pnpm --dir extension check"
+    "check": "npx tsx src/i18n.test.ts && tsc --noEmit && npm --prefix extension run check"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.8.0",
     "@tauri-apps/plugin-clipboard-manager": "^2.3.2",
     "@tauri-apps/plugin-dialog": "^2.4.0",
+    "@tauri-apps/plugin-notification": "^2.3.0",
     "@tauri-apps/plugin-shell": "^2.3.5",
     "lucide-react": "^0.468.0",
     "react": "^19.1.1",

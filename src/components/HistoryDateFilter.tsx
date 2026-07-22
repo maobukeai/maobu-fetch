@@ -1,3 +1,5 @@
+import { Select } from "./Select";
+
 export type HistoryDatePreset = "all" | "today" | "7-days" | "30-days" | "custom";
 
 export interface HistoryDateRange {
@@ -28,17 +30,24 @@ export function matchesHistoryDate(completedAt: number | undefined, range: Histo
     && (end === undefined || completedAt < end + 86_400_000);
 }
 
+const PRESET_OPTIONS: Array<{ value: HistoryDatePreset; label: string }> = [
+  { value: "all", label: "全部时间" },
+  { value: "today", label: "今天" },
+  { value: "7-days", label: "最近 7 天" },
+  { value: "30-days", label: "最近 30 天" },
+  { value: "custom", label: "自定义范围" },
+];
+
 export function HistoryDateFilter({ value, onChange }: { value: HistoryDateRange; onChange: (next: HistoryDateRange) => void }) {
   return (
     <div className="history-filter-bar" aria-label="完成日期筛选">
       <span>完成日期</span>
-      <select value={value.preset} onChange={(event) => onChange({ ...value, preset: event.target.value as HistoryDatePreset })}>
-        <option value="all">全部时间</option>
-        <option value="today">今天</option>
-        <option value="7-days">最近 7 天</option>
-        <option value="30-days">最近 30 天</option>
-        <option value="custom">自定义范围</option>
-      </select>
+      <Select
+        value={value.preset}
+        onChange={(nextPreset) => onChange({ ...value, preset: nextPreset as HistoryDatePreset })}
+        options={PRESET_OPTIONS}
+        ariaLabel="完成日期筛选"
+      />
       {value.preset === "custom" && <>
         <input type="date" aria-label="开始日期" value={value.start} onChange={(event) => onChange({ ...value, start: event.target.value })} />
         <span>至</span>
