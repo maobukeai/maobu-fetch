@@ -33,7 +33,7 @@
     "aboutDescLine1": "本地优先、紧凑高效的 Windows 下载管理器。",
     "aboutDescLine2": "支持多线程并发 HTTP Range 连接，接管浏览器下载。",
     "version": "版本",
-    "versionNumber": "版本 v0.5.7",
+    "versionNumber": "版本 v0.6.0",
     "projectHome": "项目主页",
     "copyright": "© 2026 Maobu Fetch. 保留所有权利。",
     "minimize": "最小化",
