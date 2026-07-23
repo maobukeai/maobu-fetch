@@ -4,10 +4,12 @@ import { open as openUrl } from "@tauri-apps/plugin-shell";
 import {
   AlertCircle, AlertTriangle, Archive, ArrowLeft, Bookmark, Check, CheckCircle2, CheckSquare, ChevronDown, ChevronUp, ChevronsDown, ChevronsUp, CirclePause, Clock, Copy,
   Download, ExternalLink, File, FileAudio, FileImage, FileText, Film, FolderOpen,
-  Gauge, Globe2, HelpCircle, Info, ListFilter, LoaderCircle, MonitorDown, MoreHorizontal, Network,
+  Gauge, Globe2, Heart, HelpCircle, Info, ListFilter, LoaderCircle, MessageCircle, MonitorDown, MoreHorizontal, Network,
   PanelRightClose, PanelRightOpen, Pause, Play, Plus, RefreshCw, RotateCcw, Save, Search, Settings, Keyboard,
   ShieldCheck, SlidersHorizontal, Sparkles, Square, Tag as TagIcon, Trash2, Unplug, Video, X, Zap,
 } from "lucide-react";
+import contactQr from "./assets/contact_qr.webp";
+import sponsorQr from "./assets/sponsor_qr.webp";
 import { api, isDesktop } from "./api";
 import { Effect, getCurrentWindow } from "@tauri-apps/api/window";
 import { readText } from "@tauri-apps/plugin-clipboard-manager";
@@ -4991,6 +4993,7 @@ function SettingsPage({ value, onChange, onClose, notify, totalSpeed = 0, active
   const [cacheSizeBytes, setCacheSizeBytes] = useState<number | null>(null);
   const [cacheSizeLoading, setCacheSizeLoading] = useState(false);
   const [cacheCleaning, setCacheCleaning] = useState(false);
+  const [qrModal, setQrModal] = useState<"contact" | "sponsor" | null>(null);
 
   const handleInspectCache = useCallback(() => {
     setCacheSizeLoading(true);
@@ -5326,13 +5329,67 @@ function SettingsPage({ value, onChange, onClose, notify, totalSpeed = 0, active
             </div>
           )}
 
-          <div style={{ borderTop: "1px solid var(--border)", paddingTop: "14px", display: "flex", alignItems: "center", gap: "12px" }}>
-            <span style={{ fontSize: "12px", fontWeight: 600, color: "var(--muted)" }}>作者 / 开发团队</span>
-            <div style={{ display: "inline-flex", alignItems: "center", gap: "6px" }}>
-              <span style={{ fontSize: "12px", fontWeight: 600, color: "var(--text)" }}>猫步可爱</span>
-              <span style={{ fontSize: "11px", color: "var(--subtle)" }}>(maobukeai)</span>
+          <div style={{ borderTop: "1px solid var(--border)", paddingTop: "14px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: "12px", flexWrap: "wrap" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+              <span style={{ fontSize: "12px", fontWeight: 600, color: "var(--muted)" }}>作者 / 开发团队</span>
+              <div style={{ display: "inline-flex", alignItems: "center", gap: "6px" }}>
+                <span style={{ fontSize: "12px", fontWeight: 600, color: "var(--text)" }}>猫步可爱</span>
+                <span style={{ fontSize: "11px", color: "var(--subtle)" }}>(maobukeai)</span>
+              </div>
+            </div>
+            <div style={{ display: "inline-flex", alignItems: "center", gap: "8px" }}>
+              <button
+                type="button"
+                className="input-button"
+                onClick={() => setQrModal("contact")}
+                style={{ display: "inline-flex", alignItems: "center", gap: "5px", height: "26px", padding: "0 10px", fontSize: "11px", fontWeight: 500, borderRadius: "6px", cursor: "pointer", border: "1px solid var(--border-strong)", background: "var(--control)", color: "var(--text)" }}
+              >
+                <MessageCircle size={12} color="#07c160" />
+                <span>联系方式</span>
+              </button>
+              <button
+                type="button"
+                className="input-button"
+                onClick={() => setQrModal("sponsor")}
+                style={{ display: "inline-flex", alignItems: "center", gap: "5px", height: "26px", padding: "0 10px", fontSize: "11px", fontWeight: 500, borderRadius: "6px", cursor: "pointer", border: "1px solid var(--border-strong)", background: "var(--control)", color: "var(--text)" }}
+              >
+                <Heart size={12} color="#e11d48" />
+                <span>赞助支持</span>
+              </button>
             </div>
           </div>
+
+          {qrModal === "contact" && (
+            <Modal title="联系作者 · 微信二维码" onClose={() => setQrModal(null)} style={{ width: "360px" }}>
+              <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "12px", padding: "12px 0 4px" }}>
+                <img
+                  src={contactQr}
+                  alt="猫步可爱 微信二维码"
+                  style={{ width: "260px", height: "auto", borderRadius: "8px", border: "1px solid var(--border)", boxShadow: "0 4px 16px rgba(0,0,0,0.08)" }}
+                />
+                <div style={{ textAlign: "center" }}>
+                  <div style={{ fontSize: "13px", fontWeight: 600, color: "var(--text)" }}>猫步可爱 (鲤蓝)</div>
+                  <div style={{ fontSize: "11px", color: "var(--muted)", marginTop: "4px" }}>扫二维码，添加我为微信好友</div>
+                </div>
+              </div>
+            </Modal>
+          )}
+
+          {qrModal === "sponsor" && (
+            <Modal title="赞助支持 · 赞赏码" onClose={() => setQrModal(null)} style={{ width: "360px" }}>
+              <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "12px", padding: "12px 0 4px" }}>
+                <img
+                  src={sponsorQr}
+                  alt="猫步可爱 赞赏码"
+                  style={{ width: "260px", height: "auto", borderRadius: "8px", border: "1px solid var(--border)", boxShadow: "0 4px 16px rgba(0,0,0,0.08)" }}
+                />
+                <div style={{ textAlign: "center" }}>
+                  <div style={{ fontSize: "13px", fontWeight: 600, color: "var(--text)" }}>“新年快乐”</div>
+                  <div style={{ fontSize: "11px", color: "var(--muted)", marginTop: "4px" }}>猫步可爱 (鲤蓝) 的赞赏码 · 感谢支持！</div>
+                </div>
+              </div>
+            </Modal>
+          )}
 
           <div style={{ borderTop: "1px solid var(--border)", paddingTop: "14px" }}>
             <h3 style={{ margin: "0 0 6px", fontSize: "12px", fontWeight: 600, color: "var(--text)" }}>软件技术架构</h3>
