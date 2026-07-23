@@ -119,15 +119,15 @@ async function run() {
             { index: 4, start_byte: 1536000001, end_byte: 1920000000, downloaded_bytes: 384000000, status: "completed" },
             { index: 5, start_byte: 1920000001, end_byte: 2304000000, downloaded_bytes: 2304000000, status: "completed" },
             { index: 6, start_byte: 2304000001, end_byte: 2688000000, downloaded_bytes: 2688000000, status: "completed" },
-            { index: 7, start_byte: 2704000001, end_byte: 3072000000, downloaded_bytes: 3072000000, status: "completed" },
-            { index: 8, start_byte: 3072000001, end_byte: 3456000000, downloaded_bytes: 3456000000, status: "completed" },
-            { index: 9, start_byte: 3456000001, end_byte: 3840000000, downloaded_bytes: 3840000000, status: "completed" },
-            { index: 10, start_byte: 3840000001, end_byte: 4224000000, downloaded_bytes: 186531840, status: "downloading" },
-            { index: 11, start_byte: 4224000001, end_byte: 4608000000, downloaded_bytes: 0, status: "downloading" },
-            { index: 12, start_byte: 4608000001, end_byte: 4992000000, downloaded_bytes: 0, status: "downloading" },
-            { index: 13, start_byte: 4992000001, end_byte: 5376000000, downloaded_bytes: 0, status: "downloading" },
-            { index: 14, start_byte: 5376000001, end_byte: 5760000000, downloaded_bytes: 0, status: "downloading" },
-            { index: 15, start_byte: 5760000001, end_byte: 6144000000, downloaded_bytes: 0, status: "downloading" }
+            { index: 7, start_byte: 2704000001, end: 3072000000, downloaded_bytes: 3072000000, status: "completed" },
+            { index: 8, start_byte: 3072000001, end: 3456000000, downloaded_bytes: 3456000000, status: "completed" },
+            { index: 9, start_byte: 3456000001, end: 3840000000, downloaded_bytes: 3840000000, status: "completed" },
+            { index: 10, start_byte: 3840000001, end: 4224000000, downloaded_bytes: 186531840, status: "downloading" },
+            { index: 11, start_byte: 4224000001, end: 4608000000, downloaded_bytes: 0, status: "downloading" },
+            { index: 12, start_byte: 4608000001, end: 4992000000, downloaded_bytes: 0, status: "downloading" },
+            { index: 13, start_byte: 4992000001, end: 5376000000, downloaded_bytes: 0, status: "downloading" },
+            { index: 14, start_byte: 5376000001, end: 5760000000, downloaded_bytes: 0, status: "downloading" },
+            { index: 15, start_byte: 5760000001, end: 6144000000, downloaded_bytes: 0, status: "downloading" }
           ]
         },
         {
@@ -377,62 +377,59 @@ async function run() {
     await pageTab.close();
   }
 
-  // 5. 浏览器扩展 Popup 截图 (11_extension_popup.webp)
+  // 5. 浏览器扩展 Popup 截图 (11_extension_popup.webp) - 使用真实的 extension/src/popup.js 渲染
   const pageExt = await browser.newPage();
-  await pageExt.setViewport({ width: 380, height: 680, deviceScaleFactor: 2 });
+  await pageExt.setViewport({ width: 380, height: 720, deviceScaleFactor: 2 });
   await pageExt.evaluateOnNewDocument(() => {
     window.chrome = {
-      runtime: { lastError: null, sendMessage: (msg, cb) => cb && cb({ success: true, active: true }) },
-      storage: { local: { get: (keys, cb) => cb({ bridgeToken: "mock_token_123456", intercept: true, minSize: 1 }), set: (data, cb) => cb && cb() } },
-      cookies: { getAll: (details, cb) => cb([{ name: "SESSDATA", value: "abcdef123" }]) },
-      tabs: { query: (details, cb) => cb([{ id: 1, url: "https://www.bilibili.com/video/BV1xx411c7m9", title: "哔哩哔哩视频" }]) }
+      runtime: {
+        lastError: null,
+        getURL: (path) => path,
+        sendMessage: (msg, cb) => {
+          if (msg.type === "health") {
+            cb({ ok: true, paired: true });
+          } else if (msg.type === "recent-tasks") {
+            cb({
+              ok: true,
+              result: {
+                tasks: [
+                  {
+                    id: "task-1",
+                    file_name: "Maobu Fetch 0.6.3 x64-setup (8).exe",
+                    status: "downloading",
+                    progress: 0.94,
+                    speed: 16389734
+                  }
+                ]
+              }
+            });
+          } else {
+            cb({ ok: true });
+          }
+        }
+      },
+      storage: {
+        local: {
+          get: (keys, cb) => cb({ intercept: true, minSizeMb: 1 }),
+          set: (data, cb) => cb && cb()
+        },
+        session: {
+          get: (key, cb) => cb({ [key]: [] })
+        }
+      },
+      cookies: {
+        getAll: (details, cb) => cb([{ name: "SESSDATA", value: "abcdef123" }])
+      },
+      tabs: {
+        query: (details, cb) => cb([{ id: 1, url: "https://www.bilibili.com/video/BV1xx411c7m9", title: "哔哩哔哩视频" }])
+      }
     };
   });
   const popupPath = path.join(__dirname, "..", "extension", "src", "popup.html");
   await pageExt.goto(`file:///${popupPath.replace(/\\/g, "/")}`);
-  await new Promise(r => setTimeout(r, 600));
-  await pageExt.evaluate(() => {
-    const conn = document.getElementById("connection");
-    if (conn) conn.textContent = "已连接桌面端 · 127.0.0.1:17433";
-    const status = document.getElementById("status");
-    if (status) status.className = "online";
-    const msg = document.getElementById("message");
-    if (msg) msg.textContent = "准备就绪";
-    const count = document.getElementById("count");
-    if (count) count.textContent = "2";
-    const media = document.getElementById("media");
-    if (media) {
-      media.innerHTML = `
-        <div class="item">
-          <span>bilibili_BV1xx411c7m9_1080P.mp4</span>
-          <button class="send-btn">发送到猫步</button>
-        </div>
-        <div class="item">
-          <span>audio_high_bitrate.m4a</span>
-          <button class="send-btn">发送到猫步</button>
-        </div>
-      `;
-    }
-    const tasks = document.getElementById("tasks");
-    const taskCount = document.getElementById("taskCount");
-    if (taskCount) taskCount.textContent = "2";
-    if (tasks) {
-      tasks.innerHTML = `
-        <div class="item">
-          <span>ubuntu-26.04-desktop-amd64.iso</span>
-          <small style="color:#0a84ff">下载中 65.5% · 28.4 MB/s</small>
-        </div>
-        <div class="item">
-          <span>yt-dlp_2026.06.09_x64.exe</span>
-          <small style="color:#34c759">已完成 100%</small>
-        </div>
-      `;
-    }
-    const intercept = document.getElementById("intercept");
-    if (intercept) intercept.checked = true;
-  });
+  await new Promise(r => setTimeout(r, 1200));
   await pageExt.screenshot({ path: path.join(outputDir, "11_extension_popup.webp"), type: "webp", quality: 90 });
-  console.log("Saved: 11_extension_popup.webp");
+  console.log("Saved REAL extension popup: 11_extension_popup.webp");
   await pageExt.close();
 
   await browser.close();
