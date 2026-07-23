@@ -29,16 +29,24 @@ function collectMedia() {
       found.set(src, { url: src, type: node.parentElement?.tagName.toLowerCase() || "media", title: document.title });
     }
   });
-  if (!chrome.runtime?.id) return;
   try {
+    if (!chrome?.runtime?.id) return;
     chrome.runtime.sendMessage({ type: "media", items: [...found.values()].slice(-20) }).catch(() => {});
   } catch {}
 }
 
-if (chrome.runtime?.id) {
+function isContextValid() {
+  try {
+    return Boolean(chrome?.runtime?.id);
+  } catch {
+    return false;
+  }
+}
+
+if (isContextValid()) {
   collectMedia();
   const observer = new MutationObserver(() => {
-    if (!chrome.runtime?.id) {
+    if (!isContextValid()) {
       observer.disconnect();
       return;
     }
@@ -53,7 +61,7 @@ if (chrome.runtime?.id) {
     });
   }
   const timer = setInterval(() => {
-    if (!chrome.runtime?.id) {
+    if (!isContextValid()) {
       clearInterval(timer);
       return;
     }

@@ -480,11 +480,23 @@ fn validate_origin(headers: &HeaderMap, extension: &str) -> Result<(), (StatusCo
         .unwrap_or("");
     let chrome = format!("chrome-extension://{extension}");
     let edge = format!("edge-extension://{extension}");
-    if origin == chrome || origin == edge {
-        Ok(())
-    } else {
-        Err((StatusCode::FORBIDDEN, "Origin 不受信任".into()))
+    let moz = format!("moz-extension://{extension}");
+    if origin == chrome || origin == edge || origin == moz {
+        return Ok(());
     }
+    // 浏览器 HTTP 规范：GET 请求默认不自动携带 Origin 请求头，JS 显式设置也会被浏览器禁忌头规则剥离。
+    // 如果 Origin 为空，但请求附带了匹配的 X-Luma-Extension 头（由 signedGet 发送），放行交由 authorize 进行 HMAC 签名校验；
+    // 其它缺少合法 Origin 和 Extension 头的跨域请求严格拦截。
+    if origin.is_empty() {
+        let has_ext = headers
+            .get("x-luma-extension")
+            .and_then(|v| v.to_str().ok())
+            .map_or(false, |ext| ext == extension);
+        if has_ext {
+            return Ok(());
+        }
+    }
+    Err((StatusCode::FORBIDDEN, "Origin 不受信任".into()))
 }
 fn validate_extension_id(value: &str) -> Result<(), (StatusCode, String)> {
     if value.len() >= 16

@@ -33,7 +33,7 @@
     "aboutDescLine1": "A local-first, compact and efficient Windows download manager.",
     "aboutDescLine2": "Supports multi-threaded concurrent HTTP Range connections and browser download takeover.",
     "version": "Version",
-    "versionNumber": "Version v0.6.1",
+    "versionNumber": "Version v0.6.2",
     "projectHome": "Project Home",
     "copyright": "(c) 2026 Maobu Fetch. All rights reserved.",
     "minimize": "Minimize",
