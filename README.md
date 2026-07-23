@@ -1,49 +1,251 @@
-# 猫步下载器 · Maobu Fetch
+<div align="center">
 
-猫步下载器（Maobu Fetch）是面向 Windows 10/11 的开源效率型下载器。品牌中的 “Fetch” 同时表达下载获取与猫取回物品的动作；界面采用紧凑、克制的 Windows 11 风格，不包含广告、在线字体或云端服务。
+# 🐱 猫步下载器 (Maobu Fetch)
 
-## 已实现
+<p align="center">
+  <b>专为 Windows 10/11 设计的本地优先、高效紧凑型多线程下载管理器</b>
+</p>
 
-- SQLite 任务与设置存储，并兼容迁移旧版数据
-- 每任务可选 1、2、4、8、16 路 HTTP Range 分段连接，实时显示各分段进度
-- 全局并发、优先级队列、全局限速下按高/普通/低 4:2:1 加权分配带宽、计划任务、批量暂停/继续与指数退避重试
-- ETag/Last-Modified 变化检测、持久续传、原子合并与 SHA-256 校验
-- 全局及单任务限速、重名策略、自定义请求头、Referer、Cookie 与 Authorization
-- 可排序任务表、多选、快捷键、详情栏、真实速度与剩余时间、深浅色主题
-- Chrome/Edge Manifest V3 扩展：右键下载、下载接管、临时绕过与页面媒体发现
-- 本地 `/v1` 桥：一次性配对码、持久令牌、精确 Origin、HMAC 签名与速率限制
-- 按需安装并校验 yt-dlp 2026.06.09 与 FFmpeg 8.1.2；支持媒体探测、格式选择、字幕和合并；拒绝 DRM
-- 平台兼容性矩阵：在“设置 → 关于”和新建任务对话框中展示各平台（哔哩哔哩、抖音、YouTube、TikTok、Twitter/X、微博）的支持级别（已验证/实验性）与详细功能说明
+[![Version](https://img.shields.io/badge/version-0.6.3-blue.svg)](https://github.com/maobukeai/maobu-fetch/releases/tag/v0.6.3)
+[![Tauri](https://img.shields.io/badge/Tauri-v2.0-24C8D8.svg?logo=tauri&logoColor=white)](https://tauri.app)
+[![React](https://img.shields.io/badge/React-v19.0-61DAFB.svg?logo=react&logoColor=black)](https://react.dev)
+[![Rust](https://img.shields.io/badge/Rust-v1.80+-000000.svg?logo=rust&logoColor=white)](https://www.rust-lang.org)
+[![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-BT、磁力、账号同步、远程下载、DRM 绕过和 Firefox 不在当前范围内。
+[功能特性](#-功能特性) • [界面展示](#-界面展示) • [功能详解](#-功能详解) • [浏览器插件](#-浏览器插件接管) • [开发与编译](#-开发与构建指南) • [更新日志](CHANGELOG.md)
 
-## 开发与构建
+</div>
 
-需要 Node.js 20+、pnpm 11+、Rust，以及安装“使用 C++ 的桌面开发”组件的 Visual Studio 2022 Build Tools。
+---
 
-参与开发前必须阅读并遵守 [`AGENTS.md`](AGENTS.md) 中的开发注意事项与强约束。
+## 📖 项目简介
+
+**猫步下载器（Maobu Fetch）** 是一款遵循 **本地优先（Local-First）** 理念打造的高性能下载客户端。它结合了 Rust 语言的高并发网络内核与现代前端响应式 UI，旨在为 Windows 用户提供轻量、极速、无广告、无痕追踪的专业下载体验。
+
+不同于传统云端下载工具，猫步下载器没有任何在线用户系统、云端转发或遥测追踪，所有数据与文件均保留在您的本地设备上。
+
+> [!NOTE]
+> **强约束承诺**：零广告、零遥测、零在线登录、零后台无用请求。基础安装包小于 30MB，开箱即用。
+
+---
+
+## 🔥 功能特性
+
+- ⚡ **HTTP Range 并发切片下载**：支持 `1 / 2 / 4 / 8 / 16 / 32` 多线程并发 Range 请求，无缝动态分片与原子合并，充分吃满带宽。
+- 🛡️ **数据一致性校验**：续传自动校验 ETag 与 Last-Modified 标头，支持完成后自动 SHA-256 完整性哈希比对。
+- 🌐 **本地安全桥与 MV3 扩展**：提供 Chrome & Edge 原生 Manifest V3 扩展，采用本地 `127.0.0.1` HMAC-SHA256 签名与一次性配对码机制安全接管下载。
+- 🎬 **按需媒体增强内核**：解耦组件设计，提供 `yt-dlp` 与 `FFmpeg` 安全按需安装与版本校验，支持 Bilibili 1080P/4K、YouTube Dash 流视频智能抓取。
+- 🎨 **Windows 11 效率型原生 UI**：融入 Win11 Acrylic 亚克力磨砂玻璃视效，184px 分类导航、40px 命令栏与全宽切片进度条，支持深浅色及高 DPI 自适应。
+- ⚡ **智能断点续传与重试**：网络波动、系统休眠后自动挂起并安全续接，保护半成品分片不损坏。
+
+---
+
+## 🖼️ 界面展示
+
+### 1. 软件主界面 dashboard
+
+主界面由分类导航栏、顶部快捷命令栏、全宽任务表格及动态实时速度仪表盘组成。
+
+<div align="center">
+  <img src="docs/assets/01_main_dashboard.webp" alt="猫步下载器主界面" width="100%" />
+</div>
+
+- **分类导航**：系统镜像、影视媒体、常用软件、压缩文件等智能自动归类与自定义分类规则。
+- **状态统计**：实时显示全局总下载速度、当前并发任务数与活动连接总数。
+
+---
+
+### 2. 线程切片与任务详情
+
+选中任一下载任务，底部展开可视化分片进度条与全量 HTTP 协议标头元数据。
+
+<div align="center">
+  <img src="docs/assets/02_slice_visualization.webp" alt="切片可视化与详情" width="100%" />
+</div>
+
+- **切片可视化**：微观展示每个并发线程的起止偏移量（Range offset）、已下载字节数与单独线程下载速度。
+- **元数据面板**：直观查看 ETag、Last-Modified、目标路径、SHA-256 校验状态及响应头。
+
+---
+
+### 3. 新建任务与高级预设
+
+点击“新建任务”弹窗，可自定义 HTTP 请求头、Cookie、代理绕过策略及文件重命名逻辑。
+
+<div align="center">
+  <img src="docs/assets/03_new_task_modal.webp" alt="新建任务弹窗" width="100%" />
+</div>
+
+- **高级选项**：支持设置 Referer、Authorization、User-Agent、线程切片数 (`1-32`)。
+- **重名策略**：自动重命名 (`rename`)、覆盖原文件 (`overwrite`) 或跳过 (`skip`)。
+
+---
+
+## ⚙️ 功能详解
+
+系统设置分为 7 大核心模块，涵盖从存储路径到媒体解析的全方位配置：
+
+### 1. 基础与存储设置 (General Settings)
+
+控制文件默认保存目录、便携模式（Portable mode）状态以及磁盘缓存分析器。
+
+<div align="center">
+  <img src="docs/assets/04_settings_general.webp" alt="基础设置" width="100%" />
+</div>
+
+- **磁盘缓存清理**：实时检测 `.lumaget` 临时切片数据占用的空间，提供一键清理与校验功能。
+- **便携模式**：支持将所有数据库与配置存放在程序同级目录，适合在 U 盘中使用。
+
+---
+
+### 2. 下载与并发限速 (Download Settings)
+
+调控高并发下载引擎参数，保护磁盘寿命与带宽平衡。
+
+<div align="center">
+  <img src="docs/assets/05_settings_download.webp" alt="下载设置" width="100%" />
+</div>
+
+- **并发与切片上限**：设定全局最大并发任务数 (例如 `5`) 与单任务连接数 (最高 `32`)。
+- **全局限速**：针对普通 HTTP 流与所有并发分片连接进行统一 Token Bucket 限速。
+
+---
+
+### 3. 网络代理与休眠规避 (Network Settings)
+
+配置代理网络及局域网适配策略。
+
+<div align="center">
+  <img src="docs/assets/06_settings_network.webp" alt="网络设置" width="100%" />
+</div>
+
+- **代理支持**：支持跟随系统代理或指定 HTTP / SOCKS5 代理（含认证凭据）。
+- **按流量计费网络保护**：在检测到移动热点或计费网络时自动暂停大文件下载。
+
+---
+
+### 4. 浏览器接管与安全配对 (Browser Bridge)
+
+配置本地 HTTP Bridge 与 Chrome/Edge 扩展的加密授权。
+
+<div align="center">
+  <img src="docs/assets/07_settings_browser.webp" alt="浏览器接管" width="100%" />
+</div>
+
+- **安全配对**：基于 `127.0.0.1:17433` 监听，配合 6 位一次性配对码与持久 HMAC-SHA256 令牌认证，杜绝未授权本地恶意软件调用。
+- **接管阈值**：可设置接管文件大小下限（如仅接管 > 1MB 的文件）及域名白名单/黑名单。
+
+---
+
+### 5. 媒体增强与组件管理 (Media Tools)
+
+按需解耦管理音视频解析组件，保证基础客户端轻量无臃肿。
+
+<div align="center">
+  <img src="docs/assets/08_settings_media.webp" alt="媒体工具" width="100%" />
+</div>
+
+- **按需安装**：一键安装固定签名可信来源的 `yt-dlp` (2026.06.09) 与 `FFmpeg` (8.1.2)，存放于应用数据目录。
+- **自动混流与提取**：支持视频音频分离下载后由 FFmpeg 无损封装为标准 MP4/MKV。
+
+---
+
+### 6. 外观与 Win11 亚克力风格 (Appearance Settings)
+
+打造极致流畅的个性化视觉体验。
+
+<div align="center">
+  <img src="docs/assets/09_settings_appearance.webp" alt="外观设置" width="100%" />
+</div>
+
+- **系统主题同步**：支持浅色 (Light)、深色 (Dark) 及自动跟随 Windows 11 主题切换。
+- **亚克力磨砂玻璃**：开启 Windows 11 DWM Acrylic / Mica 窗口背景材质。
+
+---
+
+### 7. 关于与平台兼容矩阵 (About & Compatibility Matrix)
+
+查看版本状态、授权许可及各主流音视频平台的解析兼容度。
+
+<div align="center">
+  <img src="docs/assets/10_settings_about_matrix.webp" alt="关于与兼容矩阵" width="100%" />
+</div>
+
+- **平台兼容矩阵**：实时呈现 Bilibili (4K/高码率)、YouTube (Dash)、Douyin、TikTok、Twitter/X、Weibo 等站点的解析支持级别。
+
+---
+
+## 🧩 浏览器插件接管
+
+猫步下载器包含专用的 Manifest V3 浏览器扩展，支持 Chrome 及 Edge 浏览器。
+
+### 扩展特性：
+1. **静默接管**：自动拦截浏览器默认下载，弹窗确认后直通猫步下载器多线程引擎。
+2. **离线安全回退**：若猫步下载器桌面端未启动，自动无感恢复浏览器自带下载，不丢失任何下载请求。
+3. **媒体抓取**：自动提取网页中的 HLS/DASH 视频流与音频链接。
+
+<div align="center">
+  <a href="https://github.com/maobukeai/maobu-fetch/releases/tag/v0.6.3">
+    <img src="https://img.shields.io/badge/下载浏览器扩展-v0.6.3-orange.svg?style=for-the-badge&logo=googlechrome&logoColor=white" alt="下载浏览器扩展" />
+  </a>
+</div>
+
+---
+
+## 🛠️ 开发与构建指南
+
+### 前置要求
+
+- **操作系统**：Windows 10 / 11 (x64)
+- **Node.js**：`v20.0.0` 或更高版本
+- **pnpm**：`v9.0.0` 或更高版本
+- **Rust**：`1.80.0` 或更高版本 (`x86_64-pc-windows-msvc` target)
+- **C++ 构建工具**：Windows 10/11 SDK（包含 `rc.exe`）
+
+### 本地开发运行
 
 ```powershell
+# 1. 克隆代码库
+git clone https://github.com/maobukeai/maobu-fetch.git
+cd maobu-fetch
+
+# 2. 安装前端依赖
 pnpm install
-pnpm desktop:dev
+
+# 3. 启动前端开发服务器与 Tauri 桌面端
+pnpm tauri dev
 ```
 
-构建浏览器扩展后，在 Chrome/Edge 的扩展管理页加载 `extension/dist`：
+### 自动化测试校验
+
+在提交代码前，请确保通过所有自动化测试断言：
 
 ```powershell
-pnpm extension:build
-```
+# 前端类型检查
+pnpm run check
 
-桌面端启动后，在“设置 → 浏览器”查看一次性配对码，并在扩展弹窗输入。未连接或未配对时，浏览器下载不会被取消。
-
-## 验证
-
-```powershell
-pnpm check
+# Rust 下载内核与 SQLite 迁移单元测试 (1050+ 测试套件)
 cargo test --manifest-path src-tauri\Cargo.toml
+
+# 浏览器扩展模拟 API 构建测试 (50+ 测试套件)
+pnpm run extension:build
+```
+
+### 发布构建打包
+
+```powershell
+# 编译前端、浏览器扩展并构建 Windows NSIS 安装包及单文件发布包
 pnpm tauri build
 ```
 
-## 许可
+构建产物将保存在 `src-tauri/target/release/bundle/nsis/` 目录下。
 
-MIT。猫步下载器与 Neat Download Manager 无隶属关系，也未使用其专有源码或素材。
+---
+
+## 📄 开源许可证
+
+本项目采用 [MIT License](LICENSE) 许可证开源。
+
+<div align="center">
+  <sub>Made with ❤️ by <a href="https://github.com/maobukeai">maobukeai</a>. Designed for Windows 10/11.</sub>
+</div>
