@@ -377,8 +377,66 @@ async function run() {
     await pageTab.close();
   }
 
+  // 5. 浏览器扩展 Popup 截图 (11_extension_popup.webp)
+  const pageExt = await browser.newPage();
+  await pageExt.setViewport({ width: 380, height: 680, deviceScaleFactor: 2 });
+  await pageExt.evaluateOnNewDocument(() => {
+    window.chrome = {
+      runtime: { lastError: null, sendMessage: (msg, cb) => cb && cb({ success: true, active: true }) },
+      storage: { local: { get: (keys, cb) => cb({ bridgeToken: "mock_token_123456", intercept: true, minSize: 1 }), set: (data, cb) => cb && cb() } },
+      cookies: { getAll: (details, cb) => cb([{ name: "SESSDATA", value: "abcdef123" }]) },
+      tabs: { query: (details, cb) => cb([{ id: 1, url: "https://www.bilibili.com/video/BV1xx411c7m9", title: "哔哩哔哩视频" }]) }
+    };
+  });
+  const popupPath = path.join(__dirname, "..", "extension", "src", "popup.html");
+  await pageExt.goto(`file:///${popupPath.replace(/\\/g, "/")}`);
+  await new Promise(r => setTimeout(r, 600));
+  await pageExt.evaluate(() => {
+    const conn = document.getElementById("connection");
+    if (conn) conn.textContent = "已连接桌面端 · 127.0.0.1:17433";
+    const status = document.getElementById("status");
+    if (status) status.className = "online";
+    const msg = document.getElementById("message");
+    if (msg) msg.textContent = "准备就绪";
+    const count = document.getElementById("count");
+    if (count) count.textContent = "2";
+    const media = document.getElementById("media");
+    if (media) {
+      media.innerHTML = `
+        <div class="item">
+          <span>bilibili_BV1xx411c7m9_1080P.mp4</span>
+          <button class="send-btn">发送到猫步</button>
+        </div>
+        <div class="item">
+          <span>audio_high_bitrate.m4a</span>
+          <button class="send-btn">发送到猫步</button>
+        </div>
+      `;
+    }
+    const tasks = document.getElementById("tasks");
+    const taskCount = document.getElementById("taskCount");
+    if (taskCount) taskCount.textContent = "2";
+    if (tasks) {
+      tasks.innerHTML = `
+        <div class="item">
+          <span>ubuntu-26.04-desktop-amd64.iso</span>
+          <small style="color:#0a84ff">下载中 65.5% · 28.4 MB/s</small>
+        </div>
+        <div class="item">
+          <span>yt-dlp_2026.06.09_x64.exe</span>
+          <small style="color:#34c759">已完成 100%</small>
+        </div>
+      `;
+    }
+    const intercept = document.getElementById("intercept");
+    if (intercept) intercept.checked = true;
+  });
+  await pageExt.screenshot({ path: path.join(outputDir, "11_extension_popup.webp"), type: "webp", quality: 90 });
+  console.log("Saved: 11_extension_popup.webp");
+  await pageExt.close();
+
   await browser.close();
-  console.log("All 10 crisp WebP screenshots captured successfully!");
+  console.log("All 11 crisp WebP screenshots captured successfully!");
 }
 
 run().catch((err) => {

@@ -12,7 +12,7 @@
 [![Rust](https://img.shields.io/badge/Rust-v1.80+-000000.svg?logo=rust&logoColor=white)](https://www.rust-lang.org)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-[功能特性](#-功能特性) • [界面展示](#-界面展示) • [功能详解](#-功能详解) • [浏览器插件](#-浏览器插件接管) • [开发与编译](#-开发与构建指南) • [更新日志](CHANGELOG.md)
+[功能特性](#-功能特性) • [界面展示](#-界面展示) • [功能详解](#-功能详解) • [开发与构建指南](#-开发与构建指南) • [更新日志](CHANGELOG.md)
 
 </div>
 
@@ -55,7 +55,36 @@
 
 ---
 
-### 2. 线程切片与任务详情
+### 2. 浏览器插件接管与安装 (Browser Extension)
+
+猫步下载器配有专门针对 Chrome 和 Microsoft Edge 打造的 Manifest V3 官方扩展程序。扩展与本地客户端通过 `127.0.0.1:17433` 加密通信，实现网页下载链接自动接管与音视频媒体流抓取。
+
+<div align="center">
+  <img src="docs/assets/11_extension_popup.webp" alt="浏览器扩展程序界面" width="50%" />
+</div>
+
+#### 📦 插件安装与配置指南
+
+1. **下载插件包**：
+   前往 GitHub Releases 页面下载最新版本的 [`extension.zip`](https://github.com/maobukeai/maobu-fetch/releases/tag/v0.6.3) 并解压到本地文件夹。
+2. **开启浏览器开发者模式**：
+   - **Chrome**：在地址栏输入 `chrome://extensions/`，开启右上角的 **开发者模式**。
+   - **Edge**：在地址栏输入 `edge://extensions/`，开启左侧的 **开发者模式**。
+3. **加载插件**：
+   点击 **加载已解压的扩展程序** (Load unpacked)，选择刚才解压的 `extension` 目录即可完成安装。
+4. **安全配对授权**：
+   打开猫步下载器桌面客户端 → 侧边栏“设置” → “浏览器接管”，复制 6 位动态配对码。点击浏览器插件图标，输入配对码完成 HMAC-SHA256 安全令牌绑定。
+
+#### ✨ 插件核心功能
+
+- ⚡ **无感拦截接管**：自动拦截浏览器默认下载，按文件类型、域名及设定的体积阈值（如 >1MB）精准接管。
+- 🛡️ **离线安全回退**：若猫步桌面端未启动或退出，扩展会自动感知并回退为浏览器原生下载，绝不丢失用户的下载请求。
+- 🔑 **登录态 Cookie 传递**：支持一键提取并向桌面端传递当前页面授权 Cookie（如 Bilibili 1080P/4K 登录凭据），无需手动输入或持久化落盘。
+- 🎬 **网页媒体感知**：自动探测当前网页中的音视频媒体资源（M3U8 / MP4 / DASH），点击直通桌面端极速下载。
+
+---
+
+### 3. 线程切片与任务详情
 
 选中任一下载任务，底部展开可视化分片进度条与全量 HTTP 协议标头元数据。
 
@@ -68,7 +97,7 @@
 
 ---
 
-### 3. 新建任务与高级预设
+### 4. 新建任务与高级预设
 
 点击“新建任务”弹窗，可自定义 HTTP 请求头、Cookie、代理绕过策略及文件重命名逻辑。
 
@@ -175,23 +204,6 @@
 
 ---
 
-## 🧩 浏览器插件接管
-
-猫步下载器包含专用的 Manifest V3 浏览器扩展，支持 Chrome 及 Edge 浏览器。
-
-### 扩展特性：
-1. **静默接管**：自动拦截浏览器默认下载，弹窗确认后直通猫步下载器多线程引擎。
-2. **离线安全回退**：若猫步下载器桌面端未启动，自动无感恢复浏览器自带下载，不丢失任何下载请求。
-3. **媒体抓取**：自动提取网页中的 HLS/DASH 视频流与音频链接。
-
-<div align="center">
-  <a href="https://github.com/maobukeai/maobu-fetch/releases/tag/v0.6.3">
-    <img src="https://img.shields.io/badge/下载浏览器扩展-v0.6.3-orange.svg?style=for-the-badge&logo=googlechrome&logoColor=white" alt="下载浏览器扩展" />
-  </a>
-</div>
-
----
-
 ## 🛠️ 开发与构建指南
 
 ### 前置要求
@@ -222,20 +234,20 @@ pnpm tauri dev
 
 ```powershell
 # 前端类型检查
-pnpm run check
+npx pnpm run check
 
 # Rust 下载内核与 SQLite 迁移单元测试 (1050+ 测试套件)
 cargo test --manifest-path src-tauri\Cargo.toml
 
 # 浏览器扩展模拟 API 构建测试 (50+ 测试套件)
-pnpm run extension:build
+npx pnpm run extension:build
 ```
 
 ### 发布构建打包
 
 ```powershell
 # 编译前端、浏览器扩展并构建 Windows NSIS 安装包及单文件发布包
-pnpm tauri build
+npx tauri build
 ```
 
 构建产物将保存在 `src-tauri/target/release/bundle/nsis/` 目录下。
