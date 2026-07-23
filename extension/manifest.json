@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "猫步下载器 · Maobu Fetch",
   "short_name": "Maobu Fetch",
-  "version": "0.6.2",
+  "version": "0.6.3",
   "description": "安全地接管下载并将页面媒体发送到猫步下载器。",
   "permissions": [
     "contextMenus",

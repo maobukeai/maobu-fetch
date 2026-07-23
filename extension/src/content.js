@@ -30,8 +30,10 @@ function collectMedia() {
     }
   });
   try {
-    if (!chrome?.runtime?.id) return;
-    chrome.runtime.sendMessage({ type: "media", items: [...found.values()].slice(-20) }).catch(() => {});
+    if (!isContextValid()) return;
+    chrome.runtime.sendMessage({ type: "media", items: [...found.values()].slice(-20) }, () => {
+      const _ = chrome?.runtime?.lastError;
+    });
   } catch {}
 }
 
