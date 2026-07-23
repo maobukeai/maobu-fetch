@@ -27,131 +27,213 @@ async function run() {
 
   const setupMockData = async (page) => {
     await page.evaluateOnNewDocument(() => {
+      const mockDefaultRetryPolicy = {
+        connection_timeout_secs: 15,
+        task_timeout_secs: null,
+        max_retries: 5,
+        backoff: "exponential",
+        initial_backoff_ms: 1000,
+        max_backoff_ms: 30000
+      };
+
+      const mockSettings = {
+        download_dir: "C:\\Users\\20269\\Downloads",
+        concurrent_downloads: 5,
+        connections_per_download: 16,
+        speed_limit_kbps: 0,
+        start_minimized: false,
+        minimize_to_tray: true,
+        close_to_tray: true,
+        notifications: true,
+        auto_start: false,
+        theme: "system",
+        accent_color: "blue",
+        frosted_glass: true,
+        language: "zh-CN",
+        intercept_browser_downloads: true,
+        min_file_size_mb: 1,
+        clipboard_monitor: true,
+        proxy_mode: "system",
+        proxy_url: "",
+        proxy_username: "",
+        proxy_password: "",
+        user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+        default_collision_policy: "rename",
+        default_completion_action: "none",
+        max_retries: 5,
+        retry_base_seconds: 2,
+        verify_after_download: true,
+        media_tool_auto_update: true,
+        yt_dlp_path: "",
+        ffmpeg_path: "",
+        ffprobe_path: "",
+        low_memory_mode: false,
+        auto_scale_ui: true,
+        default_retry_policy: mockDefaultRetryPolicy,
+        row_compact: false,
+        detail_default_collapsed: false,
+        color_scheme: "system",
+        archive_days: 30,
+        archive_threshold: 100,
+        notify_on_complete: true,
+        notify_on_failure: true,
+        notify_sound_enabled: true,
+        notify_failure_sound_enabled: false
+      };
+
       const mockTasks = [
         {
           id: "task-ubuntu-001",
           url: "https://releases.ubuntu.com/26.04/ubuntu-26.04-desktop-amd64.iso",
-          filename: "ubuntu-26.04-desktop-amd64.iso",
-          save_path: "C:\\Users\\20269\\Downloads\\ubuntu-26.04-desktop-amd64.iso",
-          status: "downloading",
-          size: 6144000000,
-          downloaded: 4026531840,
+          file_name: "ubuntu-26.04-desktop-amd64.iso",
+          destination: "C:\\Users\\20269\\Downloads\\ubuntu-26.04-desktop-amd64.iso",
+          total_bytes: 6144000000,
+          downloaded_bytes: 4026531840,
           speed: 29777216,
-          progress: 0.655,
-          eta: 71,
-          connections: 16,
-          category: "系统镜像",
-          created_at: "2026-07-23T10:15:00Z",
+          eta_seconds: 71,
+          status: "downloading",
+          created_at: 1784801700000,
+          category: "system",
+          queue_position: 1,
+          priority: 0,
+          retry_count: 0,
+          max_retries: 5,
+          source: "direct",
           etag: '"6600a12b-16e000000"',
           last_modified: "Wed, 15 Jul 2026 12:00:00 GMT",
-          verify_sha256: true,
-          priority: 10,
-          slices: [
-            { index: 0, start: 0, end: 384000000, downloaded: 384000000, speed: 0, status: "completed" },
-            { index: 1, start: 384000001, end: 768000000, downloaded: 384000000, speed: 0, status: "completed" },
-            { index: 2, start: 768000001, end: 1152000000, downloaded: 384000000, speed: 0, status: "completed" },
-            { index: 3, start: 1152000001, end: 1536000000, downloaded: 384000000, speed: 0, status: "completed" },
-            { index: 4, start: 1536000001, end: 1920000000, downloaded: 384000000, speed: 0, status: "completed" },
-            { index: 5, start: 1920000001, end: 2304000000, downloaded: 2304000000, speed: 0, status: "completed" },
-            { index: 6, start: 2304000001, end: 2688000000, downloaded: 2688000000, speed: 0, status: "completed" },
-            { index: 7, start: 2704000001, end: 3072000000, downloaded: 3072000000, speed: 0, status: "completed" },
-            { index: 8, start: 3072000001, end: 3456000000, downloaded: 3456000000, speed: 0, status: "completed" },
-            { index: 9, start: 3456000001, end: 3840000000, downloaded: 3840000000, speed: 0, status: "completed" },
-            { index: 10, start: 3840000001, end: 4224000000, downloaded: 186531840, speed: 3820000, status: "downloading" },
-            { index: 11, start: 4224000001, end: 4608000000, downloaded: 0, speed: 3640000, status: "downloading" },
-            { index: 12, start: 4608000001, end: 4992000000, downloaded: 0, speed: 4120000, status: "downloading" },
-            { index: 13, start: 4992000001, end: 5376000000, downloaded: 0, speed: 3950000, status: "downloading" },
-            { index: 14, start: 5376000001, end: 5760000000, downloaded: 0, speed: 4200000, status: "downloading" },
-            { index: 15, start: 5760000001, end: 6144000000, downloaded: 0, speed: 4040000, status: "downloading" }
+          accepts_ranges: true,
+          headers: {
+            "User-Agent": "MaobuFetch/0.6.3",
+            "Accept": "*/*"
+          },
+          per_task_speed_limit: 0,
+          collision_policy: "rename",
+          completion_action: "none",
+          connection_count: 16,
+          active_connections: 16,
+          segments: [
+            { index: 0, start_byte: 0, end_byte: 384000000, downloaded_bytes: 384000000, status: "completed" },
+            { index: 1, start_byte: 384000001, end_byte: 768000000, downloaded_bytes: 384000000, status: "completed" },
+            { index: 2, start_byte: 768000001, end_byte: 1152000000, downloaded_bytes: 384000000, status: "completed" },
+            { index: 3, start_byte: 1152000001, end_byte: 1536000000, downloaded_bytes: 384000000, status: "completed" },
+            { index: 4, start_byte: 1536000001, end_byte: 1920000000, downloaded_bytes: 384000000, status: "completed" },
+            { index: 5, start_byte: 1920000001, end_byte: 2304000000, downloaded_bytes: 2304000000, status: "completed" },
+            { index: 6, start_byte: 2304000001, end_byte: 2688000000, downloaded_bytes: 2688000000, status: "completed" },
+            { index: 7, start_byte: 2704000001, end: 3072000000, downloaded_bytes: 3072000000, status: "completed" },
+            { index: 8, start_byte: 3072000001, end: 3456000000, downloaded_bytes: 3456000000, status: "completed" },
+            { index: 9, start_byte: 3456000001, end: 3840000000, downloaded_bytes: 3840000000, status: "completed" },
+            { index: 10, start_byte: 3840000001, end: 4224000000, downloaded_bytes: 186531840, status: "downloading" },
+            { index: 11, start_byte: 4224000001, end: 4608000000, downloaded_bytes: 0, status: "downloading" },
+            { index: 12, start_byte: 4608000001, end: 4992000000, downloaded_bytes: 0, status: "downloading" },
+            { index: 13, start_byte: 4992000001, end: 5376000000, downloaded_bytes: 0, status: "downloading" },
+            { index: 14, start_byte: 5376000001, end: 5760000000, downloaded_bytes: 0, status: "downloading" },
+            { index: 15, start_byte: 5760000001, end: 6144000000, downloaded_bytes: 0, status: "downloading" }
           ]
         },
         {
           id: "task-bilibili-002",
           url: "https://www.bilibili.com/video/BV1xx411c7m9",
-          filename: "bilibili_BV1xx411c7m9_1080P_UltraHD.mp4",
-          save_path: "C:\\Users\\20269\\Videos\\bilibili_BV1xx411c7m9_1080P_UltraHD.mp4",
-          status: "downloading",
-          size: 922746880,
-          downloaded: 461373440,
+          file_name: "bilibili_BV1xx411c7m9_1080P_UltraHD.mp4",
+          destination: "C:\\Users\\20269\\Videos\\bilibili_BV1xx411c7m9_1080P_UltraHD.mp4",
+          total_bytes: 922746880,
+          downloaded_bytes: 461373440,
           speed: 14155776,
-          progress: 0.500,
-          eta: 32,
-          connections: 8,
-          category: "影视媒体",
-          created_at: "2026-07-23T10:18:22Z"
+          eta_seconds: 32,
+          status: "downloading",
+          created_at: 1784801800000,
+          category: "video",
+          queue_position: 2,
+          priority: 0,
+          retry_count: 0,
+          max_retries: 5,
+          source: "bilibili",
+          headers: {},
+          per_task_speed_limit: 0,
+          collision_policy: "rename",
+          completion_action: "none",
+          connection_count: 8,
+          active_connections: 8,
+          segments: []
         },
         {
           id: "task-yt-003",
           url: "https://github.com/yt-dlp/yt-dlp/releases/download/2026.06.09/yt-dlp.exe",
-          filename: "yt-dlp_2026.06.09_x64.exe",
-          save_path: "C:\\Users\\20269\\Downloads\\yt-dlp_2026.06.09_x64.exe",
-          status: "completed",
-          size: 18202192,
-          downloaded: 18202192,
+          file_name: "yt-dlp_2026.06.09_x64.exe",
+          destination: "C:\\Users\\20269\\Downloads\\yt-dlp_2026.06.09_x64.exe",
+          total_bytes: 18202192,
+          downloaded_bytes: 18202192,
           speed: 0,
-          progress: 1.0,
-          eta: 0,
-          connections: 4,
-          category: "常用软件",
-          sha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-          created_at: "2026-07-23T09:30:11Z"
+          eta_seconds: 0,
+          status: "completed",
+          created_at: 1784800000000,
+          completed_at: 1784800500000,
+          category: "apps",
+          queue_position: 3,
+          priority: 0,
+          retry_count: 0,
+          max_retries: 5,
+          source: "direct",
+          checksum_sha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          headers: {},
+          per_task_speed_limit: 0,
+          collision_policy: "rename",
+          completion_action: "none",
+          connection_count: 4,
+          active_connections: 0,
+          segments: []
         },
         {
           id: "task-node-004",
           url: "https://nodejs.org/dist/v24.14.0/node-v24.14.0-x64.msi",
-          filename: "node-v24.14.0-x64.msi",
-          save_path: "C:\\Users\\20269\\Downloads\\node-v24.14.0-x64.msi",
-          status: "paused",
-          size: 47185920,
-          downloaded: 33554432,
+          file_name: "node-v24.14.0-x64.msi",
+          destination: "C:\\Users\\20269\\Downloads\\node-v24.14.0-x64.msi",
+          total_bytes: 47185920,
+          downloaded_bytes: 33554432,
           speed: 0,
-          progress: 0.711,
-          eta: 0,
-          connections: 8,
-          category: "常用软件",
-          created_at: "2026-07-23T08:12:00Z"
+          eta_seconds: 0,
+          status: "paused",
+          created_at: 1784795000000,
+          category: "apps",
+          queue_position: 4,
+          priority: 0,
+          retry_count: 0,
+          max_retries: 5,
+          source: "direct",
+          headers: {},
+          per_task_speed_limit: 0,
+          collision_policy: "rename",
+          completion_action: "none",
+          connection_count: 8,
+          active_connections: 0,
+          segments: []
         },
         {
           id: "task-kernel-005",
           url: "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.10.tar.xz",
-          filename: "linux-6.10.tar.xz",
-          save_path: "C:\\Users\\20269\\Downloads\\linux-6.10.tar.xz",
-          status: "scheduled",
-          scheduled_at: "2026-07-24T02:00:00Z",
-          size: 146800640,
-          downloaded: 0,
+          file_name: "linux-6.10.tar.xz",
+          destination: "C:\\Users\\20269\\Downloads\\linux-6.10.tar.xz",
+          total_bytes: 146800640,
+          downloaded_bytes: 0,
           speed: 0,
-          progress: 0.0,
-          eta: 0,
-          connections: 8,
-          category: "压缩文件",
-          created_at: "2026-07-23T10:20:00Z"
+          eta_seconds: 0,
+          status: "scheduled",
+          created_at: 1784802000000,
+          scheduled_at: 1784850000000,
+          category: "archives",
+          queue_position: 5,
+          priority: 0,
+          retry_count: 0,
+          max_retries: 5,
+          source: "direct",
+          headers: {},
+          per_task_speed_limit: 0,
+          collision_policy: "rename",
+          completion_action: "none",
+          connection_count: 8,
+          active_connections: 0,
+          segments: []
         }
       ];
-
-      const mockSettings = {
-        download_dir: "C:\\Users\\20269\\Downloads",
-        max_concurrent_tasks: 5,
-        default_connections: 16,
-        global_max_connections: 64,
-        speed_limit_kbps: 0,
-        collision_policy: "rename",
-        verify_after_download: true,
-        low_memory_mode: false,
-        proxy_mode: "system",
-        proxy_url: "",
-        proxy_username: "",
-        proxy_password: "",
-        max_retries: 5,
-        intercept_browser_downloads: true,
-        min_file_size_mb: 1,
-        theme: "system",
-        accent_color: "blue",
-        frosted_glass: true,
-        auto_scale_ui: true,
-        media_tool_auto_update: true,
-        shortcut_keys: { toggle_window: "Alt+D", new_task: "Ctrl+N" }
-      };
 
       const mockToolStatus = {
         state: "installed",
@@ -226,16 +308,19 @@ async function run() {
   await page1.setViewport({ width: 1280, height: 800, deviceScaleFactor: 2 });
   await setupMockData(page1);
   await page1.goto("http://localhost:1420", { waitUntil: "networkidle0" });
-  await new Promise(r => setTimeout(r, 1200));
+  await new Promise(r => setTimeout(r, 1500));
   await page1.waitForSelector(".task-row");
   await page1.screenshot({ path: path.join(outputDir, "01_main_dashboard.webp"), type: "webp", quality: 85 });
   console.log("Saved: 01_main_dashboard.webp");
 
   // 2. 选中任务展开切片与详情 (02_slice_visualization.webp)
   await page1.evaluate(() => {
-    if (window.__SHOW_TASK_DETAILS__) window.__SHOW_TASK_DETAILS__("task-ubuntu-001");
+    const row = document.querySelector(".task-row");
+    if (row) (row).click();
+    const detailsToggle = document.querySelector(".details-toggle");
+    if (detailsToggle) (detailsToggle).click();
   });
-  await new Promise(r => setTimeout(r, 800));
+  await new Promise(r => setTimeout(r, 1000));
   await page1.screenshot({ path: path.join(outputDir, "02_slice_visualization.webp"), type: "webp", quality: 85 });
   console.log("Saved: 02_slice_visualization.webp");
   await page1.close();
@@ -245,24 +330,25 @@ async function run() {
   await page2.setViewport({ width: 1280, height: 800, deviceScaleFactor: 2 });
   await setupMockData(page2);
   await page2.goto("http://localhost:1420", { waitUntil: "networkidle0" });
-  await new Promise(r => setTimeout(r, 1200));
+  await new Promise(r => setTimeout(r, 1500));
   await page2.evaluate(() => {
-    if (window.__OPEN_NEW_TASK__) window.__OPEN_NEW_TASK__();
+    const btn = document.querySelector(".new-button") || document.querySelector(".action-btn-standalone");
+    if (btn) (btn).click();
   });
-  await new Promise(r => setTimeout(r, 800));
+  await new Promise(r => setTimeout(r, 1000));
   await page2.screenshot({ path: path.join(outputDir, "03_new_task_modal.webp"), type: "webp", quality: 85 });
   console.log("Saved: 03_new_task_modal.webp");
   await page2.close();
 
   // 4. 设置页面与各个 Tab (04 ~ 10)
   const settingsTabs = [
-    { sec: "general", file: "04_settings_general.webp" },
-    { sec: "download", file: "05_settings_download.webp" },
-    { sec: "network", file: "06_settings_network.webp" },
-    { sec: "browser", file: "07_settings_browser.webp" },
-    { sec: "media", file: "08_settings_media.webp" },
-    { sec: "appearance", file: "09_settings_appearance.webp" },
-    { sec: "about", file: "10_settings_about_matrix.webp" }
+    { text: "基础设置", file: "04_settings_general.webp" },
+    { text: "下载设置", file: "05_settings_download.webp" },
+    { text: "网络代理", file: "06_settings_network.webp" },
+    { text: "浏览器接管", file: "07_settings_browser.webp" },
+    { text: "媒体工具", file: "08_settings_media.webp" },
+    { text: "外观与窗口", file: "09_settings_appearance.webp" },
+    { text: "关于", file: "10_settings_about_matrix.webp" }
   ];
 
   for (const item of settingsTabs) {
@@ -270,18 +356,21 @@ async function run() {
     await pageTab.setViewport({ width: 1280, height: 800, deviceScaleFactor: 2 });
     await setupMockData(pageTab);
     await pageTab.goto("http://localhost:1420", { waitUntil: "networkidle0" });
-    await new Promise(r => setTimeout(r, 1200));
-    await pageTab.evaluate(async (s) => {
-      if (window.__OPEN_SETTINGS__) window.__OPEN_SETTINGS__();
-      for (let i = 0; i < 20; i++) {
-        if (window.__SET_SETTINGS_SECTION__) {
-          window.__SET_SETTINGS_SECTION__(s);
-          break;
-        }
-        await new Promise(r => setTimeout(r, 50));
-      }
-    }, item.sec);
-    await new Promise(r => setTimeout(r, 800));
+    await new Promise(r => setTimeout(r, 1500));
+    await pageTab.waitForSelector(".nav-settings");
+    await pageTab.click(".nav-settings");
+    await pageTab.waitForSelector(".settings-page", { timeout: 5000 });
+
+    if (item.text !== "基础设置") {
+      await pageTab.evaluate((txt) => {
+        const btns = Array.from(document.querySelectorAll(".settings-nav-list .nav-item"));
+        const btn = btns.find(b => b.textContent.includes(txt));
+        if (btn) (btn).click();
+      }, item.text);
+      await new Promise(r => setTimeout(r, 600));
+    } else {
+      await new Promise(r => setTimeout(r, 600));
+    }
 
     await pageTab.screenshot({ path: path.join(outputDir, item.file), type: "webp", quality: 85 });
     console.log(`Saved: ${item.file}`);
