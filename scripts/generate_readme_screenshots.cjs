@@ -119,15 +119,15 @@ async function run() {
             { index: 4, start_byte: 1536000001, end_byte: 1920000000, downloaded_bytes: 384000000, status: "completed" },
             { index: 5, start_byte: 1920000001, end_byte: 2304000000, downloaded_bytes: 2304000000, status: "completed" },
             { index: 6, start_byte: 2304000001, end_byte: 2688000000, downloaded_bytes: 2688000000, status: "completed" },
-            { index: 7, start_byte: 2704000001, end: 3072000000, downloaded_bytes: 3072000000, status: "completed" },
-            { index: 8, start_byte: 3072000001, end: 3456000000, downloaded_bytes: 3456000000, status: "completed" },
-            { index: 9, start_byte: 3456000001, end: 3840000000, downloaded_bytes: 3840000000, status: "completed" },
-            { index: 10, start_byte: 3840000001, end: 4224000000, downloaded_bytes: 186531840, status: "downloading" },
-            { index: 11, start_byte: 4224000001, end: 4608000000, downloaded_bytes: 0, status: "downloading" },
-            { index: 12, start_byte: 4608000001, end: 4992000000, downloaded_bytes: 0, status: "downloading" },
-            { index: 13, start_byte: 4992000001, end: 5376000000, downloaded_bytes: 0, status: "downloading" },
-            { index: 14, start_byte: 5376000001, end: 5760000000, downloaded_bytes: 0, status: "downloading" },
-            { index: 15, start_byte: 5760000001, end: 6144000000, downloaded_bytes: 0, status: "downloading" }
+            { index: 7, start_byte: 2704000001, end_byte: 3072000000, downloaded_bytes: 3072000000, status: "completed" },
+            { index: 8, start_byte: 3072000001, end_byte: 3456000000, downloaded_bytes: 3456000000, status: "completed" },
+            { index: 9, start_byte: 3456000001, end_byte: 3840000000, downloaded_bytes: 3840000000, status: "completed" },
+            { index: 10, start_byte: 3840000001, end_byte: 4224000000, downloaded_bytes: 186531840, status: "downloading" },
+            { index: 11, start_byte: 4224000001, end_byte: 4608000000, downloaded_bytes: 0, status: "downloading" },
+            { index: 12, start_byte: 4608000001, end_byte: 4992000000, downloaded_bytes: 0, status: "downloading" },
+            { index: 13, start_byte: 4992000001, end_byte: 5376000000, downloaded_bytes: 0, status: "downloading" },
+            { index: 14, start_byte: 5376000001, end_byte: 5760000000, downloaded_bytes: 0, status: "downloading" },
+            { index: 15, start_byte: 5760000001, end_byte: 6144000000, downloaded_bytes: 0, status: "downloading" }
           ]
         },
         {
@@ -316,9 +316,9 @@ async function run() {
   // 2. 选中任务展开切片与详情 (02_slice_visualization.webp)
   await page1.evaluate(() => {
     const row = document.querySelector(".task-row");
-    if (row) (row).click();
+    if (row) row.click();
     const detailsToggle = document.querySelector(".details-toggle");
-    if (detailsToggle) (detailsToggle).click();
+    if (detailsToggle) detailsToggle.click();
   });
   await new Promise(r => setTimeout(r, 1000));
   await page1.screenshot({ path: path.join(outputDir, "02_slice_visualization.webp"), type: "webp", quality: 85 });
@@ -333,7 +333,7 @@ async function run() {
   await new Promise(r => setTimeout(r, 1500));
   await page2.evaluate(() => {
     const btn = document.querySelector(".new-button") || document.querySelector(".action-btn-standalone");
-    if (btn) (btn).click();
+    if (btn) btn.click();
   });
   await new Promise(r => setTimeout(r, 1000));
   await page2.screenshot({ path: path.join(outputDir, "03_new_task_modal.webp"), type: "webp", quality: 85 });
@@ -342,12 +342,12 @@ async function run() {
 
   // 4. 设置页面与各个 Tab (04 ~ 10)
   const settingsTabs = [
-    { text: "基础设置", file: "04_settings_general.webp" },
-    { text: "下载设置", file: "05_settings_download.webp" },
-    { text: "网络代理", file: "06_settings_network.webp" },
-    { text: "浏览器接管", file: "07_settings_browser.webp" },
-    { text: "媒体工具", file: "08_settings_media.webp" },
-    { text: "外观与窗口", file: "09_settings_appearance.webp" },
+    { text: "常规", file: "04_settings_general.webp" },
+    { text: "下载", file: "05_settings_download.webp" },
+    { text: "网络", file: "06_settings_network.webp" },
+    { text: "浏览器", file: "07_settings_browser.webp" },
+    { text: "媒体", file: "08_settings_media.webp" },
+    { text: "外观", file: "09_settings_appearance.webp" },
     { text: "关于", file: "10_settings_about_matrix.webp" }
   ];
 
@@ -358,22 +358,22 @@ async function run() {
     await pageTab.goto("http://localhost:1420", { waitUntil: "networkidle0" });
     await new Promise(r => setTimeout(r, 1500));
     await pageTab.waitForSelector(".nav-settings");
-    await pageTab.click(".nav-settings");
+    await pageTab.evaluate(() => { document.querySelector(".nav-settings")?.click(); });
     await pageTab.waitForSelector(".settings-page", { timeout: 5000 });
 
-    if (item.text !== "基础设置") {
-      await pageTab.evaluate((txt) => {
+    if (item.text !== "常规") {
+      await pageTab.evaluate((targetText) => {
         const btns = Array.from(document.querySelectorAll(".settings-nav-list .nav-item"));
-        const btn = btns.find(b => b.textContent.includes(txt));
-        if (btn) (btn).click();
+        const btn = btns.find(b => b.textContent.trim() === targetText);
+        if (btn) btn.click();
       }, item.text);
-      await new Promise(r => setTimeout(r, 600));
+      await new Promise(r => setTimeout(r, 800));
     } else {
       await new Promise(r => setTimeout(r, 600));
     }
 
     await pageTab.screenshot({ path: path.join(outputDir, item.file), type: "webp", quality: 85 });
-    console.log(`Saved: ${item.file}`);
+    console.log(`Saved: ${item.file} (Tab text: ${item.text})`);
     await pageTab.close();
   }
 
