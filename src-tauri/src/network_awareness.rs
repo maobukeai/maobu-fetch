@@ -67,7 +67,7 @@ try {
     Write-Output 'Error'
 }
 "#;
-    let command = Command::new("powershell.exe")
+    let command = crate::media_tools::create_hidden_tokio_command("powershell.exe")
         .args([
             "-NoProfile",
             "-NonInteractive",

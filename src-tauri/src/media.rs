@@ -11,7 +11,7 @@ use crate::{
         fetch_douyin_live_detail, fetch_douyin_live_detail_with_credentials, is_douyin_gallery, is_douyin_live, is_tiktok_gallery,
         is_twitter_space, is_weibo_gallery, strip_tracking_params, MediaPlatform,
     },
-    media_tools::{resolve_ffmpeg, resolve_yt_dlp},
+    media_tools::{create_hidden_tokio_command, resolve_ffmpeg, resolve_yt_dlp},
     models::AppSettings,
     models::{
         DownloadTask, MediaFormat, MediaProbeResult, MediaType, PlatformNamingTemplate, TaskStatus,
@@ -481,7 +481,7 @@ async fn probe_via_yt_dlp(
 ) -> Result<Value, String> {
     let yt = resolve_yt_dlp(app, settings)
         .ok_or("MEDIA_YT_DLP_MISSING: 分析媒体需要先安装 yt-dlp 基础组件")?;
-    let mut command = Command::new(yt);
+    let mut command = create_hidden_tokio_command(yt);
     command.env("PYTHONIOENCODING", "utf-8").env("PYTHONUTF8", "1");
     command.args([
         "--dump-single-json",
@@ -583,7 +583,7 @@ pub async fn download(
     };
     // 从 task.headers 中分离认证头，避免通过 --add-header 传递 Cookie
     let (cookie, referer, user_agent, safe_headers) = split_auth_headers(&task.headers);
-    let mut command = Command::new(yt);
+    let mut command = create_hidden_tokio_command(yt);
     command.env("PYTHONIOENCODING", "utf-8").env("PYTHONUTF8", "1");
     command.args(media_arguments(&format, &template, ffmpeg.is_some()));
     if let Some(path) = ffmpeg {
@@ -1006,7 +1006,7 @@ pub(crate) async fn apply_platform_naming_template(
         Ok(final_url) => final_url,
         Err(_) => target_url.to_string(),
     };
-    let mut command = Command::new(yt);
+    let mut command = create_hidden_tokio_command(yt);
     command.env("PYTHONIOENCODING", "utf-8").env("PYTHONUTF8", "1");
     command.args([
         "--dump-single-json",

@@ -33,6 +33,26 @@ pub struct MediaTools {
     cancellation: Arc<Mutex<Option<CancellationToken>>>,
 }
 
+pub fn create_hidden_tokio_command<P: AsRef<std::ffi::OsStr>>(program: P) -> tokio::process::Command {
+    let mut cmd = tokio::process::Command::new(program);
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000);
+    }
+    cmd
+}
+
+pub fn create_hidden_std_command<P: AsRef<std::ffi::OsStr>>(program: P) -> std::process::Command {
+    let mut cmd = std::process::Command::new(program);
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000);
+    }
+    cmd
+}
+
 impl MediaTools {
     pub fn new(app: &AppHandle, settings: &AppSettings) -> Self {
         Self {
@@ -979,7 +999,7 @@ pub async fn remux_flv_to_mp4_if_needed(app: &AppHandle, settings: &AppSettings,
     if needs_remux {
         if let Some(ffmpeg) = resolve_ffmpeg(app, settings) {
             let temp_remux = file_path.with_extension("remux_tmp.mp4");
-            let mut cmd = tokio::process::Command::new(&ffmpeg.ffmpeg);
+            let mut cmd = create_hidden_tokio_command(&ffmpeg.ffmpeg);
             cmd.args(&[
                 "-y",
                 "-i",

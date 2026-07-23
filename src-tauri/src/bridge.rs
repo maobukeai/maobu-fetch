@@ -233,11 +233,16 @@ async fn recent_tasks(
     authorize(&state, &headers, &[]).await?;
     rate_limit_recent(&state.recent_requests).await?;
     let all = state.manager.list().await.map_err(internal)?;
-    let mut extension_tasks: Vec<_> = all
-        .into_iter()
-        .filter(|task| task.source == "browser")
-        .collect();
-    extension_tasks.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+    let mut extension_tasks: Vec<_> = all;
+    extension_tasks.sort_by(|a, b| {
+        let a_browser = a.source == "browser";
+        let b_browser = b.source == "browser";
+        if a_browser != b_browser {
+            b_browser.cmp(&a_browser)
+        } else {
+            b.created_at.cmp(&a.created_at)
+        }
+    });
     let summaries = extension_tasks
         .into_iter()
         .take(5)
@@ -414,7 +419,7 @@ async fn authorize(
         .and_then(|v| v.parse::<u64>().ok())
         .ok_or((StatusCode::UNAUTHORIZED, "缺少时间戳".into()))?;
     if now().abs_diff(timestamp) > 5 * 60 * 1000 {
-        return Err((StatusCode::UNAUTHORIZED, "请求已过期".into()));
+        return Err((StatusCode::UNAUTHORIZED, "请求已过期（请检查并同步电脑 Windows 系统时间）".into()));
     }
     let signature = headers
         .get("x-luma-signature")
@@ -462,7 +467,7 @@ async fn rate_limit_recent(queue: &Mutex<VecDeque<Instant>>) -> Result<(), (Stat
     while queue.front().is_some_and(|v| *v < cutoff) {
         queue.pop_front();
     }
-    if queue.len() >= 5 {
+    if queue.len() >= 15 {
         return Err((StatusCode::TOO_MANY_REQUESTS, "请求过于频繁".into()));
     }
     queue.push_back(now);
@@ -534,9 +539,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn rate_limit_recent_allows_five_per_second_then_rejects() {
+    async fn rate_limit_recent_allows_fifteen_per_second_then_rejects() {
         let queue: Arc<Mutex<VecDeque<Instant>>> = Arc::new(Mutex::new(VecDeque::new()));
-        for _ in 0..5 {
+        for _ in 0..15 {
             assert!(rate_limit_recent(&queue).await.is_ok());
         }
         let blocked = rate_limit_recent(&queue).await;
@@ -548,9 +553,9 @@ mod tests {
 
     #[tokio::test]
     async fn rate_limit_recent_recovers_after_window_expires() {
-        // 预填 5 条已过期记录（1.5 秒前），新请求应被允许。
+        // 预填 15 条已过期记录（1.5 秒前），新请求应被允许。
         let queue: Arc<Mutex<VecDeque<Instant>>> = Arc::new(Mutex::new(VecDeque::from_iter(
-            std::iter::repeat(Instant::now() - Duration::from_millis(1500)).take(5),
+            std::iter::repeat(Instant::now() - Duration::from_millis(1500)).take(15),
         )));
         assert!(rate_limit_recent(&queue).await.is_ok());
     }

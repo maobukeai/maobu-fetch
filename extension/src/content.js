@@ -29,17 +29,37 @@ function collectMedia() {
       found.set(src, { url: src, type: node.parentElement?.tagName.toLowerCase() || "media", title: document.title });
     }
   });
-  chrome.runtime.sendMessage({ type: "media", items: [...found.values()].slice(-20) }).catch(() => {});
+  if (!chrome.runtime?.id) return;
+  try {
+    chrome.runtime.sendMessage({ type: "media", items: [...found.values()].slice(-20) }).catch(() => {});
+  } catch {}
 }
 
-collectMedia();
-new MutationObserver(() => collectMedia()).observe(document.documentElement, {
-  childList: true,
-  subtree: true,
-  attributes: true,
-  attributeFilter: ["src", "href"],
-});
-setInterval(collectMedia, 5000);
+if (chrome.runtime?.id) {
+  collectMedia();
+  const observer = new MutationObserver(() => {
+    if (!chrome.runtime?.id) {
+      observer.disconnect();
+      return;
+    }
+    collectMedia();
+  });
+  if (document.documentElement) {
+    observer.observe(document.documentElement, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ["src", "href"],
+    });
+  }
+  const timer = setInterval(() => {
+    if (!chrome.runtime?.id) {
+      clearInterval(timer);
+      return;
+    }
+    collectMedia();
+  }, 5000);
+}
 
 // SubTask 13.4：接管前 1.5 秒浮层。
 // background 在 interceptBrowserDownload 之前发送 show-overlay 消息；

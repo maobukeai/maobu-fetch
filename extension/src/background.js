@@ -135,10 +135,18 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
       if (!stored.bridgeToken) return { ok: true, paired: false };
       try {
         const checkRes = await signedGet("/v1/tasks/recent");
-        if (!checkRes.ok && checkRes.status === 401) {
+        if (!checkRes.ok) {
+          if (checkRes.status === 401) {
+            await chrome.storage.local.remove("bridgeToken").catch(() => {});
+            return { ok: true, paired: false };
+          }
+        }
+      } catch {
+        const storedAfter = await chrome.storage.local.get("bridgeToken");
+        if (!storedAfter.bridgeToken) {
           return { ok: true, paired: false };
         }
-      } catch {}
+      }
       const hasToken = Boolean((await chrome.storage.local.get("bridgeToken")).bridgeToken);
       return { ok: true, paired: hasToken };
     }

@@ -416,7 +416,8 @@ async function renderTasks() {
   if (!tasksEl) return;
   const response = await call({ type: "recent-tasks" });
   if (!response?.ok) {
-    tasksEl.innerHTML = '<div class="empty">桌面端离线或未配对</div>';
+    const errReason = response?.error || "桌面端离线或未配对";
+    tasksEl.innerHTML = `<div class="empty">${errReason}</div>`;
     if (countEl) countEl.textContent = "0";
     return;
   }

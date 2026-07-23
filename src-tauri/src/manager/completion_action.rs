@@ -215,7 +215,7 @@ pub fn run_command_action(
         .iter()
         .map(|arg| expand_template(arg, context))
         .collect();
-    let mut builder = std::process::Command::new(command);
+    let mut builder = crate::media_tools::create_hidden_std_command(command);
     builder.args(&expanded_args);
     if let Some(dir) = working_dir {
         let dir = dir.trim();
