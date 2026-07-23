@@ -853,7 +853,7 @@ export interface QuickView {
  * 应用信息（Task 34.3）。
  *
  * 由 `app_get_info` 命令返回，前端用于在设置页"关于"分组显示便携模式状态。
- * - `version`：编译期 `CARGO_PKG_VERSION`，例如 "0.6.3"
+ * - `version`：编译期 `CARGO_PKG_VERSION`，例如 "0.6.4"
  * - `portable_mode`：便携模式是否生效。环境变量 `MAOBU_FETCH_DATA_DIR`
  *   覆盖时为 false（即使存在 `maobu.portable` 标记也不视为便携）。
  * - `data_dir`：当前生效的数据目录绝对路径，仅用于在关于页展示。
