@@ -294,7 +294,7 @@ async function run() {
           if (cmd === "tag_list") return [];
           if (cmd === "task_tags_list_all") return {};
           if (cmd === "cache_inspect") return { total_bytes: 29777216, file_count: 3 };
-          if (cmd === "app_get_info") return { version: "0.6.5", portable_mode: false, data_dir: "C:\\Users\\20269\\AppData\\Roaming\\maobu-fetch" };
+          if (cmd === "app_get_info") return { version: "0.6.6", portable_mode: false, data_dir: "C:\\Users\\20269\\AppData\\Roaming\\maobu-fetch" };
           if (cmd === "power_action_get") return { action: "none", phase: "idle", remaining_seconds: 0, target_count: 0 };
           return [];
         },

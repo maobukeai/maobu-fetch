@@ -5312,7 +5312,7 @@ function SettingsPage({ value, onChange, onClose, notify, totalSpeed = 0, active
             </div>
             <div>
               <h2 style={{ margin: 0, fontSize: "16px", fontWeight: 700, color: "var(--text)" }}>猫步下载器 (Maobu Fetch)</h2>
-              <p style={{ margin: "4px 0 0", fontSize: "11px", color: "var(--muted)" }}>版本 {appInfo?.version || "0.6.5"}</p>
+              <p style={{ margin: "4px 0 0", fontSize: "11px", color: "var(--muted)" }}>版本 {appInfo?.version || "0.6.6"}</p>
             </div>
           </div>
 
@@ -5434,7 +5434,7 @@ function SettingsPage({ value, onChange, onClose, notify, totalSpeed = 0, active
                   {updateChecking ? <LoaderCircle size={12} className="spin" /> : <RefreshCw size={12} />}
                   {updateChecking ? "检查中…" : "检查更新"}
                 </button>
-                <span style={{ fontSize: "11px", color: "var(--muted)" }}>v{appInfo?.version || "0.6.5"}</span>
+                <span style={{ fontSize: "11px", color: "var(--muted)" }}>v{appInfo?.version || "0.6.6"}</span>
               </div>
               {updateResult && !updateResult.error && (
                 <div style={{ marginTop: "6px", fontSize: "11px", lineHeight: 1.5, color: "var(--muted)", padding: "8px 10px", background: "var(--bg-alt, rgba(0,0,0,0.03))", borderRadius: "6px", border: "1px solid var(--border)" }}>
@@ -5490,7 +5490,7 @@ function SettingsPage({ value, onChange, onClose, notify, totalSpeed = 0, active
                 <input
                   value={extVersion}
                   onChange={(e) => setExtVersion(e.target.value)}
-                  placeholder="如 0.6.5"
+                  placeholder="如 0.6.6"
                   style={{ height: "28px", padding: "0 8px", fontSize: "11px", borderRadius: "6px", border: "1px solid var(--border)", background: "var(--bg)", color: "var(--text)", width: "85px" }}
                 />
                 <button

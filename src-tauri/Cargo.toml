@@ -1,6 +1,6 @@
 [package]
 name = "maobu-fetch"
-version = "0.6.5"
+version = "0.6.6"
 description = "A clean-room open-source download manager"
 authors = ["Maobu Fetch contributors"]
 license = "MIT"
@@ -85,3 +85,11 @@ debug = 1
 
 [profile.test]
 debug = 1
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+
