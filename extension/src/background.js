@@ -230,8 +230,13 @@ async function syncCookiesForDomain(domain, url) {
   }
 }
 
-function notify(title, message) {
-  chrome.notifications.create({ type: "basic", iconUrl: "icon128.png", title, message });
+function notify(title, message, notificationId) {
+  const options = { type: "basic", iconUrl: "icon128.png", title, message };
+  if (notificationId) {
+    chrome.notifications.create(notificationId, options);
+  } else {
+    chrome.notifications.create(options);
+  }
 }
 
 async function syncAllOpenTabs() {

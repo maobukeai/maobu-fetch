@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { evaluateDownload, interceptBrowserDownload, refreshDownload } from "./interceptor.js";
+import { evaluateDownload, interceptBrowserDownload, refreshDownload, resetNotificationCooldownsForTest } from "./interceptor.js";
 
 globalThis.chrome = {
   storage: {
@@ -79,6 +79,7 @@ test("pauses first, sends the stable final URL, then cancels browser download", 
 });
 
 test("resumes browser download when the desktop bridge fails", async () => {
+  resetNotificationCooldownsForTest();
   const calls = [];
   const item = { id: 5, url: "https://example.com/file.zip", finalUrl: "https://example.com/file.zip", filename: "file.zip", totalBytes: 3_000_000 };
   const downloads = {
@@ -94,4 +95,30 @@ test("resumes browser download when the desktop bridge fails", async () => {
   assert.equal(handled, false);
   assert.deepEqual(calls, ["pause", "resume"]);
   assert.match(messages[0][0], /回退浏览器下载/);
+});
+
+test("throttles repeated failure notifications within cooldown period", async () => {
+  resetNotificationCooldownsForTest();
+  const item = { id: 6, url: "https://example.com/file.zip", finalUrl: "https://example.com/file.zip", filename: "file.zip", totalBytes: 3_000_000 };
+  const downloads = {
+    pause: async () => {}, search: async () => [item], resume: async () => {}, cancel: async () => {}, erase: async () => {},
+  };
+  const messages = [];
+  const options = {
+    downloads, settings, runtimeId: "extension-id", wait: async () => {},
+    sendTask: async () => { throw new Error("请求过于频繁"); },
+    notify: (...args) => messages.push(args),
+    isDesktopOfflineError: () => false,
+  };
+
+  const handled1 = await interceptBrowserDownload(item, options);
+  const handled2 = await interceptBrowserDownload(item, options);
+
+  assert.equal(handled1, false);
+  assert.equal(handled2, false);
+  // First call should trigger notification, second call should be throttled by cooldown
+  assert.equal(messages.length, 1);
+  assert.equal(messages[0][0], "接管失败，已回退浏览器下载");
+  assert.equal(messages[0][1], "请求过于频繁");
+  assert.equal(messages[0][2], "takeover-error");
 });

@@ -64,7 +64,14 @@ export async function refreshDownload(downloads, initial, wait = sleep) {
 }
 
 let lastOfflineNotificationTime = 0;
+let lastErrorNotificationTime = 0;
 const OFFLINE_NOTIFY_COOLDOWN_MS = 60_000;
+const ERROR_NOTIFY_COOLDOWN_MS = 60_000;
+
+export function resetNotificationCooldownsForTest() {
+  lastOfflineNotificationTime = 0;
+  lastErrorNotificationTime = 0;
+}
 
 export async function interceptBrowserDownload(initial, options) {
   const { downloads, settings, runtimeId, sendTask, notify, wait, isDesktopOfflineError } = options;
@@ -137,7 +144,11 @@ export async function interceptBrowserDownload(initial, options) {
           notify?.("桌面端离线，已回退浏览器下载", "点击此处打开猫步下载器", "offline-warning");
         }
       } else {
-        notify?.("接管失败，已回退浏览器下载", String(error?.message || error));
+        const now = Date.now();
+        if (now - lastErrorNotificationTime > ERROR_NOTIFY_COOLDOWN_MS) {
+          lastErrorNotificationTime = now;
+          notify?.("接管失败，已回退浏览器下载", String(error?.message || error), "takeover-error");
+        }
       }
       return false;
     }
