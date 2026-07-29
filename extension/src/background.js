@@ -1,9 +1,10 @@
 import { API, signedFetch, signedGet, compatFetch } from "./protocol.js";
-import { interceptBrowserDownload } from "./interceptor.js";
+import { interceptBrowserDownload, evaluateDownload } from "./interceptor.js";
 import { bridgeMediaTask } from "./media-selection.js";
 import { requestPageWithTrackingFallback } from "./rules.js";
 import { buildCookieHeader } from "./auth-download.js";
 
+const swStartTime = Date.now();
 const defaults = { intercept: true, minSizeMb: 1, allowHosts: [], blockHosts: [], extensions: [], bypassUntil: 0 };
 const config = async () => ({ ...defaults, ...(await chrome.storage.local.get(Object.keys(defaults))) });
 
@@ -55,6 +56,11 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
 
 chrome.downloads.onCreated.addListener(async (item) => {
   const settings = await config();
+  const evalResult = evaluateDownload(item, settings, chrome.runtime.id, swStartTime);
+  if (!evalResult.eligible) {
+    try { await chrome.downloads.resume(item.id); } catch {}
+    return;
+  }
   const proceed = await confirmTakeoverWithOverlay(item, settings);
   if (!proceed) {
     try { await chrome.downloads.resume(item.id); } catch {}
@@ -62,7 +68,7 @@ chrome.downloads.onCreated.addListener(async (item) => {
   }
   const handled = await interceptBrowserDownload(item, {
     downloads: chrome.downloads, settings, runtimeId: chrome.runtime.id, sendTask, notify,
-    isDesktopOfflineError,
+    isDesktopOfflineError, swStartTime,
   });
   if (!handled) {
     try { await chrome.downloads.resume(item.id); } catch {}
@@ -80,6 +86,10 @@ export async function confirmTakeoverWithOverlay(item, settings, deps = {}) {
   const notifyFn = deps.notify || notify;
   if (!settings.intercept) return true;
   if (Date.now() < Number(settings.bypassUntil || 0)) return true;
+  const runtimeId = deps.runtimeId || chrome.runtime?.id;
+  const swTime = deps.swStartTime || swStartTime;
+  const evalResult = evaluateDownload(item, settings, runtimeId, swTime);
+  if (!evalResult.eligible) return false;
   const tab = await findSourceTab(item, deps);
   if (!tab) return true;
   try {

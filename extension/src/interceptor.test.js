@@ -122,3 +122,163 @@ test("throttles repeated failure notifications within cooldown period", async ()
   assert.equal(messages[0][1], "请求过于频繁");
   assert.equal(messages[0][2], "takeover-error");
 });
+
+test("ignores restored history download items with past startTime or existing progress", () => {
+  const swStartTime = 1000000;
+  // 1. 过去的 startTime
+  const oldItem = {
+    id: 10,
+    url: "https://example.com/old.zip",
+    filename: "old.zip",
+    totalBytes: 5_000_000,
+    startTime: new Date(swStartTime - 10000).toISOString(),
+  };
+  const resultOld = evaluateDownload(oldItem, settings, "extension-id", swStartTime);
+  assert.equal(resultOld.eligible, false);
+  assert.equal(resultOld.reason, "restored-history");
+
+  // 2. 带已有进度的任务
+  const progressItem = {
+    id: 11,
+    url: "https://example.com/progress.zip",
+    filename: "progress.zip",
+    totalBytes: 5_000_000,
+    bytesReceived: 1024,
+    startTime: new Date(swStartTime + 100).toISOString(),
+  };
+  const resultProgress = evaluateDownload(progressItem, settings, "extension-id", swStartTime);
+  assert.equal(resultProgress.eligible, false);
+  assert.equal(resultProgress.reason, "restored-history");
+
+  // 3. 被暂停/可恢复的任务
+  const pausedItem = {
+    id: 12,
+    url: "https://example.com/paused.zip",
+    filename: "paused.zip",
+    totalBytes: 5_000_000,
+    paused: true,
+    startTime: new Date(swStartTime + 100).toISOString(),
+  };
+  const resultPaused = evaluateDownload(pausedItem, settings, "extension-id", swStartTime);
+  assert.equal(resultPaused.eligible, false);
+  assert.equal(resultPaused.reason, "restored-history");
+
+  // 4. 真正的新新建任务
+  const newItem = {
+    id: 13,
+    url: "https://example.com/new.zip",
+    filename: "new.zip",
+    totalBytes: 5_000_000,
+    bytesReceived: 0,
+    paused: false,
+    state: "in_progress",
+    startTime: new Date(swStartTime + 500).toISOString(),
+  };
+  const resultNew = evaluateDownload(newItem, settings, "extension-id", swStartTime);
+  assert.equal(resultNew.eligible, true);
+});
+
+test("rejects downloads with interrupted/complete/cancelled state as restored-history", () => {
+  const swStartTime = Date.now();
+  for (const state of ["interrupted", "complete", "cancelled"]) {
+    const item = {
+      id: 20, url: "https://example.com/file.zip", filename: "file.zip",
+      totalBytes: 5_000_000, state,
+      startTime: new Date(swStartTime + 100).toISOString(),
+    };
+    const result = evaluateDownload(item, settings, "extension-id", swStartTime);
+    assert.equal(result.eligible, false, `state=${state} should be rejected`);
+    assert.equal(result.reason, "restored-history");
+  }
+});
+
+test("rejects downloads with canResume=true as restored-history", () => {
+  const swStartTime = Date.now();
+  const item = {
+    id: 21, url: "https://example.com/file.zip", filename: "file.zip",
+    totalBytes: 5_000_000, canResume: true,
+    startTime: new Date(swStartTime + 100).toISOString(),
+  };
+  const result = evaluateDownload(item, settings, "extension-id", swStartTime);
+  assert.equal(result.eligible, false);
+  assert.equal(result.reason, "restored-history");
+});
+
+test("timestamp check uses 2-second tolerance correctly", () => {
+  const swStartTime = 1000000;
+  // 1.5 秒前：在 2 秒容差内，应该通过时间检查（不被 startTime 拦截）
+  const withinTolerance = {
+    id: 22, url: "https://example.com/edge.zip", filename: "edge.zip",
+    totalBytes: 5_000_000, bytesReceived: 0, paused: false, state: "in_progress",
+    startTime: new Date(swStartTime - 1500).toISOString(),
+  };
+  const result1 = evaluateDownload(withinTolerance, settings, "extension-id", swStartTime);
+  assert.equal(result1.eligible, true, "item within 2s tolerance should pass");
+
+  // 恰好 2 秒前：边界值，不应被拦截（需要严格小于 swStartTime - 2000）
+  const exactBoundary = {
+    id: 23, url: "https://example.com/boundary.zip", filename: "boundary.zip",
+    totalBytes: 5_000_000, bytesReceived: 0, paused: false, state: "in_progress",
+    startTime: new Date(swStartTime - 2000).toISOString(),
+  };
+  const result2 = evaluateDownload(exactBoundary, settings, "extension-id", swStartTime);
+  assert.equal(result2.eligible, true, "item at exact 2s boundary should pass (not strictly less)");
+
+  // 2.1 秒前：超出容差，应被拦截
+  const beyondTolerance = {
+    id: 24, url: "https://example.com/old.zip", filename: "old.zip",
+    totalBytes: 5_000_000,
+    startTime: new Date(swStartTime - 2100).toISOString(),
+  };
+  const result3 = evaluateDownload(beyondTolerance, settings, "extension-id", swStartTime);
+  assert.equal(result3.eligible, false, "item beyond 2s tolerance should be rejected");
+  assert.equal(result3.reason, "restored-history");
+});
+
+test("without swStartTime, falls back to state/progress checks only", () => {
+  // swStartTime=0 时跳过时间校验，仅靠 bytesReceived/paused/state 兜底
+  const pausedItem = {
+    id: 30, url: "https://example.com/file.zip", filename: "file.zip",
+    totalBytes: 5_000_000, paused: true,
+    startTime: new Date(Date.now() - 86400000).toISOString(),
+  };
+  const result1 = evaluateDownload(pausedItem, settings, "extension-id", 0);
+  assert.equal(result1.eligible, false, "paused item should be rejected even without swStartTime");
+  assert.equal(result1.reason, "restored-history");
+
+  // 干净的新任务，无 swStartTime 时应通过
+  const freshItem = {
+    id: 31, url: "https://example.com/file.zip", filename: "file.zip",
+    totalBytes: 5_000_000, bytesReceived: 0, paused: false, state: "in_progress",
+  };
+  const result2 = evaluateDownload(freshItem, settings, "extension-id", 0);
+  assert.equal(result2.eligible, true, "fresh item should pass without swStartTime");
+});
+
+test("interceptBrowserDownload skips restored history items without sending task", async () => {
+  resetNotificationCooldownsForTest();
+  const swStartTime = Date.now();
+  const calls = [];
+  const restoredItem = {
+    id: 40, url: "https://example.com/restored.zip", finalUrl: "https://example.com/restored.zip",
+    filename: "restored.zip", totalBytes: 5_000_000,
+    startTime: new Date(swStartTime - 60000).toISOString(),
+  };
+  const downloads = {
+    pause: async () => calls.push("pause"),
+    search: async () => [restoredItem],
+    resume: async () => calls.push("resume"),
+    cancel: async () => calls.push("cancel"),
+    erase: async () => calls.push("erase"),
+  };
+  const handled = await interceptBrowserDownload(restoredItem, {
+    downloads, settings, runtimeId: "extension-id", wait: async () => {},
+    sendTask: async () => { calls.push("send"); },
+    swStartTime,
+  });
+  assert.equal(handled, false, "restored item should not be handled");
+  assert.ok(!calls.includes("send"), "sendTask must NOT be called for restored items");
+  assert.ok(!calls.includes("pause"), "pause must NOT be called for restored items");
+  assert.ok(calls.includes("resume"), "resume should be called to let browser handle it");
+});
+

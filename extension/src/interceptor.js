@@ -17,10 +17,24 @@ const extensionFrom = (item, urls) => {
   return "";
 };
 
-export function evaluateDownload(item, settings, runtimeId) {
+export function evaluateDownload(item, settings, runtimeId, swStartTime = 0) {
   if (!settings.intercept) return { eligible: false, reason: "disabled" };
   if (Date.now() < Number(settings.bypassUntil || 0)) return { eligible: false, reason: "bypass" };
   if (item.byExtensionId === runtimeId) return { eligible: false, reason: "self" };
+
+  // 校验浏览器重启/会话恢复载入的历史 DownloadItem：
+  // 1. 若 item.startTime 早于扩展 Service Worker 启动时间（容许 2 秒误差距），属于历史任务。
+  if (swStartTime && item.startTime) {
+    const itemStartTime = new Date(item.startTime).getTime();
+    if (!isNaN(itemStartTime) && itemStartTime < swStartTime - 2000) {
+      return { eligible: false, reason: "restored-history" };
+    }
+  }
+
+  // 2. 若 item 带有已有下载进度、被暂停、支持恢复或非 in_progress 状态，属于历史恢复任务，不予以拦截。
+  if (item.bytesReceived > 0 || item.paused || item.canResume || (item.state && item.state !== "in_progress")) {
+    return { eligible: false, reason: "restored-history" };
+  }
 
   const urls = [...new Set([item.finalUrl, item.url].filter((url) => HTTP_URL.test(url || "")))];
   if (!urls.length) return { eligible: false, reason: "scheme" };
@@ -74,8 +88,8 @@ export function resetNotificationCooldownsForTest() {
 }
 
 export async function interceptBrowserDownload(initial, options) {
-  const { downloads, settings, runtimeId, sendTask, notify, wait, isDesktopOfflineError } = options;
-  const preflight = evaluateDownload(initial, settings, runtimeId);
+  const { downloads, settings, runtimeId, sendTask, notify, wait, isDesktopOfflineError, swStartTime } = options;
+  const preflight = evaluateDownload(initial, settings, runtimeId, swStartTime);
   if (!preflight.eligible) {
     try {
       await chrome.storage.local.set({
@@ -99,7 +113,7 @@ export async function interceptBrowserDownload(initial, options) {
   let taskSent = false;
   try {
     const item = await refreshDownload(downloads, initial, wait);
-    const decision = evaluateDownload(item, settings, runtimeId);
+    const decision = evaluateDownload(item, settings, runtimeId, swStartTime);
     if (!decision.eligible) {
       try {
         await chrome.storage.local.set({
