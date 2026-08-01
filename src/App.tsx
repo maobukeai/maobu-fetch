@@ -3,7 +3,7 @@ import { open as pickPath, save as savePath } from "@tauri-apps/plugin-dialog";
 import { open as openUrl } from "@tauri-apps/plugin-shell";
 import {
   AlertCircle, AlertTriangle, Archive, ArrowLeft, Bookmark, Check, CheckCircle2, CheckSquare, ChevronDown, ChevronUp, ChevronsDown, ChevronsUp, CirclePause, Clock, Copy,
-  Download, ExternalLink, File, FileAudio, FileImage, FileText, Film, FolderOpen,
+  Download, ExternalLink, Eye, File, FileAudio, FileImage, FileText, Film, FolderOpen,
   Gauge, Globe2, Heart, HelpCircle, Info, ListFilter, LoaderCircle, MessageCircle, MonitorDown, MoreHorizontal, Network,
   PanelRightClose, PanelRightOpen, Pause, Play, Plus, RefreshCw, RotateCcw, Save, Search, Settings, Keyboard,
   ShieldCheck, SlidersHorizontal, Sparkles, Square, Tag as TagIcon, Trash2, Unplug, Video, X, Zap,
@@ -429,8 +429,9 @@ export default function App() {
   // - renameTarget: F2 触发 of 重命名目标任务。
   const [renameTarget, setRenameTarget] = useState<DownloadTask | null>(null);
   const [speedLimitTarget, setSpeedLimitTarget] = useState<DownloadTask | null>(null);
-  // Task 30：失败通知 toast（带"一键重试"按钮）。仅在收到 failed kind 的 task-notification 事件时显示。
+  // Task 30：失败/完成通知 toast（带定位与操作按钮）。收到 task-notification 事件时显示。
   const [failureToast, setFailureToast] = useState<{ taskId: string; title: string; body: string } | undefined>();
+  const [completionToast, setCompletionToast] = useState<{ taskId: string; title: string; body: string } | undefined>();
   const [youtubeModalTaskId, setYoutubeModalTaskId] = useState<string | null>(null);
   // Task 25: 标签 + 任务-标签关联 + 高级筛选 + 快捷视图。
   // - tags: 全部标签列表（按 name 升序）
@@ -543,9 +544,19 @@ export default function App() {
           element.classList.add("fade-out");
           setTimeout(() => {
             setSplash(false);
+            if (isDesktop() && appWindow) {
+              void appWindow.show();
+              void appWindow.unminimize();
+              void appWindow.setFocus();
+            }
           }, 300);
         } else {
           setSplash(false);
+          if (isDesktop() && appWindow) {
+            void appWindow.show();
+            void appWindow.unminimize();
+            void appWindow.setFocus();
+          }
         }
       }, delay);
     });
@@ -622,13 +633,19 @@ export default function App() {
     }).then((item) => {
       if (item) unlisten.push(item);
     });
-    // 监听系统通知（如任务完成/失败弹窗）点击事件，点击时拉起/聚焦主窗口。
+    // 监听系统通知（如任务完成/失败弹窗）点击事件，点击时拉起/聚焦主窗口，并高亮定位任务。
     if (isDesktop()) {
-      void onAction(() => {
+      void onAction((notification) => {
         if (appWindow) {
           void appWindow.show();
           void appWindow.unminimize();
           void appWindow.setFocus();
+        }
+        const taskId = (notification as { extra?: { task_id?: string } })?.extra?.task_id;
+        if (taskId) {
+          setSelected(new Set([taskId]));
+          requestShowDetails(true);
+          setFilter("all");
         }
       }).then((item) => {
         if (item) unlisten.push(() => { void item.unregister(); });
@@ -639,11 +656,9 @@ export default function App() {
       unlisten.forEach((item) => item());
     };
   }, []);
-  // Task 30.2 / 30.5：监听任务完成/失败通知事件，按设置播放提示音并展示失败重试 toast。
-  // - 完成事件：根据 settings.notify_sound_enabled 决定是否播放上升提示音。
-  // - 失败事件：根据 settings.notify_failure_sound_enabled 决定是否播放下降提示音；
-  //   同时弹出带"一键重试"按钮的 toast，用户点击可重试对应任务。
-  // 依赖 settings 以读取最新的提示音开关；事件流本身不会重复触发本 effect。
+  // Task 30.2 / 30.5：监听任务完成/失败通知事件，按设置播放提示音并展示应用内悬浮 toast。
+  // - 完成事件：播放上升提示音，并展示带"定位任务"和"打开文件夹"的应用内悬浮通知。
+  // - 失败事件：播放下降提示音，并展示带"一键重试"和"查看详情"的应用内悬浮通知。
   useEffect(() => {
     let unlisten: (() => void) | undefined;
     void api.subscribeTaskNotification((payload: TaskNotificationPayload) => {
@@ -651,6 +666,7 @@ export default function App() {
         if (settings.notify_sound_enabled) {
           void playNotificationSound("completed");
         }
+        setCompletionToast({ taskId: payload.task_id, title: payload.title, body: payload.body });
       } else if (payload.kind === "failed") {
         if (settings.notify_failure_sound_enabled) {
           void playNotificationSound("failed");
@@ -664,12 +680,17 @@ export default function App() {
       if (unlisten) unlisten();
     };
   }, [settings.notify_sound_enabled, settings.notify_failure_sound_enabled]);
-  // Task 30.4：失败重试 toast 自动消失（与普通 toast 不同的 8 秒时长，给用户足够时间点击重试）。
+  // Task 30.4：失败/完成通知 toast 自动消失（8 秒时长，给用户足够时间点击交互）。
   useEffect(() => {
     if (!failureToast) return;
     const timer = setTimeout(() => setFailureToast(undefined), 8000);
     return () => clearTimeout(timer);
   }, [failureToast]);
+  useEffect(() => {
+    if (!completionToast) return;
+    const timer = setTimeout(() => setCompletionToast(undefined), 8000);
+    return () => clearTimeout(timer);
+  }, [completionToast]);
   useEffect(() => {
     const applyColorScheme = () => {
       const dark = usesDarkTheme(settings.color_scheme);
@@ -1453,6 +1474,56 @@ export default function App() {
               </div>
             </div>
             <button className="toast-close-btn" onClick={() => setFailureToast(undefined)} aria-label={t("common.close")}>
+              <X size={11} />
+            </button>
+          </div>
+        )}
+        {completionToast && (
+          <div className="toast toast-with-action toast-success" role="alert" onClick={() => {
+            const taskId = completionToast.taskId;
+            setCompletionToast(undefined);
+            setSelected(new Set([taskId]));
+            requestShowDetails(true);
+            setFilter("all");
+          }}>
+            <span className="toast-icon" style={{ color: "var(--accent-color, #10b981)" }}><CheckCircle2 size={14} /></span>
+            <div className="toast-body">
+              <span>{completionToast.title}</span>
+              <span className="toast-subtext">{completionToast.body}</span>
+              <div className="toast-actions">
+                <button
+                  className="toast-action-btn"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    const taskId = completionToast.taskId;
+                    setCompletionToast(undefined);
+                    setSelected(new Set([taskId]));
+                    requestShowDetails(true);
+                    setFilter("all");
+                  }}
+                >
+                  <Eye size={11} />
+                  定位任务
+                </button>
+                <button
+                  className="toast-action-btn toast-action-btn-secondary"
+                  onClick={async (e) => {
+                    e.stopPropagation();
+                    const taskId = completionToast.taskId;
+                    setCompletionToast(undefined);
+                    try {
+                      await api.action(taskId, "open-folder");
+                    } catch (err) {
+                      notify(String(err), "error");
+                    }
+                  }}
+                >
+                  <FolderOpen size={11} />
+                  打开文件夹
+                </button>
+              </div>
+            </div>
+            <button className="toast-close-btn" onClick={(e) => { e.stopPropagation(); setCompletionToast(undefined); }} aria-label={t("common.close")}>
               <X size={11} />
             </button>
           </div>
@@ -5312,7 +5383,7 @@ function SettingsPage({ value, onChange, onClose, notify, totalSpeed = 0, active
             </div>
             <div>
               <h2 style={{ margin: 0, fontSize: "16px", fontWeight: 700, color: "var(--text)" }}>猫步下载器 (Maobu Fetch)</h2>
-              <p style={{ margin: "4px 0 0", fontSize: "11px", color: "var(--muted)" }}>版本 {appInfo?.version || "0.6.8"}</p>
+              <p style={{ margin: "4px 0 0", fontSize: "11px", color: "var(--muted)" }}>版本 {appInfo?.version || "0.6.9"}</p>
             </div>
           </div>
 
@@ -5434,7 +5505,7 @@ function SettingsPage({ value, onChange, onClose, notify, totalSpeed = 0, active
                   {updateChecking ? <LoaderCircle size={12} className="spin" /> : <RefreshCw size={12} />}
                   {updateChecking ? "检查中…" : "检查更新"}
                 </button>
-                <span style={{ fontSize: "11px", color: "var(--muted)" }}>v{appInfo?.version || "0.6.8"}</span>
+                <span style={{ fontSize: "11px", color: "var(--muted)" }}>v{appInfo?.version || "0.6.9"}</span>
               </div>
               {updateResult && !updateResult.error && (
                 <div style={{ marginTop: "6px", fontSize: "11px", lineHeight: 1.5, color: "var(--muted)", padding: "8px 10px", background: "var(--bg-alt, rgba(0,0,0,0.03))", borderRadius: "6px", border: "1px solid var(--border)" }}>
@@ -5490,7 +5561,7 @@ function SettingsPage({ value, onChange, onClose, notify, totalSpeed = 0, active
                 <input
                   value={extVersion}
                   onChange={(e) => setExtVersion(e.target.value)}
-                  placeholder="如 0.6.8"
+                  placeholder="如 0.6.9"
                   style={{ height: "28px", padding: "0 8px", fontSize: "11px", borderRadius: "6px", border: "1px solid var(--border)", background: "var(--bg)", color: "var(--text)", width: "85px" }}
                 />
                 <button

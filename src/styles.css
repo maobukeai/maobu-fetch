@@ -2476,6 +2476,11 @@ svg { flex: 0 0 auto; }
   background: var(--border, #d0d0d0);
 }
 
+.toast.toast-success {
+  border-left: 3px solid var(--accent-color, #10b981);
+  cursor: pointer;
+}
+
 /* 预检面板（SubTask 9.1 / 9.4） */
 .precheck-panel {
   display: flex;

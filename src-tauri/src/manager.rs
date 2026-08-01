@@ -3222,6 +3222,7 @@ impl DownloadManager {
             .builder()
             .title(&title)
             .body(&body)
+            .extra("task_id", task.id.clone())
             .show()
         {
             let _ = self.app.emit(
@@ -3255,6 +3256,7 @@ impl DownloadManager {
             .builder()
             .title(&title)
             .body(&body)
+            .extra("task_id", task.id.clone())
             .show()
         {
             let _ = self.app.emit(
