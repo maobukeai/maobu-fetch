@@ -35,6 +35,19 @@
   --task-row-font-size: 11px;
   --task-row-name-size: 12px;
   --task-row-meta-size: 10px;
+  /* 组件兼容别名：EpisodePicker / GalleryPicker / YouTubeCredentialsModal 等组件
+     历史上使用了下列变量名（并带硬编码 fallback，浅色主题下几乎不可见）。
+     统一映射到主题变量；引用其他变量的别名会在使用处解析，深色主题自动跟随。 */
+  --fg: var(--text);
+  --fg-subtle: var(--muted);
+  --text-primary: var(--text);
+  --text-secondary: var(--muted);
+  --text-tertiary: var(--subtle);
+  --border-color: var(--border);
+  --card-bg: var(--surface);
+  --item-bg: var(--bg-alt);
+  --accent-bg-subtle: var(--accent-light);
+  --bg-input: var(--control);
 }
 
 :root[data-theme="dark"] {

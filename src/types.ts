@@ -465,6 +465,24 @@ export interface ExtensionCompatibilityResult {
   message: string;
 }
 
+// 一键更新（用户主动触发，非后台自动下载）。
+export interface UpdateDownloadResult {
+  version: string;
+  size: number;
+  /** 已通过 SHA-256 校验的安装包临时文件绝对路径（位于系统临时目录）。 */
+  path: string;
+}
+export interface ExtensionUpdateResult {
+  version: string;
+  /** 解压完成的扩展托管目录（应用数据目录下）。 */
+  folder: string;
+}
+export interface UpdateProgressPayload {
+  kind: "app" | "extension";
+  downloaded: number;
+  total: number;
+}
+
 // ===== 错误诊断（Task 3）=====
 export type ErrorCategory =
   | "auth-expired"

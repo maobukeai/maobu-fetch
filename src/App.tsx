@@ -20,7 +20,7 @@ import { LogicalSize } from "@tauri-apps/api/dpi";
 import type {
   AdvancedFilter, AppInfo, AppSettings, BackoffStrategy, CategoryRule, CategoryRuleType, CollisionPolicy, ColorScheme, CompletionAction, ConnectionState, DeepLinkReceivedPayload, DownloadPreset, DownloadTask, DuplicateCheckResult, DuplicateMatch, DuplicateType, ExtensionCompatibilityResult, FilenameCleanupRule, FilterKey, MediaCredential, MediaCredentialCheckResult, MediaFormat, MediaPlatform, MediaProbeResult, MeteredNetworkDetectedPayload,
   NewTaskRequest, PairingInfo, PlatformCompatibility, PlatformNamingTemplate, PowerAction, PowerActionState, PrecheckResult, ProxyAuth, QuickView, RestorePreview, RetryPolicy, SegmentStatus, SelfcheckReport, Tag,
-  TaskConnectionsEvent, TaskNotificationPayload, TaskStatus, TaskTagsMap, TaskTemplate, TaskTemplateTestResult, ToolComponent, ToolStatus, UpdateCheckResult, UrlHistoryEntry, WaitReason, ShortcutKeys,
+  TaskConnectionsEvent, TaskNotificationPayload, TaskStatus, TaskTagsMap, TaskTemplate, TaskTemplateTestResult, ToolComponent, ToolStatus, UpdateCheckResult, UpdateDownloadResult, UpdateProgressPayload, ExtensionUpdateResult, UrlHistoryEntry, WaitReason, ShortcutKeys,
 } from "./types";
 import {
   completionActionKind,
@@ -114,12 +114,6 @@ function getStatusText(): Record<TaskStatus | "parsing", string> {
     "paused-by-metered": t("status.paused-by-metered"),
   };
 }
-const duplicateTypeLabel: Record<DuplicateType, string> = {
-  "same-url": "URL 冲突",
-  "same-final-url": "最终地址冲突",
-  "same-target-path": "目标文件冲突",
-  "same-checksum": "已下载过相同文件",
-};
 /** Task 33: 按当前 locale 返回重复类型文案。 */
 function getDuplicateTypeLabel(): Record<DuplicateType, string> {
   return {
@@ -429,9 +423,8 @@ export default function App() {
   // - renameTarget: F2 触发 of 重命名目标任务。
   const [renameTarget, setRenameTarget] = useState<DownloadTask | null>(null);
   const [speedLimitTarget, setSpeedLimitTarget] = useState<DownloadTask | null>(null);
-  // Task 30：失败/完成通知 toast（带定位与操作按钮）。收到 task-notification 事件时显示。
+  // Task 30：失败通知 toast（带定位与操作按钮）。收到 task-notification 事件时显示。
   const [failureToast, setFailureToast] = useState<{ taskId: string; title: string; body: string } | undefined>();
-  const [completionToast, setCompletionToast] = useState<{ taskId: string; title: string; body: string } | undefined>();
   const [youtubeModalTaskId, setYoutubeModalTaskId] = useState<string | null>(null);
   // Task 25: 标签 + 任务-标签关联 + 高级筛选 + 快捷视图。
   // - tags: 全部标签列表（按 name 升序）
@@ -492,9 +485,14 @@ export default function App() {
     });
   };
 
+  // M6：记录订阅事件到达序号。refresh() 拉取全量快照期间若有增量事件先入 state，
+  // 旧快照会覆盖掉这些任务；检测到序号变化时补拉一次，避免新任务短暂"消失"。
+  const taskEventSeq = useRef(0);
   const refresh = async () => {
     try {
-      setTasks(await api.list());
+      const seqBefore = taskEventSeq.current;
+      const list = await api.list();
+      setTasks(taskEventSeq.current !== seqBefore ? await api.list() : list);
       if (isDesktop()) {
         const [nextSettings, nextPowerAction] = await Promise.all([api.settings(), api.powerActionState()]);
         setSettings(nextSettings);
@@ -562,7 +560,16 @@ export default function App() {
     });
 
     let unlisten: Array<() => void> = [];
+    // M2：异步订阅 resolve 晚于组件卸载时（StrictMode 开发模式双挂载必现），
+    // 用 disposed 标志在 push 前拦截并立即释放，避免监听器泄漏/双注册。
+    let disposed = false;
+    const keep = (item: (() => void) | null | undefined) => {
+      if (!item) return;
+      if (disposed) item();
+      else unlisten.push(item);
+    };
     void api.subscribe((event) => {
+      taskEventSeq.current += 1;
       if ("removed" in event) {
         setTasks((items) => items.filter((task) => task.id !== event.removed));
         setSelected((current) => {
@@ -578,15 +585,18 @@ export default function App() {
           ? items.map((task) => task.id === event.task.id ? event.task : task)
           : [event.task, ...items]);
       }
-    }).then((items) => { unlisten.push(...items); });
+    }).then((items) => {
+      if (disposed) items.forEach((fn) => fn());
+      else unlisten.push(...items);
+    });
     void api.subscribeSettings(setSettings).then((item) => {
-      if (item) unlisten.push(item);
+      keep(item);
     });
     void api.subscribePowerAction(setPowerAction).then((item) => {
-      if (item) unlisten.push(item);
+      keep(item);
     });
     void api.subscribeNotificationErrors((message) => setToast({ kind: "error", text: message })).then((item) => {
-      if (item) unlisten.push(item);
+      keep(item);
     });
     void api.subscribeStartupSelfcheck((report: SelfcheckReport) => {
       if (report.interrupted_count > 0 || report.dropped_shards > 0) {
@@ -597,13 +607,13 @@ export default function App() {
         });
       }
     }).then((item) => {
-      if (item) unlisten.push(item);
+      keep(item);
     });
     // Task 29：监听 maobu:// 深链错误与 .maobu-task 文件导入事件。
     void api.subscribeDeepLinkErrors((message) => {
       setToast({ kind: "error", text: message });
     }).then((item) => {
-      if (item) unlisten.push(item);
+      keep(item);
     });
     void api.subscribeDeepLinkReceived((payload: DeepLinkReceivedPayload) => {
       if (payload.action === "add" && payload.url) {
@@ -621,7 +631,7 @@ export default function App() {
         }
       }
     }).then((item) => {
-      if (item) unlisten.push(item);
+      keep(item);
     });
     // Task 32.3：监听计量网络自动暂停事件，展示 toast 提示用户。
     // 后端在 60s 定时检查中检测到计量网络且实际暂停了 ≥1 个任务时 emit。
@@ -631,7 +641,7 @@ export default function App() {
         setToast({ kind: "error", text: `当前为计量网络，已暂停 ${count} 个任务` });
       }
     }).then((item) => {
-      if (item) unlisten.push(item);
+      keep(item);
     });
     // 监听系统通知（如任务完成/失败弹窗）点击事件，点击时拉起/聚焦主窗口，并高亮定位任务。
     if (isDesktop()) {
@@ -645,13 +655,26 @@ export default function App() {
         if (taskId) {
           setSelected(new Set([taskId]));
           requestShowDetails(true);
+          setView("main");
           setFilter("all");
         }
       }).then((item) => {
-        if (item) unlisten.push(() => { void item.unregister(); });
+        if (item && !disposed) unlisten.push(() => { void item.unregister(); });
+        else if (item) void item.unregister();
+      });
+      // Windows 原生 Toast（tauri-winrt-notification）点击回调：后端在回调中拉起主窗口并
+      // emit notification-focus-task（payload 为 task_id），此处与 onAction 一致地高亮定位任务。
+      void listen<string>("notification-focus-task", (event) => {
+        setSelected(new Set([event.payload]));
+        requestShowDetails(true);
+        setView("main");
+        setFilter("all");
+      }).then((item) => {
+        keep(item);
       });
     }
     return () => {
+      disposed = true;
       document.removeEventListener("contextmenu", handleContextMenu);
       unlisten.forEach((item) => item());
     };
@@ -666,7 +689,6 @@ export default function App() {
         if (settings.notify_sound_enabled) {
           void playNotificationSound("completed");
         }
-        setCompletionToast({ taskId: payload.task_id, title: payload.title, body: payload.body });
       } else if (payload.kind === "failed") {
         if (settings.notify_failure_sound_enabled) {
           void playNotificationSound("failed");
@@ -680,17 +702,12 @@ export default function App() {
       if (unlisten) unlisten();
     };
   }, [settings.notify_sound_enabled, settings.notify_failure_sound_enabled]);
-  // Task 30.4：失败/完成通知 toast 自动消失（8 秒时长，给用户足够时间点击交互）。
+  // Task 30.4：失败通知 toast 自动消失（8 秒时长，给用户足够时间点击交互）。
   useEffect(() => {
     if (!failureToast) return;
     const timer = setTimeout(() => setFailureToast(undefined), 8000);
     return () => clearTimeout(timer);
   }, [failureToast]);
-  useEffect(() => {
-    if (!completionToast) return;
-    const timer = setTimeout(() => setCompletionToast(undefined), 8000);
-    return () => clearTimeout(timer);
-  }, [completionToast]);
   useEffect(() => {
     const applyColorScheme = () => {
       const dark = usesDarkTheme(settings.color_scheme);
@@ -1166,10 +1183,11 @@ export default function App() {
         return;
       }
       // 暂停/继续选中任务（单选时；多选时对全部生效）
+      // 活跃判定与 TaskRow 行内按钮保持一致（connecting/verifying/extracting 也可暂停）。
       if (matchesShortcut(event, keys.toggle_pause) && !event.repeat) {
         if (selected.size === 0) return;
         event.preventDefault();
-        const anyActive = tasks.some((task) => selected.has(task.id) && ["downloading", "waiting-network"].includes(task.status));
+        const anyActive = tasks.some((task) => selected.has(task.id) && ["downloading", "waiting-network", "connecting", "verifying", "extracting"].includes(task.status));
         void bulk(anyActive ? "pause" : "resume");
         return;
       }
@@ -1180,12 +1198,107 @@ export default function App() {
 
   const titlebar = isDesktop() ? <Titlebar /> : null;
 
+  // L3/H1：常规/自检/失败 toast 层。提取为共享变量，设置页早退分支也渲染，
+  // 避免停留设置页时错过任务失败通知；定位处理统一切回主视图（view 可能在历史归档）。
+  const globalToastLayer = (<>
+    {toast && <div className="toast"><span>{toast.kind === "ok" ? <Check size={14} /> : <AlertCircle size={14} />}</span>{toast.text}</div>}
+    {selfcheckToast && (
+      <div className="toast toast-with-action" role="status">
+        <span className="toast-icon"><AlertTriangle size={14} /></span>
+        <div className="toast-body">
+          <span>{t("toasts.recoveredInterrupted", { count: selfcheckToast.interrupted, dropped: selfcheckToast.dropped > 0 ? t("toasts.recoveredDroppedShards", { count: selfcheckToast.dropped }) : "" })}</span>
+          <button
+            className="toast-action-btn"
+            onClick={() => {
+              const ids = selfcheckToast.taskIds;
+              setSelfcheckToast(undefined);
+              setView("main");
+              if (ids.length > 0) {
+                setSelected(new Set(ids));
+                // Task 22.3：用户显式点击"查看详情"，跳过 detail_default_collapsed 自动折叠。
+                requestShowDetails(true);
+                setFilter("all");
+              } else {
+                setFilter("failed");
+              }
+            }}
+          >
+            <ListFilter size={11} />
+            {t("toasts.viewDetails")}
+          </button>
+        </div>
+        <button className="toast-close-btn" onClick={() => setSelfcheckToast(undefined)} aria-label={t("common.close")}>
+          <X size={11} />
+        </button>
+      </div>
+    )}
+    {failureToast && (
+      <div className="toast toast-with-action" role="alert">
+        <span className="toast-icon"><AlertCircle size={14} /></span>
+        <div className="toast-body">
+          <span>{failureToast.title}</span>
+          <span className="toast-subtext">{failureToast.body}</span>
+          <div className="toast-actions">
+            <button
+              className="toast-action-btn"
+              onClick={async () => {
+                const taskId = failureToast.taskId;
+                setFailureToast(undefined);
+                try {
+                  await api.action(taskId, "retry");
+                  setSelected(new Set([taskId]));
+                  requestShowDetails(true);
+                  setView("main");
+                  setFilter("all");
+                } catch (error) {
+                  notify(String(error), "error");
+                }
+              }}
+            >
+              <RefreshCw size={11} />
+              {t("toasts.retryNow")}
+            </button>
+            <button
+              className="toast-action-btn toast-action-btn-secondary"
+              onClick={() => {
+                const taskId = failureToast.taskId;
+                setFailureToast(undefined);
+                setSelected(new Set([taskId]));
+                requestShowDetails(true);
+                setView("main");
+                setFilter("all");
+              }}
+            >
+              {t("toasts.viewDetails")}
+            </button>
+            {failureToast.body.includes("YouTube") && (
+              <button
+                className="toast-action-btn toast-action-btn-secondary"
+                onClick={() => {
+                  const taskId = failureToast.taskId;
+                  setFailureToast(undefined);
+                  setYoutubeModalTaskId(taskId);
+                }}
+              >
+                <ShieldCheck size={11} />
+                同步/配置凭证
+              </button>
+            )}
+          </div>
+        </div>
+        <button className="toast-close-btn" onClick={() => setFailureToast(undefined)} aria-label={t("common.close")}>
+          <X size={11} />
+        </button>
+      </div>
+    )}
+  </>);
+
   if (settingsOpen) return (
     <div className="app-container">
       {titlebar}
       <SettingsPage value={settings} onChange={setSettings} onClose={() => setSettingsOpen(false)} notify={notify} totalSpeed={totalSpeed} activeCount={active.length} />
       <WindowResizeHandles />
-      {toast && <div className="toast"><span>{toast.kind === "ok" ? <Check size={14} /> : <AlertCircle size={14} />}</span>{toast.text}</div>}
+      {globalToastLayer}
       {showCloseConfirm && <CloseConfirmDialog onClose={() => setShowCloseConfirm(false)} onConfirm={handleCloseConfirm} />}
     </div>
   );
@@ -1255,8 +1368,8 @@ export default function App() {
               </div>
 
               <div className="action-group">
-                <button disabled={!selectedOne || selectedOne.status !== "completed"} onClick={() => selectedOne && void api.openFile(selectedOne.id)} title={t("toolbar.openFile")}><ExternalLink size={14} /></button>
-                <button disabled={!selectedOne} onClick={() => selectedOne && void api.openFolder(selectedOne.id)} title={t("toolbar.openFolder")}><FolderOpen size={14} /></button>
+                <button disabled={!selectedOne || selectedOne.status !== "completed"} onClick={() => selectedOne && void api.openFile(selectedOne.id).catch((error) => notify(String(error), "error"))} title={t("toolbar.openFile")}><ExternalLink size={14} /></button>
+                <button disabled={!selectedOne} onClick={() => selectedOne && void api.openFolder(selectedOne.id).catch((error) => notify(String(error), "error"))} title={t("toolbar.openFolder")}><FolderOpen size={14} /></button>
               </div>
 
               {view === "history" && (
@@ -1336,7 +1449,7 @@ export default function App() {
             >
               <div className="task-grid">
               <div className="table-header"><label><input type="checkbox" aria-label={t("toolbar.selectAll")} checked={visible.length > 0 && visible.every((task) => selected.has(task.id))} onChange={() => setSelected(visible.every((task) => selected.has(task.id)) ? new Set() : new Set(visible.map((task) => task.id)))} /></label>{[["file_name",t("table.fileName"),""],["total_bytes",t("table.size"),"size"],["status",t("table.status"),"status"],["connection_count",t("table.connection"),"connection"],["downloaded_bytes",t("table.progress"),"progress"],["speed",t("table.speed"),"speed"],["eta_seconds",t("table.eta"),"eta"],[showCompletedAt ? "completed_at" : "created_at",showCompletedAt ? t("table.completedAt") : t("table.createdAt"),"created"]].map(([key,label,widthKey]) => <span key={key} onClick={() => setSort((current) => ({ key: key as keyof DownloadTask, desc: current.key === key ? !current.desc : ["created_at", "completed_at"].includes(key) }))}>{label}{widthKey && <i className="column-resizer" onMouseDown={(event) => beginResize(widthKey, event)} />}</span>)}<span /></div>
-              <div className="task-rows">{loading ? <div className="center-state"><LoaderCircle className="spin" /></div> : visible.length === 0 ? <EmptyState filter={filter} view={view} onAdd={() => setNewOpen(true)} /> : visible.map((task) => <TaskRow key={task.id} task={task} showCompletedAt={showCompletedAt} taskTagList={taskTags[task.id] ?? []} selected={selected.has(task.id)} onSelect={() => { setPrimaryTaskId(task.id); setSelected((current) => { const next = new Set(current); next.has(task.id) ? next.delete(task.id) : next.add(task.id); return next; }); }} onOpen={() => task.status === "completed" && void api.openFile(task.id)} onContext={(event) => { event.preventDefault(); setPrimaryTaskId(task.id); setContext({ x: event.clientX, y: event.clientY, id: task.id }); if (!selected.has(task.id)) setSelected(new Set([task.id])); }} onMouseDown={(taskItem, evt) => { setPrimaryTaskId(taskItem.id); handleTaskMouseDown(taskItem, evt); }} onCheckboxMouseDown={(evt) => handleCheckboxMouseDown(task.id, selected.has(task.id), evt)} onCheckboxMouseEnter={() => handleCheckboxMouseEnter(task.id)} />)}</div>
+              <div className="task-rows">{loading ? <div className="center-state"><LoaderCircle className="spin" /></div> : visible.length === 0 ? <EmptyState filter={filter} view={view} onAdd={() => setNewOpen(true)} /> : visible.map((task) => <TaskRow key={task.id} task={task} showCompletedAt={showCompletedAt} taskTagList={taskTags[task.id] ?? []} selected={selected.has(task.id)} notify={notify} onSelect={() => { setPrimaryTaskId(task.id); setSelected((current) => { const next = new Set(current); next.has(task.id) ? next.delete(task.id) : next.add(task.id); return next; }); }} onOpen={() => task.status === "completed" && void api.openFile(task.id).catch((error) => notify(String(error), "error"))} onContext={(event) => { event.preventDefault(); setPrimaryTaskId(task.id); setContext({ x: event.clientX, y: event.clientY, id: task.id }); if (!selected.has(task.id)) setSelected(new Set([task.id])); }} onMouseDown={(taskItem, evt) => { setPrimaryTaskId(taskItem.id); handleTaskMouseDown(taskItem, evt); }} onCheckboxMouseDown={(evt) => handleCheckboxMouseDown(task.id, selected.has(task.id), evt)} onCheckboxMouseEnter={() => handleCheckboxMouseEnter(task.id)} />)}</div>
             </div></div>
             {showDetails && <Details task={activeTask} onClose={() => setShowDetails(false)} notify={notify} selectedCount={selected.size} onOpenProxySettings={() => { setSettingsOpen(true); }} onOpenYouTubeModal={() => setYoutubeModalTaskId(activeTask?.id || "")} onTagsChanged={refreshTags} />}
           </section>
@@ -1355,6 +1468,7 @@ export default function App() {
           setSelected(new Set([taskId]));
           // Task 22.3：用户显式定位任务后请求展开详情，跳过 detail_default_collapsed 自动折叠。
           requestShowDetails(true);
+          setView("main");
           setFilter("all");
         }} notify={notify} />}
         {(() => {
@@ -1391,143 +1505,7 @@ export default function App() {
             }}
           />
         )}
-        {toast && <div className="toast"><span>{toast.kind === "ok" ? <Check size={14} /> : <AlertCircle size={14} />}</span>{toast.text}</div>}
-        {selfcheckToast && (
-          <div className="toast toast-with-action" role="status">
-            <span className="toast-icon"><AlertTriangle size={14} /></span>
-            <div className="toast-body">
-              <span>{t("toasts.recoveredInterrupted", { count: selfcheckToast.interrupted, dropped: selfcheckToast.dropped > 0 ? t("toasts.recoveredDroppedShards", { count: selfcheckToast.dropped }) : "" })}</span>
-              <button
-                className="toast-action-btn"
-                onClick={() => {
-                  const ids = selfcheckToast.taskIds;
-                  setSelfcheckToast(undefined);
-                  if (ids.length > 0) {
-                    setSelected(new Set(ids));
-                    // Task 22.3：用户显式点击"查看详情"，跳过 detail_default_collapsed 自动折叠。
-                    requestShowDetails(true);
-                    setFilter("all");
-                  } else {
-                    setFilter("failed");
-                  }
-                }}
-              >
-                <ListFilter size={11} />
-                {t("toasts.viewDetails")}
-              </button>
-            </div>
-            <button className="toast-close-btn" onClick={() => setSelfcheckToast(undefined)} aria-label={t("common.close")}>
-              <X size={11} />
-            </button>
-          </div>
-        )}
-        {failureToast && (
-          <div className="toast toast-with-action" role="alert">
-            <span className="toast-icon"><AlertCircle size={14} /></span>
-            <div className="toast-body">
-              <span>{failureToast.title}</span>
-              <span className="toast-subtext">{failureToast.body}</span>
-              <div className="toast-actions">
-                <button
-                  className="toast-action-btn"
-                  onClick={async () => {
-                    const taskId = failureToast.taskId;
-                    setFailureToast(undefined);
-                    try {
-                      await api.action(taskId, "retry");
-                      setSelected(new Set([taskId]));
-                      requestShowDetails(true);
-                      setFilter("all");
-                    } catch (error) {
-                      notify(String(error), "error");
-                    }
-                  }}
-                >
-                  <RefreshCw size={11} />
-                  {t("toasts.retryNow")}
-                </button>
-                <button
-                  className="toast-action-btn toast-action-btn-secondary"
-                  onClick={() => {
-                    const taskId = failureToast.taskId;
-                    setFailureToast(undefined);
-                    setSelected(new Set([taskId]));
-                    requestShowDetails(true);
-                    setFilter("all");
-                  }}
-                >
-                  {t("toasts.viewDetails")}
-                </button>
-                {failureToast.body.includes("YouTube") && (
-                  <button
-                    className="toast-action-btn toast-action-btn-secondary"
-                    onClick={() => {
-                      const taskId = failureToast.taskId;
-                      setFailureToast(undefined);
-                      setYoutubeModalTaskId(taskId);
-                    }}
-                  >
-                    <ShieldCheck size={11} />
-                    同步/配置凭证
-                  </button>
-                )}
-              </div>
-            </div>
-            <button className="toast-close-btn" onClick={() => setFailureToast(undefined)} aria-label={t("common.close")}>
-              <X size={11} />
-            </button>
-          </div>
-        )}
-        {completionToast && (
-          <div className="toast toast-with-action toast-success" role="alert" onClick={() => {
-            const taskId = completionToast.taskId;
-            setCompletionToast(undefined);
-            setSelected(new Set([taskId]));
-            requestShowDetails(true);
-            setFilter("all");
-          }}>
-            <span className="toast-icon" style={{ color: "var(--accent-color, #10b981)" }}><CheckCircle2 size={14} /></span>
-            <div className="toast-body">
-              <span>{completionToast.title}</span>
-              <span className="toast-subtext">{completionToast.body}</span>
-              <div className="toast-actions">
-                <button
-                  className="toast-action-btn"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    const taskId = completionToast.taskId;
-                    setCompletionToast(undefined);
-                    setSelected(new Set([taskId]));
-                    requestShowDetails(true);
-                    setFilter("all");
-                  }}
-                >
-                  <Eye size={11} />
-                  定位任务
-                </button>
-                <button
-                  className="toast-action-btn toast-action-btn-secondary"
-                  onClick={async (e) => {
-                    e.stopPropagation();
-                    const taskId = completionToast.taskId;
-                    setCompletionToast(undefined);
-                    try {
-                      await api.action(taskId, "open-folder");
-                    } catch (err) {
-                      notify(String(err), "error");
-                    }
-                  }}
-                >
-                  <FolderOpen size={11} />
-                  打开文件夹
-                </button>
-              </div>
-            </div>
-            <button className="toast-close-btn" onClick={(e) => { e.stopPropagation(); setCompletionToast(undefined); }} aria-label={t("common.close")}>
-              <X size={11} />
-            </button>
-          </div>
-        )}
+        {globalToastLayer}
         {youtubeModalTaskId !== null && (
           <YouTubeCredentialsModal
             taskId={youtubeModalTaskId || undefined}
@@ -1607,7 +1585,7 @@ function isMediaTask(task: DownloadTask): boolean {
   }
 }
 
-function TaskRow({ task, selected, showCompletedAt, taskTagList, onSelect, onOpen, onContext, onMouseDown, onCheckboxMouseDown, onCheckboxMouseEnter }: { task: DownloadTask; selected: boolean; showCompletedAt: boolean; taskTagList: Tag[]; onSelect: () => void; onOpen: () => void; onContext: (event: MouseEvent) => void; onMouseDown: (task: DownloadTask, event: React.MouseEvent) => void; onCheckboxMouseDown: (event: React.MouseEvent) => void; onCheckboxMouseEnter: () => void }) {
+function TaskRow({ task, selected, showCompletedAt, taskTagList, notify, onSelect, onOpen, onContext, onMouseDown, onCheckboxMouseDown, onCheckboxMouseEnter }: { task: DownloadTask; selected: boolean; showCompletedAt: boolean; taskTagList: Tag[]; notify: (text: string, kind?: "ok" | "error") => void; onSelect: () => void; onOpen: () => void; onContext: (event: MouseEvent) => void; onMouseDown: (task: DownloadTask, event: React.MouseEvent) => void; onCheckboxMouseDown: (event: React.MouseEvent) => void; onCheckboxMouseEnter: () => void }) {
   // Task 33: 订阅 locale 变化，语言切换时 TaskRow 重渲染以刷新状态文案。
   useLocale();
   const statusText = getStatusText();
@@ -1626,7 +1604,10 @@ function TaskRow({ task, selected, showCompletedAt, taskTagList, onSelect, onOpe
       } else {
         await api.action(task.id, "resume");
       }
-    } catch (e) {}
+    } catch (e) {
+      // 暂停/重试/继续失败必须反馈，不能静默吞掉让用户误以为操作成功。
+      notify(String(e), "error");
+    }
   };
   return <div
     className={selected ? "task-row selected" : "task-row"}
@@ -1644,7 +1625,7 @@ function TaskRow({ task, selected, showCompletedAt, taskTagList, onSelect, onOpe
       onMouseEnter={onCheckboxMouseEnter}
       style={{ cursor: "pointer" }}
     >
-      <input type="checkbox" aria-label={t("toolbar.selectAll")} checked={selected} readOnly />
+      <input type="checkbox" aria-label={`选择任务：${task.file_name}`} checked={selected} readOnly />
     </label>
     <div className="name-cell" onClick={onSelect}>
       <FileIcon category={task.category} />
@@ -1751,7 +1732,8 @@ function Details({ task, onClose, notify, selectedCount, onOpenProxySettings, on
 
   const activeRequestRef = useRef<string | null>(null);
 
-  // 当任务切换或状态变化时，重置标签页与预检缓存。
+  // 任务切换时重置标签页与预检缓存；状态变化时只刷新预检缓存，
+  // 并在进入可诊断状态时切换到诊断页——不再把用户从"连接"等标签页踢回"信息"。
   useEffect(() => {
     activeRequestRef.current = null;
     setPrecheck({ loading: false });
@@ -1760,7 +1742,16 @@ function Details({ task, onClose, notify, selectedCount, onOpenProxySettings, on
     } else {
       setTab("info");
     }
-  }, [taskId, taskStatus]);
+  }, [taskId]);
+  useEffect(() => {
+    if (taskId === undefined) return;
+    activeRequestRef.current = null;
+    setPrecheck({ loading: false });
+    if (taskStatus && DIAGNOSIS_TAB_STATUSES.includes(taskStatus)) {
+      setTab("diagnosis");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [taskStatus]);
 
   const runPrecheck = async () => {
     if (!task) return;
@@ -1883,15 +1874,6 @@ function Details({ task, onClose, notify, selectedCount, onOpenProxySettings, on
   </aside>;
 }
 
-const CONNECTION_STATE_LABEL: Record<ConnectionState, string> = {
-  connecting: "连接中",
-  downloading: "下载中",
-  retrying: "重试中",
-  completed: "已完成",
-  failed: "失败",
-  paused: "已暂停",
-};
-
 /** Task 33: DetailsConnectionsTab 内部按当前 locale 取连接状态文案。 */
 function useConnectionStateLabel(): Record<ConnectionState, string> {
   // useLocale 触发组件重渲染，确保语言切换时连接状态文案同步刷新。
@@ -1914,6 +1896,8 @@ function DetailsConnectionsTab({ task }: { task: DownloadTask }) {
   const [segments, setSegments] = useState<Record<string, SegmentStatus>>({});
   const [lastTimestamp, setLastTimestamp] = useState<number | undefined>();
   const taskId = task.id;
+  // Task 33：连接状态文案按当前 locale 取值（语言切换时随 useLocale 重渲染）。
+  const connectionStateLabel = useConnectionStateLabel();
 
   useEffect(() => {
     setSegments({});
@@ -1998,7 +1982,7 @@ function DetailsConnectionsTab({ task }: { task: DownloadTask }) {
         return <div key={seg.segment_id} className={`connection-item state-${seg.state}`}>
           <div className="connection-row">
             <span className="connection-index">#{seg.segment_id}</span>
-            <span className="connection-state-badge">{CONNECTION_STATE_LABEL[seg.state]}</span>
+            <span className="connection-state-badge">{connectionStateLabel[seg.state]}</span>
             <span className="connection-bytes">{formatBytes(seg.downloaded_bytes)} / {formatBytes(seg.total_bytes)}</span>
             <span className="connection-percent">{percent}%</span>
           </div>
@@ -2341,7 +2325,7 @@ function DetailsInfoTab({ task, showMore, onToggleMore, notify, action, onTagsCh
       ) : (
         !["completed", "cancelled", "remote-changed"].includes(task.status) && <button onClick={() => void action("resume")}><Play size={13} />{t("details.resumeDownload")}</button>
       )}
-      <button onClick={() => void api.openFolder(task.id)}><FolderOpen size={13} />{t("details.openDirectory")}</button>
+      <button onClick={() => void api.openFolder(task.id).catch((error) => notify(String(error), "error"))}><FolderOpen size={13} />{t("details.openDirectory")}</button>
       {task.status === "completed" && (
         <button onClick={async () => {
           try {
@@ -2424,7 +2408,7 @@ function DetailsInfoTab({ task, showMore, onToggleMore, notify, action, onTagsCh
 }
 
 function DetailValue({ label, value, notify }: { label: string; value: string; notify: (text: string, kind?: "ok" | "error") => void }) {
-  return <div><dt>{label}</dt><dd className="detail-copy-value" title={value}><span>{value}</span><button onClick={() => void navigator.clipboard.writeText(value).then(() => notify(t("details.copied", { label })))} title={t("details.copyLabel", { label })}><Copy size={11} /></button></dd></div>;
+  return <div><dt>{label}</dt><dd className="detail-copy-value" title={value}><span>{value}</span><button onClick={() => void navigator.clipboard.writeText(value).then(() => notify(t("details.copied", { label }))).catch((error) => notify(String(error), "error"))} title={t("details.copyLabel", { label })}><Copy size={11} /></button></dd></div>;
 }
 
 const RETRY_PRESETS = {
@@ -3510,6 +3494,8 @@ function NewTaskDialog({ settings, allTasks, onClose, onCreated, defaultUrl, onL
   const [checksum, setChecksum] = useState(""); const [limit, setLimit] = useState(0);
   const [connections, setConnections] = useState(settings.connections_per_download);
   const [media, setMedia] = useState<MediaProbeResult>(); const [format, setFormat] = useState("");
+  // 已勾选的字幕语言（yt-dlp --sub-langs）；为空表示不下载字幕。
+  const [subtitleLangs, setSubtitleLangs] = useState<string[]>([]);
   // Task 42：图集场景下用户选中的图片 format id 集合。默认全选，用户可取消勾选。
   const [selectedImageIds, setSelectedImageIds] = useState<Set<string>>(new Set());
   // Task 47：合集/多 P 场景下用户选中的分 P 序号集合与画质偏好。
@@ -3922,6 +3908,8 @@ function NewTaskDialog({ settings, allTasks, onClose, onCreated, defaultUrl, onL
       const result = await api.probeMedia(lines[0], { cookie: cookie || undefined, referer: referer || undefined });
       if (result.drm) throw new Error("检测到 DRM 保护，猫步下载器不处理此内容");
       setMedia(result);
+      // 字幕语言选择随新探测结果重置（默认不下载字幕，用户按需勾选）。
+      setSubtitleLangs([]);
       // Task 42：根据 media_type 选择默认格式
       // - Video / Mixed：选择最高画质的视频流（与历史行为一致）
       // - Audio：仅显示音频流（has_audio && !has_video），按高度/比特率排序后选最佳
@@ -4030,11 +4018,13 @@ function NewTaskDialog({ settings, allTasks, onClose, onCreated, defaultUrl, onL
           onCreated(fulfilled.length === 1 ? fulfilled[0] : fulfilled);
         }
         if (firstError) {
-          setError(
-            fulfilled.length === 0
-              ? firstError
-              : `部分集数创建失败：${firstError}（成功 ${fulfilled.length}/${eps.length}）`
-          );
+          if (fulfilled.length === 0) {
+            setError(firstError);
+          } else {
+            // 部分成功时 onCreated 已关闭对话框，改用全局 toast 提示失败明细，
+            // 避免向已卸载的对话框写入错误导致失败原因丢失。
+            notify?.(`部分集数创建失败：${firstError}（成功 ${fulfilled.length}/${eps.length}）`, "error");
+          }
         }
       } catch (reason) { setError(String(reason)); }
       setBusy(false);
@@ -4085,17 +4075,18 @@ function NewTaskDialog({ settings, allTasks, onClose, onCreated, defaultUrl, onL
           onCreated(fulfilled.length === 1 ? fulfilled[0] : fulfilled);
         }
         if (firstError) {
-          setError(
-            fulfilled.length === 0
-              ? firstError
-              : `部分图片创建失败：${firstError}（成功 ${fulfilled.length}/${imageItems.length}）`
-          );
+          if (fulfilled.length === 0) {
+            setError(firstError);
+          } else {
+            // 部分成功时 onCreated 已关闭对话框，改用全局 toast 提示失败明细。
+            notify?.(`部分图片创建失败：${firstError}（成功 ${fulfilled.length}/${imageItems.length}）`, "error");
+          }
         }
       } catch (reason) { setError(String(reason)); }
       setBusy(false);
       return;
     }
-    const template: Omit<NewTaskRequest, "url"> = { file_name: activeFileName || undefined, destination, headers, scheduled_at: schedule ? new Date(schedule).getTime() : undefined, priority, expected_checksum: checksum || undefined, source: "desktop", per_task_speed_limit: limit * 1024, collision_policy: policy, completion_action: lines.length > 1 ? "none" : completionAction, connection_count: connections, media: media ? { extractor: media.extractor, format_id: format, format_label: selectedFormat?.label, subtitles: [], thumbnail: media.thumbnail, requires_ffmpeg: selectedFormat?.requires_ffmpeg } : undefined, user_edited_file_name: userEditedFileName.current || overrideFileName !== undefined };
+    const template: Omit<NewTaskRequest, "url"> = { file_name: activeFileName || undefined, destination, headers, scheduled_at: schedule ? new Date(schedule).getTime() : undefined, priority, expected_checksum: checksum || undefined, source: "desktop", per_task_speed_limit: limit * 1024, collision_policy: policy, completion_action: lines.length > 1 ? "none" : completionAction, connection_count: connections, media: media ? { extractor: media.extractor, format_id: format, format_label: selectedFormat?.label, subtitles: subtitleLangs, thumbnail: media.thumbnail, requires_ffmpeg: selectedFormat?.requires_ffmpeg } : undefined, user_edited_file_name: userEditedFileName.current || overrideFileName !== undefined };
     try {
       // Task 19: 创建任务成功后将 URL 写入历史（LRU），失败不阻塞主流程。
       // 多行批量场景下逐条写入；单行场景只写一次。
@@ -4574,6 +4565,27 @@ function NewTaskDialog({ settings, allTasks, onClose, onCreated, defaultUrl, onL
                 />
               </div>
             )}
+            {media.subtitles.length > 0 && (
+              <div className="media-format-select-row" style={{ display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
+                <span style={{ fontSize: "11px", color: "var(--muted)", flexShrink: 0 }}>下载字幕：</span>
+                {media.subtitles.slice(0, 10).map((lang) => {
+                  const active = subtitleLangs.includes(lang);
+                  return (
+                    <button
+                      type="button"
+                      key={lang}
+                      aria-pressed={active}
+                      title={active ? `点击取消下载 ${lang} 字幕` : `点击下载 ${lang} 字幕`}
+                      onClick={() => setSubtitleLangs((current) => current.includes(lang) ? current.filter((item) => item !== lang) : [...current, lang])}
+                      style={{ height: "20px", padding: "0 9px", fontSize: "10px", cursor: "pointer", borderRadius: "999px", border: active ? "1px solid var(--accent)" : "1px solid var(--border)", background: active ? "var(--accent)" : "var(--bg)", color: active ? "#fff" : "var(--text)" }}
+                    >
+                      {lang}
+                    </button>
+                  );
+                })}
+                {media.subtitles.length > 10 && <span style={{ fontSize: "10px", color: "var(--muted)" }}>等 {media.subtitles.length} 种语言</span>}
+              </div>
+            )}
           </div>
         )}
 
@@ -4643,11 +4655,11 @@ function NewTaskDialog({ settings, allTasks, onClose, onCreated, defaultUrl, onL
                   placeholder="Bearer ... 或 Basic ..."
                 />
               </Field>
-              <Field className={["run-command", "copy-to", "move-to"].includes(completionActionKind(completionAction)) ? "wide" : ""} label="预期文件 SHA-256">
+              <Field className={["run-command", "copy-to", "move-to"].includes(completionActionKind(completionAction)) ? "wide" : ""} label="预期文件校验和">
                 <input
                   value={checksum}
                   onChange={(e) => setChecksum(e.target.value)}
-                  placeholder="用于校验文件完整性"
+                  placeholder="MD5(32位) / SHA-1(40位) / SHA-256(64位) 十六进制"
                 />
               </Field>
               <Field className={["run-command", "copy-to", "move-to"].includes(completionActionKind(completionAction)) ? "wide" : ""} label="下载完成后">
@@ -4738,13 +4750,13 @@ function NewTaskDialog({ settings, allTasks, onClose, onCreated, defaultUrl, onL
             <div className="conflict-options-header">
               <AlertTriangle size={11} />
               <span>
-                检测到与已有任务重复（{duplicateResult.matches.map((m) => duplicateTypeLabel[m.duplicate_type]).join("、")}），请选择处理方式：
+                检测到与已有任务重复（{duplicateResult.matches.map((m) => getDuplicateTypeLabel()[m.duplicate_type]).join("、")}），请选择处理方式：
               </span>
             </div>
             <ul className="duplicate-match-list">
               {duplicateResult.matches.map((m) => (
                 <li key={`${m.duplicate_type}-${m.existing_task_id}`} className="duplicate-match-item">
-                  <span className="duplicate-match-type">{duplicateTypeLabel[m.duplicate_type]}</span>
+                  <span className="duplicate-match-type">{getDuplicateTypeLabel()[m.duplicate_type]}</span>
                   <span className="duplicate-match-label" title={m.existing_task_label}>{m.existing_task_label}</span>
                   <span className="duplicate-match-status">（{statusText[m.existing_task_status as TaskStatus] ?? m.existing_task_status}）</span>
                 </li>
@@ -4939,6 +4951,22 @@ function SettingsPage({ value, onChange, onClose, notify, totalSpeed = 0, active
   const [extVersion, setExtVersion] = useState("");
   const [extChecking, setExtChecking] = useState(false);
   const [extResult, setExtResult] = useState<ExtensionCompatibilityResult | null>(null);
+  // 一键更新（用户主动触发）：应用安装包与扩展 ZIP 的下载进度/结果状态。
+  const [appUpdateBusy, setAppUpdateBusy] = useState(false);
+  const [appUpdateProgress, setAppUpdateProgress] = useState<UpdateProgressPayload | null>(null);
+  const [appUpdateReady, setAppUpdateReady] = useState<UpdateDownloadResult | null>(null);
+  const [extUpdateBusy, setExtUpdateBusy] = useState(false);
+  const [extUpdateProgress, setExtUpdateProgress] = useState<UpdateProgressPayload | null>(null);
+  const [extUpdateResult, setExtUpdateResult] = useState<ExtensionUpdateResult | null>(null);
+  // 订阅一键更新下载进度事件（kind 区分 app / extension）。
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    void api.subscribeUpdateProgress((payload) => {
+      if (payload.kind === "app") setAppUpdateProgress(payload);
+      else setExtUpdateProgress(payload);
+    }).then((item) => { unlisten = item; });
+    return () => { if (unlisten) unlisten(); };
+  }, []);
   // Task 34.3：应用信息（便携模式、版本、数据目录）。设置页关于分组加载时拉取一次。
   const [appInfo, setAppInfo] = useState<AppInfo | null>(null);
   useEffect(() => {
@@ -4989,6 +5017,49 @@ function SettingsPage({ value, onChange, onClose, notify, totalSpeed = 0, active
       notify(String(error), "error");
     } finally {
       setExtChecking(false);
+    }
+  };
+  // 一键更新（应用）：下载最新安装包（后端强制 SHA-256 校验），完成后等待用户确认运行。
+  const runAppUpdateDownload = async () => {
+    setAppUpdateBusy(true);
+    setAppUpdateReady(null);
+    setAppUpdateProgress({ kind: "app", downloaded: 0, total: 0 });
+    try {
+      const result = await api.appUpdateDownload();
+      setAppUpdateReady(result);
+      notify(`v${result.version} 安装包已下载并校验通过`);
+    } catch (error) {
+      notify(String(error), "error");
+    } finally {
+      setAppUpdateBusy(false);
+      setAppUpdateProgress(null);
+    }
+  };
+  // 一键更新（应用）：运行安装包。NSIS 向导会引导用户完成安装（含关闭本应用）。
+  const runAppUpdateInstaller = async () => {
+    if (!appUpdateReady) return;
+    try {
+      await api.appUpdateRunInstaller(appUpdateReady.path);
+      notify("安装程序已启动，请按提示完成安装");
+      setAppUpdateReady(null);
+    } catch (error) {
+      notify(String(error), "error");
+    }
+  };
+  // 一键更新（扩展）：下载 extension.zip 并解压到应用数据目录的托管目录。
+  const runExtensionUpdate = async () => {
+    setExtUpdateBusy(true);
+    setExtUpdateResult(null);
+    setExtUpdateProgress({ kind: "extension", downloaded: 0, total: 0 });
+    try {
+      const result = await api.extensionUpdateDownload();
+      setExtUpdateResult(result);
+      notify(`扩展 v${result.version} 已就绪`);
+    } catch (error) {
+      notify(String(error), "error");
+    } finally {
+      setExtUpdateBusy(false);
+      setExtUpdateProgress(null);
     }
   };
   const exportTasks = async () => {
@@ -5524,7 +5595,16 @@ function SettingsPage({ value, onChange, onClose, notify, totalSpeed = 0, active
                       {updateResult.latest.sha256 && (
                         <div style={{ fontSize: "10px", color: "var(--muted)", wordBreak: "break-all" }}>SHA-256: {updateResult.latest.sha256}</div>
                       )}
-                      <div>
+                      <div style={{ display: "flex", gap: "6px", flexWrap: "wrap", alignItems: "center" }}>
+                        <button
+                          className="input-button"
+                          disabled={appUpdateBusy}
+                          onClick={() => void runAppUpdateDownload()}
+                          style={{ display: "inline-flex", alignItems: "center", gap: "6px", height: "26px", padding: "0 12px", fontSize: "11px", fontWeight: 500, cursor: appUpdateBusy ? "default" : "pointer", borderRadius: "6px", border: "1px solid var(--accent)", background: "var(--accent)", color: "white" }}
+                        >
+                          {appUpdateBusy ? <LoaderCircle size={11} className="spin" /> : <Download size={11} />}
+                          {appUpdateBusy ? "下载中…" : "一键更新"}
+                        </button>
                         <button
                           className="input-button"
                           onClick={() => void openUrl(updateResult.latest?.download_url || "https://github.com/maobukeai/maobu-fetch/releases").catch((err) => notify(String(err), "error"))}
@@ -5534,6 +5614,28 @@ function SettingsPage({ value, onChange, onClose, notify, totalSpeed = 0, active
                           前往下载页
                         </button>
                       </div>
+                      {appUpdateBusy && appUpdateProgress && (
+                        <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
+                          <div style={{ height: "4px", borderRadius: "2px", background: "var(--bg-alt, rgba(0,0,0,0.08))", overflow: "hidden" }}>
+                            <div style={{ height: "100%", width: `${appUpdateProgress.total > 0 ? Math.min(100, Math.round(appUpdateProgress.downloaded / appUpdateProgress.total * 100)) : 0}%`, background: "var(--accent)", transition: "width 0.15s" }} />
+                          </div>
+                          <span style={{ fontSize: "10px", color: "var(--muted)" }}>{formatBytes(appUpdateProgress.downloaded)}{appUpdateProgress.total > 0 ? ` / ${formatBytes(appUpdateProgress.total)}` : ""}</span>
+                        </div>
+                      )}
+                      {appUpdateReady && (
+                        <div style={{ display: "flex", alignItems: "center", gap: "6px", padding: "6px 8px", borderRadius: "6px", border: "1px solid rgba(34,197,94,0.3)", background: "rgba(34,197,94,0.08)" }}>
+                          <Check size={12} color="#22c55e" />
+                          <span style={{ fontSize: "11px", color: "var(--muted)", flex: 1, minWidth: 0 }}>v{appUpdateReady.version} 安装包已校验（{formatBytes(appUpdateReady.size)}）</span>
+                          <button
+                            className="input-button"
+                            onClick={() => void runAppUpdateInstaller()}
+                            style={{ display: "inline-flex", alignItems: "center", gap: "5px", height: "24px", padding: "0 10px", fontSize: "11px", fontWeight: 500, cursor: "pointer", borderRadius: "6px", border: "1px solid var(--accent)", background: "var(--accent)", color: "white", flexShrink: 0 }}
+                          >
+                            <Zap size={11} />
+                            立即安装
+                          </button>
+                        </div>
+                      )}
                     </div>
                   ) : (
                     <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
@@ -5551,13 +5653,50 @@ function SettingsPage({ value, onChange, onClose, notify, totalSpeed = 0, active
               )}
             </div>
 
-            {/* 2. 扩展版本兼容性 */}
+            {/* 2. 浏览器扩展一键更新 */}
             <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-              <h3 style={{ margin: "0", fontSize: "12px", fontWeight: 600, color: "var(--text)" }}>扩展版本兼容性</h3>
+              <h3 style={{ margin: "0", fontSize: "12px", fontWeight: 600, color: "var(--text)" }}>浏览器扩展</h3>
               <p style={{ margin: 0, fontSize: "11px", color: "var(--muted)", lineHeight: 1.4 }}>
-                输入扩展版本号，验证与桌面端兼容性。
+                一键拉取 GitHub 最新扩展（与桌面端版本同步），自动校验并解压到本地托管目录。
               </p>
-              <div style={{ display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap", marginTop: "auto", paddingTop: "4px" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
+                <button
+                  className="input-button"
+                  disabled={extUpdateBusy}
+                  onClick={() => void runExtensionUpdate()}
+                  style={{ display: "inline-flex", alignItems: "center", gap: "6px", height: "28px", padding: "0 12px", fontSize: "11px", fontWeight: 500, cursor: extUpdateBusy ? "default" : "pointer", borderRadius: "6px", border: "1px solid var(--accent)", background: "var(--accent)", color: "white" }}
+                >
+                  {extUpdateBusy ? <LoaderCircle size={11} className="spin" /> : <Download size={11} />}
+                  {extUpdateBusy ? "更新中…" : "一键更新扩展"}
+                </button>
+              </div>
+              {extUpdateBusy && extUpdateProgress && (
+                <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
+                  <div style={{ height: "4px", borderRadius: "2px", background: "var(--bg-alt, rgba(0,0,0,0.08))", overflow: "hidden" }}>
+                    <div style={{ height: "100%", width: `${extUpdateProgress.total > 0 ? Math.min(100, Math.round(extUpdateProgress.downloaded / extUpdateProgress.total * 100)) : 0}%`, background: "var(--accent)", transition: "width 0.15s" }} />
+                  </div>
+                  <span style={{ fontSize: "10px", color: "var(--muted)" }}>{formatBytes(extUpdateProgress.downloaded)}{extUpdateProgress.total > 0 ? ` / ${formatBytes(extUpdateProgress.total)}` : ""}</span>
+                </div>
+              )}
+              {extUpdateResult && (
+                <div style={{ display: "flex", flexDirection: "column", gap: "6px", fontSize: "11px", lineHeight: 1.5, padding: "8px 10px", borderRadius: "6px", border: "1px solid rgba(34,197,94,0.3)", background: "rgba(34,197,94,0.08)", color: "var(--muted)" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                    <Check size={12} color="#22c55e" />
+                    <strong style={{ color: "var(--text)" }}>扩展 v{extUpdateResult.version} 已就绪</strong>
+                    <button
+                      className="input-button"
+                      onClick={() => void api.extensionUpdateOpenFolder().catch((e) => notify(String(e), "error"))}
+                      style={{ display: "inline-flex", alignItems: "center", gap: "5px", height: "24px", padding: "0 10px", fontSize: "11px", fontWeight: 500, cursor: "pointer", borderRadius: "6px", border: "1px solid var(--accent)", background: "transparent", color: "var(--accent)", marginLeft: "auto", flexShrink: 0 }}
+                    >
+                      <FolderOpen size={11} />
+                      打开目录
+                    </button>
+                  </div>
+                  <div>首次使用：在浏览器扩展管理页选择"加载已解压的扩展程序"，指向上述目录；已从该目录加载过：在扩展页点击"刷新"即可生效。</div>
+                  <div style={{ fontSize: "10px", wordBreak: "break-all", color: "var(--muted)" }}>{extUpdateResult.folder}</div>
+                </div>
+              )}
+              <div style={{ display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap", marginTop: "auto", paddingTop: "4px", borderTop: "1px dashed var(--border)" }}>
                 <input
                   value={extVersion}
                   onChange={(e) => setExtVersion(e.target.value)}

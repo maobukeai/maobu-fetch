@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { AppInfo, AppSettings, CacheClearResult, CacheInspectResult, CategoryRule, CategoryRuleTestResult, CompletionAction, DeepLinkReceivedPayload, DetectedMediaTools, DownloadPreset, DownloadTask, DuplicateCheckResult, ErrorDiagnosis, ExtensionCompatibilityResult, FilenameCleanupRule, MediaCredential, MediaCredentialCheckResult, MediaPlatform, MediaProbeResult, MeteredNetworkDetectedPayload, NewTaskRequest, PairingInfo, PlatformCompatibility, PlatformNamingTemplate, PowerAction, PowerActionState, PrecheckRequest, PrecheckResult, ProxyAuth, ProxyTestResult, RestorePreview, RestoreStats, RetryPolicy, SelfcheckReport, Tag, TaskEvent, TaskNotificationPayload, TaskTagsMap, TaskTemplate, TaskTemplateTestResult, ToolComponent, ToolStatus, UpdateCheckResult, UrlHistoryEntry, WaitReason } from "./types";
+import type { AppInfo, AppSettings, CacheClearResult, CacheInspectResult, CategoryRule, CategoryRuleTestResult, CompletionAction, DeepLinkReceivedPayload, DetectedMediaTools, DownloadPreset, DownloadTask, DuplicateCheckResult, ErrorDiagnosis, ExtensionCompatibilityResult, ExtensionUpdateResult, FilenameCleanupRule, MediaCredential, MediaCredentialCheckResult, MediaPlatform, MediaProbeResult, MeteredNetworkDetectedPayload, NewTaskRequest, PairingInfo, PlatformCompatibility, PlatformNamingTemplate, PowerAction, PowerActionState, PrecheckRequest, PrecheckResult, ProxyAuth, ProxyTestResult, RestorePreview, RestoreStats, RetryPolicy, SelfcheckReport, Tag, TaskEvent, TaskNotificationPayload, TaskTagsMap, TaskTemplate, TaskTemplateTestResult, ToolComponent, ToolStatus, UpdateCheckResult, UpdateDownloadResult, UpdateProgressPayload, UrlHistoryEntry, WaitReason } from "./types";
 
 export const isDesktop = () => "__TAURI_INTERNALS__" in window;
 const call = <T>(command: string, args?: Record<string, unknown>): Promise<T> => isDesktop() ? invoke<T>(command, args) : Promise.reject(new Error("请运行猫步下载器桌面应用"));
@@ -97,6 +97,17 @@ export const api = {
   appCheckUpdate: () => call<UpdateCheckResult>("app_check_update"),
   /** Task 26.3 / 26.6：检查浏览器扩展版本与桌面端兼容性。`extVersion` 为扩展 manifest 中的 version。 */
   extensionCheckCompatibility: (extVersion: string) => call<ExtensionCompatibilityResult>("extension_check_compatibility", { extVersion }),
+  // ===== 一键更新（用户主动触发；下载强制官方 SHA-256 校验） =====
+  /** 下载最新 release 的 NSIS 安装包到系统临时目录并校验，返回待确认运行的路径。 */
+  appUpdateDownload: () => call<UpdateDownloadResult>("app_update_download"),
+  /** 运行已下载校验通过的安装包（仅限本应用临时目录内的 maobu-fetch-*-setup.exe）。 */
+  appUpdateRunInstaller: (path: string) => call<void>("app_update_run_installer", { path }),
+  /** 下载最新 extension.zip 并解压到应用数据目录的扩展托管目录。 */
+  extensionUpdateDownload: () => call<ExtensionUpdateResult>("extension_update_download"),
+  /** 在资源管理器中打开扩展托管目录（供浏览器"加载已解压的扩展程序"使用）。 */
+  extensionUpdateOpenFolder: () => call<void>("extension_update_open_folder"),
+  /** 订阅一键更新下载进度（kind 区分 app / extension）。 */
+  subscribeUpdateProgress: async (handler: (payload: UpdateProgressPayload) => void): Promise<UnlistenFn | undefined> => isDesktop() ? listen<UpdateProgressPayload>("update-download-progress", event => handler(event.payload)) : undefined,
   categoryRuleList: () => isDesktop() ? call<CategoryRule[]>("category_rule_list") : Promise.resolve([]),
   categoryRuleAdd: (rule: CategoryRule) => call<CategoryRule>("category_rule_add", { rule }),
   categoryRuleUpdate: (rule: CategoryRule) => call<void>("category_rule_update", { rule }),
