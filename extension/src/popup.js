@@ -29,6 +29,8 @@ async function health() {
   const response = await call({ type: "health" });
   const online = Boolean(response?.ok);
   const paired = Boolean(response?.paired);
+  const desktopVersion = String(response?.version || "");
+  const extVersion = chrome.runtime.getManifest()?.version || "";
   const statusEl = $("status");
   if (statusEl) {
     statusEl.classList.toggle("online", online && paired);
@@ -40,11 +42,23 @@ async function health() {
     else if (!paired) connEl.textContent = "桌面端在线（未配对）";
     else connEl.textContent = "桌面端已连接";
   }
+  // 版本一致性提示：扩展与桌面端版本同步发布，不一致时引导更新扩展并重载。
+  const updateBoxEl = $("updateBox");
+  const updateTextEl = $("updateText");
+  if (updateBoxEl && updateTextEl) {
+    const mismatch = online && desktopVersion && extVersion && desktopVersion !== extVersion;
+    updateBoxEl.classList.toggle("hidden", !mismatch);
+    if (mismatch) {
+      updateTextEl.textContent = `桌面端为 v${desktopVersion}，扩展为 v${extVersion}。请在桌面端「设置 → 关于」一键更新扩展后，点击下方按钮重载。`;
+    }
+  }
   const pairBoxEl = $("pairBox");
   if (pairBoxEl) pairBoxEl.classList.toggle("hidden", !online || paired);
   message(!online ? "请先启动猫步下载器；下载会保留在浏览器中" : paired ? "连接安全，可以发送下载" : "需要先在下方输入 6 位配对码完成授权", !online || !paired);
 }
 await health().catch(() => {});
+const reloadExtEl = $("reloadExt");
+if (reloadExtEl) reloadExtEl.onclick = () => chrome.runtime.reload();
 const refreshEl = $("refresh");
 if (refreshEl) refreshEl.onclick = async () => {
   await health().catch(() => {});
@@ -360,11 +374,17 @@ async function renderDiag() {
     }
     const reasonMap = {
       disabled: "「接管浏览器下载」开关未开启",
+      "desktop-disabled": "桌面端已关闭浏览器接管（猫步下载器 → 设置 → 浏览器）",
       bypass: "处于临时暂停接管时段",
       self: "扩展本身发起的下载（防循环限制）",
       scheme: "链接非 HTTP/HTTPS 协议（如 blob/data/file 协议）",
+      "blocked-host": "文件所在站点位于禁止接管的主机列表",
+      "not-allowed-host": "文件所在站点不在允许接管的主机列表内",
       extension: "文件后缀名不在接管后缀名规则列表内",
       size: `文件体积小于设置的接管大小（当前设为了 ${data.minSizeMb ?? 1} MB）`,
+      "restored-history": "浏览器重启或会话恢复的历史下载（自动忽略）",
+      unpaired: "尚未与桌面端配对，已由浏览器直接下载",
+      offline: "桌面端离线，已回退浏览器下载",
     };
     let readable = reasonMap[diag.reason] || diag.reason || "未知原因";
     if (diag.reason && typeof diag.reason === "string" && diag.reason.startsWith("error:")) {

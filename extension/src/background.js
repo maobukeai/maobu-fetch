@@ -1,5 +1,5 @@
 import { API, signedFetch, signedGet, compatFetch } from "./protocol.js";
-import { interceptBrowserDownload, evaluateDownload } from "./interceptor.js";
+import { interceptBrowserDownload, evaluateDownload, skipUnpairedDownload } from "./interceptor.js";
 import { bridgeMediaTask } from "./media-selection.js";
 import { requestPageWithTrackingFallback } from "./rules.js";
 import { buildCookieHeader } from "./auth-download.js";
@@ -7,6 +7,29 @@ import { buildCookieHeader } from "./auth-download.js";
 const swStartTime = Date.now();
 const defaults = { intercept: true, minSizeMb: 1, allowHosts: [], blockHosts: [], extensions: [], bypassUntil: 0 };
 const config = async () => ({ ...defaults, ...(await chrome.storage.local.get(Object.keys(defaults))) });
+
+// 桌面端接管设置缓存（health 的 takeover_enabled / min_file_size_mb）。
+// SW 生命周期内缓存 30 秒；桌面端离线/请求失败返回 null，此时不阻断——
+// 接管尝试会在 sendTask 阶段失败并走离线回退路径。
+let desktopGateCache = null;
+const DESKTOP_GATE_TTL_MS = 30_000;
+async function fetchDesktopGate() {
+  const current = Date.now();
+  if (desktopGateCache && current - desktopGateCache.at < DESKTOP_GATE_TTL_MS) return desktopGateCache;
+  try {
+    const response = await compatFetch("/v1/health");
+    if (!response.ok) return null;
+    const data = await response.json();
+    desktopGateCache = {
+      at: current,
+      enabled: data.takeover_enabled !== false,
+      minSizeMb: Number(data.min_file_size_mb || 0),
+    };
+    return desktopGateCache;
+  } catch {
+    return null;
+  }
+}
 
 async function sendTask(url, fileName, extra = {}) {
   const response = await signedFetch("/v1/tasks", {
@@ -56,8 +79,23 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
 
 chrome.downloads.onCreated.addListener(async (item) => {
   const settings = await config();
+  // 桌面端接管设置接线：桌面端"设置 → 浏览器"中的开关与最小体积阈值
+  // 通过 health 端点同步，扩展侧取两者中更严格的限制。
+  const desktopGate = await fetchDesktopGate();
+  if (desktopGate) {
+    settings.desktopTakeoverEnabled = desktopGate.enabled;
+    if (desktopGate.minSizeMb > 0) {
+      settings.minSizeMb = Math.max(Number(settings.minSizeMb || 0), desktopGate.minSizeMb);
+    }
+  }
   const evalResult = evaluateDownload(item, settings, chrome.runtime.id, swStartTime);
   if (!evalResult.eligible) {
+    try { await chrome.downloads.resume(item.id); } catch {}
+    return;
+  }
+  // 配对预检：未配对时不进入浮层与接管流程，直接由浏览器下载。
+  // 避免未配对状态下每个下载都弹浮层 + 重复"接管失败"通知。
+  if (await skipUnpairedDownload(item, notify)) {
     try { await chrome.downloads.resume(item.id); } catch {}
     return;
   }
@@ -130,6 +168,15 @@ function sameOrigin(a, b) {
   try { return new URL(a).origin === new URL(b).origin; } catch { return false; }
 }
 
+// 桥接错误转用户可读文案：剥离桌面端内部前缀，补上可操作指引。
+function friendlyBridgeError(error) {
+  const message = String(error?.message || error);
+  if (message.startsWith("MEDIA_YT_DLP_MISSING:")) {
+    return `${message.slice("MEDIA_YT_DLP_MISSING:".length).trim()}。请打开猫步下载器 → 设置 → 媒体工具，安装基础组件后重试。`;
+  }
+  return message;
+}
+
 chrome.runtime.onMessage.addListener((message, sender, respond) => {
   (async () => {
     if (message.type === "media") { await chrome.storage.session.set({ [`media:${sender.tab?.id}`]: message.items }); return { ok: true }; }
@@ -141,26 +188,60 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
     if (message.type === "health") {
       const response = await compatFetch("/v1/health");
       if (!response.ok) return { ok: false, paired: false };
+      // 透传桌面端版本号：popup 用于比较扩展版本并提示更新/重载。
+      const desktopVersion = await response.json().then((data) => String(data?.version || "")).catch(() => "");
       const stored = await chrome.storage.local.get("bridgeToken");
-      if (!stored.bridgeToken) return { ok: true, paired: false };
+      if (!stored.bridgeToken) return { ok: true, paired: false, version: desktopVersion };
       try {
         const checkRes = await signedGet("/v1/tasks/recent");
         if (!checkRes.ok) {
           if (checkRes.status === 401) {
             await chrome.storage.local.remove("bridgeToken").catch(() => {});
-            return { ok: true, paired: false };
+            return { ok: true, paired: false, version: desktopVersion };
           }
         }
       } catch {
         const storedAfter = await chrome.storage.local.get("bridgeToken");
         if (!storedAfter.bridgeToken) {
-          return { ok: true, paired: false };
+          return { ok: true, paired: false, version: desktopVersion };
         }
       }
       const hasToken = Boolean((await chrome.storage.local.get("bridgeToken")).bridgeToken);
-      return { ok: true, paired: hasToken };
+      return { ok: true, paired: hasToken, version: desktopVersion };
     }
     if (message.type === "send") return { ok: true, item: await sendTask(message.url, message.fileName, message.extra) };
+    // 页内悬浮按钮（page 模式）：MSE 站点（B 站/YouTube 等）拿不到 http(s) 直链，
+    // 发送页面 URL，与右键菜单"使用猫步下载器下载媒体"走相同的探测与任务构造流程。
+    if (message.type === "download-page-media") {
+      try {
+        // 附带当前页 Cookie：B 站等平台风控要求 buvid 等 Cookie，裸请求会被 412
+        // 拦截。一次性传递给探针，不持久化（凭证库同步由常规浏览流程负责）。
+        let pageCookie = "";
+        try {
+          const cookies = await chrome.cookies.getAll({ url: message.url });
+          pageCookie = buildCookieHeader(cookies || []);
+        } catch {}
+        const isBili = /bilibili\.com|b23\.tv/i.test(message.url);
+        const response = await requestPageWithTrackingFallback(
+          (candidate) => signedFetch("/v1/media/probe", {
+            url: candidate,
+            cookie: pageCookie || undefined,
+            referer: isBili ? "https://www.bilibili.com/" : undefined,
+          }),
+          message.url,
+        );
+        if (!response.ok) throw new Error(await response.text());
+        const task = bridgeMediaTask(await response.json(), message.title || sender.tab?.title);
+        await sendTask(message.url, task.fileName, { media: task.media });
+        return { ok: true };
+      } catch (error) {
+        // 完整错误用系统通知展示（悬浮按钮空间有限只显示截断文案），
+        // 内部前缀（如 MEDIA_YT_DLP_MISSING）翻译为带安装指引的中文。
+        const friendly = friendlyBridgeError(error);
+        notify("猫步下载器发送失败", friendly);
+        return { ok: false, error: friendly };
+      }
+    }
     if (message.type === "probe") { const response = await signedFetch("/v1/media/probe", { url: message.url }); if (!response.ok) throw new Error(await response.text()); return { ok: true, result: await response.json() }; }
     if (message.type === "bypass") {
       if (message.cancel) {

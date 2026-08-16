@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { evaluateDownload, interceptBrowserDownload, refreshDownload, resetNotificationCooldownsForTest } from "./interceptor.js";
+import { evaluateDownload, interceptBrowserDownload, refreshDownload, resetNotificationCooldownsForTest, skipUnpairedDownload } from "./interceptor.js";
 
 globalThis.chrome = {
   storage: {
@@ -280,5 +280,127 @@ test("interceptBrowserDownload skips restored history items without sending task
   assert.ok(!calls.includes("send"), "sendTask must NOT be called for restored items");
   assert.ok(!calls.includes("pause"), "pause must NOT be called for restored items");
   assert.ok(calls.includes("resume"), "resume should be called to let browser handle it");
+});
+
+test("re-evaluation passes for a download paused by the extension itself", () => {
+  const swStartTime = Date.now();
+  const pausedItem = {
+    id: 50, url: "https://example.com/file.zip", finalUrl: "https://example.com/file.zip",
+    filename: "file.zip", totalBytes: 3_000_000,
+    paused: true, canResume: true, bytesReceived: 2048, state: "in_progress",
+    startTime: new Date(swStartTime + 100).toISOString(),
+  };
+  // 首次评估（onCreated 入口）应拒绝：这些标志在真实新下载上意味着会话恢复。
+  const first = evaluateDownload(pausedItem, settings, "extension-id", swStartTime);
+  assert.equal(first.eligible, false);
+  assert.equal(first.reason, "restored-history");
+  // 重评估（扩展自己 pause() 之后）应放行：标志由拦截流程自身造成。
+  const reevaluation = evaluateDownload(pausedItem, settings, "extension-id", swStartTime, { reevaluation: true });
+  assert.equal(reevaluation.eligible, true);
+  assert.equal(reevaluation.url, pausedItem.finalUrl);
+});
+
+test("interceptBrowserDownload completes takeover when search reflects the extension pause", async () => {
+  // 回归测试（v0.6.9 修复）：真实 Chrome 中 pause() 之后 search() 返回的快照带
+  // paused/canResume/bytesReceived，此前二次评估必被误判 restored-history，
+  // 导致接管 100% 失效、下载全部回退浏览器。
+  resetNotificationCooldownsForTest();
+  const swStartTime = Date.now();
+  const calls = [];
+  const sent = [];
+  const pausedSnapshot = {
+    id: 51, url: "https://example.com/file.zip", finalUrl: "https://example.com/file.zip",
+    filename: "file.zip", totalBytes: 3_000_000,
+    paused: true, canResume: true, bytesReceived: 4096, state: "in_progress",
+    startTime: new Date(swStartTime + 100).toISOString(),
+  };
+  const downloads = {
+    pause: async () => calls.push("pause"),
+    search: async () => [pausedSnapshot],
+    cancel: async () => calls.push("cancel"),
+    erase: async () => calls.push("erase"),
+    resume: async () => calls.push("resume"),
+  };
+  const initial = { ...pausedSnapshot, paused: false, canResume: undefined, bytesReceived: 0 };
+  const handled = await interceptBrowserDownload(initial, {
+    downloads, settings, runtimeId: "extension-id", wait: async () => {},
+    sendTask: async (...args) => { calls.push("send"); sent.push(args); },
+    swStartTime,
+  });
+  assert.equal(handled, true, "paused-by-extension download must still be taken over");
+  assert.deepEqual(calls, ["pause", "send", "cancel", "erase"]);
+  assert.equal(sent[0][0], pausedSnapshot.finalUrl);
+});
+
+test("skipUnpairedDownload falls back to browser and records reason when unpaired", async () => {
+  resetNotificationCooldownsForTest();
+  const originalChrome = globalThis.chrome;
+  const stored = {};
+  const messages = [];
+  globalThis.chrome = {
+    storage: {
+      local: {
+        get: async (key) => (key === "bridgeToken" ? {} : {}),
+        set: async (entries) => { Object.assign(stored, entries); },
+      },
+      session: { get: async () => ({}), set: async () => {}, remove: async () => {} },
+    },
+  };
+  try {
+    const item = {
+      id: 60, url: "https://example.com/file.zip", finalUrl: "https://example.com/file.zip",
+      filename: "file.zip", totalBytes: 3_000_000,
+    };
+    const skipped = await skipUnpairedDownload(item, (...args) => messages.push(args));
+    assert.equal(skipped, true, "unpaired download should be skipped (browser fallback)");
+    assert.equal(stored.lastIgnored?.reason, "unpaired");
+    assert.equal(messages.length, 1);
+    assert.match(messages[0][0], /尚未与桌面端配对/);
+    // 未配对提示按 5 分钟长周期节流，第二次不再弹。
+    const skippedAgain = await skipUnpairedDownload(item, (...args) => messages.push(args));
+    assert.equal(skippedAgain, true);
+    assert.equal(messages.length, 1, "unpaired notification must be throttled");
+  } finally {
+    globalThis.chrome = originalChrome;
+  }
+});
+
+test("skipUnpairedDownload returns false when bridge token exists", async () => {
+  resetNotificationCooldownsForTest();
+  const originalChrome = globalThis.chrome;
+  globalThis.chrome = {
+    storage: {
+      local: { get: async () => ({ bridgeToken: "token" }), set: async () => {} },
+      session: { get: async () => ({}), set: async () => {}, remove: async () => {} },
+    },
+  };
+  try {
+    const skipped = await skipUnpairedDownload(
+      { url: "https://example.com/a.zip", filename: "a.zip" },
+      () => assert.fail("已配对时不应发通知"),
+    );
+    assert.equal(skipped, false);
+  } finally {
+    globalThis.chrome = originalChrome;
+  }
+});
+
+test("respects desktop-side takeover switch when provided", () => {
+  const swStartTime = Date.now();
+  const item = {
+    id: 70, url: "https://example.com/file.zip", finalUrl: "https://example.com/file.zip",
+    filename: "file.zip", totalBytes: 3_000_000,
+    startTime: new Date(swStartTime + 100).toISOString(),
+  };
+  // 桌面端开关未知（旧桌面端/离线，字段缺失）：不阻断。
+  const unknown = evaluateDownload(item, settings, "extension-id", swStartTime);
+  assert.equal(unknown.eligible, true);
+  // 桌面端显式关闭接管：拒绝并给出独立原因。
+  const disabled = evaluateDownload(item, { ...settings, desktopTakeoverEnabled: false }, "extension-id", swStartTime);
+  assert.equal(disabled.eligible, false);
+  assert.equal(disabled.reason, "desktop-disabled");
+  // 桌面端开启（true）：正常评估。
+  const enabled = evaluateDownload(item, { ...settings, desktopTakeoverEnabled: true }, "extension-id", swStartTime);
+  assert.equal(enabled.eligible, true);
 });
 
