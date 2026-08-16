@@ -91,6 +91,8 @@ struct BridgeState {
     requests: Arc<Mutex<VecDeque<Instant>>>,
     /// `/v1/tasks/recent` 专用速率限制队列：每秒最多 5 次。
     recent_requests: Arc<Mutex<VecDeque<Instant>>>,
+    /// `/v1/pair` 专用速率限制队列：每分钟最多 10 次，防止 6 位配对码被暴力枚举。
+    pair_requests: Arc<Mutex<VecDeque<Instant>>>,
 }
 #[derive(Deserialize)]
 struct PairRequest {
@@ -162,6 +164,7 @@ pub async fn run(manager: SharedManager, pairing: PairingService, app: AppHandle
         app,
         requests: Arc::new(Mutex::new(VecDeque::new())),
         recent_requests: Arc::new(Mutex::new(VecDeque::new())),
+        pair_requests: Arc::new(Mutex::new(VecDeque::new())),
     };
     let router = Router::new()
         .route("/v1/health", get(health))
@@ -177,14 +180,29 @@ pub async fn run(manager: SharedManager, pairing: PairingService, app: AppHandle
     }
 }
 
-async fn health() -> impl IntoResponse {
-    Json(serde_json::json!({"name":"Maobu Fetch","api_version":1,"ready":true}))
+async fn health(State(state): State<BridgeState>) -> impl IntoResponse {
+    // 扩展通过本端点同步桌面端接管设置（takeover_enabled / min_file_size_mb），
+    // 使桌面端"设置 → 浏览器"里的开关与最小体积阈值真实生效。
+    // version：桌面端版本号，popup 用于与扩展版本比较并提示更新/重载。
+    // 以上均为非敏感字段，端点仅监听 127.0.0.1。
+    let settings = state.manager.settings().await;
+    Json(serde_json::json!({
+        "name":"Maobu Fetch",
+        "api_version":1,
+        "ready":true,
+        "version": crate::updater::APP_VERSION,
+        "takeover_enabled": settings.intercept_browser_downloads,
+        "min_file_size_mb": settings.min_file_size_mb
+    }))
 }
 async fn pair(
     State(state): State<BridgeState>,
     headers: HeaderMap,
     Json(request): Json<PairRequest>,
 ) -> Result<Json<PairResponse>, (StatusCode, String)> {
+    // 配对端点不经过 authorize（配对前无令牌），必须先做独立限流，
+    // 防止 6 位配对码在有效期内被暴力枚举。
+    rate_limit_pair(&state.pair_requests).await?;
     validate_extension_id(&request.extension_id)?;
     validate_origin(&headers, &request.extension_id)?;
     if !state.pairing.consume(request.code.trim()).await {
@@ -322,17 +340,61 @@ async fn probe_media(
     let request: ProbeRequest = serde_json::from_slice(&body)
         .map_err(|_| (StatusCode::BAD_REQUEST, "媒体参数无效".into()))?;
     let settings = state.manager.settings().await;
+    // 凭证补齐：扩展未显式携带 Cookie/Referer/User-Agent 时，按域名从凭证库匹配。
+    // B 站等平台的风控要求请求携带 buvid 等 Cookie，裸 yt-dlp 请求会被 412 拦截；
+    // 凭证由扩展在用户浏览对应站点时自动同步入库，解密失败时安全降级为无凭证。
+    let stored_credential = match crate::media_cookies::extract_domain(&request.url) {
+        Some(domain) => state
+            .manager
+            .store
+            .media_credential_get_matching(&domain)
+            .await
+            .ok()
+            .flatten(),
+        None => None,
+    };
+    let (cookie, referer, user_agent) = merge_probe_credentials(
+        request.cookie,
+        request.referer,
+        request.user_agent,
+        stored_credential.as_ref(),
+    );
     media::probe(
         &state.app,
         &settings,
         &request.url,
-        request.cookie.as_deref(),
-        request.referer.as_deref(),
-        request.user_agent.as_deref(),
+        cookie.as_deref(),
+        referer.as_deref(),
+        user_agent.as_deref(),
     )
     .await
     .map(Json)
     .map_err(|e| (StatusCode::BAD_REQUEST, e))
+}
+
+/// 合并探测凭证：请求显式携带的值优先，空缺项用凭证库匹配结果补齐。
+fn merge_probe_credentials(
+    request_cookie: Option<String>,
+    request_referer: Option<String>,
+    request_user_agent: Option<String>,
+    stored: Option<&crate::models::MediaCredential>,
+) -> (Option<String>, Option<String>, Option<String>) {
+    let Some(stored) = stored else {
+        return (request_cookie, request_referer, request_user_agent);
+    };
+    let cookie = match request_cookie {
+        Some(value) if !value.is_empty() => Some(value),
+        _ => (!stored.cookie.is_empty()).then(|| stored.cookie.clone()),
+    };
+    let referer = match request_referer {
+        Some(value) if !value.is_empty() => Some(value),
+        _ => stored.referer.clone(),
+    };
+    let user_agent = match request_user_agent {
+        Some(value) if !value.is_empty() => Some(value),
+        _ => stored.user_agent.clone(),
+    };
+    (cookie, referer, user_agent)
 }
 
 async fn sync_media_credentials(
@@ -473,6 +535,27 @@ async fn rate_limit_recent(queue: &Mutex<VecDeque<Instant>>) -> Result<(), (Stat
     queue.push_back(now);
     Ok(())
 }
+
+/// `/v1/pair` 专用速率限制：滑动 60 秒窗口内最多 10 次配对尝试。
+///
+/// 配对码为 6 位数字且 10 分钟有效，无限流时可被脚本暴力枚举；
+/// 正常人工配对每次仅需 1 次请求，10 次/分钟不影响正常使用。
+async fn rate_limit_pair(queue: &Mutex<VecDeque<Instant>>) -> Result<(), (StatusCode, String)> {
+    let mut queue = queue.lock().await;
+    let now = Instant::now();
+    let cutoff = now - Duration::from_secs(60);
+    while queue.front().is_some_and(|v| *v < cutoff) {
+        queue.pop_front();
+    }
+    if queue.len() >= 10 {
+        return Err((
+            StatusCode::TOO_MANY_REQUESTS,
+            "配对尝试过于频繁，请稍后再试".into(),
+        ));
+    }
+    queue.push_back(now);
+    Ok(())
+}
 fn validate_origin(headers: &HeaderMap, extension: &str) -> Result<(), (StatusCode, String)> {
     let origin = headers
         .get("origin")
@@ -549,6 +632,57 @@ mod tests {
         assert!(validate_origin(&headers, id).is_err());
     }
 
+    // ---- 探测凭证合并（B 站 412 风控修复） ----
+
+    fn sample_credential() -> crate::models::MediaCredential {
+        crate::models::MediaCredential {
+            domain: "bilibili.com".into(),
+            cookie: "buvid3=abc; buvid4=def".into(),
+            referer: Some("https://www.bilibili.com/".into()),
+            user_agent: Some("Mozilla/5.0 Test".into()),
+            updated_at: String::new(),
+        }
+    }
+
+    #[test]
+    fn merge_probe_credentials_fills_missing_from_stored() {
+        let stored = sample_credential();
+        // 请求完全未携带：全部由凭证库补齐。
+        let (cookie, referer, user_agent) =
+            merge_probe_credentials(None, None, None, Some(&stored));
+        assert_eq!(cookie.as_deref(), Some("buvid3=abc; buvid4=def"));
+        assert_eq!(referer.as_deref(), Some("https://www.bilibili.com/"));
+        assert_eq!(user_agent.as_deref(), Some("Mozilla/5.0 Test"));
+    }
+
+    #[test]
+    fn merge_probe_credentials_prefers_explicit_request_values() {
+        let stored = sample_credential();
+        // 请求显式携带的值优先；空字符串视为缺失并补齐。
+        let (cookie, referer, user_agent) = merge_probe_credentials(
+            Some(String::new()),
+            Some("https://custom.example/".into()),
+            None,
+            Some(&stored),
+        );
+        assert_eq!(cookie.as_deref(), Some("buvid3=abc; buvid4=def"));
+        assert_eq!(referer.as_deref(), Some("https://custom.example/"));
+        assert_eq!(user_agent.as_deref(), Some("Mozilla/5.0 Test"));
+    }
+
+    #[test]
+    fn merge_probe_credentials_without_stored_keeps_request_values() {
+        let (cookie, referer, user_agent) = merge_probe_credentials(
+            Some("a=1".into()),
+            Some("https://r/".into()),
+            Some("UA".into()),
+            None,
+        );
+        assert_eq!(cookie.as_deref(), Some("a=1"));
+        assert_eq!(referer.as_deref(), Some("https://r/"));
+        assert_eq!(user_agent.as_deref(), Some("UA"));
+    }
+
     #[tokio::test]
     async fn rate_limit_recent_allows_fifteen_per_second_then_rejects() {
         let queue: Arc<Mutex<VecDeque<Instant>>> = Arc::new(Mutex::new(VecDeque::new()));
@@ -569,6 +703,28 @@ mod tests {
             std::iter::repeat(Instant::now() - Duration::from_millis(1500)).take(15),
         )));
         assert!(rate_limit_recent(&queue).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn rate_limit_pair_allows_ten_per_minute_then_rejects() {
+        let queue: Arc<Mutex<VecDeque<Instant>>> = Arc::new(Mutex::new(VecDeque::new()));
+        for _ in 0..10 {
+            assert!(rate_limit_pair(&queue).await.is_ok());
+        }
+        let blocked = rate_limit_pair(&queue).await;
+        assert!(blocked.is_err());
+        let (status, message) = blocked.unwrap_err();
+        assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(message, "配对尝试过于频繁，请稍后再试");
+    }
+
+    #[tokio::test]
+    async fn rate_limit_pair_recovers_after_window_expires() {
+        // 预填 10 条已过期记录（61 秒前），新配对尝试应被允许。
+        let queue: Arc<Mutex<VecDeque<Instant>>> = Arc::new(Mutex::new(VecDeque::from_iter(
+            std::iter::repeat(Instant::now() - Duration::from_secs(61)).take(10),
+        )));
+        assert!(rate_limit_pair(&queue).await.is_ok());
     }
 
     #[test]

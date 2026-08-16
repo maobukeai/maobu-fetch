@@ -10,7 +10,9 @@
 //! 所有网络/解析错误使用 `redact_sensitive` 脱敏后以中文返回，不泄露内部细节。
 
 use crate::manager::redact_sensitive;
-use crate::models::{ExtensionCompatibilityResult, UpdateCheckResult, UpdateInfo};
+use crate::models::{
+    ExtensionCompatibilityResult, UpdateAssetInfo, UpdateCheckResult, UpdateInfo,
+};
 use reqwest::Client;
 use std::cmp::Ordering;
 use std::time::Duration;
@@ -152,12 +154,97 @@ fn parse_release(json: &serde_json::Value) -> Option<UpdateInfo> {
         .unwrap_or("")
         .to_owned();
     let sha256 = parse_sha256_from_body(&release_notes);
+    let assets = parse_assets(json.get("assets"));
     Some(UpdateInfo {
         version,
         release_date,
         download_url,
         sha256,
         release_notes,
+        assets,
+    })
+}
+
+/// 从 release 的 `assets[]` 解析下载资产（一键更新用）。
+///
+/// `digest` 字段形如 `sha256:<hex>`（GitHub 对新上传资产自动生成），
+/// 解析失败或缺失时 `sha256 = None`——一键更新要求必须有校验值。
+fn parse_assets(value: Option<&serde_json::Value>) -> Vec<UpdateAssetInfo> {
+    let Some(entries) = value.and_then(|v| v.as_array()) else {
+        return Vec::new();
+    };
+    entries
+        .iter()
+        .filter_map(|entry| {
+            let name = entry.get("name")?.as_str()?.to_owned();
+            let url = entry
+                .get("browser_download_url")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_owned();
+            if url.is_empty() {
+                return None;
+            }
+            let size = entry.get("size").and_then(|v| v.as_u64()).unwrap_or(0);
+            let sha256 = entry
+                .get("digest")
+                .and_then(|v| v.as_str())
+                .and_then(parse_digest_sha256);
+            Some(UpdateAssetInfo {
+                name,
+                url,
+                size,
+                sha256,
+            })
+        })
+        .collect()
+}
+
+/// 解析 GitHub 资产 `digest` 字段（`sha256:<64 位十六进制>`）。
+fn parse_digest_sha256(digest: &str) -> Option<String> {
+    let hex = digest.strip_prefix("sha256:")?;
+    if hex.len() == 64 && hex.chars().all(|c| c.is_ascii_hexdigit()) {
+        Some(hex.to_ascii_lowercase())
+    } else {
+        None
+    }
+}
+
+/// 从资产列表中选择 Windows NSIS 安装包（`*-setup.exe` / `*_setup.exe`，
+/// 含 `setup` 的 `.exe` 亦可），同等条件下优先 `x64`。
+pub fn select_installer_asset(assets: &[UpdateAssetInfo]) -> Option<&UpdateAssetInfo> {
+    let mut best: Option<&UpdateAssetInfo> = None;
+    for asset in assets {
+        let name = asset.name.to_ascii_lowercase();
+        let is_installer = name.ends_with("-setup.exe")
+            || name.ends_with("_setup.exe")
+            || (name.contains("setup") && name.ends_with(".exe"));
+        if !is_installer {
+            continue;
+        }
+        let is_x64 = name.contains("x64");
+        best = Some(match best {
+            None => asset,
+            Some(current) => {
+                let current_x64 = current.name.to_ascii_lowercase().contains("x64");
+                if is_x64 && !current_x64 {
+                    asset
+                } else {
+                    current
+                }
+            }
+        });
+    }
+    best
+}
+
+/// 从资产列表中选择浏览器扩展 ZIP（`extension.zip` 或 `*-extension.zip`）。
+pub fn select_extension_asset(assets: &[UpdateAssetInfo]) -> Option<&UpdateAssetInfo> {
+    assets.iter().find(|asset| {
+        let name = asset.name.to_ascii_lowercase();
+        name == "extension.zip"
+            || name.ends_with("-extension.zip")
+            || name.ends_with("_extension.zip")
     })
 }
 
@@ -274,10 +361,153 @@ pub fn build_extension_compatibility_result(
     }
 }
 
+// ---- 一键更新：下载、校验与解压（仅在用户显式点击时调用，AGENTS.md §6） ----
+
+/// 下载进度事件 payload（emit 到前端 `update-download-progress`）。
+#[derive(Clone, serde::Serialize)]
+pub struct UpdateDownloadProgress {
+    pub kind: &'static str,
+    pub downloaded: u64,
+    pub total: u64,
+}
+
+/// 用户主动触发的更新资产下载：流式写入系统临时目录，边下边算 SHA-256，
+/// 完成后与 GitHub 官方 digest 比对；不一致立即删除文件并报错，
+/// 绝不让未校验/校验失败的文件进入安装环节（AGENTS.md §6）。
+///
+/// 资产未提供官方校验值时直接拒绝下载（安全默认，不做降级放行）。
+pub async fn download_release_asset(
+    app: &tauri::AppHandle,
+    kind: &'static str,
+    asset: &UpdateAssetInfo,
+    file_name: &str,
+) -> Result<std::path::PathBuf, String> {
+    use futures_util::StreamExt;
+    use sha2::{Digest, Sha256};
+    use tauri::Emitter;
+    use tokio::io::AsyncWriteExt;
+
+    let Some(expected) = asset.sha256.as_deref() else {
+        return Err(format!(
+            "资产 {} 未提供官方 SHA-256 校验值，为安全起见已取消下载，请前往发布页手动下载",
+            asset.name
+        ));
+    };
+    let client = Client::builder()
+        .user_agent(USER_AGENT)
+        .connect_timeout(Duration::from_secs(15))
+        .timeout(Duration::from_secs(600))
+        .build()
+        .map_err(|e| format!("构建 HTTP 客户端失败：{e}"))?;
+    let response = client
+        .get(&asset.url)
+        .send()
+        .await
+        .map_err(|e| format!("无法连接下载服务器：{e}"))?;
+    if !response.status().is_success() {
+        return Err(format!("下载服务器返回 HTTP {}", response.status()));
+    }
+    let total = response
+        .headers()
+        .get(reqwest::header::CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(asset.size);
+    let target = std::env::temp_dir().join(file_name);
+    let file = tokio::fs::File::create(&target)
+        .await
+        .map_err(|e| format!("无法创建临时文件：{e}"))?;
+    let mut writer = tokio::io::BufWriter::new(file);
+    let mut hasher = Sha256::new();
+    let mut stream = response.bytes_stream();
+    let mut downloaded: u64 = 0;
+    let mut last_emit = std::time::Instant::now();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| format!("下载中断：{e}"))?;
+        writer
+            .write_all(&chunk)
+            .await
+            .map_err(|e| format!("写入临时文件失败：{e}"))?;
+        hasher.update(&chunk);
+        downloaded += chunk.len() as u64;
+        // 进度事件节流至 ~150ms 一次，避免高频 emit（AGENTS.md §8）。
+        if last_emit.elapsed() >= Duration::from_millis(150) {
+            last_emit = std::time::Instant::now();
+            let _ = app.emit(
+                "update-download-progress",
+                UpdateDownloadProgress {
+                    kind,
+                    downloaded,
+                    total,
+                },
+            );
+        }
+    }
+    writer
+        .flush()
+        .await
+        .map_err(|e| format!("写入临时文件失败：{e}"))?;
+    let _ = app.emit(
+        "update-download-progress",
+        UpdateDownloadProgress {
+            kind,
+            downloaded,
+            total,
+        },
+    );
+    let actual = hex::encode(hasher.finalize());
+    if !actual.eq_ignore_ascii_case(expected) {
+        let _ = tokio::fs::remove_file(&target).await;
+        return Err(format!(
+            "SHA-256 校验失败（期望 {expected}，实际 {actual}），已删除下载文件，请重试或手动下载"
+        ));
+    }
+    Ok(target)
+}
+
+/// 将扩展 ZIP 安全解压到目标目录。
+///
+/// - `enclosed_name` 阻止绝对路径与 `..` 穿越路径（AGENTS.md §6）；
+/// - 只接受常规文件条目（目录条目在创建父目录时自然生成）；
+/// - 解压完成后校验根级 `manifest.json` 存在，防止误用非扩展压缩包。
+pub fn extract_extension_zip(archive: &std::path::Path, target_dir: &std::path::Path) -> Result<(), String> {
+    let file = std::fs::File::open(archive).map_err(|e| e.to_string())?;
+    let mut zip = zip::ZipArchive::new(file).map_err(|e| format!("扩展压缩包无效：{e}"))?;
+    std::fs::create_dir_all(target_dir).map_err(|e| e.to_string())?;
+    let mut has_manifest = false;
+    for index in 0..zip.len() {
+        let mut entry = zip
+            .by_index(index)
+            .map_err(|e| format!("扩展压缩包无效：{e}"))?;
+        if entry.is_dir() {
+            continue;
+        }
+        let Some(enclosed) = entry.enclosed_name() else {
+            return Err("扩展压缩包含非法路径条目，已中止".into());
+        };
+        if enclosed.file_name().is_some_and(|n| n == "manifest.json")
+            && enclosed.components().count() == 1
+        {
+            has_manifest = true;
+        }
+        let output_path = target_dir.join(&enclosed);
+        if let Some(parent) = output_path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        let mut output = std::fs::File::create(&output_path).map_err(|e| e.to_string())?;
+        std::io::copy(&mut entry, &mut output).map_err(|e| e.to_string())?;
+    }
+    if !has_manifest {
+        return Err("扩展压缩包缺少 manifest.json，不是有效的扩展包".into());
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::cmp::Ordering;
+    use std::io::Write;
 
     // ---- version_compare ----
 
@@ -566,5 +796,170 @@ mod tests {
         assert!(RELEASES_LATEST_URL.contains(GITHUB_REPO));
         assert!(RELEASES_PAGE.contains(GITHUB_OWNER));
         assert!(RELEASES_PAGE.contains(GITHUB_REPO));
+    }
+
+    // ---- 一键更新：资产解析与选择 ----
+
+    #[test]
+    fn parse_assets_extracts_digest_sha256() {
+        let json = serde_json::json!({
+            "assets": [
+                {
+                    "name": "Maobu.Fetch_0.6.9_x64-setup.exe",
+                    "browser_download_url": "https://example.com/setup.exe",
+                    "size": 3952000,
+                    "digest": "sha256:AE67A0E890E95B518FB5139BBC725FEC1C428EB208E5F5880472C153B2E108CA"
+                },
+                { "name": "extension.zip", "browser_download_url": "https://example.com/ext.zip", "size": 48000 },
+                { "name": "no-url.txt", "size": 1 }
+            ]
+        });
+        let assets = parse_assets(json.get("assets"));
+        assert_eq!(assets.len(), 2, "缺少下载地址的资产应被过滤");
+        assert_eq!(assets[0].name, "Maobu.Fetch_0.6.9_x64-setup.exe");
+        assert_eq!(assets[0].size, 3_952_000);
+        assert_eq!(
+            assets[0].sha256.as_deref(),
+            Some("ae67a0e890e95b518fb5139bbc725fec1c428eb208e5f5880472c153b2e108ca"),
+            "digest 应转小写"
+        );
+        assert_eq!(assets[1].sha256, None, "无 digest 字段时 sha256 为 None");
+    }
+
+    #[test]
+    fn parse_assets_handles_missing_or_invalid_digest() {
+        assert_eq!(parse_digest_sha256("sha256:abc123"), None, "长度不足");
+        assert_eq!(
+            parse_digest_sha256("sha256:xyz48cb955d55c8821b60ccbdbbc6f61bc958f2f3d3b7ad5eaf3d83a543293a27"),
+            None,
+            "非十六进制"
+        );
+        assert_eq!(parse_digest_sha256("md5:abc"), None, "非 sha256 前缀");
+        let valid = "sha256:3a48cb955d55c8821b60ccbdbbc6f61bc958f2f3d3b7ad5eaf3d83a543293a27";
+        assert_eq!(
+            parse_digest_sha256(valid).as_deref(),
+            Some("3a48cb955d55c8821b60ccbdbbc6f61bc958f2f3d3b7ad5eaf3d83a543293a27")
+        );
+    }
+
+    #[test]
+    fn select_installer_asset_prefers_x64_setup() {
+        let assets = vec![
+            UpdateAssetInfo {
+                name: "readme.txt".into(),
+                url: "https://example.com/readme.txt".into(),
+                size: 10,
+                sha256: None,
+            },
+            UpdateAssetInfo {
+                name: "Maobu.Fetch_0.6.9_x86-setup.exe".into(),
+                url: "https://example.com/x86.exe".into(),
+                size: 10,
+                sha256: None,
+            },
+            UpdateAssetInfo {
+                name: "Maobu.Fetch_0.6.9_x64-setup.exe".into(),
+                url: "https://example.com/x64.exe".into(),
+                size: 10,
+                sha256: None,
+            },
+        ];
+        let selected = select_installer_asset(&assets).expect("应选中安装包");
+        assert_eq!(selected.name, "Maobu.Fetch_0.6.9_x64-setup.exe");
+        assert!(select_installer_asset(&assets[..1]).is_none(), "无 exe 资产时应为 None");
+    }
+
+    #[test]
+    fn select_extension_asset_matches_extension_zip() {
+        let assets = vec![
+            UpdateAssetInfo {
+                name: "Maobu.Fetch_0.6.9_x64-setup.exe".into(),
+                url: "https://example.com/setup.exe".into(),
+                size: 10,
+                sha256: None,
+            },
+            UpdateAssetInfo {
+                name: "extension.zip".into(),
+                url: "https://example.com/extension.zip".into(),
+                size: 10,
+                sha256: None,
+            },
+        ];
+        let selected = select_extension_asset(&assets).expect("应选中扩展包");
+        assert_eq!(selected.name, "extension.zip");
+        assert!(select_extension_asset(&assets[..1]).is_none());
+    }
+
+    #[test]
+    fn parse_release_includes_assets() {
+        let json = serde_json::json!({
+            "tag_name": "v0.6.9",
+            "published_at": "2026-08-01T11:57:02Z",
+            "html_url": "https://github.com/maobukeai/maobu-fetch/releases/tag/v0.6.9",
+            "body": "SHA-256: 3a48cb955d55c8821b60ccbdbbc6f61bc958f2f3d3b7ad5eaf3d83a543293a27",
+            "assets": [
+                {
+                    "name": "extension.zip",
+                    "browser_download_url": "https://example.com/extension.zip",
+                    "size": 48000,
+                    "digest": "sha256:2ba9b3ab667119d929fefbae14e9fd001edfc9fe6cc5d2b75cdd6c0ad647cba9"
+                }
+            ]
+        });
+        let info = parse_release(&json).expect("应解析成功");
+        assert_eq!(info.assets.len(), 1);
+        assert_eq!(info.assets[0].name, "extension.zip");
+        assert!(info.assets[0].sha256.is_some());
+    }
+
+    // ---- 一键更新：安全解压 ----
+
+    #[test]
+    fn extract_extension_zip_extracts_and_requires_manifest() {
+        let dir = tempfile::tempdir().unwrap();
+        let archive = dir.path().join("ext.zip");
+        let file = std::fs::File::create(&archive).unwrap();
+        let mut writer = zip::ZipWriter::new(file);
+        let options = zip::write::SimpleFileOptions::default();
+        writer.start_file("manifest.json", options).unwrap();
+        writer.write_all(b"{}").unwrap();
+        writer.start_file("src/background.js", options).unwrap();
+        writer.write_all(b"// ok").unwrap();
+        writer.finish().unwrap();
+
+        let target = dir.path().join("out");
+        extract_extension_zip(&archive, &target).expect("应解压成功");
+        assert!(target.join("manifest.json").exists());
+        assert!(target.join("src").join("background.js").exists());
+
+        // 缺少 manifest.json 的压缩包必须被拒绝。
+        let bad = dir.path().join("bad.zip");
+        let file = std::fs::File::create(&bad).unwrap();
+        let mut writer = zip::ZipWriter::new(file);
+        writer.start_file("a.txt", options).unwrap();
+        writer.write_all(b"x").unwrap();
+        writer.finish().unwrap();
+        assert!(extract_extension_zip(&bad, &target).is_err());
+    }
+
+    #[test]
+    fn extract_extension_zip_rejects_path_traversal() {
+        let dir = tempfile::tempdir().unwrap();
+        let archive = dir.path().join("evil.zip");
+        let file = std::fs::File::create(&archive).unwrap();
+        let mut writer = zip::ZipWriter::new(file);
+        let options = zip::write::SimpleFileOptions::default();
+        // 模拟携带 `..` 穿越路径的恶意压缩包：enclosed_name 必须拒绝。
+        writer.start_file("../evil.txt", options).unwrap();
+        writer.write_all(b"pwn").unwrap();
+        writer.finish().unwrap();
+
+        let target = dir.path().join("out2");
+        let result = extract_extension_zip(&archive, &target);
+        assert!(result.is_err(), "穿越路径条目必须导致解压失败");
+        assert!(
+            !dir.path().join("evil.txt").exists(),
+            "不得写出目标目录之外"
+        );
     }
 }
