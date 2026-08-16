@@ -1573,6 +1573,23 @@ impl Default for RetryPolicy {
     }
 }
 
+/// Release 资产信息（一键更新用）。
+///
+/// 由 `updater::parse_release` 从 GitHub Releases API 的 `assets[]` 解析。
+/// `sha256` 来自资产自带的 `digest` 字段（`sha256:<hex>`），一键更新必须
+/// 有官方校验值才允许下载安装（AGENTS.md §6：校验失败时不得切换为可用版本）。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct UpdateAssetInfo {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub url: String,
+    #[serde(default)]
+    pub size: u64,
+    #[serde(default)]
+    pub sha256: Option<String>,
+}
+
 /// 应用更新信息（Task 26）。
 ///
 /// 由 `updater::check_app_update` 通过 GitHub Releases API 获取后填充。
@@ -1582,9 +1599,10 @@ impl Default for RetryPolicy {
 /// - `release_date`：GitHub `published_at` 原值（ISO 8601 字符串）。
 /// - `download_url`：release 的 `html_url`，作为"前往下载页"按钮目标，
 ///   不指向单个二进制资源以避免误触发自动下载。
-/// - `sha256`：当前 release 资产的 SHA-256；GitHub Releases 不一定提供，
-///   未提供时为 `None`，前端不展示校验值。
+/// - `sha256`：release body 中解析的 SHA-256（旧发布格式兼容），可能为 `None`。
 /// - `release_notes`：release `body` 字段原文（Markdown）。
+/// - `assets`：release 附带的下载资产（安装包 / 扩展 ZIP），供用户主动触发的
+///   一键更新使用；旧版本检查结果反序列化时安全默认为空。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct UpdateInfo {
     #[serde(default)]
@@ -1597,6 +1615,30 @@ pub struct UpdateInfo {
     pub sha256: Option<String>,
     #[serde(default)]
     pub release_notes: String,
+    #[serde(default)]
+    pub assets: Vec<UpdateAssetInfo>,
+}
+
+/// 一键更新：安装包下载结果（校验通过后返回给前端确认运行）。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct UpdateDownloadResult {
+    #[serde(default)]
+    pub version: String,
+    #[serde(default)]
+    pub size: u64,
+    /// 已校验的安装包临时文件绝对路径（仅位于系统临时目录内）。
+    #[serde(default)]
+    pub path: String,
+}
+
+/// 一键更新：浏览器扩展下载并解压完成的结果。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct ExtensionUpdateResult {
+    #[serde(default)]
+    pub version: String,
+    /// 解压完成的扩展目录（应用数据目录下的固定托管目录）。
+    #[serde(default)]
+    pub folder: String,
 }
 
 /// 应用更新检查结果（Task 26）。
@@ -2642,6 +2684,7 @@ mod tests {
             download_url: "https://github.com/maobukeai/maobu-fetch/releases/tag/v0.6.0".into(),
             sha256: Some("3a48cb955d55c8821b60ccbdbbc6f61bc958f2f3d3b7ad5eaf3d83a543293a27".into()),
             release_notes: "## 新增\n- 更新检查与提醒功能".into(),
+            assets: Vec::new(),
         };
         let json = serde_json::to_string(&info).unwrap();
         let restored: UpdateInfo = serde_json::from_str(&json).unwrap();

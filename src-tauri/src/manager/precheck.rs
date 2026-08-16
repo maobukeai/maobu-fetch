@@ -811,6 +811,42 @@ pub(crate) fn suggest_connections(file_size: Option<u64>, accepts_ranges: bool) 
     }
 }
 
+/// CDN 感知连接数上限。
+///
+/// 对已知对并发 Range 请求单独限速的 CDN 域名，返回建议的最大连接数；
+/// 未知域名返回 `u8::MAX`（不限制）。
+///
+/// - 仅做 host 后缀字符串匹配，无网络请求，无 panic。
+/// - URL 解析失败或 host 为空时安全返回 `u8::MAX`。
+pub(crate) fn cdn_connection_cap(url: &str) -> u8 {
+    /// (host 后缀, 连接上限)
+    static CDN_CAPS: &[(&str, u8)] = &[
+        ("objects.githubusercontent.com", 1),
+        ("releases.githubusercontent.com", 1),
+        ("github.com", 2),
+        ("download.microsoft.com", 2),
+        ("download.visualstudio.com", 2),
+        ("aka.ms", 2),
+        ("blob.core.windows.net", 2),
+        ("onedrive.live.com", 2),
+    ];
+
+    let host = match Url::parse(url)
+        .ok()
+        .and_then(|u| u.host_str().map(|h| h.to_ascii_lowercase()))
+    {
+        Some(h) => h,
+        None => return u8::MAX,
+    };
+
+    for &(suffix, cap) in CDN_CAPS {
+        if host == suffix || host.ends_with(&format!(".{suffix}")) {
+            return cap;
+        }
+    }
+    u8::MAX
+}
+
 /// 精细化计算磁盘空间需求与三态评估（Task 7）。
 ///
 /// - 单连接任务：所需空间 = size + 50MB 安全余量
@@ -1672,5 +1708,85 @@ mod tests {
     fn precheck_user_agent_contains_product_name() {
         assert!(PRECHECK_USER_AGENT.contains("MaobuFetch"));
         assert!(PRECHECK_USER_AGENT.contains(env!("CARGO_PKG_VERSION")));
+    }
+
+    // ---- CDN 感知连接数上限 ----
+
+    #[test]
+    fn cdn_cap_github_objects() {
+        assert_eq!(
+            cdn_connection_cap(
+                "https://objects.githubusercontent.com/github-production-release-asset-123/file.tar.gz"
+            ),
+            1
+        );
+    }
+
+    #[test]
+    fn cdn_cap_releases_githubusercontent() {
+        assert_eq!(
+            cdn_connection_cap(
+                "https://releases.githubusercontent.com/owner/repo/releases/download/v1.0/file.zip"
+            ),
+            1
+        );
+    }
+
+    #[test]
+    fn cdn_cap_github_com() {
+        assert_eq!(
+            cdn_connection_cap(
+                "https://github.com/owner/repo/releases/download/v1.0/file.zip"
+            ),
+            2
+        );
+    }
+
+    #[test]
+    fn cdn_cap_azure_blob() {
+        assert_eq!(
+            cdn_connection_cap("https://myaccount.blob.core.windows.net/container/blob"),
+            2
+        );
+    }
+
+    #[test]
+    fn cdn_cap_onedrive() {
+        assert_eq!(
+            cdn_connection_cap("https://onedrive.live.com/download?resid=ABC"),
+            2
+        );
+    }
+
+    #[test]
+    fn cdn_cap_microsoft_download() {
+        assert_eq!(
+            cdn_connection_cap("https://download.microsoft.com/download/file.exe"),
+            2
+        );
+    }
+
+    #[test]
+    fn cdn_cap_unknown_domain_returns_max() {
+        assert_eq!(cdn_connection_cap("https://example.com/file.zip"), u8::MAX);
+    }
+
+    #[test]
+    fn cdn_cap_empty_url_returns_max() {
+        assert_eq!(cdn_connection_cap(""), u8::MAX);
+    }
+
+    #[test]
+    fn cdn_cap_invalid_url_returns_max() {
+        assert_eq!(cdn_connection_cap("not-a-url"), u8::MAX);
+    }
+
+    #[test]
+    fn cdn_cap_subdomain_matched() {
+        // blob.core.windows.net 的任意子域名也应命中
+        assert_eq!(
+            cdn_connection_cap("https://myaccount.blob.core.windows.net/x"),
+            2
+        );
     }
 }

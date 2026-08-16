@@ -48,7 +48,8 @@ use models::{
     MediaProbeResult, NewTaskRequest, PairingInfo, PlatformCompatibility, PlatformNamingTemplate,
     PowerAction, PowerActionState, PrecheckRequest, PrecheckResult, ProxyAuth, ProxyTestResult,
     RestorePreview, RestoreStats, RetryPolicy, Tag, TaskTemplate, TaskTemplateTestResult,
-    ToolComponent, ToolStatus, UpdateCheckResult, UrlHistoryEntry, WaitReason,
+    ToolComponent, ToolStatus, UpdateCheckResult, UpdateDownloadResult, ExtensionUpdateResult,
+    UrlHistoryEntry, WaitReason,
 };
 use std::{path::PathBuf, sync::Arc};
 use store::Store;
@@ -643,6 +644,125 @@ async fn extension_check_compatibility(
         updater::APP_VERSION,
         &ext_version,
     ))
+}
+
+/// 一键更新（应用）：下载最新 release 的 NSIS 安装包到系统临时目录。
+///
+/// 仅在用户点击"一键更新"按钮时调用（AGENTS.md §6 禁止后台自动下载）。
+/// 下载完成后用 GitHub 官方 digest 做 SHA-256 校验，失败立即删除文件。
+/// 返回路径与版本，前端确认后再调用 `app_update_run_installer` 运行。
+#[tauri::command]
+async fn app_update_download(app: tauri::AppHandle) -> Result<UpdateDownloadResult, String> {
+    let check = updater::check_app_update().await;
+    if let Some(error) = &check.error {
+        return Err(error.clone());
+    }
+    let latest = check.latest.ok_or("未获取到最新版本信息")?;
+    if !check.has_update {
+        return Err("当前已是最新版本，无需更新".into());
+    }
+    let asset = updater::select_installer_asset(&latest.assets)
+        .ok_or("最新版本未提供 Windows 安装包（-setup.exe），请前往发布页手动下载")?;
+    let file_name = format!("maobu-fetch-{}-setup.exe", latest.version);
+    let path = updater::download_release_asset(&app, "app", asset, &file_name).await?;
+    let size = std::fs::metadata(&path)
+        .map(|m| m.len())
+        .unwrap_or(asset.size);
+    Ok(UpdateDownloadResult {
+        version: latest.version,
+        size,
+        path: path.to_string_lossy().into_owned(),
+    })
+}
+
+/// 一键更新（应用）：运行已下载并校验通过的安装包。
+///
+/// 安全约束：只允许运行位于系统临时目录、由 `app_update_download` 命名的
+/// `maobu-fetch-*-setup.exe`，拒绝任意路径执行。安装程序启动后由用户按
+/// NSIS 向导完成安装（包含关闭本应用的确认步骤），本命令不做静默安装。
+#[tauri::command]
+fn app_update_run_installer(path: String) -> Result<(), String> {
+    let target = PathBuf::from(&path);
+    let canonical = target
+        .canonicalize()
+        .map_err(|_| "安装包文件不存在，请重新下载".to_string())?;
+    let temp_root = std::env::temp_dir()
+        .canonicalize()
+        .map_err(|e| format!("无法定位临时目录：{e}"))?;
+    if !canonical.starts_with(&temp_root) {
+        return Err("仅允许运行一键更新下载的安装包".into());
+    }
+    let name = canonical
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or_default();
+    if !name.starts_with("maobu-fetch-") || !name.ends_with("-setup.exe") {
+        return Err("仅允许运行一键更新下载的安装包".into());
+    }
+    std::process::Command::new(&canonical)
+        .spawn()
+        .map_err(|e| format!("无法启动安装程序：{e}"))?;
+    Ok(())
+}
+
+/// 一键更新（扩展）：下载最新 release 的 extension.zip 并解压到应用数据目录
+/// 的固定托管目录 `{data}/extension`。
+///
+/// 扩展版本必须与桌面端同步发布（updater 兼容性策略：版本全等）。
+/// 最新 release 高于当前桌面端时提示先更新应用；下载同样强制 digest 校验，
+/// 解压先写入暂存目录成功后原子替换，失败不破坏旧扩展。
+#[tauri::command]
+async fn extension_update_download(
+    app: tauri::AppHandle,
+) -> Result<ExtensionUpdateResult, String> {
+    let check = updater::check_app_update().await;
+    if let Some(error) = &check.error {
+        return Err(error.clone());
+    }
+    let latest = check.latest.ok_or("未获取到最新版本信息")?;
+    if updater::version_compare(&latest.version, updater::APP_VERSION)
+        == std::cmp::Ordering::Greater
+    {
+        return Err(format!(
+            "扩展 v{} 需要搭配桌面端 v{} 使用，请先在\"应用更新检查\"中一键更新应用",
+            latest.version, latest.version
+        ));
+    }
+    let asset = updater::select_extension_asset(&latest.assets)
+        .ok_or("最新版本未提供扩展包（extension.zip），请前往发布页手动下载")?;
+    let file_name = format!("maobu-fetch-extension-{}.zip", latest.version);
+    let archive = updater::download_release_asset(&app, "extension", asset, &file_name).await?;
+
+    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let staging = data_dir.join("extension-staging");
+    let managed = data_dir.join("extension");
+    if staging.exists() {
+        std::fs::remove_dir_all(&staging).map_err(|e| format!("清理暂存目录失败：{e}"))?;
+    }
+    updater::extract_extension_zip(&archive, &staging)?;
+    if managed.exists() {
+        std::fs::remove_dir_all(&managed).map_err(|e| format!("替换旧扩展目录失败：{e}"))?;
+    }
+    std::fs::rename(&staging, &managed).map_err(|e| format!("移动扩展目录失败：{e}"))?;
+    let _ = std::fs::remove_file(&archive);
+    Ok(ExtensionUpdateResult {
+        version: latest.version,
+        folder: managed.to_string_lossy().into_owned(),
+    })
+}
+
+/// 打开扩展托管目录（浏览器"加载已解压的扩展程序"指向该目录）。
+#[tauri::command]
+async fn extension_update_open_folder(app: tauri::AppHandle) -> Result<(), String> {
+    let managed = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?
+        .join("extension");
+    if !managed.exists() {
+        return Err("扩展目录不存在，请先执行一键更新扩展".into());
+    }
+    open::that(&managed).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -2590,6 +2710,10 @@ pub fn run() {
             media_tool_remove,
             media_tools_check_update,
             app_check_update,
+            app_update_download,
+            app_update_run_installer,
+            extension_update_download,
+            extension_update_open_folder,
             extension_check_compatibility,
             category_rule_add,
             category_rule_update,

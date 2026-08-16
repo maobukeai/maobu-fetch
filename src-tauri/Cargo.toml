@@ -32,6 +32,10 @@ axum = "0.8"
 open = "5"
 rusqlite = { version = "0.32", features = ["bundled"] }
 sha2 = "0.10"
+# 校验和算法补充：大量下载站点发布 MD5 / SHA-1 校验值。
+# 与 sha2 同属 RustCrypto 家族（纯 Rust、no_std、MIT/Apache 双许可、体积小）。
+sha1 = "0.10"
+md-5 = "0.10"
 hmac = "0.12"
 hex = "0.4"
 rand = "0.9"
@@ -68,6 +72,9 @@ tauri-plugin-single-instance = "2"
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.52"
+# 原生 Windows Toast 激活回调：点击通知时在同进程内直接触发 on_activated，
+# 无需 COM Activator 注册。是 notify_rust 的间接依赖，固定同版本避免重复编译。
+tauri-winrt-notification = "0.7"
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
     "Win32_Security",

@@ -14,7 +14,9 @@ use reqwest::header::{
     ACCEPT_ENCODING, ACCEPT_RANGES, CONTENT_DISPOSITION, CONTENT_LENGTH, CONTENT_RANGE,
     CONTENT_TYPE, ETAG, IF_RANGE, LAST_MODIFIED, RANGE,
 };
+use sha1::Sha1;
 use sha2::{Digest, Sha256};
+use md5::Md5;
 use std::{
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
@@ -782,12 +784,30 @@ impl DownloadManager {
         task.status = TaskStatus::Verifying;
         self.store.upsert_task(&task).await?;
         self.emit_task("updated", &task);
-        let hash = sha256_file(&path).await?;
+        // 支持按长度识别 MD5(32) / SHA-1(40) / SHA-256(64)。无法识别的校验值
+        // 直接判失败并显式报错——影响文件完整性判断的错误不得静默跳过（AGENTS.md §7）。
+        if let Some(expected) = task.expected_checksum.as_deref() {
+            if parse_expected_checksum(expected).is_none() {
+                task.status = TaskStatus::Failed;
+                task.error = Some(format!(
+                    "校验值格式无法识别（支持 MD5/SHA-1/SHA-256 十六进制，长度 32/40/64 位）：{expected}"
+                ));
+                self.store.upsert_task(&task).await?;
+                self.emit_task("updated", &task);
+                return Err(task.error.clone().unwrap_or_default());
+            }
+        }
+        let (algorithm, expected_clean) = task
+            .expected_checksum
+            .as_deref()
+            .and_then(parse_expected_checksum)
+            .unwrap_or((ChecksumAlgorithm::Sha256, String::new()));
+        let hash = digest_file(&path, algorithm).await?;
         task.checksum_sha256 = Some(hash.clone());
         if let Some(expected) = &task.expected_checksum {
-            if !expected.eq_ignore_ascii_case(&hash) {
+            if !expected_clean.eq_ignore_ascii_case(&hash) {
                 task.status = TaskStatus::Failed;
-                task.error = Some("SHA-256 校验不一致".into());
+                task.error = Some(format!("{} 校验不一致", algorithm.label()));
             } else {
                 task.status = TaskStatus::Completed;
                 task.error = None;
@@ -1372,7 +1392,12 @@ impl DownloadManager {
                             .filter(|e| !e.is_empty())
                             .unwrap_or("jpg")
                             .to_string();
-                        task.url = first.image_url.clone().unwrap();
+                        // image_formats 已按 image_url.is_some() 过滤，let-else 仅作防御，
+                        // 避免异常探测数据导致运行时 panic（AGENTS.md §7）。
+                        let Some(first_image_url) = first.image_url.clone() else {
+                            return Err("图集图片直链缺失，请重试或先点击\"分析媒体\"".into());
+                        };
+                        task.url = first_image_url;
                         task.file_name = format!("{}_1.{}", stem, first_ext);
                         task.media = None; // 走 HTTP Range 路径，不调用 yt-dlp
                         task.total_bytes = 0;
@@ -1387,8 +1412,11 @@ impl DownloadManager {
                                 .filter(|e| !e.is_empty())
                                 .unwrap_or("jpg")
                                 .to_string();
+                            let Some(item_image_url) = fmt.image_url.clone() else {
+                                continue; // 同上，仅防御异常探测数据。
+                            };
                             let new_req = NewTaskRequest {
-                                url: fmt.image_url.clone().unwrap(),
+                                url: item_image_url,
                                 file_name: Some(format!("{}_{}.{}", stem, idx + 2, ext)),
                                 destination: Some(task.destination.clone()),
                                 headers: task.headers.clone(),
@@ -1798,7 +1826,22 @@ impl DownloadManager {
         for (name, value) in &task.headers {
             head = head.header(name, value);
         }
-        let probe = head.send().await.map_err(friendly_reqwest)?;
+        let mut probe = head.send().await.map_err(friendly_reqwest)?;
+        // 部分服务器/CDN 不支持 HEAD（405/501）：回退为 GET + bytes=0-0 探针，
+        // 避免把可以正常 GET 下载的资源直接判为失败。回退响应可能为 206，
+        // 总长度由 probe_total_bytes 从 Content-Range 提取。
+        if probe.status() == reqwest::StatusCode::METHOD_NOT_ALLOWED
+            || probe.status() == reqwest::StatusCode::NOT_IMPLEMENTED
+        {
+            let mut get = client
+                .get(&task.url)
+                .header(ACCEPT_ENCODING, "identity")
+                .header(RANGE, "bytes=0-0");
+            for (name, value) in &task.headers {
+                get = get.header(name, value);
+            }
+            probe = get.send().await.map_err(friendly_reqwest)?;
+        }
         task.final_url = Some(diagnostic_url(probe.url()));
         task.response_status = Some(probe.status().as_u16());
         task.content_type =
@@ -1815,12 +1858,7 @@ impl DownloadManager {
         if !probe.status().is_success() {
             return Err(format!("服务器返回 HTTP {}", probe.status()));
         }
-        let total = probe
-            .headers()
-            .get(CONTENT_LENGTH)
-            .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(0);
+        let total = probe_total_bytes(&probe);
         let etag = header_string(&probe, ETAG);
         let last_modified = header_string(&probe, LAST_MODIFIED);
         // Resume integrity check: if we previously recorded ETag/Last-Modified
@@ -1893,6 +1931,10 @@ impl DownloadManager {
             .is_some_and(|v| v.eq_ignore_ascii_case("bytes"));
         let settings = self.settings().await;
         let mut connections = effective_connection_count(&settings, task.connection_count);
+        // CDN cap 前置判定：必须在下方动态连接数调整改写 task.connection_count 之前计算
+        // "用户是否显式设置"，否则 suggest_connections 的自动调整结果会被误判为用户
+        // 显式设置，导致 CDN 连接数上限几乎从不生效。
+        let is_user_explicit = task.connection_count != settings.connections_per_download;
         // Accept-Ranges is only advisory and is frequently omitted by CDNs.
         // Verify multi-connection support with an actual one-byte range request.
         let supports_range = if connections > 1 {
@@ -1936,6 +1978,26 @@ impl DownloadManager {
                     task.connection_count = target_count;
                     connections = target_count;
                 }
+            }
+        }
+
+        // CDN 感知：对已知对并发 Range 请求单独限速的 CDN，自动收紧连接数。
+        // 仅在全新任务（无已下载进度）且用户未显式指定连接数时生效，不影响续传。
+        // is_user_explicit 已在动态连接数调整之前计算（见上方声明处注释）。
+        if !is_user_explicit && task.downloaded_bytes == 0 && task.segments.is_empty() {
+            let probe_url = task.final_url.as_deref().unwrap_or(&task.url);
+            let cdn_cap = precheck::cdn_connection_cap(probe_url);
+            if cdn_cap < connections {
+                tracing::info!(
+                    task_id = %task.id,
+                    capped_connections = cdn_cap,
+                    original_connections = connections,
+                    "CDN 感知：自动将连接数从 {} 降为 {} 以避免 CDN 限速",
+                    connections,
+                    cdn_cap
+                );
+                connections = cdn_cap;
+                task.connection_count = cdn_cap;
             }
         }
 
@@ -2086,6 +2148,10 @@ impl DownloadManager {
         // 周期性磁盘空间检查状态：写入首字节前及每下载 10MB 或每 5 秒（取先到者）检查一次。
         let mut last_disk_check_at = Instant::now();
         let mut bytes_since_disk_check: u64 = DISK_CHECK_BYTES_INTERVAL;
+        // SQLite 持久化节流：UI 事件保持 250ms，DB 写入降至至多 1 次/秒且仅在进度变化时写。
+        // 续传以临时文件实际长度（fs::metadata）为准，DB 短暂滞后无正确性影响。
+        let mut last_persist_at = Instant::now();
+        let mut last_persisted_bytes = task.downloaded_bytes;
         while let Some(chunk) = stream.next().await {
             if token.is_cancelled() {
                 file.flush().await.ok();
@@ -2149,11 +2215,34 @@ impl DownloadManager {
             if sample.should_emit(task.downloaded_bytes) {
                 runtime_options.apply(&mut task).await;
                 sample.apply(&mut task);
-                self.store.upsert_task(&task).await?;
+                if task.downloaded_bytes != last_persisted_bytes
+                    && last_persist_at.elapsed() >= Duration::from_secs(1)
+                {
+                    // 进度持久化失败不中断传输：文件写入不受影响，续传依据是
+                    // 临时文件长度而非 DB 进度；持续故障由完成/失败收尾持久化暴露。
+                    match self.store.upsert_task(&task).await {
+                        Ok(()) => {
+                            last_persist_at = Instant::now();
+                            last_persisted_bytes = task.downloaded_bytes;
+                        }
+                        Err(error) => {
+                            tracing::warn!(task_id = %task.id, error = %error, "进度持久化失败，下载继续");
+                        }
+                    }
+                }
                 self.emit_task("updated", &task);
             }
         }
         file.flush().await.map_err(|e| e.to_string())?;
+        // 显式终长校验：已知总长时，服务器提前断流（干净 EOF）不得被当作下载完成，
+        // 返回错误进入任务级重试，续传从临时文件当前长度继续；未知长度（total=0）跳过。
+        // 分片路径已有合并前逐分片校验，这里是单连接路径的对应防线。
+        if task.total_bytes > 0 && task.downloaded_bytes != task.total_bytes {
+            return Err(format!(
+                "下载提前结束（已接收 {} 字节 / 共 {} 字节），将自动续传",
+                task.downloaded_bytes, task.total_bytes
+            ));
+        }
         task.active_connections = 0;
         if let Some(segment) = task.segments.first_mut() {
             segment.status = "completed".into();
@@ -2263,13 +2352,20 @@ impl DownloadManager {
             tokio::spawn(async move {
                 let mut sample = ProgressSample::new(initial);
                 // Task 18: task-connections 事件节流状态。
-                // 频率：每秒一次（与 task-updated 同步），不更高（AGENTS.md §8）。
+                // 频率：每秒一次，不更高（AGENTS.md §8）。
                 // 速度计算基于 downloaded_bytes 原子量的真实采样（AGENTS.md §3）。
                 let mut last_conn_emit_at = Instant::now();
                 let mut last_conn_bytes: Vec<u64> = runtimes
                     .iter()
                     .map(|r| r.downloaded_bytes.load(Ordering::Relaxed))
                     .collect();
+                // SQLite 持久化节流：UI 事件保持 250ms 不变，DB 写入降至至多 1 次/秒，
+                // 且仅在进度或分片状态变化时写（下载停滞时不再空写）。
+                // 续传以分片文件实际长度为准（fs::metadata），DB 进度短暂滞后无正确性影响；
+                // 结束状态（暂停/失败/低磁盘/完成）由主循环收尾时统一持久化。
+                let mut last_persist_at = Instant::now();
+                let mut last_persisted_bytes = initial;
+                let mut last_persist_statuses: Vec<u8> = Vec::new();
                 loop {
                     tokio::select! {
                         _ = stop.cancelled() => break,
@@ -2282,8 +2378,18 @@ impl DownloadManager {
                     sample.apply(&mut snapshot);
                     adaptive.observe(snapshot.speed);
                     snapshot.active_connections = adaptive.active();
-                    if store.upsert_task(&snapshot).await.is_err() {
-                        continue;
+                    let statuses: Vec<u8> = runtimes
+                        .iter()
+                        .map(|r| r.status.load(Ordering::Relaxed))
+                        .collect();
+                    if (snapshot.downloaded_bytes != last_persisted_bytes
+                        || statuses != last_persist_statuses)
+                        && last_persist_at.elapsed() >= Duration::from_secs(1)
+                        && store.upsert_task(&snapshot).await.is_ok()
+                    {
+                        last_persist_at = Instant::now();
+                        last_persisted_bytes = snapshot.downloaded_bytes;
+                        last_persist_statuses = statuses;
                     }
                     let _ = app.emit(
                         "task-updated",
@@ -3214,21 +3320,39 @@ impl DownloadManager {
         let Some((title, body)) = completion_notification(&settings, task) else {
             return;
         };
-        // Task 30.2：发送系统通知；同时 emit `task-notification` 事件让前端
-        // 播放完成提示音（按 notify_sound_enabled 设置控制）。
-        if let Err(error) = self
-            .app
-            .notification()
-            .builder()
-            .title(&title)
-            .body(&body)
-            .extra("task_id", task.id.clone())
-            .show()
+        // Task 30.2：Windows 上用 tauri-winrt-notification 发原生 Toast，
+        // 注册 on_activated 回调，点击通知时在同进程内 emit 定位事件。
+        // 非 Windows 平台回退到 tauri-plugin-notification 原有实现。
+        #[cfg(windows)]
         {
-            let _ = self.app.emit(
-                "notification-error",
-                format!("下载已完成，但 Windows 通知发送失败：{error}"),
-            );
+            let app = self.app.clone();
+            let task_id = task.id.clone();
+            let app_id = self.app.config().identifier.clone();
+            let title_c = title.clone();
+            let body_c = body.clone();
+            let toast_result = notify_win_toast(&app_id, &title_c, &body_c, task_id.clone(), app);
+            if let Err(error) = toast_result {
+                let _ = self.app.emit(
+                    "notification-error",
+                    format!("下载已完成，但 Windows 通知发送失败：{error}"),
+                );
+            }
+        }
+        #[cfg(not(windows))]
+        {
+            if let Err(error) = self
+                .app
+                .notification()
+                .builder()
+                .title(&title)
+                .body(&body)
+                .show()
+            {
+                let _ = self.app.emit(
+                    "notification-error",
+                    format!("下载已完成，但通知发送失败：{error}"),
+                );
+            }
         }
         let _ = self.app.emit(
             "task-notification",
@@ -3250,19 +3374,36 @@ impl DownloadManager {
         let Some((title, body)) = failure_notification(&settings, task) else {
             return;
         };
-        if let Err(error) = self
-            .app
-            .notification()
-            .builder()
-            .title(&title)
-            .body(&body)
-            .extra("task_id", task.id.clone())
-            .show()
+        #[cfg(windows)]
         {
-            let _ = self.app.emit(
-                "notification-error",
-                format!("下载已失败，但 Windows 通知发送失败：{error}"),
-            );
+            let app = self.app.clone();
+            let task_id = task.id.clone();
+            let app_id = self.app.config().identifier.clone();
+            let title_c = title.clone();
+            let body_c = body.clone();
+            let toast_result = notify_win_toast(&app_id, &title_c, &body_c, task_id.clone(), app);
+            if let Err(error) = toast_result {
+                let _ = self.app.emit(
+                    "notification-error",
+                    format!("下载已失败，但 Windows 通知发送失败：{error}"),
+                );
+            }
+        }
+        #[cfg(not(windows))]
+        {
+            if let Err(error) = self
+                .app
+                .notification()
+                .builder()
+                .title(&title)
+                .body(&body)
+                .show()
+            {
+                let _ = self.app.emit(
+                    "notification-error",
+                    format!("下载失败，但通知发送失败：{error}"),
+                );
+            }
         }
         let _ = self.app.emit(
             "task-notification",
@@ -4787,6 +4928,25 @@ fn parse_content_range_value(value: &str) -> Option<(u64, u64, u64)> {
     let total = total.trim().parse().ok()?;
     (start <= end && end < total).then_some((start, end, total))
 }
+
+/// 从预检响应中提取资源总长度。
+///
+/// HEAD/200 响应取 Content-Length；HEAD 被拒绝后回退的 GET + Range 探针返回 206，
+/// 此时 Content-Length 是分片长度（如 1 字节），总长度必须取 Content-Range。
+fn probe_total_bytes(response: &reqwest::Response) -> u64 {
+    if response.status() == reqwest::StatusCode::PARTIAL_CONTENT {
+        parse_content_range(response)
+            .map(|(_, _, total)| total)
+            .unwrap_or(0)
+    } else {
+        response
+            .headers()
+            .get(CONTENT_LENGTH)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0)
+    }
+}
 fn disposition_name(response: &reqwest::Response) -> Option<String> {
     response
         .headers()
@@ -5061,18 +5221,75 @@ fn resolve_output_path(
         }
     }
 }
-async fn sha256_file(path: &Path) -> Result<String, String> {
+/// 校验和算法。按预期校验值长度识别：32 位十六进制 = MD5，40 = SHA-1，64 = SHA-256。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum ChecksumAlgorithm {
+    Md5,
+    Sha1,
+    Sha256,
+}
+
+impl ChecksumAlgorithm {
+    fn label(self) -> &'static str {
+        match self {
+            ChecksumAlgorithm::Md5 => "MD5",
+            ChecksumAlgorithm::Sha1 => "SHA-1",
+            ChecksumAlgorithm::Sha256 => "SHA-256",
+        }
+    }
+}
+
+/// 解析用户提供的预期校验值：识别 MD5 / SHA-1 / SHA-256（十六进制，长度 32/40/64），
+/// 支持可选的 `md5:` / `sha1:` / `sha256:` 前缀（大小写不敏感）。
+/// 返回 (算法, 去前缀的小写十六进制)；无法识别时返回 `None`。
+fn parse_expected_checksum(expected: &str) -> Option<(ChecksumAlgorithm, String)> {
+    let lowered = expected.trim().to_ascii_lowercase();
+    let cleaned = lowered
+        .strip_prefix("md5:")
+        .or_else(|| lowered.strip_prefix("sha1:"))
+        .or_else(|| lowered.strip_prefix("sha-1:"))
+        .or_else(|| lowered.strip_prefix("sha256:"))
+        .or_else(|| lowered.strip_prefix("sha-256:"))
+        .unwrap_or(&lowered);
+    let algorithm = match cleaned.len() {
+        32 => ChecksumAlgorithm::Md5,
+        40 => ChecksumAlgorithm::Sha1,
+        64 => ChecksumAlgorithm::Sha256,
+        _ => return None,
+    };
+    if !cleaned.chars().all(|c| c.is_ascii_hexdigit()) {
+        return None;
+    }
+    Some((algorithm, cleaned.to_string()))
+}
+
+/// 流式计算文件摘要（1MB 缓冲），按需只维护所选算法的哈希状态。
+async fn digest_file(path: &Path, algorithm: ChecksumAlgorithm) -> Result<String, String> {
     let mut file = fs::File::open(path).await.map_err(|e| e.to_string())?;
-    let mut hasher = Sha256::new();
+    let mut md5 = Md5::new();
+    let mut sha1 = Sha1::new();
+    let mut sha256 = Sha256::new();
     let mut buffer = vec![0; 1024 * 1024];
     loop {
         let n = file.read(&mut buffer).await.map_err(|e| e.to_string())?;
         if n == 0 {
             break;
         }
-        hasher.update(&buffer[..n])
+        match algorithm {
+            ChecksumAlgorithm::Md5 => md5.update(&buffer[..n]),
+            ChecksumAlgorithm::Sha1 => sha1.update(&buffer[..n]),
+            ChecksumAlgorithm::Sha256 => sha256.update(&buffer[..n]),
+        }
     }
-    Ok(hex::encode(hasher.finalize()))
+    Ok(hex::encode(match algorithm {
+        ChecksumAlgorithm::Md5 => md5.finalize().to_vec(),
+        ChecksumAlgorithm::Sha1 => sha1.finalize().to_vec(),
+        ChecksumAlgorithm::Sha256 => sha256.finalize().to_vec(),
+    }))
+}
+
+async fn sha256_file(path: &Path) -> Result<String, String> {
+    digest_file(path, ChecksumAlgorithm::Sha256).await
 }
 
 #[cfg(test)]
@@ -5542,6 +5759,89 @@ mod tests {
         assert_eq!(parse_content_range_value("bytes 19-10/100"), None);
         assert_eq!(parse_content_range_value("bytes 0-100/100"), None);
         assert_eq!(parse_content_range_value("bytes */100"), None);
+    }
+
+    #[test]
+    fn probe_total_bytes_prefers_content_range_on_206() {
+        use axum::http;
+        // HEAD 被拒（405/501）回退 GET+Range 后得到 206：Content-Length 是分片长度
+        // （1 字节），总长必须取 Content-Range，否则任务总长会被误判为 1 字节。
+        let partial: reqwest::Response = http::Response::builder()
+            .status(http::StatusCode::PARTIAL_CONTENT)
+            .header("Content-Range", "bytes 0-0/1048576")
+            .header("Content-Length", "1")
+            .body("x".to_string())
+            .unwrap()
+            .into();
+        assert_eq!(probe_total_bytes(&partial), 1_048_576);
+
+        // 普通 200/HEAD 响应：总长取 Content-Length。
+        let full: reqwest::Response = http::Response::builder()
+            .header("Content-Length", "2048")
+            .body(Vec::<u8>::new())
+            .unwrap()
+            .into();
+        assert_eq!(probe_total_bytes(&full), 2048);
+
+        // 206 但 Content-Range 缺失/损坏：安全回退 0（未知长度，走单连接路径）。
+        let broken: reqwest::Response = http::Response::builder()
+            .status(http::StatusCode::PARTIAL_CONTENT)
+            .header("Content-Length", "1")
+            .body("x".to_string())
+            .unwrap()
+            .into();
+        assert_eq!(probe_total_bytes(&broken), 0);
+    }
+
+    // ---- 校验和算法识别（MD5 / SHA-1 / SHA-256） ----
+
+    #[test]
+    fn parse_expected_checksum_detects_algorithms_by_length() {
+        let md5_hex = "0123456789abcdef0123456789abcdef";
+        let sha1_hex = "0123456789abcdef0123456789abcdef01234567";
+        let sha256_hex = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        assert!(matches!(
+            parse_expected_checksum(md5_hex),
+            Some((ChecksumAlgorithm::Md5, _))
+        ));
+        assert!(matches!(
+            parse_expected_checksum(sha1_hex),
+            Some((ChecksumAlgorithm::Sha1, _))
+        ));
+        assert!(matches!(
+            parse_expected_checksum(sha256_hex),
+            Some((ChecksumAlgorithm::Sha256, _))
+        ));
+        // 前缀（大小写不敏感）与去前缀小写化。
+        let (algo, cleaned) =
+            parse_expected_checksum("SHA256:ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789")
+                .expect("带前缀应可识别");
+        assert_eq!(algo, ChecksumAlgorithm::Sha256);
+        assert!(cleaned.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit()));
+        // 非法输入：长度不对、非十六进制。
+        assert!(parse_expected_checksum("xyz").is_none());
+        assert!(parse_expected_checksum(&format!("sha256:{}", "g".repeat(64))).is_none());
+        assert!(parse_expected_checksum("123").is_none());
+    }
+
+    #[tokio::test]
+    async fn digest_file_matches_known_vectors() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("abc.txt");
+        tokio::fs::write(&path, b"abc").await.unwrap();
+        // "abc" 的公开标准向量。
+        assert_eq!(
+            digest_file(&path, ChecksumAlgorithm::Md5).await.unwrap(),
+            "900150983cd24fb0d6963f7d28e17f72"
+        );
+        assert_eq!(
+            digest_file(&path, ChecksumAlgorithm::Sha1).await.unwrap(),
+            "a9993e364706816aba3e25717850c26c9cd0d89d"
+        );
+        assert_eq!(
+            digest_file(&path, ChecksumAlgorithm::Sha256).await.unwrap(),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
     }
 
     fn selfcheck_task(
@@ -7628,4 +7928,49 @@ mod tests {
             assert_eq!(s.speed, segment_size - 256 * 1024);
         }
     }
+}
+
+/// Task 30.2 Windows 原生 Toast 通知辅助函数。
+///
+/// 使用 `tauri-winrt-notification` 直接调用 WinRT API 发送带 `on_activated`
+/// 回调的 Toast。回调在当前运行进程的线程中同步触发，无需 COM Activator
+/// 注册，解决了 `tauri-plugin-notification` 在 Windows 上无法触发点击回调的问题。
+///
+/// 点击通知时 emit `notification-focus-task` 事件，payload 为 `task_id`，
+/// 前端监听该事件后激活主窗口并高亮对应任务。
+#[cfg(windows)]
+fn notify_win_toast<R: tauri::Runtime>(
+    app_id: &str,
+    title: &str,
+    body: &str,
+    task_id: String,
+    app: tauri::AppHandle<R>,
+) -> Result<(), String> {
+    use tauri_winrt_notification::Toast;
+    use tauri::Manager;
+    // 开发构建（debug_assertions，如 `pnpm tauri dev`）没有注册 AUMID，
+    // 回退到 PowerShell AUMID 保证 Toast 能弹出（图标显示为 PowerShell）；
+    // 正式构建——无论从安装目录运行还是直接运行 target\release 产物——一律用应用标识。
+    // 不再用 exe 路径判断：`pnpm tauri build` 的产物同样位于 target\release，会被误判。
+    let effective_app_id = if cfg!(debug_assertions) {
+        Toast::POWERSHELL_APP_ID.to_string()
+    } else {
+        app_id.to_string()
+    };
+
+    Toast::new(&effective_app_id)
+        .title(title)
+        .text1(body)
+        .on_activated(move |_action_arg| {
+            // 在同一进程内直接触发：show 窗口 + 定位任务
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.show();
+                let _ = window.unminimize();
+                let _ = window.set_focus();
+            }
+            let _ = app.emit("notification-focus-task", task_id.clone());
+            Ok(())
+        })
+        .show()
+        .map_err(|e| e.to_string())
 }
