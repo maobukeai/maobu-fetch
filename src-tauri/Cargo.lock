@@ -2447,7 +2447,6 @@ dependencies = [
  "aes-gcm",
  "axum",
  "base64 0.22.1",
- "embed-resource",
  "fs2",
  "futures-util",
  "hex",
