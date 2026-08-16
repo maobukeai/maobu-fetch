@@ -5614,33 +5614,43 @@ function SettingsPage({ value, onChange, onClose, notify, totalSpeed = 0, active
                           前往下载页
                         </button>
                       </div>
-                      {appUpdateBusy && appUpdateProgress && (
-                        <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
-                          <div style={{ height: "4px", borderRadius: "2px", background: "var(--bg-alt, rgba(0,0,0,0.08))", overflow: "hidden" }}>
-                            <div style={{ height: "100%", width: `${appUpdateProgress.total > 0 ? Math.min(100, Math.round(appUpdateProgress.downloaded / appUpdateProgress.total * 100)) : 0}%`, background: "var(--accent)", transition: "width 0.15s" }} />
-                          </div>
-                          <span style={{ fontSize: "10px", color: "var(--muted)" }}>{formatBytes(appUpdateProgress.downloaded)}{appUpdateProgress.total > 0 ? ` / ${formatBytes(appUpdateProgress.total)}` : ""}</span>
-                        </div>
-                      )}
-                      {appUpdateReady && (
-                        <div style={{ display: "flex", alignItems: "center", gap: "6px", padding: "6px 8px", borderRadius: "6px", border: "1px solid rgba(34,197,94,0.3)", background: "rgba(34,197,94,0.08)" }}>
-                          <Check size={12} color="#22c55e" />
-                          <span style={{ fontSize: "11px", color: "var(--muted)", flex: 1, minWidth: 0 }}>v{appUpdateReady.version} 安装包已校验（{formatBytes(appUpdateReady.size)}）</span>
-                          <button
-                            className="input-button"
-                            onClick={() => void runAppUpdateInstaller()}
-                            style={{ display: "inline-flex", alignItems: "center", gap: "5px", height: "24px", padding: "0 10px", fontSize: "11px", fontWeight: 500, cursor: "pointer", borderRadius: "6px", border: "1px solid var(--accent)", background: "var(--accent)", color: "white", flexShrink: 0 }}
-                          >
-                            <Zap size={11} />
-                            立即安装
-                          </button>
-                        </div>
-                      )}
                     </div>
                   ) : (
-                    <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
                       <Check size={12} color="#22c55e" />
-                      <span>已是最新版{updateResult.latest ? ` (v${updateResult.latest.version})` : ""}</span>
+                      <span style={{ flex: 1, minWidth: 0 }}>已是最新版{updateResult.latest ? ` (v${updateResult.latest.version})` : ""}</span>
+                      <button
+                        className="input-button"
+                        disabled={appUpdateBusy}
+                        onClick={() => void runAppUpdateDownload()}
+                        title="重新下载当前版本安装包（可用于修复安装）"
+                        style={{ display: "inline-flex", alignItems: "center", gap: "6px", height: "24px", padding: "0 10px", fontSize: "11px", fontWeight: 500, cursor: appUpdateBusy ? "default" : "pointer", borderRadius: "6px", border: "1px solid var(--accent)", background: "transparent", color: "var(--accent)", flexShrink: 0 }}
+                      >
+                        {appUpdateBusy ? <LoaderCircle size={11} className="spin" /> : <Download size={11} />}
+                        {appUpdateBusy ? "下载中…" : "重新下载安装包"}
+                      </button>
+                    </div>
+                  )}
+                  {appUpdateBusy && appUpdateProgress && (
+                    <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
+                      <div style={{ height: "4px", borderRadius: "2px", background: "var(--bg-alt, rgba(0,0,0,0.08))", overflow: "hidden" }}>
+                        <div style={{ height: "100%", width: `${appUpdateProgress.total > 0 ? Math.min(100, Math.round(appUpdateProgress.downloaded / appUpdateProgress.total * 100)) : 0}%`, background: "var(--accent)", transition: "width 0.15s" }} />
+                      </div>
+                      <span style={{ fontSize: "10px", color: "var(--muted)" }}>{formatBytes(appUpdateProgress.downloaded)}{appUpdateProgress.total > 0 ? ` / ${formatBytes(appUpdateProgress.total)}` : ""}</span>
+                    </div>
+                  )}
+                  {appUpdateReady && (
+                    <div style={{ display: "flex", alignItems: "center", gap: "6px", padding: "6px 8px", borderRadius: "6px", border: "1px solid rgba(34,197,94,0.3)", background: "rgba(34,197,94,0.08)" }}>
+                      <Check size={12} color="#22c55e" />
+                      <span style={{ fontSize: "11px", color: "var(--muted)", flex: 1, minWidth: 0 }}>v{appUpdateReady.version} 安装包已校验（{formatBytes(appUpdateReady.size)}）</span>
+                      <button
+                        className="input-button"
+                        onClick={() => void runAppUpdateInstaller()}
+                        style={{ display: "inline-flex", alignItems: "center", gap: "5px", height: "24px", padding: "0 10px", fontSize: "11px", fontWeight: 500, cursor: "pointer", borderRadius: "6px", border: "1px solid var(--accent)", background: "var(--accent)", color: "white", flexShrink: 0 }}
+                      >
+                        <Zap size={11} />
+                        立即安装
+                      </button>
                     </div>
                   )}
                 </div>

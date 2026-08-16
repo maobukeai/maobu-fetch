@@ -658,8 +658,15 @@ async fn app_update_download(app: tauri::AppHandle) -> Result<UpdateDownloadResu
         return Err(error.clone());
     }
     let latest = check.latest.ok_or("未获取到最新版本信息")?;
-    if !check.has_update {
-        return Err("当前已是最新版本，无需更新".into());
+    // 同版本也允许下载（用于修复安装/重新安装）；仅拒绝降级到低于当前版本。
+    if updater::version_compare(&latest.version, updater::APP_VERSION)
+        == std::cmp::Ordering::Less
+    {
+        return Err(format!(
+            "最新版本 v{} 不高于当前版本 v{}，无需更新",
+            latest.version,
+            updater::APP_VERSION
+        ));
     }
     let asset = updater::select_installer_asset(&latest.assets)
         .ok_or("最新版本未提供 Windows 安装包（-setup.exe），请前往发布页手动下载")?;
