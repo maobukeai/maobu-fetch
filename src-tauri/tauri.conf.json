@@ -38,6 +38,7 @@
     "icon": [
       "icons/icon.ico"
     ],
+    "licenseFile": "../LICENSE",
     "shortDescription": "Windows 原生效率型下载器",
     "longDescription": "支持可靠续传、队列调度、浏览器接管与媒体下载的开源 Windows 下载管理器",
     "fileAssociations": [
@@ -53,6 +54,7 @@
         "silent": true
       },
       "nsis": {
+        "template": "installer/installer.nsi",
         "installerHooks": "installer-hooks.nsh",
         "headerImage": "installer-header.bmp",
         "sidebarImage": "installer-sidebar.bmp",
