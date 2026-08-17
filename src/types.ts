@@ -198,9 +198,73 @@ export interface DownloadTask {
   /**
    * Task 31：任务级代理认证。仅当 `proxy_override` 为非空 URL 时生效。
    * `password` 在内存中为明文（前端输入），后端保存时由 DPAPI 加密为密文落库。
-   * 反序列化时由后端解密为明文；前端不应假定 `password` 字段是密文。
+   * 反序列化时由后端解密为明文返回前端。前端不应假定 `password` 字段是密文。
    */
   proxy_auth?: ProxyAuth | null;
+  /**
+   * 任务内核类型（2026-08-16 BT 批准）。`"http"` = 并发 Range 内核；
+   * `"bt"` = aria2 BT/磁力内核。旧数据缺失时后端默认 `"http"`。
+   */
+  task_kind?: TaskKind;
+  /** BT 任务持久化元数据；HTTP 任务恒为空。 */
+  bt_meta?: BtTaskMeta | null;
+  /** BT 运行时状态（peers/seeds/上传速度），仅随任务事件下发、不持久化。 */
+  bt_runtime?: BtRuntimeStatus | null;
+}
+
+/** 任务内核类型：HTTP Range 并发内核 或 aria2 BT/磁力内核。 */
+export type TaskKind = "http" | "bt";
+
+/** BT 任务持久化元数据（后端 `BtTaskMeta` 镜像）。 */
+export interface BtTaskMeta {
+  /** 40 位小写十六进制 infohash；磁力创建即知，.torrent 由 aria2 回填。 */
+  info_hash: string;
+  /** 用户勾选的 1 基文件索引（aria2 select-file）。空 = 全部文件。 */
+  selected_files: number[];
+  /** 元数据获取后的显示名；未就绪时为空（UI 必须显示"待获取"）。 */
+  display_name?: string | null;
+  /** 磁力元数据是否已获取(.torrent 任务创建即为 true)。 */
+  metadata_ready: boolean;
+  /**
+   * 拖放创建的 .torrent 内容(STANDARD base64)。aria2 接受添加并落盘会话后
+   * 即不再依赖;保留用于暂停任务的后续恢复添加。旧数据缺失为 null。
+   */
+  torrent_data_base64?: string | null;
+  /** 边下边看：优先下载首尾分片（aria2 bt-prioritize-piece）。旧数据默认 false。 */
+  streaming_priority?: boolean;
+}
+
+/** BT 任务运行时状态（后端 `BtRuntimeStatus` 镜像，来自 aria2 真实状态）。 */
+export interface BtRuntimeStatus {
+  num_seeds: number;
+  num_peers: number;
+  upload_speed: number;
+  fetching_metadata: boolean;
+  /** 累计上传字节（分享率分子）。旧事件缺省 0。 */
+  uploaded_bytes?: number;
+  /** aria2 报告本机正在做种上传。旧事件缺省 false。 */
+  seeding?: boolean;
+}
+
+/** 种子内单个文件条目（`bt_task_files` 返回）。 */
+export interface BtFileEntry {
+  index: number;
+  path: string;
+  length_bytes: number;
+  selected: boolean;
+}
+
+/** 新建 BT 任务请求（`bt_task_add`）。source 为 magnet: URI、.torrent 绝对路径或拖放种子文件名。 */
+export interface BtNewTaskRequest {
+  source: string;
+  /** 拖放 .torrent 的文件内容（STANDARD base64）。存在时优先于路径读取。 */
+  source_data_base64?: string | null;
+  destination?: string | null;
+  selected_files?: number[];
+  start_paused?: boolean;
+  source_tag?: string | null;
+  /** 边下边看：优先下载首尾分片，便于预览播放。 */
+  streaming_priority?: boolean;
 }
 
 /**
@@ -360,6 +424,30 @@ export interface AppSettings {
   user_resumed_after_metered: boolean;
   /** Task 21：自定义列表快捷键配置。未设置时由前端填充默认组合。 */
   shortcut_keys?: ShortcutKeys;
+  /** BT 做种策略：完成后是否继续上传。默认 false（AGENTS.md §3 做种默认关闭）。 */
+  bt_seed_enabled?: boolean;
+  /** BT 做种分享率目标（仅在 bt_seed_enabled 时生效）。默认 1.0。 */
+  bt_seed_ratio?: number;
+  /** BT 全局上传限速 KB/s（下载期与做种期均生效）。0 = 不限。默认 2048。 */
+  bt_upload_limit_kbps?: number;
+  /** 扩展/剪贴板是否接管 magnet: 链接。默认 true，可关闭。 */
+  bt_intercept_magnet?: boolean;
+  /** BT 额外 Tracker 列表（每行一个 URL）。空 = 不追加。 */
+  bt_extra_trackers?: string;
+  /** 分时段限速规则（2026-08-17）。`null`/缺省 = 未配置。 */
+  scheduled_limit?: ScheduledSpeedLimit | null;
+}
+
+/**
+ * 分时段限速规则（2026-08-17）：每日时间窗口内用独立限速覆盖全局设置。
+ * `start_minutes`/`end_minutes` 为本地时间一天内分钟数（0..=1439，闭区间）；
+ * `start > end` 表示跨午夜窗口；`limit_kbps = 0` 表示窗口内不限速（夜间全速）。
+ */
+export interface ScheduledSpeedLimit {
+  enabled: boolean;
+  start_minutes: number;
+  end_minutes: number;
+  limit_kbps: number;
 }
 
 /** Task 21：列表快捷键配置映射。 */
@@ -379,7 +467,7 @@ export type ColorScheme = "system" | "light" | "dark";
 
 export interface PairingInfo { code: string; expires_at: number; paired_extension?: string; }
 export type ToolPhase = "missing" | "downloading" | "verifying" | "extracting" | "ready" | "failed";
-export type ToolComponent = "yt-dlp" | "ffmpeg";
+export type ToolComponent = "yt-dlp" | "ffmpeg" | "aria2";
 export interface ToolStatus {
   state: ToolPhase;
   version: string;
@@ -400,11 +488,34 @@ export interface ToolStatus {
   ffmpeg_source: "missing" | "custom" | "bundled" | "system";
   yt_dlp_resolved_path?: string;
   ffmpeg_resolved_path?: string;
+  /** aria2 组件可用性（BT 前置条件）。独立于 state 字段（state 描述媒体组件）。 */
+  aria2_available?: boolean;
+  aria2_version?: string;
+  aria2_download_bytes?: number;
+  aria2_installed_bytes?: number;
+  aria2_source?: "missing" | "bundled";
+  aria2_resolved_path?: string;
 }
 export interface DetectedMediaTools {
   yt_dlp_path?: string;
   ffmpeg_path?: string;
   ffprobe_path?: string;
+}
+/**
+ * yt-dlp 在线更新检查结果（仅检查与提醒，下载需用户确认）。
+ * 与后端 `YtDlpUpdateInfo` 对应。
+ */
+export interface YtDlpUpdateInfo {
+  /** 本地已安装版本（来自版本记录文件，缺失时回退编译期内置版本）。 */
+  installed_version: string;
+  /** GitHub 官方最新 release 版本号（CalVer，如 `2026.09.06`）。 */
+  latest_version: string;
+  /** 最新版本是否高于本地版本。 */
+  has_update: boolean;
+  /** 最新版 `yt-dlp.exe` 资产大小（字节）。 */
+  size_bytes: number;
+  /** release 页面地址，供"查看发布说明"跳转。 */
+  release_url: string;
 }
 export interface MediaFormat {
   id: string;
@@ -789,6 +900,8 @@ export interface RestorePreview {
   new_presets: number;
   override_presets: number;
   new_url_history: number;
+  /** 应用快捷视图条数（按 ID 比对，含新增与覆盖）。 */
+  new_saved_views?: number;
   new_tasks: number;
   duplicate_tasks: number;
   includes_auth: boolean;

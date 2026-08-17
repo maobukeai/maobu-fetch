@@ -10,7 +10,7 @@
     "tauri": "tauri",
     "desktop:dev": "scripts\\run-dev.cmd",
     "extension:build": "pnpm --dir extension build",
-    "check": "npx tsx src/i18n.test.ts && tsc --noEmit && npm --prefix extension run check",
+    "check": "npx tsx src/i18n.test.ts && npx tsx src/url-sequence.test.ts && npx tsx src/drag-drop.test.ts && tsc --noEmit && npm --prefix extension run check",
     "clean": "cargo clean --manifest-path src-tauri/Cargo.toml"
   },
   "dependencies": {

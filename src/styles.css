@@ -335,6 +335,9 @@ svg { flex: 0 0 auto; }
 .column-resizer:hover { border-right-color: var(--accent); }
 .task-rows { overflow: auto; scrollbar-width: thin; }
 .task-row { min-height: var(--task-row-height); padding: 0 var(--task-row-padding-x); border-bottom: 1px solid var(--border); font-size: var(--task-row-font-size); outline: none; transition: background-color 0.15s; user-select: none; -webkit-user-select: none; cursor: grab; }
+/* 长列表滚动优化（2026-08-17）：视口外的行跳过渲染；contain-intrinsic-size
+   提供占位高度（auto 记住渲染后的实际高度），滚动条与排序/多选/右键行为不变。 */
+.task-row { content-visibility: auto; contain-intrinsic-size: auto var(--task-row-height); }
 .task-row:hover { background: var(--surface-hover); }
 .task-row.selected { background: var(--surface-selected); }
 .task-row:active { cursor: grabbing; }
@@ -449,6 +452,25 @@ svg { flex: 0 0 auto; }
   background: var(--sidebar-bg);
   overflow: hidden;
 }
+/* 速度历史卡片（2026-08-17）：真实速度采样曲线，紧凑排布在详情信息页签顶部。 */
+.speed-history-card {
+  margin: 10px 12px 0;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.speed-history-title {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 10px;
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+.speed-history-peak { color: var(--subtle); font-size: 9px; white-space: nowrap; }
+.speed-history-empty { font-size: 10px; color: var(--subtle); padding: 14px 0; text-align: center; }
+.speed-history-chart { display: block; width: 100%; height: 48px; }
 .details-header {
   display: flex;
   align-items: center;
@@ -915,6 +937,52 @@ svg { flex: 0 0 auto; }
   -webkit-backdrop-filter: blur(6px);
   backdrop-filter: blur(6px);
 }
+
+/* 窗口拖放遮罩：拖入文件/链接时全屏提示（pointer-events 关闭，drop 落到 window） */
+.drop-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+  background: color-mix(in srgb, var(--accent, #0078d4) 6%, transparent);
+  border: 2px dashed color-mix(in srgb, var(--accent, #0078d4) 55%, transparent);
+}
+.drop-overlay-card {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 22px;
+  border-radius: 10px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--accent, #0078d4);
+  background: var(--bg-surface, rgba(255, 255, 255, 0.92));
+  border: 1px solid color-mix(in srgb, var(--accent, #0078d4) 35%, transparent);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+}
+
+/* 应用内确认对话框（替代原生 window.confirm） */
+.confirm-dialog-body { display: flex; flex-direction: column; gap: 14px; padding: 4px 0 0; }
+.confirm-dialog-body p { margin: 0; font-size: 12px; color: var(--text, #333); line-height: 1.6; white-space: pre-line; }
+.confirm-dialog-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.confirm-dialog-actions button {
+  height: 28px;
+  padding: 0 14px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+}
+.confirm-btn-secondary {
+  border: 1px solid var(--border-strong, rgba(0, 0, 0, 0.25));
+  background: var(--control, #fff);
+  color: var(--text, #333);
+}
+.confirm-btn-primary { border: none; background: var(--accent, #0078d4); color: #fff; }
+.confirm-btn-danger { border: none; background: var(--danger, #c0392b); color: #fff; }
+.confirm-dialog-actions button:focus-visible { outline: 2px solid var(--accent, #0078d4); outline-offset: 1px; }
 .dialog-material {
   width: max-content;
   max-width: calc(100vw - 48px);
@@ -4008,3 +4076,189 @@ svg { flex: 0 0 auto; }
   color: var(--accent);
   flex-shrink: 0;
 }
+
+/* ===== BT/磁力（2026-08-16 批准纳入）===== */
+/* 任务行 BT 徽标：小尺寸可辨识、不依赖颜色单独传达（带文字 "BT"） */
+.bt-task-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 0 4px;
+  border-radius: 3px;
+  font-size: 9px;
+  font-weight: 600;
+  line-height: 14px;
+  color: var(--accent, #0078d4);
+  background: rgba(0, 120, 212, 0.10);
+  border: 1px solid rgba(0, 120, 212, 0.22);
+  flex-shrink: 0;
+}
+/* 新建任务对话框：磁力/种子识别徽标 */
+.bt-input-badge {
+  position: absolute;
+  right: 84px;
+  bottom: 6px;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 10px;
+  color: var(--accent, #0078d4);
+  background: rgba(0, 120, 212, 0.10);
+  border: 1px solid rgba(0, 120, 212, 0.22);
+  pointer-events: none;
+}
+/* 新建任务对话框：.torrent 文件选择按钮 */
+.torrent-pick-button {
+  position: absolute;
+  right: 6px;
+  bottom: 6px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  font-size: 11px;
+  border-radius: 4px;
+  border: 1px solid var(--border, rgba(0, 0, 0, 0.15));
+  background: var(--bg-surface, #fbfbfb);
+  color: var(--text-secondary, #555);
+  cursor: pointer;
+}
+.torrent-pick-button:hover { border-color: var(--accent, #0078d4); color: var(--accent, #0078d4); }
+.url-input-wrap { position: relative; }
+.bt-input-options { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 6px; }
+.bt-start-paused-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--text-secondary, #555);
+  cursor: pointer;
+  user-select: none;
+  -webkit-user-select: none;
+}
+/* 设置页 BT 分区：Tracker 多行输入 */
+.bt-trackers-input {
+  width: 100%;
+  box-sizing: border-box;
+  font-family: Consolas, "Courier New", monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--bg, transparent);
+  color: var(--text);
+  resize: vertical;
+}
+
+/* 详情栏 BT 面板：统计行 + 文件勾选 + 隐私说明 */
+.bt-details-panel { display: flex; flex-direction: column; gap: 10px; padding: 10px 4px 2px; }
+.bt-stats-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(96px, 1fr)); gap: 8px; }
+.bt-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: var(--bg-surface, rgba(127, 127, 127, 0.06));
+  border: 1px solid var(--border, rgba(127, 127, 127, 0.18));
+}
+.bt-stat-label { font-size: 10px; color: var(--text-secondary, #777); }
+.bt-stat-value { font-size: 14px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.bt-files-section { display: flex; flex-direction: column; gap: 6px; }
+.bt-files-header { display: flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 600; }
+.bt-files-header > span:first-child { flex: 1; }
+.bt-files-refresh, .bt-files-save {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  border: 1px solid var(--border, rgba(0, 0, 0, 0.15));
+  background: transparent;
+  cursor: pointer;
+}
+.bt-files-save { border-color: var(--accent, #0078d4); color: var(--accent, #0078d4); }
+.bt-files-refresh:disabled, .bt-files-save:disabled { opacity: 0.5; cursor: default; }
+.bt-files-hint, .bt-files-error, .bt-privacy-note { font-size: 11px; color: var(--text-secondary, #777); margin: 0; }
+.bt-files-error { color: var(--danger, #c0392b); }
+
+/* BT 做种中徽章：仅当 aria2 报告 seeder 时由前端渲染（§3 真实状态） */
+.bt-seed-badge {
+  display: inline-block;
+  margin-left: 5px;
+  padding: 0 5px;
+  border-radius: 999px;
+  font-size: 10px;
+  line-height: 16px;
+  vertical-align: middle;
+  color: var(--accent, #0078d4);
+  background: color-mix(in srgb, var(--accent, #0078d4) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent, #0078d4) 35%, transparent);
+}
+.bt-files-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 200px;
+  overflow-y: auto;
+  border: 1px solid var(--border, rgba(127, 127, 127, 0.18));
+  border-radius: 6px;
+  padding: 4px;
+}
+.bt-file-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  font-size: 11px;
+  text-align: left;
+  cursor: pointer;
+  width: 100%;
+}
+.bt-file-item:hover { background: rgba(127, 127, 127, 0.08); }
+.bt-file-item.selected { color: var(--accent, #0078d4); }
+.bt-file-item.selected svg { color: var(--accent, #0078d4); }
+.bt-file-item svg { color: var(--text-secondary, #999); flex-shrink: 0; }
+.bt-file-path { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; }
+.bt-file-size { color: var(--text-secondary, #888); font-variant-numeric: tabular-nums; flex-shrink: 0; }
+.bt-privacy-note { padding-top: 2px; border-top: 1px dashed var(--border, rgba(127, 127, 127, 0.25)); }
+
+/* 设置页 BT 分区 */
+.bt-settings { display: flex; flex-direction: column; gap: 10px; }
+.bt-settings h3 { display: flex; align-items: center; gap: 6px; font-size: 13px; margin: 0 0 4px; }
+.bt-settings-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border, rgba(127, 127, 127, 0.18));
+}
+/* Tracker 多行输入行：纵向排布。必须置于 .bt-settings-row 之后，
+   同优先级下靠后的规则才能覆盖基类的 align-items/gap。 */
+.bt-settings-row-wide { flex-direction: column; align-items: stretch; gap: 6px; }
+.bt-settings-label { font-size: 12px; font-weight: 600; }
+.bt-settings-sub { font-size: 11px; color: var(--text-secondary, #777); margin-top: 2px; max-width: 420px; }
+.bt-settings-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+.bt-settings-actions button, .bt-settings-row input[type="number"] { font-size: 12px; }
+.bt-progress-hint { font-size: 11px; color: var(--accent, #0078d4); }
+.bt-settings-error { font-size: 11px; color: var(--danger, #c0392b); margin: 0; }
+.bt-privacy-card {
+  display: flex;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px solid rgba(234, 163, 8, 0.35);
+  background: rgba(234, 163, 8, 0.07);
+}
+.bt-privacy-card svg { color: #b8860b; flex-shrink: 0; margin-top: 1px; }
+.bt-privacy-card strong { font-size: 11px; }
+.bt-privacy-card p { font-size: 11px; margin: 2px 0 0; color: var(--text-secondary, #666); }

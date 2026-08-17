@@ -108,6 +108,8 @@ export function BackupRestoreModal({
           stats.settings_replaced ? "，设置已替换" : ""
         }`
       );
+      // 通知 App 层刷新快捷视图等衍生状态（恢复可能改写 saved_views 表）。
+      window.dispatchEvent(new CustomEvent("maobu:backup-restored"));
       setRestorePreview(null);
       setRestorePath(null);
       setRestorePassword("");
@@ -229,6 +231,7 @@ export function BackupRestoreModal({
                 <li>新增文件名清理规则：{restorePreview.new_filename_cleanup_rules} 条（覆盖 {restorePreview.override_filename_cleanup_rules} 条）</li>
                 <li>新增下载预设：{restorePreview.new_presets} 条（覆盖 {restorePreview.override_presets} 条）</li>
                 <li>新增 URL 历史：{restorePreview.new_url_history} 条</li>
+                <li>应用快捷视图：{restorePreview.new_saved_views ?? 0} 条</li>
                 <li>
                   全局设置：
                   {!restorePreview.settings_diff.identical ? "将替换当前设置" : "与当前设置相同"}

@@ -24,6 +24,21 @@ declare const process: { exitCode: number; argv: string[] };
 
 import { t, setLocale, getLocale, findChineseCharactersInLocale, type Locale } from "./i18n.js";
 import { reorderTaskIdsWithinPriority, TASK_PRIORITY_PRESETS } from "./priority.js";
+import zhCNJson from "./locales/zh-CN.json";
+import enJson from "./locales/en.json";
+
+/** 把嵌套 locale 对象展平为点分键集合（与 t() 的查找路径一致）。 */
+function flattenKeys(value: unknown, prefix = ""): string[] {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return prefix ? [prefix] : [];
+  }
+  const keys: string[] = [];
+  for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+    const path = prefix ? `${prefix}.${key}` : key;
+    keys.push(...flattenKeys(child, path));
+  }
+  return keys;
+}
 
 /** 简易断言：实际值 === 期望值时通过，否则抛错。 */
 function assertEqual<T>(actual: T, expected: T, message: string): void {
@@ -180,6 +195,17 @@ test("zh-CN locale 中确实包含中文字符（验证扫描逻辑正确）", (
   assertTrue(chineseChars.length > 0, "zh-CN locale should have Chinese characters");
 });
 
+// ===== zh-CN / en 键一致性（Task 33 迁移防漂移） =====
+
+test("zh-CN 与 en 的点分键集合完全一致", () => {
+  const zhKeys = new Set(flattenKeys(zhCNJson));
+  const enKeys = new Set(flattenKeys(enJson));
+  const missingInEn = [...zhKeys].filter((key) => !enKeys.has(key));
+  const missingInZh = [...enKeys].filter((key) => !zhKeys.has(key));
+  assertEqual(missingInEn.length, 0, `keys missing in en.json: ${missingInEn.slice(0, 10).join(", ")}`);
+  assertEqual(missingInZh.length, 0, `keys missing in zh-CN.json: ${missingInZh.slice(0, 10).join(", ")}`);
+});
+
 // ===== 运行测试 =====
 
 /**
@@ -217,7 +243,9 @@ function runAllTests(): void {
 
 // 当作为脚本直接执行时运行测试；被 import 时不自动运行。
 // 使用 import.meta.url 检测入口点，兼容 ESM。
-if (typeof process !== "undefined" && process.argv[1] && import.meta.url.endsWith(process.argv[1].replace(/\\/g, "/"))) {
+// 注意：非 ASCII 路径（如中文目录名）下 import.meta.url 是百分号编码，
+// 必须先 decodeURI 再比较，否则入口检测静默失效、测试被跳过。
+if (typeof process !== "undefined" && process.argv[1] && decodeURI(import.meta.url).endsWith(process.argv[1].replace(/\\/g, "/"))) {
   runAllTests();
 }
 

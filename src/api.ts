@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { AppInfo, AppSettings, CacheClearResult, CacheInspectResult, CategoryRule, CategoryRuleTestResult, CompletionAction, DeepLinkReceivedPayload, DetectedMediaTools, DownloadPreset, DownloadTask, DuplicateCheckResult, ErrorDiagnosis, ExtensionCompatibilityResult, ExtensionUpdateResult, FilenameCleanupRule, MediaCredential, MediaCredentialCheckResult, MediaPlatform, MediaProbeResult, MeteredNetworkDetectedPayload, NewTaskRequest, PairingInfo, PlatformCompatibility, PlatformNamingTemplate, PowerAction, PowerActionState, PrecheckRequest, PrecheckResult, ProxyAuth, ProxyTestResult, RestorePreview, RestoreStats, RetryPolicy, SelfcheckReport, Tag, TaskEvent, TaskNotificationPayload, TaskTagsMap, TaskTemplate, TaskTemplateTestResult, ToolComponent, ToolStatus, UpdateCheckResult, UpdateDownloadResult, UpdateProgressPayload, UrlHistoryEntry, WaitReason } from "./types";
+import type { AppInfo, AppSettings, BtFileEntry, BtNewTaskRequest, CacheClearResult, CacheInspectResult, CategoryRule, CategoryRuleTestResult, CompletionAction, DeepLinkReceivedPayload, DetectedMediaTools, DownloadPreset, DownloadTask, DuplicateCheckResult, ErrorDiagnosis, ExtensionCompatibilityResult, ExtensionUpdateResult, FilenameCleanupRule, MediaCredential, MediaCredentialCheckResult, MediaPlatform, MediaProbeResult, MeteredNetworkDetectedPayload, NewTaskRequest, PairingInfo, PlatformCompatibility, PlatformNamingTemplate, PowerAction, PowerActionState, PrecheckRequest, PrecheckResult, ProxyAuth, ProxyTestResult, QuickView, RestorePreview, RestoreStats, RetryPolicy, SelfcheckReport, Tag, TaskEvent, TaskNotificationPayload, TaskTagsMap, TaskTemplate, TaskTemplateTestResult, ToolComponent, ToolStatus, UpdateCheckResult, UpdateDownloadResult, UpdateProgressPayload, UrlHistoryEntry, WaitReason, YtDlpUpdateInfo } from "./types";
 
 export const isDesktop = () => "__TAURI_INTERNALS__" in window;
 const call = <T>(command: string, args?: Record<string, unknown>): Promise<T> => isDesktop() ? invoke<T>(command, args) : Promise.reject(new Error("请运行猫步下载器桌面应用"));
@@ -8,6 +8,15 @@ const call = <T>(command: string, args?: Record<string, unknown>): Promise<T> =>
 export const api = {
   list: () => isDesktop() ? call<DownloadTask[]>("tasks_list") : Promise.resolve([]),
   add: (request: NewTaskRequest) => call<DownloadTask>("task_add", { request }),
+  /**
+   * 新建 BT/磁力任务（2026-08-16 批准）。`source` 为 magnet: URI 或本地
+   * .torrent 文件绝对路径。元数据获取前任务不携带文件名/大小。
+   */
+  addBt: (request: BtNewTaskRequest) => call<DownloadTask>("bt_task_add", { request }),
+  /** 列出 BT 任务种子内文件。磁力元数据未就绪时抛 `BT_METADATA_PENDING:` 前缀错误。 */
+  btTaskFiles: (id: string) => call<BtFileEntry[]>("bt_task_files", { id }),
+  /** 勾选/取消勾选 BT 任务内文件（1 基索引，至少保留一个）。 */
+  btSelectFiles: (id: string, indices: number[]) => call<void>("bt_select_files", { id, indices }),
   addBatch: (urls: string[], template: Omit<NewTaskRequest, "url">) => call<DownloadTask[]>("tasks_add_batch", { request: { urls, destination: template.destination, headers: template.headers, scheduled_at: template.scheduled_at, priority: template.priority, per_task_speed_limit: template.per_task_speed_limit, collision_policy: template.collision_policy, completion_action: template.completion_action, connection_count: template.connection_count } }),
   exportTasks: (path: string) => call<number>("tasks_export", { path }),
   importTasks: (path: string, destination: string) => call<DownloadTask[]>("tasks_import", { path, destination }),
@@ -86,13 +95,24 @@ export const api = {
    */
   mediaNormalizeUrl: (input: string) => call<string>("media_normalize_url", { input }),
   detectSystemMediaTools: () => call<DetectedMediaTools>("media_tools_detect_system"),
-  toolStatus: () => isDesktop() ? call<ToolStatus>("media_tool_status") : Promise.resolve({ state: "missing", version: "yt-dlp 2026.06.09 · FFmpeg 8.1.2", downloaded_bytes: 0, total_bytes: 0, installed_bytes: 0, yt_dlp_available: false, ffmpeg_available: false, yt_dlp_version: "2026.06.09", ffmpeg_version: "8.1.2 essentials", yt_dlp_download_bytes: 18_202_192, ffmpeg_download_bytes: 109_728_040, yt_dlp_installed_bytes: 0, ffmpeg_installed_bytes: 0, yt_dlp_source: "missing", ffmpeg_source: "missing" } as ToolStatus),
+  toolStatus: () => isDesktop() ? call<ToolStatus>("media_tool_status") : Promise.resolve({ state: "missing", version: "yt-dlp 2026.07.04 · FFmpeg 8.1.2", downloaded_bytes: 0, total_bytes: 0, installed_bytes: 0, yt_dlp_available: false, ffmpeg_available: false, yt_dlp_version: "2026.07.04", ffmpeg_version: "8.1.2 essentials", yt_dlp_download_bytes: 18_202_192, ffmpeg_download_bytes: 109_728_040, yt_dlp_installed_bytes: 0, ffmpeg_installed_bytes: 0, yt_dlp_source: "missing", ffmpeg_source: "missing" } as ToolStatus),
   installMediaTool: (component: ToolComponent) => call<void>("media_tool_install", { component }),
   installMediaTools: () => call<void>("media_tools_install"),
   cancelMediaTools: () => call<void>("media_tools_cancel"),
   removeMediaTools: () => call<void>("media_tools_remove"),
   removeMediaTool: (component: ToolComponent) => call<void>("media_tool_remove", { component }),
   checkMediaToolsUpdate: () => call<ToolStatus>("media_tools_check_update"),
+  /**
+   * 检查 yt-dlp 官方最新版本（仅检查，不下载）。通过 GitHub API 获取
+   * 最新版本号与官方 SHA-256，与本地已安装版本比较。失败时抛出中文错误
+   * （限流/网络不可达），不会静默降级。
+   */
+  checkYtDlpUpdate: () => call<YtDlpUpdateInfo>("media_tools_check_yt_dlp_update"),
+  /**
+   * 用户确认后把 yt-dlp 更新到官方最新版本。后端安装时重新拉取最新规格
+   * 并强制 SHA-256 校验，校验失败不落盘为可用版本。
+   */
+  updateYtDlp: () => call<void>("media_tools_update_yt_dlp"),
   /** Task 26.2 / 26.5：检查猫步下载器应用更新。只检查不自动下载，结果仅用于提醒用户。 */
   appCheckUpdate: () => call<UpdateCheckResult>("app_check_update"),
   /** Task 26.3 / 26.6：检查浏览器扩展版本与桌面端兼容性。`extVersion` 为扩展 manifest 中的 version。 */
@@ -140,8 +160,8 @@ export const api = {
   /**
    * 列出全部平台兼容性记录，按 platform 升序返回。
    *
-   * 内置 6 条默认记录（YouTube/哔哩哔哩=Verified，
-   * 抖音/TikTok/Twitter/微博=Experimental）由后端 `Store::open` 自动 seed，
+   * 内置 6 条默认记录（哔哩哔哩/抖音/Twitter=Verified，
+   * TikTok/微博/YouTube=Experimental）由后端 `Store::open` 自动 seed，
    * 用户修改不会被覆盖。用于设置页"关于 > 平台兼容性"子区域展示矩阵。
    */
   platformCompatibilityList: () => isDesktop() ? call<PlatformCompatibility[]>("platform_compatibility_list") : Promise.resolve([] as PlatformCompatibility[]),
@@ -207,6 +227,15 @@ export const api = {
   urlHistoryList: () => isDesktop() ? call<UrlHistoryEntry[]>("url_history_list") : Promise.resolve([] as UrlHistoryEntry[]),
   /** 清空全部 URL 历史（Task 19）。 */
   urlHistoryClear: () => call<void>("url_history_clear"),
+  // ===== 快捷视图 CRUD（2026-08-17 从 localStorage 迁入 SQLite，随完整备份导出）=====
+  /** 列出全部快捷视图，按创建时间升序。 */
+  savedViewList: () => isDesktop() ? call<QuickView[]>("saved_view_list") : Promise.resolve([] as QuickView[]),
+  /** 新增或更新快捷视图（按 id upsert）。 */
+  savedViewUpsert: (view: QuickView) => isDesktop() ? call<void>("saved_view_upsert", { view }) : Promise.resolve(),
+  /** 删除快捷视图（幂等）。 */
+  savedViewDelete: (id: string) => isDesktop() ? call<void>("saved_view_delete", { id }) : Promise.resolve(),
+  /** 整体替换快捷视图列表（localStorage 一次性迁移用）。 */
+  savedViewReplaceAll: (views: QuickView[]) => isDesktop() ? call<void>("saved_view_replace_all", { views }) : Promise.resolve(),
   // ===== Task 25: 标签 CRUD 与任务-标签关联 =====
   /** 列出全部标签，按 name 升序排列。 */
   tagList: () => isDesktop() ? call<Tag[]>("tag_list") : Promise.resolve([] as Tag[]),

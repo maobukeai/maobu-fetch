@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { open as pickPath, save as savePath } from "@tauri-apps/plugin-dialog";
 import { open as openUrl } from "@tauri-apps/plugin-shell";
 import {
@@ -20,7 +21,7 @@ import { LogicalSize } from "@tauri-apps/api/dpi";
 import type {
   AdvancedFilter, AppInfo, AppSettings, BackoffStrategy, CategoryRule, CategoryRuleType, CollisionPolicy, ColorScheme, CompletionAction, ConnectionState, DeepLinkReceivedPayload, DownloadPreset, DownloadTask, DuplicateCheckResult, DuplicateMatch, DuplicateType, ExtensionCompatibilityResult, FilenameCleanupRule, FilterKey, MediaCredential, MediaCredentialCheckResult, MediaFormat, MediaPlatform, MediaProbeResult, MeteredNetworkDetectedPayload,
   NewTaskRequest, PairingInfo, PlatformCompatibility, PlatformNamingTemplate, PowerAction, PowerActionState, PrecheckResult, ProxyAuth, QuickView, RestorePreview, RetryPolicy, SegmentStatus, SelfcheckReport, Tag,
-  TaskConnectionsEvent, TaskNotificationPayload, TaskStatus, TaskTagsMap, TaskTemplate, TaskTemplateTestResult, ToolComponent, ToolStatus, UpdateCheckResult, UpdateDownloadResult, UpdateProgressPayload, ExtensionUpdateResult, UrlHistoryEntry, WaitReason, ShortcutKeys,
+  TaskConnectionsEvent, TaskNotificationPayload, TaskStatus, TaskTagsMap, TaskTemplate, TaskTemplateTestResult, ToolComponent, ToolStatus, UpdateCheckResult, UpdateDownloadResult, UpdateProgressPayload, ExtensionUpdateResult, UrlHistoryEntry, WaitReason, ShortcutKeys, YtDlpUpdateInfo,
 } from "./types";
 import {
   completionActionKind,
@@ -43,8 +44,12 @@ import { YouTubeCredentialsModal } from "./components/YouTubeCredentialsModal";
 import { CompletionActionEditor, completionActionLabel } from "./components/CompletionActionEditor";
 import { BackupRestoreModal } from "./components/BackupRestoreModal";
 import { EpisodePicker } from "./components/EpisodePicker";
-import { t, setLocale, useLocale } from "./i18n";
+import { BtDetailsPanel } from "./components/BtDetailsPanel";
+import { BtSettingsSection } from "./components/BtSettingsSection";
+import { t, setLocale, useLocale, getLocale } from "./i18n";
 import { reorderTaskIdsWithinPriority, TASK_PRIORITY_PRESETS } from "./priority";
+import { expandSequenceUrls, isBtSourceLine } from "./url-sequence";
+import { arrayBufferToBase64, classifyDroppedFiles, extractDroppedUrls, MAX_DROPPED_TORRENT_BYTES } from "./drag-drop";
 
 export function parseShortcutEvent(event: KeyboardEvent): string {
   const parts: string[] = [];
@@ -172,7 +177,7 @@ const defaults: AppSettings = {
   speed_limit_kbps: 0, start_minimized: false, minimize_to_tray: true,
   close_to_tray: false, notifications: true, auto_start: true, theme: "system",
   accent_color: "blue",
-  frosted_glass: false,
+  frosted_glass: false, scheduled_limit: null, bt_extra_trackers: "",
   language: "zh-CN", intercept_browser_downloads: true, min_file_size_mb: 1,
   clipboard_monitor: false, proxy_mode: "system", proxy_url: "", proxy_username: "",
   proxy_password: "", user_agent: "MaobuFetch/0.5", default_collision_policy: "rename", default_completion_action: "none",
@@ -512,21 +517,53 @@ export default function App() {
       setTaskTags(nextTaskTags);
     } catch (error) { /* 标签加载失败不阻塞主流程，仅记录到 toast */ }
   };
-  // Task 25: 快捷视图持久化到 localStorage。键名固定为 `maobu.quickViews`，
-  // 与 SQLite 设置无关，仅作为前端个人偏好。
+  // Task 25: 快捷视图持久化到 SQLite（2026-08-17 从 localStorage 迁入）。
+  // 首次启动时若数据库为空而 localStorage 存有旧数据，执行一次性迁移并清除旧键；
+  // 迁移失败时保留旧键，下次启动重试。非桌面开发环境退回 localStorage。
   const QUICK_VIEWS_STORAGE_KEY = "maobu.quickViews";
   useEffect(() => {
-    try {
-      const raw = localStorage.getItem(QUICK_VIEWS_STORAGE_KEY);
-      if (raw) {
-        const parsed = JSON.parse(raw) as QuickView[];
-        if (Array.isArray(parsed)) setQuickViews(parsed);
-      }
-    } catch { /* 旧数据格式损坏时静默忽略，使用空列表 */ }
+    if (!isDesktop()) {
+      try {
+        const raw = localStorage.getItem(QUICK_VIEWS_STORAGE_KEY);
+        if (raw) {
+          const parsed = JSON.parse(raw) as QuickView[];
+          if (Array.isArray(parsed)) setQuickViews(parsed);
+        }
+      } catch { /* 旧数据格式损坏时静默忽略，使用空列表 */ }
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      try {
+        let views = await api.savedViewList();
+        if (views.length === 0) {
+          try {
+            const raw = localStorage.getItem(QUICK_VIEWS_STORAGE_KEY);
+            if (raw) {
+              const parsed = JSON.parse(raw) as QuickView[];
+              const valid = Array.isArray(parsed)
+                ? parsed.filter((v) => v && typeof v.id === "string" && v.name && typeof v.name === "string" && v.filter && typeof v.filter === "object")
+                : [];
+              if (valid.length > 0) {
+                await api.savedViewReplaceAll(valid);
+                views = valid;
+              }
+            }
+            // 仅在迁移未抛错时清除旧键；replace 失败会跳过本行，保留旧键下次重试。
+            localStorage.removeItem(QUICK_VIEWS_STORAGE_KEY);
+          } catch { /* 旧数据损坏或迁移失败：保留旧键，下次启动重试 */ }
+        }
+        if (!cancelled) setQuickViews(views);
+      } catch { /* 加载失败保持空列表，不阻塞主流程 */ }
+    })();
+    return () => { cancelled = true; };
   }, []);
+  // 备份恢复可能改写 saved_views 表（BackupRestoreModal 派发事件），此处刷新内存列表。
   useEffect(() => {
-    try { localStorage.setItem(QUICK_VIEWS_STORAGE_KEY, JSON.stringify(quickViews)); } catch { /* localStorage 配额或不可用时静默忽略 */ }
-  }, [quickViews]);
+    const reload = () => { void api.savedViewList().then(setQuickViews).catch(() => {}); };
+    window.addEventListener("maobu:backup-restored", reload);
+    return () => window.removeEventListener("maobu:backup-restored", reload);
+  }, []);
   useEffect(() => {
     const handleContextMenu = (e: globalThis.MouseEvent) => e.preventDefault();
     document.addEventListener("contextmenu", handleContextMenu);
@@ -820,17 +857,21 @@ export default function App() {
         const text = await readText();
         if (text && text !== lastText) {
           lastText = text;
+          // 2026-08-17：剪贴板磁力接管（bt_intercept_magnet 的语义包含剪贴板）。
+          // 磁力要求首行为 magnet: 整行，不做片段提取；http 仍走原片段提取逻辑。
+          const firstLine = text.trim().split(/\r?\n/)[0] || "";
+          const magnet = firstLine.toLowerCase().startsWith("magnet:") && settings.bt_intercept_magnet !== false
+            ? firstLine
+            : null;
           const match = text.match(/https?:\/\/[^\s<>"']+/i);
-          if (match) {
-            const url = match[0];
-            if (isDownloadableUrl(url)) {
-              setInitialUrlFromClipboard(url);
-              setNewOpen(true);
-              if (appWindow) {
-                await appWindow.show();
-                await appWindow.unminimize();
-                await appWindow.setFocus();
-              }
+          const picked = match && isDownloadableUrl(match[0]) ? match[0] : magnet;
+          if (picked) {
+            setInitialUrlFromClipboard(picked);
+            setNewOpen(true);
+            if (appWindow) {
+              await appWindow.show();
+              await appWindow.unminimize();
+              await appWindow.setFocus();
             }
           }
         }
@@ -838,6 +879,96 @@ export default function App() {
     }, 1500);
     return () => clearInterval(interval);
   }, [settings.clipboard_monitor]);
+
+  // ===== 窗口拖放新建（2026-08-17，对标 IDM/FDM）=====
+  // .torrent 文件 → BT 新建对话框（内容 base64 直传内核）；
+  // URL/文本 → 预填新建对话框；其他文件 → 明确提示不支持。
+  const [dragOverlay, setDragOverlay] = useState(false);
+  const dragDepth = useRef(0);
+  const [droppedTorrent, setDroppedTorrent] = useState<{ name: string; base64: string } | null>(null);
+  useEffect(() => {
+    if (!isDesktop()) return;
+    const isRelevantDrag = (event: DragEvent) => {
+      const types = Array.from(event.dataTransfer?.types ?? []);
+      return types.includes("Files") || types.includes("text/uri-list") || types.includes("text/plain");
+    };
+    const onDragEnter = (event: DragEvent) => {
+      if (!isRelevantDrag(event)) return;
+      event.preventDefault();
+      dragDepth.current += 1;
+      setDragOverlay(true);
+    };
+    const onDragOver = (event: DragEvent) => {
+      if (!isRelevantDrag(event)) return;
+      // 必须 preventDefault，否则浏览器按默认行为处理（如导航到文件）。
+      event.preventDefault();
+    };
+    const onDragLeave = (event: DragEvent) => {
+      if (!isRelevantDrag(event)) return;
+      dragDepth.current = Math.max(0, dragDepth.current - 1);
+      if (dragDepth.current === 0) setDragOverlay(false);
+    };
+    const onDrop = (event: DragEvent) => {
+      event.preventDefault();
+      dragDepth.current = 0;
+      setDragOverlay(false);
+      // 任一弹窗/菜单打开时不打断用户当前操作（重命名、限速、关于、关闭确认等）。
+      if (newOpen || settingsOpen || renameTarget || speedLimitTarget || aboutOpen || showCloseConfirm || context) return;
+      const transfer = event.dataTransfer;
+      if (!transfer) return;
+      const files = Array.from(transfer.files ?? []);
+      if (files.length > 0) {
+        const { torrents, rejected } = classifyDroppedFiles(files);
+        if (torrents.length === 0) {
+          notifyRef.current(t("toasts.dropOnlyTorrent"), "error");
+          return;
+        }
+        const first = torrents[0];
+        // 与后端 process::validate_torrent_bytes 同一上限（20 MB），前端先拒绝，
+        // 避免把超大文件读进内存、走完 base64 编码后才被后端打回。
+        if (first.size > MAX_DROPPED_TORRENT_BYTES) {
+          notifyRef.current(t("toasts.dropTorrentTooLarge", { size: formatBytes(first.size) }), "error");
+          return;
+        }
+        void (async () => {
+          try {
+            const base64 = arrayBufferToBase64(await first.arrayBuffer());
+            setDroppedTorrent({ name: first.name, base64 });
+            setInitialUrlFromClipboard("");
+            setNewOpen(true);
+            if (torrents.length > 1) {
+              notifyRef.current(t("toasts.dropTorrentMultiple", { count: torrents.length }));
+            }
+            if (rejected.length > 0) {
+              notifyRef.current(t("toasts.dropIgnoredFiles", { count: rejected.length }));
+            }
+          } catch (error) {
+            notifyRef.current(`${t("toasts.dropTorrentReadFailed")}：${String(error)}`, "error");
+          }
+        })();
+        return;
+      }
+      const text = transfer.getData("text/uri-list") || transfer.getData("text/plain");
+      const urls = extractDroppedUrls(text);
+      if (urls.length === 0) {
+        notifyRef.current(t("toasts.dropNoUrl"), "error");
+        return;
+      }
+      setDroppedTorrent(null);
+      setInitialUrlFromClipboard(urls.join("\n"));
+      setNewOpen(true);
+    };
+    window.addEventListener("dragenter", onDragEnter);
+    window.addEventListener("dragover", onDragOver);
+    window.addEventListener("dragleave", onDragLeave);
+    window.addEventListener("drop", onDrop);
+    return () => {
+      window.removeEventListener("dragenter", onDragEnter);
+      window.removeEventListener("dragover", onDragOver);
+      window.removeEventListener("dragleave", onDragLeave);
+      window.removeEventListener("drop", onDrop);
+    };
+  }, [newOpen, settingsOpen, renameTarget, speedLimitTarget, aboutOpen, showCloseConfirm, context]);
 
   // Task 22.3：详情栏默认折叠/展开开关。
   // - 切换选中任务时（taskId 变化），按 detail_default_collapsed 决定默认状态。
@@ -1121,6 +1252,27 @@ export default function App() {
       if (isEditing()) return;
 
       const keys = settings.shortcut_keys || DEFAULT_SHORTCUTS;
+
+      // 方向键行导航（固定绑定，不占用可自定义快捷键）：沿当前视图列表移动
+      // 单选并滚动到可见；多选状态下按方向键收敛为单选。
+      // 与行点击/右键一致地更新 primaryTaskId，保证详情栏跟随键盘导航。
+      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+        if (visible.length === 0) return;
+        event.preventDefault();
+        const delta = event.key === "ArrowDown" ? 1 : -1;
+        const currentId = selected.size === 1 ? [...selected][0] : null;
+        const currentIndex = currentId ? visible.findIndex((task) => task.id === currentId) : -1;
+        const nextIndex = currentIndex === -1
+          ? (delta === 1 ? 0 : visible.length - 1)
+          : Math.min(visible.length - 1, Math.max(0, currentIndex + delta));
+        const nextTask = visible[nextIndex];
+        setSelected(new Set([nextTask.id]));
+        setPrimaryTaskId(nextTask.id);
+        requestAnimationFrame(() => {
+          document.querySelector(`.task-row[data-task-id="${nextTask.id}"]`)?.scrollIntoView({ block: "nearest" });
+        });
+        return;
+      }
 
       // 新建任务
       if (matchesShortcut(event, keys.new_task)) {
@@ -1431,8 +1583,15 @@ export default function App() {
               tags={tags}
               quickViews={quickViews}
               onApplyQuickView={(qv) => setAdvancedFilter({ ...qv.filter })}
-              onSaveQuickView={(name) => setQuickViews((current) => [...current, { id: newQuickViewId(), name, filter: advancedFilter }])}
-              onDeleteQuickView={(id) => setQuickViews((current) => current.filter((qv) => qv.id !== id))}
+              onSaveQuickView={(name) => {
+                const view: QuickView = { id: newQuickViewId(), name, filter: advancedFilter };
+                setQuickViews((current) => [...current, view]);
+                void api.savedViewUpsert(view).catch(() => { /* 持久化失败不阻塞 UI，下次保存重试 */ });
+              }}
+              onDeleteQuickView={(id) => {
+                setQuickViews((current) => current.filter((qv) => qv.id !== id));
+                void api.savedViewDelete(id).catch(() => { /* 删除失败不阻塞 UI */ });
+              }}
               onClear={() => setAdvancedFilter({ ...EMPTY_ADVANCED_FILTER })}
             />
           )}
@@ -1454,17 +1613,27 @@ export default function App() {
             {showDetails && <Details task={activeTask} onClose={() => setShowDetails(false)} notify={notify} selectedCount={selected.size} onOpenProxySettings={() => { setSettingsOpen(true); }} onOpenYouTubeModal={() => setYoutubeModalTaskId(activeTask?.id || "")} onTagsChanged={refreshTags} />}
           </section>
         </main>
-        {newOpen && <NewTaskDialog settings={settings} allTasks={tasks} onClose={() => { setNewOpen(false); setInitialUrlFromClipboard(""); }} onCreated={(created) => {
+        {dragOverlay && !newOpen && !settingsOpen && !renameTarget && !speedLimitTarget && !aboutOpen && !showCloseConfirm && !context && (
+          <div className="drop-overlay" aria-hidden="true">
+            <div className="drop-overlay-card">
+              <Download size={20} strokeWidth={2} />
+              <span>{t("app.dropOverlay")}</span>
+            </div>
+          </div>
+        )}
+        {newOpen && <NewTaskDialog settings={settings} allTasks={tasks} onClose={() => { setNewOpen(false); setInitialUrlFromClipboard(""); setDroppedTorrent(null); }} onCreated={(created) => {
           setNewOpen(false);
           setInitialUrlFromClipboard("");
+          setDroppedTorrent(null);
           const list = Array.isArray(created) ? created : [created];
           notify(t("toasts.addedTasks", { count: list.length }));
           if (list.length > 0) {
             setSelected(new Set(list.map((t) => t.id)));
           }
-        }} defaultUrl={initialUrlFromClipboard} onLocateTask={(taskId) => {
+        }} defaultUrl={initialUrlFromClipboard} defaultTorrent={droppedTorrent} onLocateTask={(taskId) => {
           setNewOpen(false);
           setInitialUrlFromClipboard("");
+          setDroppedTorrent(null);
           setSelected(new Set([taskId]));
           // Task 22.3：用户显式定位任务后请求展开详情，跳过 detail_default_collapsed 自动折叠。
           requestShowDetails(true);
@@ -1585,6 +1754,27 @@ function isMediaTask(task: DownloadTask): boolean {
   }
 }
 
+/** 速度列文案：HTTP 任务沿用旧行为；BT 任务展示真实上传速度（§3 不得模拟）。
+ * bt_runtime 是最后一次 aria2 轮询的快照：任务转入暂停/失败/完成等非活跃
+ * 状态后轮询已停止，快照速度不得继续冒充实时速度，故仅在活跃状态展示。 */
+const BT_ACTIVE_STATUSES = ["downloading", "connecting", "verifying", "extracting"];
+
+function btRuntimeActive(task: DownloadTask): boolean {
+  return task.task_kind === "bt" && BT_ACTIVE_STATUSES.includes(task.status);
+}
+
+function taskSpeedCellText(task: DownloadTask): string {
+  if (task.task_kind !== "bt") {
+    return task.status === "downloading" ? `${formatBytes(task.speed)}/s` : "—";
+  }
+  if (!btRuntimeActive(task)) return "—";
+  const upload = task.bt_runtime?.upload_speed ?? 0;
+  const down = task.status === "downloading" && task.speed > 0 ? `${formatBytes(task.speed)}/s` : "";
+  const up = upload > 0 ? `↑${formatBytes(upload)}/s` : "";
+  if (down && up) return `${down} ${up}`;
+  return down || up || "—";
+}
+
 function TaskRow({ task, selected, showCompletedAt, taskTagList, notify, onSelect, onOpen, onContext, onMouseDown, onCheckboxMouseDown, onCheckboxMouseEnter }: { task: DownloadTask; selected: boolean; showCompletedAt: boolean; taskTagList: Tag[]; notify: (text: string, kind?: "ok" | "error") => void; onSelect: () => void; onOpen: () => void; onContext: (event: MouseEvent) => void; onMouseDown: (task: DownloadTask, event: React.MouseEvent) => void; onCheckboxMouseDown: (event: React.MouseEvent) => void; onCheckboxMouseEnter: () => void }) {
   // Task 33: 订阅 locale 变化，语言切换时 TaskRow 重渲染以刷新状态文案。
   useLocale();
@@ -1625,26 +1815,46 @@ function TaskRow({ task, selected, showCompletedAt, taskTagList, notify, onSelec
       onMouseEnter={onCheckboxMouseEnter}
       style={{ cursor: "pointer" }}
     >
-      <input type="checkbox" aria-label={`选择任务：${task.file_name}`} checked={selected} readOnly />
+      <input type="checkbox" aria-label={t("table.selectTaskAria", { name: task.file_name })} checked={selected} readOnly />
     </label>
     <div className="name-cell" onClick={onSelect}>
       <FileIcon category={task.category} />
       <div style={{ minWidth: 0, flex: 1 }}>
         <div className="name-title-row">
-          <strong title={task.file_name}>{task.file_name}</strong>
+          <strong title={task.file_name}>
+            {task.task_kind === "bt" && !task.bt_meta?.metadata_ready
+              ? t("table.btMetadataPending")
+              : task.file_name || t("table.btMetadataPending")}
+          </strong>
+          {task.task_kind === "bt" && (
+            <span className="bt-task-badge" title={t("table.btBadgeTitle")}>
+              <Zap size={9} strokeWidth={2.5} /> BT
+            </span>
+          )}
           {taskTagList.length > 0 && <TaskTagChips tags={taskTagList} max={3} />}
         </div>
         <small title={task.url}>
           {task.priority < 0 ? t("details.highPriority") : task.priority > 0 ? t("details.lowPriority") : ""}
-          {hostOf(task.url)}
+          {task.task_kind === "bt" ? t("table.btSourceLabel") : hostOf(task.url)}
         </small>
       </div>
     </div>
-    <span>{task.total_bytes ? formatBytes(task.total_bytes) : task.downloaded_bytes ? formatBytes(task.downloaded_bytes) : "—"}</span>
+    <span>
+      {task.task_kind === "bt" && !task.bt_meta?.metadata_ready
+        ? t("table.btMetadataPending")
+        : task.total_bytes
+          ? formatBytes(task.total_bytes)
+          : task.downloaded_bytes
+            ? formatBytes(task.downloaded_bytes)
+            : "—"}
+    </span>
     <span className={`task-status ${task.status}`}>
       {task.status === "downloading" && isMediaTask(task) && task.downloaded_bytes === 0 && task.active_connections === 0 && !task.error
         ? statusText.parsing
         : statusText[task.status]}
+      {btRuntimeActive(task) && task.bt_runtime?.seeding && (
+        <span className="bt-seed-badge" title={t("table.seedingTitle")}>{t("table.seeding")}</span>
+      )}
       {canControl && (
         <button
           className="task-status-btn"
@@ -1655,7 +1865,17 @@ function TaskRow({ task, selected, showCompletedAt, taskTagList, notify, onSelec
         </button>
       )}
     </span>
-    <span className="connection-count">{task.status === "downloading" ? `${task.active_connections}/${task.connection_count}` : task.connection_count}<small> {t("table.connectionUnit")}</small></span>
+    <span className="connection-count">
+      {task.task_kind === "bt"
+        ? task.bt_runtime
+          ? <span title={t("table.btConnTitle", { peers: task.bt_runtime.num_peers, seeds: task.bt_runtime.num_seeds })}>
+              {task.bt_runtime.num_peers}<small> {t("table.btPeerUnit")}</small>
+            </span>
+          : "—"
+        : <>
+            {task.status === "downloading" ? `${task.active_connections}/${task.connection_count}` : task.connection_count}<small> {t("table.connectionUnit")}</small>
+          </>}
+    </span>
     <div className="progress-cell">
       <div style={{ position: "relative", overflow: "visible", flex: 1, display: "flex", alignItems: "center" }}>
         <div style={{ flex: 1, height: "4px", overflow: "hidden", borderRadius: "2px", background: "var(--progress-track)", display: "flex" }}>
@@ -1671,9 +1891,10 @@ function TaskRow({ task, selected, showCompletedAt, taskTagList, notify, onSelec
           </span>
         )}
       </div>
-      <span>{task.status === "completed" ? "100%" : `${progress.toFixed(0)}%`}</span>
+      {/* 元数据未就绪时总长未知，百分比必然为 0 且无意义——与文件名/大小列一致显示"待获取"。 */}
+      <span>{task.status === "completed" ? "100%" : task.task_kind === "bt" && !task.bt_meta?.metadata_ready ? t("table.btMetadataPending") : `${progress.toFixed(0)}%`}</span>
     </div>
-    <span>{task.status === "downloading" ? `${formatBytes(task.speed)}/s` : "—"}</span><span>{task.eta_seconds ? formatDuration(task.eta_seconds) : "—"}</span><span>{formatDate(showCompletedAt ? task.completed_at ?? task.created_at : task.created_at)}</span><button className="row-menu" onClick={(event) => { event.stopPropagation(); onContext(event); }}><MoreHorizontal size={15} /></button>
+    <span title={btRuntimeActive(task) && task.bt_runtime?.seeding ? t("table.seedingTitle") : undefined}>{taskSpeedCellText(task)}</span><span>{task.eta_seconds ? formatDuration(task.eta_seconds) : "—"}</span><span>{formatDate(showCompletedAt ? task.completed_at ?? task.created_at : task.created_at)}</span><button className="row-menu" onClick={(event) => { event.stopPropagation(); onContext(event); }}><MoreHorizontal size={15} /></button>
   </div>;
 }
 function CatDownloadMark() { return <svg viewBox="0 0 1024 1024" aria-hidden="true"><rect x="48" y="48" width="928" height="928" rx="220" fill="#f5f5f7" /><path d="M302 360 358 230l112 78c28-9 56-14 86-14s58 5 86 14l112-78 56 130v214c0 151-113 254-254 254S302 725 302 574V360Z" fill="#1d1d1f" /><path d="M556 392v218m-86-82 86 86 86-86" fill="none" stroke="#f5f5f7" strokeWidth="58" strokeLinecap="round" strokeLinejoin="round" /><path d="M445 694h222" fill="none" stroke="#0a84ff" strokeWidth="58" strokeLinecap="round" /><circle cx="428" cy="430" r="19" fill="#f5f5f7" /><circle cx="684" cy="430" r="19" fill="#f5f5f7" /><path d="M755 700c86 15 119-50 76-103" fill="none" stroke="#1d1d1f" strokeWidth="48" strokeLinecap="round" /></svg>; }
@@ -1715,6 +1936,53 @@ function EmptyState({ filter, view, onAdd }: { filter: FilterKey; view: "main" |
 }
 
 const DIAGNOSIS_TAB_STATUSES: TaskStatus[] = ["failed", "interrupted", "remote-changed", "paused-by-low-disk"];
+
+/** 速度历史采样上限（每秒 1 个样本 ≈ 5 分钟窗口）。 */
+const SPEED_HISTORY_MAX = 300;
+
+/**
+ * 速度历史卡片（2026-08-17）：展示详情栏打开期间的真实速度采样曲线。
+ *
+ * - 数据完全来自任务事件的 `speed` 字段（真实状态，AGENTS.md §3）；
+ * - 纯 SVG 折线 + 面积填充，不引入图表库（AGENTS.md §8）；
+ * - 样本不足 2 个时显示采样提示，不绘制假曲线。
+ */
+function SpeedHistoryCard({ samples }: { samples: number[] }) {
+  useLocale();
+  if (samples.length < 2) {
+    return (
+      <div className="speed-history-card">
+        <div className="speed-history-title">{t("details.speedHistoryTitle")}</div>
+        <div className="speed-history-empty">{t("details.speedHistoryEmpty")}</div>
+      </div>
+    );
+  }
+  const peak = Math.max(...samples, 1);
+  const width = 280;
+  const height = 48;
+  const step = width / (samples.length - 1);
+  const points = samples.map((value, index) => {
+    const x = index * step;
+    const y = height - 2 - (value / peak) * (height - 6);
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  });
+  const line = `M ${points.join(" L ")}`;
+  const area = `${line} L ${width},${height} L 0,${height} Z`;
+  return (
+    <div className="speed-history-card">
+      <div className="speed-history-title">
+        <span>{t("details.speedHistoryTitle")}</span>
+        <span className="speed-history-peak">
+          {t("details.speedPeak")} {formatBytes(peak)}/s
+        </span>
+      </div>
+      <svg className="speed-history-chart" viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" role="img" aria-label={t("details.speedHistoryTitle")}>
+        <path d={area} fill="var(--accent, #0078d4)" opacity="0.12" />
+        <path d={line} fill="none" stroke="var(--accent, #0078d4)" strokeWidth="1.5" vectorEffect="non-scaling-stroke" />
+      </svg>
+    </div>
+  );
+}
 
 function Details({ task, onClose, notify, selectedCount, onOpenProxySettings, onOpenYouTubeModal, onTagsChanged }: { task?: DownloadTask; onClose: () => void; notify: (text: string, kind?: "ok" | "error") => void; selectedCount: number; onOpenProxySettings?: () => void; onOpenYouTubeModal?: () => void; onTagsChanged?: () => void }) {
   // Task 33: 订阅 locale 变化，语言切换时详情面板文案同步刷新。
@@ -1792,6 +2060,32 @@ function Details({ task, onClose, notify, selectedCount, onOpenProxySettings, on
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab, taskId, precheck.loading, precheck.result, precheck.error]);
 
+  // 速度历史采样（2026-08-17）：详情栏打开期间每秒记录一次任务真实速度
+  // （AGENTS.md §3 禁止模拟数据），保留最近 SPEED_HISTORY_MAX 个样本（约 5 分钟）。
+  // 任务切换时清空；暂停/失败期间记录 0，与真实状态一致。
+  // 未选中任务时停止采样（interval 闭包经 ref 读取最新 taskId，避免过期捕获）。
+  const [speedHistory, setSpeedHistory] = useState<number[]>([]);
+  const latestSpeedRef = useRef(0);
+  const activeTaskIdRef = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    latestSpeedRef.current = task?.speed ?? 0;
+  }, [task?.speed]);
+  useEffect(() => {
+    activeTaskIdRef.current = taskId;
+    setSpeedHistory([]);
+  }, [taskId]);
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      if (activeTaskIdRef.current === undefined) return;
+      setSpeedHistory((prev) => {
+        const next = prev.length >= SPEED_HISTORY_MAX ? prev.slice(prev.length - SPEED_HISTORY_MAX + 1) : prev.slice();
+        next.push(latestSpeedRef.current);
+        return next;
+      });
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+
   if (!task) {
     return <aside className="details-pane">
       <div className="details-header">
@@ -1839,14 +2133,17 @@ function Details({ task, onClose, notify, selectedCount, onOpenProxySettings, on
     </div>
     <div className="details-scroll">
       {tab === "info" && (
-        <DetailsInfoTab
-          task={task}
-          showMore={showMore}
-          onToggleMore={() => setShowMore(v => !v)}
-          notify={notify}
-          action={action}
-          onTagsChanged={onTagsChanged}
-        />
+        <>
+          <SpeedHistoryCard samples={speedHistory} />
+          <DetailsInfoTab
+            task={task}
+            showMore={showMore}
+            onToggleMore={() => setShowMore(v => !v)}
+            notify={notify}
+            action={action}
+            onTagsChanged={onTagsChanged}
+          />
+        </>
       )}
       {tab === "diagnosis" && (
         <DiagnosisPanel
@@ -1868,7 +2165,9 @@ function Details({ task, onClose, notify, selectedCount, onOpenProxySettings, on
         />
       )}
       {tab === "connections" && (
-        <DetailsConnectionsTab task={task} />
+        task.task_kind === "bt"
+          ? <BtDetailsPanel task={task} notify={notify} />
+          : <DetailsConnectionsTab task={task} />
       )}
     </div>
   </aside>;
@@ -1978,7 +2277,7 @@ function DetailsConnectionsTab({ task }: { task: DownloadTask }) {
         const percent = seg.total_bytes > 0 ? Math.min(100, Math.round((seg.downloaded_bytes / seg.total_bytes) * 100)) : 0;
         const meta: string[] = [];
         if (seg.speed > 0) meta.push(`${formatBytes(seg.speed)}/s`);
-        if (seg.retry_count > 0) meta.push(`重试 ${seg.retry_count}`);
+        if (seg.retry_count > 0) meta.push(t("connections.retryCount", { count: seg.retry_count }));
         return <div key={seg.segment_id} className={`connection-item state-${seg.state}`}>
           <div className="connection-row">
             <span className="connection-index">#{seg.segment_id}</span>
@@ -1999,11 +2298,27 @@ function DetailsConnectionsTab({ task }: { task: DownloadTask }) {
     <div className="connections-footer">
       {live
         ? lastTimestamp
-          ? `实时 · 更新于 ${new Date(lastTimestamp).toLocaleTimeString()}`
-          : "等待第一次状态推送…"
-        : "已停止推送 · 显示为最后一次状态"}
+          ? t("connections.realtime", { time: new Date(lastTimestamp).toLocaleTimeString() })
+          : t("connections.waitingFirstPush")
+        : t("connections.stopped")}
     </div>
   </div>;
+}
+
+/** BT 任务专属信息行（§3：seeds/peers/分享率均来自 aria2 真实状态）。 */
+function BtInfoRows({ task, notify }: { task: DownloadTask; notify: (text: string, kind?: "ok" | "error") => void }) {
+  const runtime = task.bt_runtime;
+  const uploaded = runtime?.uploaded_bytes ?? 0;
+  const ratio = task.total_bytes > 0 ? uploaded / task.total_bytes : null;
+  // 做种状态与上传速度仅在任务活跃（aria2 轮询进行中）时视为实时值。
+  const seedingNow = btRuntimeActive(task) && (runtime?.seeding ?? false);
+  return <>
+    <div><dt>{t("details.taskKind")}</dt><dd>{t("details.btTaskKindValue")}</dd></div>
+    {task.bt_meta?.info_hash && <DetailValue label={t("details.btInfoHash")} value={task.bt_meta.info_hash} notify={notify} />}
+    <div><dt>{t("details.btSeedingState")}</dt><dd>{seedingNow ? t("table.seeding") : t("details.btNotSeeding")}</dd></div>
+    <div><dt>{t("details.btUploaded")}</dt><dd>{uploaded > 0 ? formatBytes(uploaded) : "—"}</dd></div>
+    <div><dt>{t("details.btShareRatio")}</dt><dd>{ratio !== null ? `${ratio.toFixed(2)}` : "—"}</dd></div>
+  </>;
 }
 
 function DetailsInfoTab({ task, showMore, onToggleMore, notify, action, onTagsChanged }: {
@@ -2212,6 +2527,7 @@ function DetailsInfoTab({ task, showMore, onToggleMore, notify, action, onTagsCh
       <div><dt>{t("details.taskSpeedLimit")}</dt><dd>{task.per_task_speed_limit ? `${Math.round(task.per_task_speed_limit / 1024)} KB/s` : t("details.noSpeedLimit")}</dd></div>
       <div><dt>{t("details.completionAction")}</dt><dd>{completionLabel}</dd></div>
       <div><dt>{t("details.downloadSource")}</dt><dd>{task.source}</dd></div>
+      {task.task_kind === "bt" && <BtInfoRows task={task} notify={notify} />}
     </dl>
 
     {/* Task 45：当 task.headers 含 Cookie/Referer/User-Agent 时展示"包含临时登录态"标记。
@@ -2746,7 +3062,7 @@ function TaskProxySection({ task, notify }: { task: DownloadTask; notify: (text:
               </div>
             </SettingRow>
             {mode === "custom" && <>
-              <SettingRow label="代理地址"><input value={customUrl} onChange={(e) => setCustomUrl(e.target.value)} placeholder="http://host:port 或 socks5://host:port" disabled={saving} /></SettingRow>
+              <SettingRow label="代理地址"><input value={customUrl} onChange={(e) => setCustomUrl(e.target.value)} placeholder="http://host:port 或 socks5://host:port 或 socks5h://host:port" disabled={saving} /></SettingRow>
               <SettingRow label="用户名"><input value={username} onChange={(e) => setUsername(e.target.value)} placeholder="匿名代理可留空" disabled={saving} /></SettingRow>
               <SettingRow label="密码"><input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="留空表示无认证" disabled={saving} /></SettingRow>
               <SettingRow label="测试连通性">
@@ -3183,38 +3499,68 @@ function extractFileNameFromUrl(url: string): string {
 }
 
 /**
- * 解析多行 URL 输入（Task 19）。
+ * 解析多行 URL 输入（Task 19；2026-08-17 接入批量序号展开与 BT 来源行）。
  *
- * - 按换行符拆分，去除每行首尾空白
- * - 过滤空行
- * - 过滤非 http/https 行（如纯文本注释、空行）—— 不计入 `lines`，但计入 `skippedCount`
- * - 去重：同一 URL 只保留首次出现，重复条目计入 `duplicateCount`
+ * - 按换行符拆分，去除每行首尾空白，过滤空行
+ * - BT 来源行（magnet: / 本地 .torrent 路径）整行保留——磁力徽标与 addBt
+ *   提交路径依赖 lines[0] 的原样值，不能走 http 正则提取
+ * - 其余行提取首个 http(s) URL；非 http(s) 行计入 skippedCount
+ * - 批量序号：http URL 中的 `[start-end(:step)]` 组在此展开为多条具体 URL
+ *   （见 url-sequence.ts），展开失败计入 skippedCount 并带回首个错误文案
+ * - 去重：同一 URL 只保留首次出现，重复条目计入 duplicateCount
  *
- * 返回的 `lines` 顺序为首次出现顺序，与原 textarea 顺序一致。
- * 单行场景下 `lines.length === 1`，与旧逻辑行为兼容。
+ * 返回的 `lines` 顺序为首次出现顺序（序号行按展开顺序插入），与原 textarea 顺序一致。
  */
-function parseMultilineUrls(input: string): { lines: string[]; skippedCount: number; duplicateCount: number } {
+function parseMultilineUrls(input: string): { lines: string[]; skippedCount: number; duplicateCount: number; sequenceExpanded: number; sequenceError?: string } {
   const rawLines = input.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
   const seen = new Set<string>();
   const lines: string[] = [];
   let skippedCount = 0;
   let duplicateCount = 0;
+  let sequenceExpanded = 0;
+  let sequenceError: string | undefined;
   const urlRegex = /https?:\/\/[^\s<>"']+/i;
+  const push = (url: string) => {
+    if (seen.has(url)) { duplicateCount += 1; return; }
+    seen.add(url);
+    lines.push(url);
+  };
   for (const line of rawLines) {
+    if (isBtSourceLine(line)) {
+      push(line);
+      continue;
+    }
     const match = line.match(urlRegex);
     if (!match) {
       skippedCount += 1;
       continue;
     }
-    const extracted = match[0];
-    if (seen.has(extracted)) {
-      duplicateCount += 1;
+    const expanded = expandSequenceUrls(match[0]);
+    if (expanded.error) {
+      skippedCount += 1;
+      sequenceError ??= expanded.error;
       continue;
     }
-    seen.add(extracted);
-    lines.push(extracted);
+    if (expanded.urls.length > 1) sequenceExpanded += expanded.urls.length;
+    for (const url of expanded.urls) push(url);
   }
-  return { lines, skippedCount, duplicateCount };
+  return { lines, skippedCount, duplicateCount, sequenceExpanded, sequenceError };
+}
+
+/** 分时段限速：一天内分钟数（0..=1439）→ "HH:MM"，供设置页 time 输入框显示。 */
+function minutesToHHMM(minutes: number): string {
+  const clamped = Math.min(1439, Math.max(0, Math.floor(minutes)));
+  const hours = Math.floor(clamped / 60);
+  return `${String(hours).padStart(2, "0")}:${String(clamped % 60).padStart(2, "0")}`;
+}
+
+/** 分时段限速："HH:MM" → 一天内分钟数，非法输入安全回退为 0（AGENTS.md §7）。 */
+function hhmmToMinutes(value: string): number {
+  const match = value.match(/^(\d{1,2}):(\d{1,2})$/);
+  if (!match) return 0;
+  const hours = Math.min(23, Math.max(0, Number(match[1])));
+  const minutes = Math.min(59, Math.max(0, Number(match[2])));
+  return hours * 60 + minutes;
 }
 
 // Task 42：图集场景下的图片网格选择器。
@@ -3475,9 +3821,15 @@ function isDownloadableUrlForDialog(url: string): boolean {
   }
 }
 
-function NewTaskDialog({ settings, allTasks, onClose, onCreated, defaultUrl, onLocateTask, notify }: { settings: AppSettings; allTasks?: DownloadTask[]; onClose: () => void; onCreated: (tasks: DownloadTask | DownloadTask[]) => void; defaultUrl?: string; onLocateTask?: (taskId: string) => void; notify?: (text: string, kind?: "ok" | "error") => void }) {
-  const [urls, setUrls] = useState(defaultUrl || ""); const [destination, setDestination] = useState(settings.download_dir);
+function NewTaskDialog({ settings, allTasks, onClose, onCreated, defaultUrl, defaultTorrent, onLocateTask, notify }: { settings: AppSettings; allTasks?: DownloadTask[]; onClose: () => void; onCreated: (tasks: DownloadTask | DownloadTask[]) => void; defaultUrl?: string; defaultTorrent?: { name: string; base64: string } | null; onLocateTask?: (taskId: string) => void; notify?: (text: string, kind?: "ok" | "error") => void }) {
+  // 拖入的 .torrent 内容（2026-08-17）：提交时随 base64 直传 BT 内核，
+  // 不依赖原文件磁盘路径；用户编辑 URL 后作废，避免内容与显示不一致。
+  const [torrentData, setTorrentData] = useState<{ name: string; base64: string } | null>(defaultTorrent ?? null);
+  const [urls, setUrls] = useState(defaultTorrent ? defaultTorrent.name : defaultUrl || ""); const [destination, setDestination] = useState(settings.download_dir);
   const [fileName, setFileName] = useState(() => {
+    if (defaultTorrent) {
+      return defaultTorrent.name.replace(/\.torrent$/i, "");
+    }
     if (defaultUrl) {
       const initLines = defaultUrl.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
       if (initLines.length === 1) {
@@ -3487,6 +3839,12 @@ function NewTaskDialog({ settings, allTasks, onClose, onCreated, defaultUrl, onL
     return "";
   }); const [advanced, setAdvanced] = useState(false);
   const [busy, setBusy] = useState(false); const [error, setError] = useState<string>();
+  // BT/磁力：创建后暂停（先拿元数据/手动择时启动）。
+  const [btStartPaused, setBtStartPaused] = useState(false);
+  // 边下边看（2026-08-17）：BT 任务优先下载首尾分片，便于预览播放。
+  const [btStreaming, setBtStreaming] = useState(false);
+  // 磁盘不足确认（替代原生 window.confirm）；override 暂存 performSubmit 的文件名参数。
+  const [diskConfirm, setDiskConfirm] = useState<{ override?: string } | null>(null);
   const [schedule, setSchedule] = useState(""); const [policy, setPolicy] = useState<CollisionPolicy>(settings.default_collision_policy);
   const [priority, setPriority] = useState(0);
   const [completionAction, setCompletionAction] = useState<CompletionAction>(settings.default_completion_action);
@@ -3555,7 +3913,7 @@ function NewTaskDialog({ settings, allTasks, onClose, onCreated, defaultUrl, onL
   }, [fileName, cleanupRules]);
   // Task 19: 解析多行 URL，过滤空行 / 非 http(s) 行，去重（保留首次出现的顺序）。
   // `lines` 用于后续预检 / 批量创建；`skippedCount` 用于 UI 反馈被忽略的行数。
-  const { lines, skippedCount, duplicateCount } = parseMultilineUrls(urls);
+  const { lines, skippedCount, duplicateCount, sequenceExpanded, sequenceError } = parseMultilineUrls(urls);
   // Task 11: 自动分类与保存规则支持。当 URL/文件名/Content-Type 变化时自动匹配规则预填目录（仅在用户未手动选择目录时）。
   useEffect(() => {
     const firstUrl = lines[0];
@@ -3960,17 +4318,42 @@ function NewTaskDialog({ settings, allTasks, onClose, onCreated, defaultUrl, onL
       else setError(text);
     } finally { setBusy(false); }
   };
-  const performSubmit = async (overrideFileName?: string) => {
+  const performSubmit = async (overrideFileName?: string, ignoreDiskSpace = false) => {
     if (!lines.length) return; setBusy(true); setError(undefined);
     const activeFileName = overrideFileName !== undefined ? overrideFileName : fileName;
-    if (precheck?.disk_state === "insufficient" || (precheck && !precheck.disk_ok)) {
-      const confirmed = window.confirm(
-        `检测到目标磁盘可用空间不足（可用 ${formatBytes(precheck.available_disk_bytes)}，计算所需 ${formatBytes(precheck.required_disk_bytes)}）。\n\n强行开始可能导致任务在下载过程中自动暂停。是否仍要尝试开始下载？`
-      );
-      if (!confirmed) {
+    // 2026-08-16 BT/磁力：单条 magnet: 链接走 aria2 BT 内核。磁力任务在元数据
+    // 获取前没有文件名/大小，HTTP 语义的预检（磁盘/重复/模板/媒体）不适用。
+    const firstLine = lines[0].trim();
+    const isMagnet = firstLine.toLowerCase().startsWith("magnet:");
+    const isTorrentFile = !isMagnet && !/^https?:/i.test(firstLine) && /\.torrent$/i.test(firstLine);
+    if (isMagnet || isTorrentFile) {
+      if (lines.length > 1) {
+        setError(isMagnet ? "磁力链接请单独添加，一次一条" : "种子文件请单独添加，一次一个");
         setBusy(false);
         return;
       }
+      try {
+        const task = await api.addBt({
+          // 拖入的种子以内容为准，source 仅作显示名；路径来源保持原绝对路径。
+          source: torrentData ? torrentData.name : firstLine,
+          source_data_base64: torrentData ? torrentData.base64 : null,
+          destination: destination && destination.trim() !== "" ? destination : null,
+          start_paused: btStartPaused,
+          streaming_priority: btStreaming,
+          source_tag: "desktop",
+        });
+        onCreated(task);
+      } catch (reason) {
+        setError(String(reason));
+        setBusy(false);
+      }
+      return;
+    }
+    if (!ignoreDiskSpace && (precheck?.disk_state === "insufficient" || (precheck && !precheck.disk_ok))) {
+      // 磁盘不足确认改用应用内 ConfirmDialog（2026-08-17），保留待提交参数。
+      setBusy(false);
+      setDiskConfirm({ override: overrideFileName });
+      return;
     }
     const headers: Record<string, string> = {}; if (referer) headers.Referer = referer; if (cookie) headers.Cookie = cookie; if (authorization) headers.Authorization = authorization;
     const selectedFormat = media?.formats.find((item) => item.id === format);
@@ -4162,7 +4545,8 @@ function NewTaskDialog({ settings, allTasks, onClose, onCreated, defaultUrl, onL
     await performSubmit(next);
   };
   return (
-    <Modal title="新建下载任务" onClose={onClose} style={{ display: "flex", flexDirection: "column", height: "560px", maxHeight: "calc(100vh - 80px)", overflow: "hidden" }}>
+    // URL 非空时禁用 Esc 关闭，防止误按丢掉已输入的多行批量内容（遮罩点击行为保持原样）。
+    <Modal title="新建下载任务" onClose={onClose} escapeClosable={urls.trim() === ""} style={{ display: "flex", flexDirection: "column", height: "560px", maxHeight: "calc(100vh - 80px)", overflow: "hidden" }}>
       <div className="new-task-form" style={{ display: "flex", flexDirection: "column", flex: 1, overflow: "hidden" }}>
         <div className="new-task-scrollable" style={{ flex: 1, overflowY: "auto", overflowX: "hidden", paddingRight: "6px", display: "flex", flexDirection: "column", gap: "11px" }}>
           {/* Task 12: 下载预设选择下拉。选择后自动填充连接数/限速/完成动作/计划时间。 */}
@@ -4232,9 +4616,12 @@ function NewTaskDialog({ settings, allTasks, onClose, onCreated, defaultUrl, onL
                 {lines.length > 0 && (
                   <span className="form-label-counter">
                     {lines.length > 1
-                      ? `检测到 ${lines.length} 条 URL，将批量创建`
-                      : `已检测到 ${lines.length} 个链接`}
+                      ? t("newTask.urlDetectedMulti", { count: lines.length })
+                      : t("newTask.urlDetectedSingle", { count: lines.length })}
                   </span>
+                )}
+                {sequenceExpanded > 0 && lines.length > 0 && (
+                  <span className="form-label-counter">{t("newTask.sequenceExpandedBadge")}</span>
                 )}
               </div>
             </div>
@@ -4255,6 +4642,8 @@ function NewTaskDialog({ settings, allTasks, onClose, onCreated, defaultUrl, onL
                   setSelectedImageIds(new Set());
                   // URL 变化时重置"用户已手动编辑文件名"标记，允许预检结果覆盖空文件名。
                   userEditedFileName.current = false;
+                  // 拖入种子的内容只在输入框保持原文件名时有效，手动编辑即作废。
+                  setTorrentData((current) => (current && val.trim() === current.name ? current : null));
                   const parsed = parseMultilineUrls(val);
                   if (parsed.lines.length === 1) {
                     const name = extractFileNameFromUrl(parsed.lines[0]);
@@ -4265,9 +4654,72 @@ function NewTaskDialog({ settings, allTasks, onClose, onCreated, defaultUrl, onL
                     setFileName("");
                   }
                 }}
-                placeholder="https://example.com/file.zip"
-                aria-label="下载链接，支持多行批量"
+                placeholder={t("newTask.urlPlaceholder")}
+                aria-label={t("newTask.urlAriaLabel")}
               />
+              {/* 2026-08-16 BT/磁力：本地 .torrent 种子文件选择。 */}
+              <button
+                type="button"
+                className="torrent-pick-button"
+                title="选择本地 .torrent 种子文件（走 BT 内核下载）"
+                onClick={async () => {
+                  const picked = await pickPath({
+                    multiple: false,
+                    filters: [{ name: "BitTorrent 种子", extensions: ["torrent"] }],
+                  });
+                  if (typeof picked === "string" && picked) {
+                    setUrls(picked);
+                    setTorrentData(null);
+                    setMedia(undefined);
+                    userEditedFileName.current = false;
+                    const stem = picked.replace(/\\/g, "/").split("/").pop()?.replace(/\.torrent$/i, "") || "";
+                    if (stem) setFileName(stem);
+                  }
+                }}
+              >
+                <FileText size={12} /> 种子文件
+              </button>
+              {/* 2026-08-16 BT/磁力：磁力/种子识别徽标（元数据获取前名称待确认）。 */}
+              {(() => {
+                const single = lines.length === 1 ? lines[0].trim() : "";
+                const magnet = single.toLowerCase().startsWith("magnet:");
+                const torrent = !magnet && single !== "" && !/^https?:/i.test(single) && /\.torrent$/i.test(single);
+                if (!magnet && !torrent) return null;
+                return (
+                  <span
+                    className="bt-input-badge"
+                    title={magnet ? "将作为 BT 任务下载：元数据获取完成后才显示真实文件名与大小" : "将作为 BT 任务下载该种子"}
+                  >
+                    <Zap size={9} strokeWidth={2.5} /> {magnet ? "磁力任务" : "种子任务"}
+                  </span>
+                );
+              })()}
+              {/* BT/磁力：识别到磁力/种子输入时提供"创建后暂停"与"边下边看"。 */}
+              {(() => {
+                const single = lines.length === 1 ? lines[0].trim() : "";
+                const magnetOrTorrent = single !== "" && (single.toLowerCase().startsWith("magnet:") || (!/^https?:/i.test(single) && /\.torrent$/i.test(single)));
+                if (!magnetOrTorrent) return null;
+                return (
+                  <div className="bt-input-options">
+                    <label className="bt-start-paused-toggle" title={t("newTask.btStartPausedHint")}>
+                      <input
+                        type="checkbox"
+                        checked={btStartPaused}
+                        onChange={(e) => setBtStartPaused(e.target.checked)}
+                      />
+                      {t("newTask.btStartPaused")}
+                    </label>
+                    <label className="bt-start-paused-toggle" title={t("newTask.btStreamingHint")}>
+                      <input
+                        type="checkbox"
+                        checked={btStreaming}
+                        onChange={(e) => setBtStreaming(e.target.checked)}
+                      />
+                      {t("newTask.btStreaming")}
+                    </label>
+                  </div>
+                );
+              })()}
               {/* Task 19: 历史下拉。聚焦时显示最近 20 条 URL 历史，点击填充到输入框。 */}
               {historyOpen && urlHistory.length > 0 && (
                 <div className="url-history-dropdown" role="listbox" aria-label="最近 URL 历史">
@@ -4316,11 +4768,13 @@ function NewTaskDialog({ settings, allTasks, onClose, onCreated, defaultUrl, onL
                 </div>
               )}
             </div>
-            {(skippedCount > 0 || duplicateCount > 0) && (
-              <div className="url-parse-hint">
-                {skippedCount > 0 && <span>已忽略 {skippedCount} 行非 HTTP/HTTPS 内容</span>}
+            {(skippedCount > 0 || duplicateCount > 0 || sequenceError) && (
+              <div className="url-parse-hint" style={sequenceError ? { color: "var(--danger)" } : undefined}>
+                {sequenceError && <span>{sequenceError}</span>}
+                {sequenceError && skippedCount > 0 && <span> · </span>}
+                {skippedCount > 0 && <span>{t("newTask.urlParseSkipped", { count: skippedCount })}</span>}
                 {skippedCount > 0 && duplicateCount > 0 && <span> · </span>}
-                {duplicateCount > 0 && <span>已去重 {duplicateCount} 条重复 URL</span>}
+                {duplicateCount > 0 && <span>{t("newTask.urlParseDuplicated", { count: duplicateCount })}</span>}
               </div>
             )}
             {templateMatch?.matched && (
@@ -4822,6 +5276,24 @@ function NewTaskDialog({ settings, allTasks, onClose, onCreated, defaultUrl, onL
         </div>
         </div>
       </div>
+      {diskConfirm && (
+        <ConfirmDialog
+          title={t("dialogs.diskShortTitle")}
+          message={t("dialogs.diskShortMessage", {
+            avail: formatBytes(precheck?.available_disk_bytes ?? 0),
+            need: formatBytes(precheck?.required_disk_bytes ?? 0),
+          })}
+          confirmLabel={t("dialogs.diskShortConfirm")}
+          cancelLabel={t("common.cancel")}
+          danger
+          onCancel={() => setDiskConfirm(null)}
+          onConfirm={() => {
+            const override = diskConfirm.override;
+            setDiskConfirm(null);
+            void performSubmit(override, true);
+          }}
+        />
+      )}
     </Modal>
   );
 }
@@ -4945,6 +5417,8 @@ function SettingsPage({ value, onChange, onClose, notify, totalSpeed = 0, active
   const appWindow = useMemo(() => isDesktop() ? getCurrentWindow() : null, []);
   const [draft, setDraft] = useState(value); const [section, setSection] = useState<SettingsSection>("general");
   const [pair, setPair] = useState<PairingInfo>(); const [tools, setTools] = useState<ToolStatus>();
+  // yt-dlp 在线更新检查结果（仅检查；下载需用户确认，AGENTS.md §6）。
+  const [ytUpdate, setYtUpdate] = useState<YtDlpUpdateInfo | null>(null);
   // Task 26.5：更新检查与扩展兼容性检查的状态（只检查不自动下载）。
   const [updateChecking, setUpdateChecking] = useState(false);
   const [updateResult, setUpdateResult] = useState<UpdateCheckResult | null>(null);
@@ -5291,30 +5765,41 @@ function SettingsPage({ value, onChange, onClose, notify, totalSpeed = 0, active
         <SettingRow label="同时下载任务"><input type="number" min="1" max="16" value={draft.concurrent_downloads} onChange={(e) => set("concurrent_downloads", +e.target.value)} /></SettingRow>
         <SettingRow label={`每任务连接数 (${draft.connections_per_download} 路)`}><div className="settings-slider-wrapper"><input type="range" min="0" max="5" step="1" value={[1, 2, 4, 8, 16, 32].indexOf(draft.connections_per_download)} onChange={(e) => { const values = [1, 2, 4, 8, 16, 32]; set("connections_per_download", values[+e.target.value]); }} className="fluent-slider" /><div className="slider-ticks"><span>1</span><span>2</span><span>4</span><span>8</span><span>16</span><span>32</span></div></div></SettingRow>
         <SettingRow label="全局限速（KB/s）"><input type="number" min="0" value={draft.speed_limit_kbps} onChange={(e) => set("speed_limit_kbps", +e.target.value)} /></SettingRow>
+        <Toggle label={t("settings.scheduledLimitLabel")} checked={draft.scheduled_limit?.enabled ?? false} onChange={(v) => set("scheduled_limit", { enabled: v, start_minutes: draft.scheduled_limit?.start_minutes ?? 540, end_minutes: draft.scheduled_limit?.end_minutes ?? 1080, limit_kbps: draft.scheduled_limit?.limit_kbps ?? 2048 })} />
+        {draft.scheduled_limit?.enabled && <>
+          <SettingRow label={t("settings.scheduledLimitRange")}>
+            <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+              <input type="time" aria-label={t("settings.scheduledLimitStartAria")} value={minutesToHHMM(draft.scheduled_limit.start_minutes)} onChange={(e) => set("scheduled_limit", { ...draft.scheduled_limit!, enabled: true, start_minutes: hhmmToMinutes(e.target.value) })} />
+              <span>{t("settings.scheduledLimitRangeTo")}</span>
+              <input type="time" aria-label={t("settings.scheduledLimitEndAria")} value={minutesToHHMM(draft.scheduled_limit.end_minutes)} onChange={(e) => set("scheduled_limit", { ...draft.scheduled_limit!, enabled: true, end_minutes: hhmmToMinutes(e.target.value) })} />
+            </div>
+          </SettingRow>
+          <SettingRow label={t("settings.scheduledLimitValue")}><input type="number" min="0" value={draft.scheduled_limit.limit_kbps} onChange={(e) => set("scheduled_limit", { ...draft.scheduled_limit!, enabled: true, limit_kbps: Math.max(0, +e.target.value || 0) })} /></SettingRow>
+        </>}
         <Toggle label="完成后计算 SHA-256" checked={draft.verify_after_download} onChange={(v) => set("verify_after_download", v)} />
       </div>
       <p className="settings-note">开启低内存模式后使用更小的合并缓冲区和连接池；不会改写并发偏好，关闭后自动恢复。</p>
     </SettingsGroup>}
     {section === "network" && <>
-      <SettingsGroup title="代理设置">
+      <SettingsGroup title={t("settings.netProxyGroup")}>
         <div className="settings-group-content">
-          <SettingRow label="代理模式">
+          <SettingRow label={t("settings.netProxyMode")}>
             <Select
               value={draft.proxy_mode}
               onChange={(val: any) => set("proxy_mode", val as AppSettings["proxy_mode"])}
               options={[
-                { value: "system", label: "跟随系统" },
-                { value: "none", label: "不使用代理" },
-                { value: "manual", label: "手动代理" },
+                { value: "system", label: t("settings.netProxyModeSystem") },
+                { value: "none", label: t("settings.netProxyModeNone") },
+                { value: "manual", label: t("settings.netProxyModeManual") },
               ]}
-              ariaLabel="代理模式"
+              ariaLabel={t("settings.netProxyMode")}
             />
           </SettingRow>
           {draft.proxy_mode === "manual" && <>
-            <SettingRow label="代理地址"><input value={draft.proxy_url} onChange={(e) => set("proxy_url", e.target.value)} placeholder="http://host:port 或 socks5://host:port" /></SettingRow>
-            <SettingRow label="用户名"><input value={draft.proxy_username} onChange={(e) => set("proxy_username", e.target.value)} placeholder="匿名代理可留空" /></SettingRow>
-            <SettingRow label="密码"><input type="password" value={draft.proxy_password} onChange={(e) => set("proxy_password", e.target.value)} placeholder="无认证可留空" /></SettingRow>
-            <SettingRow label="测试连通性">
+            <SettingRow label={t("settings.netProxyAddressLabel")}><input value={draft.proxy_url} onChange={(e) => set("proxy_url", e.target.value)} placeholder={t("settings.netProxyAddressPlaceholder")} /></SettingRow>
+            <SettingRow label={t("settings.netProxyUsername")}><input value={draft.proxy_username} onChange={(e) => set("proxy_username", e.target.value)} placeholder={t("settings.netProxyUsernamePlaceholder")} /></SettingRow>
+            <SettingRow label={t("settings.netProxyPassword")}><input type="password" value={draft.proxy_password} onChange={(e) => set("proxy_password", e.target.value)} placeholder={t("settings.netProxyPasswordPlaceholder")} /></SettingRow>
+            <SettingRow label={t("settings.netTestConnectivity")}>
               <ProxyTestButton
                 proxyUrl={draft.proxy_url}
                 auth={draft.proxy_username || draft.proxy_password ? { username: draft.proxy_username, password: draft.proxy_password } : null}
@@ -5322,28 +5807,33 @@ function SettingsPage({ value, onChange, onClose, notify, totalSpeed = 0, active
               />
             </SettingRow>
           </>}
-          <SettingRow label="PAC 脚本路径（可选）"><input value={draft.pac_script_path ?? ""} onChange={(e) => set("pac_script_path", e.target.value || null)} placeholder="C:\path\to\proxy.pac，留空表示不使用" /></SettingRow>
+          <SettingRow label={t("settings.netPacLabel")}><input value={draft.pac_script_path ?? ""} onChange={(e) => set("pac_script_path", e.target.value || null)} placeholder={t("settings.netPacPlaceholder")} /></SettingRow>
         </div>
-        <p className="settings-note">代理密码使用 Windows DPAPI 加密存储。可在任务详情面板中为单个任务配置覆盖代理。</p>
+        <p className="settings-note">{t("settings.netProxyNote")}</p>
       </SettingsGroup>
-      <SettingsGroup title="重试策略">
+      <SettingsGroup title={t("settings.netRetryGroup")}>
         <div className="retry-policy-grid">
           <RetryPolicyEditor value={draft.default_retry_policy} onChange={(p) => set("default_retry_policy", p)} compact />
         </div>
-        <p className="settings-note">在此设置默认重试与超时规则。单个任务可在其详情面板中独立配置进行覆盖。</p>
+        <p className="settings-note">{t("settings.netRetryNote")}</p>
       </SettingsGroup>
-      <SettingsGroup title="网络感知">
+      <SettingsGroup title={t("settings.netAwareGroup")}>
         <div className="settings-group-content">
-          <Toggle label="计量网络自动暂停" checked={draft.metered_auto_pause} onChange={(v) => set("metered_auto_pause", v)} />
-          <SettingRow label="立即检查当前网络">
+          <Toggle label={t("settings.netMeteredToggle")} checked={draft.metered_auto_pause} onChange={(v) => set("metered_auto_pause", v)} />
+          <SettingRow label={t("settings.netMeteredCheck")}>
             <MeteredCheckButton notify={notify} />
           </SettingRow>
         </div>
-        <p className="settings-note">每 60 秒检测一次网络计费状态。检测到计量网络（按量计费）时将自动暂停下载以节省流量，用户手动恢复后不再自动暂停。</p>
+        <p className="settings-note">{t("settings.netMeteredNote")}</p>
       </SettingsGroup>
+      <BtSettingsSection
+        settings={draft}
+        toolStatus={tools}
+        onUpdate={(patch) => setDraft((current) => ({ ...current, ...patch }))}
+      />
     </>}
-    {section === "browser" && <><SettingsGroup title="下载接管"><div className="settings-group-content"><Toggle label="允许浏览器扩展接管下载" checked={draft.intercept_browser_downloads} onChange={(v) => set("intercept_browser_downloads", v)} /><SettingRow label="最小文件大小（MB）"><input type="number" min="0" value={draft.min_file_size_mb} onChange={(e) => set("min_file_size_mb", +e.target.value)} /></SettingRow></div></SettingsGroup><SettingsGroup title="安全配对">{pair ? <div className="pair-card"><p>在扩展中输入一次性配对码（10 分钟有效）</p><div className="pair-code-wrapper"><code>{pair.code}</code><button className="copy-code-btn" onClick={() => { void navigator.clipboard.writeText(pair.code); notify("配对码已复制到剪贴板"); }} title="复制配对码"><Copy size={13} /><span>复制</span></button></div>{pair.paired_extension && <p>已配对：{pair.paired_extension.slice(0, 16)}…</p>}<div className="maintenance"><button onClick={() => void api.rotatePairing().then(setPair)}>更换配对码</button>{pair.paired_extension && <button onClick={() => void api.revokePairing().then(() => api.pairing().then(setPair))}>撤销配对</button>}</div></div> : <LoaderCircle className="spin" />}</SettingsGroup></>}
-    {section === "media" && <SettingsGroup title="媒体组件"><p className="settings-note">按“自定义路径 → 应用安装 → Windows PATH”顺序查找组件。外部组件只会被引用，猫步下载器不会复制、更新或删除它们。</p>{tools ? <MediaToolsCard status={tools} onStatus={setTools} /> : <LoaderCircle className="spin" />}<MediaPathSettings value={draft} onChange={(patch) => setDraft((current) => ({ ...current, ...patch }))} /><MediaToolsUpdateRow tools={tools} onStatus={setTools} /></SettingsGroup>}
+    {section === "browser" && <><SettingsGroup title={t("settings.groupDownloadIntercept")}><div className="settings-group-content"><Toggle label={t("settings.browserInterceptToggle")} checked={draft.intercept_browser_downloads} onChange={(v) => set("intercept_browser_downloads", v)} /><SettingRow label={t("settings.browserMinSize")}><input type="number" min="0" value={draft.min_file_size_mb} onChange={(e) => set("min_file_size_mb", +e.target.value)} /></SettingRow></div></SettingsGroup><SettingsGroup title={t("settings.groupSecurityPairing")}>{pair ? <div className="pair-card"><p>{t("settings.browserPairHint")}</p><div className="pair-code-wrapper"><code>{pair.code}</code><button className="copy-code-btn" onClick={() => { void navigator.clipboard.writeText(pair.code); notify(t("settings.browserPairCopied")); }} title={t("settings.browserCopyTitle")}><Copy size={13} /><span>{t("settings.browserCopy")}</span></button></div>{pair.paired_extension && <p>{t("settings.browserPaired", { id: pair.paired_extension.slice(0, 16) })}</p>}<div className="maintenance"><button onClick={() => void api.rotatePairing().then(setPair)}>{t("settings.browserRotate")}</button>{pair.paired_extension && <button onClick={() => void api.revokePairing().then(() => api.pairing().then(setPair))}>{t("settings.browserRevoke")}</button>}</div></div> : <LoaderCircle className="spin" />}</SettingsGroup></>}
+    {section === "media" && <SettingsGroup title="媒体组件"><p className="settings-note">按“自定义路径 → 应用安装 → Windows PATH”顺序查找组件。外部组件只会被引用，猫步下载器不会复制、更新或删除它们。</p>{tools ? <MediaToolsCard status={tools} onStatus={setTools} ytUpdate={ytUpdate} /> : <LoaderCircle className="spin" />}<MediaPathSettings value={draft} onChange={(patch) => setDraft((current) => ({ ...current, ...patch }))} /><MediaToolsUpdateRow tools={tools} onStatus={setTools} onYtUpdate={setYtUpdate} /></SettingsGroup>}
     {section === "rules" && <CategoryRulesPanel notify={notify} />}
     {section === "filename-cleanup" && <FilenameCleanupPanel notify={notify} />}
     {section === "naming-template" && <PlatformNamingTemplatePanel notify={notify} />}
@@ -5418,27 +5908,28 @@ function SettingsPage({ value, onChange, onClose, notify, totalSpeed = 0, active
           onChange={(val) => set("shortcut_keys", val)}
           notify={notify}
         />
+        <p className="settings-note">{t("shortcuts.fixedBindings")}</p>
       </SettingsGroup>
     )}
-    {section === "advanced" && <><SettingsGroup title="任务迁移"><div className="maintenance"><button onClick={() => void exportTasks()}>导出任务 JSON</button><button onClick={() => void importTasks()}>导入任务 JSON</button></div><p className="settings-note">导出文件不含请求头、凭据和下载进度；导入任务将统一暂停并保存到指定目录。</p></SettingsGroup><SettingsGroup title="备份与恢复"><div className="maintenance"><button onClick={() => setBackupOpen(true)}>创建完整备份</button><button onClick={() => setRestoreOpen(true)}>从备份恢复</button></div><p className="settings-note">备份包含设置、规则与任务列表。勾选“包含认证信息”后将加密保护。恢复时已存在任务会自动跳过。</p></SettingsGroup><SettingsGroup title="日志"><div className="maintenance"><button onClick={() => void openLogsDir()}>打开日志目录</button><button onClick={() => void exportRecentLogs()}>导出最近 24 小时日志</button></div><p className="settings-note">日志滚动保留 7 天，敏感凭证已自动脱敏。出于安全考虑，日志目录路径不对前端公开。</p></SettingsGroup><SettingsGroup title="维护">
+    {section === "advanced" && <><SettingsGroup title={t("settings.groupTaskMigration")}><div className="maintenance"><button onClick={() => void exportTasks()}>{t("settings.advExportTasks")}</button><button onClick={() => void importTasks()}>{t("settings.advImportTasks")}</button></div><p className="settings-note">{t("settings.advMigrationNote")}</p></SettingsGroup><SettingsGroup title={t("settings.groupBackupRestore")}><div className="maintenance"><button onClick={() => setBackupOpen(true)}>{t("settings.advCreateBackup")}</button><button onClick={() => setRestoreOpen(true)}>{t("settings.advRestoreBackup")}</button></div><p className="settings-note">{t("settings.advBackupNote")}</p></SettingsGroup><SettingsGroup title={t("settings.groupLogs")}><div className="maintenance"><button onClick={() => void openLogsDir()}>{t("settings.advOpenLogs")}</button><button onClick={() => void exportRecentLogs()}>{t("settings.advExportLogs")}</button></div><p className="settings-note">{t("settings.advLogsNote")}</p></SettingsGroup><SettingsGroup title={t("settings.groupMaintenance")}>
   <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
     <div className="maintenance">
-      <button onClick={() => void api.clearHistory(false).then(() => notify("已清理取消的任务"))}>清理取消任务</button>
-      <button onClick={() => void api.clearHistory(true).then(() => notify("下载历史已清理"))}>清理完成和取消任务</button>
+      <button onClick={() => void api.clearHistory(false).then(() => notify(t("settings.advClearedCancelled")))}>{t("settings.advClearCancelled")}</button>
+      <button onClick={() => void api.clearHistory(true).then(() => notify(t("settings.advHistoryCleared")))}>{t("settings.advClearFinished")}</button>
     </div>
     <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", paddingTop: "10px", borderTop: "1px solid var(--border)" }}>
       <div style={{ display: "flex", alignItems: "center", gap: "8px", fontSize: "12px", color: "var(--text)" }}>
-        <span>软件缓存：</span>
+        <span>{t("settings.advCacheLabel")}</span>
         <strong style={{ color: "var(--primary)" }}>
-          {cacheSizeLoading ? "计算中..." : cacheSizeBytes !== null ? formatBytes(cacheSizeBytes) : "—"}
+          {cacheSizeLoading ? t("settings.advCacheCalculating") : cacheSizeBytes !== null ? formatBytes(cacheSizeBytes) : "—"}
         </strong>
       </div>
       <div className="maintenance" style={{ marginTop: 0 }}>
         <button onClick={() => void handleInspectCache()} disabled={cacheSizeLoading || cacheCleaning}>
-          检查缓存
+          {t("settings.advInspectCache")}
         </button>
         <button onClick={() => void handleClearCache()} disabled={cacheCleaning || cacheSizeBytes === 0 || cacheSizeBytes === null}>
-          {cacheCleaning ? "清理中..." : "清理软件缓存"}
+          {cacheCleaning ? t("settings.advCacheCleaning") : t("settings.advClearCache")}
         </button>
       </div>
     </div>
@@ -5777,7 +6268,7 @@ function SettingsPage({ value, onChange, onClose, notify, totalSpeed = 0, active
 
           {/* Task 44: 平台兼容性矩阵子区域。
               展示各媒体平台的支持级别（已验证/实验性/不支持），帮助用户预期下载行为。
-              内置 6 条记录（YouTube/哔哩哔哩=Verified，抖音/TikTok/Twitter/微博=Experimental）。
+              内置 6 条记录（哔哩哔哩/抖音/Twitter=Verified，TikTok/微博/YouTube=Experimental）。
               徽章同时使用颜色和文字标识，不依赖单一颜色（AGENTS.md §4 无障碍）。 */}
           <div style={{ borderTop: "1px solid var(--border)", paddingTop: "14px", display: "flex", flexDirection: "column", gap: "10px" }}>
             <h3 style={{ margin: "0", fontSize: "12px", fontWeight: 600, color: "var(--text)" }}>平台兼容性</h3>
@@ -5980,14 +6471,14 @@ function MediaPathSettings({ value, onChange }: { value: AppSettings; onChange: 
     <SettingRow label="YouTube PO Token"><div className="input-group"><input value={value.youtube_po_token || ""} onChange={(event) => onChange({ youtube_po_token: event.target.value })} placeholder="格式如 mweb.gvs+... 留空使用默认回退" />{value.youtube_po_token && <button className="input-button" onClick={() => onChange({ youtube_po_token: "" })}>清除</button>}</div></SettingRow>
   </div>;
 }
-function MediaToolsCard({ status, onStatus, compact = false, required }: { status: ToolStatus; onStatus: (value: ToolStatus) => void; compact?: boolean; required?: ToolComponent }) {
+function MediaToolsCard({ status, onStatus, compact = false, required, ytUpdate }: { status: ToolStatus; onStatus: (value: ToolStatus) => void; compact?: boolean; required?: ToolComponent; ytUpdate?: YtDlpUpdateInfo | null }) {
   const components: ToolComponent[] = required ? [required] : ["yt-dlp", "ffmpeg"];
   return <div className={compact ? "media-tools-stack compact" : "media-tools-stack"}>
-    {components.map((component) => <MediaToolComponentCard key={component} component={component} status={status} onStatus={onStatus} compact={compact} />)}
+    {components.map((component) => <MediaToolComponentCard key={component} component={component} status={status} onStatus={onStatus} compact={compact} ytUpdate={ytUpdate} />)}
   </div>;
 }
 
-function MediaToolComponentCard({ component, status, onStatus, compact }: { component: ToolComponent; status: ToolStatus; onStatus: (value: ToolStatus) => void; compact: boolean }) {
+function MediaToolComponentCard({ component, status, onStatus, compact, ytUpdate }: { component: ToolComponent; status: ToolStatus; onStatus: (value: ToolStatus) => void; compact: boolean; ytUpdate?: YtDlpUpdateInfo | null }) {
   const [successMsg, setSuccessMsg] = useState("");
   const isYtDlp = component === "yt-dlp";
   const available = isYtDlp ? status.yt_dlp_available : status.ffmpeg_available;
@@ -5995,8 +6486,8 @@ function MediaToolComponentCard({ component, status, onStatus, compact }: { comp
   const active = operationForThis && ["downloading", "verifying", "extracting"].includes(status.state);
   const someInstallActive = Boolean(status.active_component) && ["downloading", "verifying", "extracting"].includes(status.state);
   const phase = operationForThis ? status.state : available ? "ready" : "missing";
-  const downloadBytes = isYtDlp ? status.yt_dlp_download_bytes : status.ffmpeg_download_bytes;
-  const installEstimate = isYtDlp ? status.yt_dlp_download_bytes : 199 * 1024 * 1024;
+  const downloadBytes = isYtDlp ? (ytUpdate?.size_bytes || status.yt_dlp_download_bytes) : status.ffmpeg_download_bytes;
+  const installEstimate = isYtDlp ? downloadBytes : 199 * 1024 * 1024;
   const installedBytes = isYtDlp ? status.yt_dlp_installed_bytes : status.ffmpeg_installed_bytes;
   const version = isYtDlp ? status.yt_dlp_version : status.ffmpeg_version;
   const source = isYtDlp ? status.yt_dlp_source : status.ffmpeg_source;
@@ -6004,8 +6495,9 @@ function MediaToolComponentCard({ component, status, onStatus, compact }: { comp
   const title = isYtDlp ? "yt-dlp 基础媒体组件" : "FFmpeg 高清合并组件";
   const description = isYtDlp ? "媒体分析、单文件视频和音频下载" : "最高画质音视频合并、转码与格式处理";
   const progress = status.total_bytes ? Math.min(100, status.downloaded_bytes / status.total_bytes * 100) : 0;
-  const latestTargetVersion = isYtDlp ? "2026.07.04" : "8.1.2";
-  const isLatest = available && version.includes(latestTargetVersion);
+  // yt-dlp 的"是否最新"以 GitHub 在线检查为准（未检查时不误导用户）；
+  // FFmpeg 无在线更新通道，仍与软件内置推荐版本比较。
+  const isLatest = isYtDlp ? Boolean(ytUpdate && !ytUpdate.has_update) : available && version.includes("8.1.2");
 
   const prevActiveRef = useRef(false);
   useEffect(() => {
@@ -6029,7 +6521,21 @@ function MediaToolComponentCard({ component, status, onStatus, compact }: { comp
     }
   };
 
+  // yt-dlp 已安装时的更新/重装统一走在线最新版本（安装时后端重新拉取并
+  // 强制官方 SHA-256 校验），避免把已更新的版本重装回编译期旧版本。
+  const updateLatest = async () => {
+    setSuccessMsg("");
+    try {
+      await api.updateYtDlp();
+      onStatus(await api.toolStatus());
+    } catch (error) {
+      onStatus({ ...status, active_component: component, state: "failed", error: String(error) });
+    }
+  };
+
   const remove = async () => { try { await api.removeMediaTool(component); onStatus(await api.toolStatus()); } catch (error) { onStatus({ ...status, active_component: component, state: "failed", error: String(error) }); } };
+
+  const ytUpdateLabel = ytUpdate?.has_update ? `更新到 ${ytUpdate.latest_version}` : ytUpdate ? "已是最新版 (重新下载)" : "更新到最新版";
 
   return <div className={compact ? "media-tools-card compact" : "media-tools-card"}>
     <div className="media-tools-card-main">
@@ -6040,10 +6546,11 @@ function MediaToolComponentCard({ component, status, onStatus, compact }: { comp
       <div className="tool-actions">
         {active ? <button onClick={() => void api.cancelMediaTools()}>取消安装</button> : available && source === "bundled" ? <>
           <button className="danger" disabled={someInstallActive} onClick={() => void remove()}>卸载</button>
-          <button className="primary" disabled={someInstallActive} onClick={() => void install()}>{isLatest ? "已是最新版 (重新下载)" : "更新组件"}</button>
+          {isYtDlp ? <button className="primary" disabled={someInstallActive} onClick={() => void updateLatest()}>{ytUpdateLabel}</button>
+            : <button className="primary" disabled={someInstallActive} onClick={() => void install()}>{isLatest ? "已是最新版 (重新下载)" : "更新组件"}</button>}
         </> : available && isYtDlp && source === "custom" ? (
-          isLatest ? <button className="input-button" disabled={someInstallActive} title="当前组件已是最新版本，点击可强制重新下载并覆盖自定义文件" onClick={() => void install()}>已是最新版本 (点击重新覆盖)</button>
-          : <button className="primary" disabled={someInstallActive} title="发现新版本，点击将下载并覆盖您的自定义路径 yt-dlp.exe" onClick={() => void install()}>覆盖更新自定义</button>
+          ytUpdate?.has_update ? <button className="primary" disabled={someInstallActive} title="发现新版本，点击将下载并覆盖您的自定义路径 yt-dlp.exe" onClick={() => void updateLatest()}>覆盖更新自定义</button>
+          : <button className="input-button" disabled={someInstallActive} title="点击将从 GitHub 官方下载最新版并覆盖自定义文件" onClick={() => void updateLatest()}>{ytUpdate ? "已是最新版本 (点击重新覆盖)" : "更新自定义到最新版"}</button>
         ) : available ? <button disabled title="已使用第三方外部组件，软件将保持原样，不修改外部文件">使用外部组件</button> : <button className="primary" disabled={someInstallActive} onClick={() => void install()}>下载并安装</button>}
       </div>
     </div>
@@ -6053,7 +6560,7 @@ function MediaToolComponentCard({ component, status, onStatus, compact }: { comp
   </div>;
 }
 
-function MediaToolsUpdateRow({ tools, onStatus }: { tools: ToolStatus | null | undefined; onStatus: (status: ToolStatus) => void }) {
+function MediaToolsUpdateRow({ tools, onStatus, onYtUpdate }: { tools: ToolStatus | null | undefined; onStatus: (status: ToolStatus) => void; onYtUpdate: (info: YtDlpUpdateInfo | null) => void }) {
   const [checking, setChecking] = useState(false);
   const [updateMsg, setUpdateMsg] = useState("");
 
@@ -6063,13 +6570,18 @@ function MediaToolsUpdateRow({ tools, onStatus }: { tools: ToolStatus | null | u
     try {
       const currentStatus = await api.toolStatus();
       onStatus(currentStatus);
-      const isYtCustom = currentStatus.yt_dlp_source === "custom";
-      const isFfExternal = currentStatus.ffmpeg_source === "custom" || currentStatus.ffmpeg_source === "system";
 
-      const ytLocal = currentStatus.yt_dlp_version || "未安装";
-      const ytLatest = "2026.07.04";
-      const ytIsLatest = currentStatus.yt_dlp_available && ytLocal.includes(ytLatest);
-      const ytMsg = `yt-dlp (本地版本: ${ytLocal} / 最新版本: ${ytLatest} · ${ytIsLatest ? (isYtCustom ? "已是最新版，使用自定义路径" : "已是最新版") : currentStatus.yt_dlp_available ? "可更新" : "未安装"})`;
+      // yt-dlp 联网检查 GitHub 官方最新版本；失败时保留本地版本展示并提示原因。
+      let ytMsg: string;
+      try {
+        const info = await api.checkYtDlpUpdate();
+        onYtUpdate(info);
+        const stateTag = info.has_update ? "可更新" : currentStatus.yt_dlp_available ? (currentStatus.yt_dlp_source === "custom" ? "已是最新版，使用自定义路径" : "已是最新版") : "未安装";
+        ytMsg = `yt-dlp (本地版本: ${info.installed_version || "未安装"} / GitHub 最新: ${info.latest_version} · ${stateTag})`;
+      } catch (error) {
+        onYtUpdate(null);
+        ytMsg = `yt-dlp (本地版本: ${currentStatus.yt_dlp_version || "未安装"} / 在线检查失败：${String(error)})`;
+      }
 
       const ffLocal = currentStatus.ffmpeg_version || "未安装";
       const ffLatest = "8.1.2 essentials";
@@ -6089,7 +6601,7 @@ function MediaToolsUpdateRow({ tools, onStatus }: { tools: ToolStatus | null | u
     <div className="media-detect-row">
       <div>
         <strong>检查媒体组件更新</strong>
-        <span className="media-detect-desc">手动检测本地与最新版本对比，并识别更新覆盖规则</span>
+        <span className="media-detect-desc">联网检查 yt-dlp 官方最新版本并与本地对比，FFmpeg 与软件推荐版本对比</span>
       </div>
       <button className="input-button primary" disabled={checking || Boolean(tools?.active_component)} onClick={() => void handleManualCheck()}>
         {checking ? "检查中…" : "手动检查是否最新版"}
@@ -7915,6 +8427,8 @@ function MediaCredentialsPanel({ notify }: { notify: (text: string, kind?: "ok" 
 }
 
 function ContextMenu({ x, y, task, selectedTaskIds, allTasks = [], close, notify, onSetSpeedLimit, onDelete, onViewDetails }: { x: number; y: number; task: DownloadTask; selectedTaskIds?: Set<string>; allTasks?: DownloadTask[]; close: () => void; notify: (text: string, kind?: "ok" | "error") => void; onSetSpeedLimit: (task: DownloadTask) => void; onDelete: (taskIds: Set<string>, deleteFile: boolean) => void; onViewDetails?: () => void }) {
+  // Task 33: 订阅 locale 变化，右键菜单文案同步刷新。
+  useLocale();
   const targetTaskIds = useMemo(() => {
     if (selectedTaskIds && selectedTaskIds.has(task.id) && selectedTaskIds.size > 1) {
       return selectedTaskIds;
@@ -7926,7 +8440,7 @@ function ContextMenu({ x, y, task, selectedTaskIds, allTasks = [], close, notify
     return allTasks.filter((t) => targetTaskIds.has(t.id));
   }, [allTasks, targetTaskIds]);
 
-  const countTag = targetTaskIds.size > 1 ? ` (${targetTaskIds.size} 项)` : "";
+  const countTag = targetTaskIds.size > 1 ? t("contextMenu.countSuffix", { count: targetTaskIds.size }) : "";
 
   const action = async (value: string) => {
     try {
@@ -7957,9 +8471,9 @@ function ContextMenu({ x, y, task, selectedTaskIds, allTasks = [], close, notify
   const copyText = async (label: string, text: string) => {
     try {
       await navigator.clipboard.writeText(text);
-      notify(`${label}已复制`);
+      notify(t("toasts.copiedLabel", { label }));
     } catch (error) {
-      notify(`复制${label}失败：${String(error)}`, "error");
+      notify(`${t("toasts.copyLabelFailed", { label })}：${String(error)}`, "error");
     } finally {
       close();
     }
@@ -7969,9 +8483,9 @@ function ContextMenu({ x, y, task, selectedTaskIds, allTasks = [], close, notify
       const list = targetTasks.length > 0 ? targetTasks : [task];
       const text = list.map((t) => t.url).join("\n");
       await navigator.clipboard.writeText(text);
-      notify(list.length > 1 ? `${list.length} 个来源链接已复制` : "来源链接已复制");
+      notify(list.length > 1 ? t("toasts.linksCopied", { count: list.length }) : t("toasts.linkCopied"));
     } catch (error) {
-      notify(`复制链接失败：${String(error)}`, "error");
+      notify(`${t("toasts.copyLinkFailed")}：${String(error)}`, "error");
     } finally {
       close();
     }
@@ -7981,8 +8495,8 @@ function ContextMenu({ x, y, task, selectedTaskIds, allTasks = [], close, notify
     return `${task.destination}${sep}${task.file_name}`;
   };
   const showDiagnosis = () => {
-    const detail = task.error || "未记录详细错误信息。可尝试重试，若仍失败请检查链接、登录态或网络。";
-    notify(`诊断：${detail}`, "error");
+    const detail = task.error || t("toasts.diagnosisNoDetail");
+    notify(t("toasts.diagnosisPrefix", { detail }), "error");
     close();
   };
   const confirmDelete = (deleteFile: boolean) => {
@@ -8002,49 +8516,49 @@ function ContextMenu({ x, y, task, selectedTaskIds, allTasks = [], close, notify
     case "downloading":
     case "verifying":
     case "waiting-network":
-      sections.push(<button key="pause" onClick={() => void action("pause")}><Pause size={13} />暂停</button>);
+      sections.push(<button key="pause" onClick={() => void action("pause")}><Pause size={13} />{t("contextMenu.pause")}</button>);
       break;
     case "paused":
-      sections.push(<button key="resume" onClick={() => void action("resume")}><Play size={13} />继续</button>);
+      sections.push(<button key="resume" onClick={() => void action("resume")}><Play size={13} />{t("contextMenu.resume")}</button>);
       break;
     case "interrupted":
-      sections.push(<button key="resume" onClick={() => void action("resume")}><Play size={13} />继续</button>);
+      sections.push(<button key="resume" onClick={() => void action("resume")}><Play size={13} />{t("contextMenu.resume")}</button>);
       break;
     case "paused-by-low-disk":
-      sections.push(<button key="resume" onClick={() => void action("resume")}><Play size={13} />继续</button>);
-      sections.push(<button key="change-dir" disabled title="请在设置中更换默认下载目录后继续"><FolderOpen size={13} />更换目录</button>);
+      sections.push(<button key="resume" onClick={() => void action("resume")}><Play size={13} />{t("contextMenu.resume")}</button>);
+      sections.push(<button key="change-dir" disabled title={t("contextMenu.changeDirTitle")}><FolderOpen size={13} />{t("contextMenu.changeDir")}</button>);
       break;
     case "paused-by-metered":
-      sections.push(<button key="resume" onClick={() => void action("resume")}><Play size={13} />继续下载</button>);
+      sections.push(<button key="resume" onClick={() => void action("resume")}><Play size={13} />{t("contextMenu.resumeDownload")}</button>);
       break;
     case "failed":
-      sections.push(<button key="diagnose" onClick={() => showDiagnosis()}><AlertCircle size={13} />诊断错误</button>);
-      sections.push(<button key="retry" onClick={() => void action("retry")}><RefreshCw size={13} />重试</button>);
+      sections.push(<button key="diagnose" onClick={() => showDiagnosis()}><AlertCircle size={13} />{t("contextMenu.diagnose")}</button>);
+      sections.push(<button key="retry" onClick={() => void action("retry")}><RefreshCw size={13} />{t("contextMenu.retry")}</button>);
       break;
     case "remote-changed":
-      sections.push(<button key="redownload" onClick={() => void action("redownload")}><RefreshCw size={13} />重新下载</button>);
-      sections.push(<button key="keep-cancel" onClick={() => void action("cancel")}><CirclePause size={13} />保留旧文件并取消</button>);
+      sections.push(<button key="redownload" onClick={() => void action("redownload")}><RefreshCw size={13} />{t("contextMenu.redownload")}</button>);
+      sections.push(<button key="keep-cancel" onClick={() => void action("cancel")}><CirclePause size={13} />{t("contextMenu.keepOldFile")}</button>);
       break;
     case "completed":
       if (targetTaskIds.size <= 1) {
-        sections.push(<button key="open-file" onClick={() => void api.openFile(task.id).then(close).catch((e) => notify(String(e), "error"))}><ExternalLink size={13} />打开文件</button>);
-        sections.push(<button key="open-folder" onClick={() => void api.openFolder(task.id).then(close).catch((e) => notify(String(e), "error"))}><FolderOpen size={13} />打开文件夹</button>);
+        sections.push(<button key="open-file" onClick={() => void api.openFile(task.id).then(close).catch((e) => notify(String(e), "error"))}><ExternalLink size={13} />{t("contextMenu.openFile")}</button>);
+        sections.push(<button key="open-folder" onClick={() => void api.openFolder(task.id).then(close).catch((e) => notify(String(e), "error"))}><FolderOpen size={13} />{t("contextMenu.openFolder")}</button>);
       }
       sections.push(<button key="copy-path" onClick={() => {
         if (targetTaskIds.size <= 1) {
-          void copyText("文件路径", buildFilePath());
+          void copyText(t("contextMenu.filePathLabel"), buildFilePath());
         } else {
           const paths = targetTasks.map((t) => {
             const sep = t.destination.endsWith("\\") || t.destination.endsWith("/") ? "" : "\\";
             return `${t.destination}${sep}${t.file_name}`;
           }).join("\n");
-          void copyText("文件路径", paths);
+          void copyText(t("contextMenu.filePathLabel"), paths);
         }
-      }}><Copy size={13} />复制文件路径{countTag}</button>);
+      }}><Copy size={13} />{t("contextMenu.copyFilePath")}{countTag}</button>);
       if (targetTaskIds.size <= 1) {
-        sections.push(<button key="verify" onClick={() => void api.verify(task.id).then(() => { notify("文件校验完成"); close(); }).catch((e) => notify(String(e), "error"))}><ShieldCheck size={13} />校验 SHA-256</button>);
+        sections.push(<button key="verify" onClick={() => void api.verify(task.id).then(() => { notify(t("toasts.verifyDone")); close(); }).catch((e) => notify(String(e), "error"))}><ShieldCheck size={13} />{t("contextMenu.verifySha256")}</button>);
       }
-      sections.push(<button key="redownload" onClick={() => void action("redownload")}><RefreshCw size={13} />重新下载{countTag}</button>);
+      sections.push(<button key="redownload" onClick={() => void action("redownload")}><RefreshCw size={13} />{t("contextMenu.redownload")}{countTag}</button>);
       break;
     case "queued":
     case "scheduled":
@@ -8056,25 +8570,25 @@ function ContextMenu({ x, y, task, selectedTaskIds, allTasks = [], close, notify
   if (!["cancelled", "completed"].includes(task.status)) {
     sections.push(
       <div key="priority-row" className="context-menu-row-item">
-        <span className="context-menu-row-label">队列顺序</span>
+        <span className="context-menu-row-label">{t("contextMenu.queueOrder")}</span>
         <div className="context-menu-row-buttons">
-          <button onClick={() => void update({ priority: MIN_PRIORITY })} title="置顶"><ChevronsUp size={13} /></button>
-          <button onClick={() => void update({ priority: clampPriority(task.priority - PRIORITY_STEP) })} title="上移"><ChevronUp size={13} /></button>
-          <button onClick={() => void update({ priority: clampPriority(task.priority + PRIORITY_STEP) })} title="下移"><ChevronDown size={13} /></button>
-          <button onClick={() => void update({ priority: MAX_PRIORITY })} title="置底"><ChevronsDown size={13} /></button>
+          <button onClick={() => void update({ priority: MIN_PRIORITY })} title={t("contextMenu.toTop")}><ChevronsUp size={13} /></button>
+          <button onClick={() => void update({ priority: clampPriority(task.priority - PRIORITY_STEP) })} title={t("contextMenu.moveUp")}><ChevronUp size={13} /></button>
+          <button onClick={() => void update({ priority: clampPriority(task.priority + PRIORITY_STEP) })} title={t("contextMenu.moveDown")}><ChevronDown size={13} /></button>
+          <button onClick={() => void update({ priority: MAX_PRIORITY })} title={t("contextMenu.toBottom")}><ChevronsDown size={13} /></button>
         </div>
       </div>
     );
-    sections.push(<button key="speed-limit" onClick={() => void changeSpeedLimit()}><Gauge size={13} />任务限速：{task.per_task_speed_limit ? `${Math.round(task.per_task_speed_limit / 1024)} KB/s` : "不限速"}</button>);
-    sections.push(<button key="completion" onClick={() => void update({ completionAction: task.completion_action === "open-folder" ? "none" : "open-folder" })}><FolderOpen size={13} />{task.completion_action === "open-folder" ? "取消完成后打开文件夹" : "完成后打开文件夹"}</button>);
+    sections.push(<button key="speed-limit" onClick={() => void changeSpeedLimit()}><Gauge size={13} />{t("contextMenu.speedLimit", { value: task.per_task_speed_limit ? `${Math.round(task.per_task_speed_limit / 1024)} KB/s` : t("details.noSpeedLimit") })}</button>);
+    sections.push(<button key="completion" onClick={() => void update({ completionAction: task.completion_action === "open-folder" ? "none" : "open-folder" })}><FolderOpen size={13} />{task.completion_action === "open-folder" ? t("contextMenu.completionOpenFolderOff") : t("contextMenu.completionOpenFolderOn")}</button>);
   }
 
   if (onViewDetails) {
-    sections.push(<button key="view-details" onClick={() => { onViewDetails(); close(); }}><Info size={13} />查看详情</button>);
+    sections.push(<button key="view-details" onClick={() => { onViewDetails(); close(); }}><Info size={13} />{t("toasts.viewDetails")}</button>);
   }
 
   if (sections.length > 0) pushSep();
-  sections.push(<button key="copy-url" onClick={() => void copyUrls()}><Copy size={13} />复制链接{countTag}</button>);
+  sections.push(<button key="copy-url" onClick={() => void copyUrls()}><Copy size={13} />{t("contextMenu.copyLink")}{countTag}</button>);
 
   pushSep();
   sections.push(
@@ -8255,10 +8769,73 @@ function SpeedLimitDialog({
 
 
 
-export function Modal({ title, onClose, wide, children, style, headerAction }: { title: string; onClose: () => void; wide?: boolean; children: ReactNode; style?: CSSProperties; headerAction?: ReactNode }) {
+// 叠层弹窗的 Esc 处理栈：只有栈顶（最后挂载）的 Modal 响应 Escape，
+// 避免 NewTaskDialog 之上再开凭证弹窗时按 Esc 连锁关闭两层。
+const modalEscapeStack: Array<() => void> = [];
+
+const FOCUSABLE_SELECTOR = [
+  "button:not([disabled])",
+  "input:not([disabled]):not([type='hidden'])",
+  "select:not([disabled])",
+  "textarea:not([disabled])",
+  "a[href]",
+  "[tabindex]:not([tabindex='-1'])",
+].join(",");
+
+export function Modal({ title, onClose, wide, children, style, headerAction, escapeClosable = true }: { title: string; onClose: () => void; wide?: boolean; children: ReactNode; style?: CSSProperties; headerAction?: ReactNode; escapeClosable?: boolean }) {
+  const dialogRef = useRef<HTMLDivElement | null>(null);
+  // ref 承载最新回调，避免 effect 内闭包过期（escapeClosable 随输入内容变化）。
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
+  const escapeClosableRef = useRef(escapeClosable);
+  escapeClosableRef.current = escapeClosable;
+  useEffect(() => {
+    const entry = () => {
+      if (escapeClosableRef.current) onCloseRef.current();
+    };
+    modalEscapeStack.push(entry);
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (modalEscapeStack[modalEscapeStack.length - 1] !== entry) return;
+      if (event.key === "Escape") {
+        event.preventDefault();
+        entry();
+        return;
+      }
+      if (event.key === "Tab") {
+        // 焦点圈闭：Tab/Shift+Tab 在对话框可聚焦元素间循环，不逃逸到底层界面。
+        const dialog = dialogRef.current;
+        if (!dialog) return;
+        const focusable = Array.from(dialog.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR))
+          .filter((el) => el.offsetParent !== null);
+        if (focusable.length === 0) return;
+        const first = focusable[0];
+        const last = focusable[focusable.length - 1];
+        const active = document.activeElement;
+        if (event.shiftKey && (active === first || !dialog.contains(active))) {
+          event.preventDefault();
+          last.focus();
+        } else if (!event.shiftKey && (active === last || !dialog.contains(active))) {
+          event.preventDefault();
+          first.focus();
+        }
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown, true);
+    // 初始聚焦：优先 autofocus 元素，其次第一个可聚焦元素；不得覆盖对话框内既有焦点。
+    const dialog = dialogRef.current;
+    if (dialog && !dialog.contains(document.activeElement)) {
+      const target = dialog.querySelector<HTMLElement>("[autofocus]") ?? dialog.querySelector<HTMLElement>(FOCUSABLE_SELECTOR);
+      (target ?? dialog).focus();
+    }
+    return () => {
+      const index = modalEscapeStack.indexOf(entry);
+      if (index >= 0) modalEscapeStack.splice(index, 1);
+      window.removeEventListener("keydown", handleKeyDown, true);
+    };
+  }, []);
   return (
     <div className="modal-layer" onMouseDown={onClose}>
-      <div className="dialog-material" onMouseDown={(e) => e.stopPropagation()}>
+      <div className="dialog-material" ref={dialogRef} tabIndex={-1} onMouseDown={(e) => e.stopPropagation()}>
         <section className={wide ? "dialog wide" : "dialog"} style={style}>
           <div className="settings-title">
             <h2>{title}</h2>
@@ -8271,38 +8848,71 @@ export function Modal({ title, onClose, wide, children, style, headerAction }: {
   );
 }
 
+/** 轻量确认对话框：替代原生 window.confirm，风格与整体 Fluent 弹窗一致。
+ * 通过 Portal 挂载到 body：本组件可能嵌在另一弹窗的 .dialog-material
+ * （backdrop-filter 会成为 fixed 后代的包含块）内，直接渲染会被限制在
+ * 父对话框区域内而无法全屏居中。 */
+function ConfirmDialog({ title, message, confirmLabel, cancelLabel, danger, onConfirm, onCancel }: {
+  title: string;
+  message: ReactNode;
+  confirmLabel: string;
+  cancelLabel: string;
+  danger?: boolean;
+  onConfirm: () => void;
+  onCancel: () => void;
+}) {
+  return createPortal(
+    <Modal title={title} onClose={onCancel} style={{ width: "400px" }}>
+      <div className="confirm-dialog-body">
+        <p>{message}</p>
+        <div className="confirm-dialog-actions">
+          {/* 危险操作默认聚焦取消（回车不触发风险动作）；普通确认聚焦确认。 */}
+          <button className="confirm-btn-secondary" onClick={onCancel} autoFocus={danger}>{cancelLabel}</button>
+          <button className={danger ? "confirm-btn-danger" : "confirm-btn-primary"} onClick={onConfirm} autoFocus={!danger}>{confirmLabel}</button>
+        </div>
+      </div>
+    </Modal>,
+    document.body
+  );
+}
+
 /** Task 27.6：备份选项对话框。
  *
  * 让用户选择是否包含认证信息（Cookie/Authorization/代理密码）。
  * 勾选后必须输入密码，备份文件将以 AES-256-GCM 加密。 */
 function formatBytes(value: number) { if (!value) return "0 B"; const units = ["B","KB","MB","GB","TB"]; const index = Math.min(Math.floor(Math.log(value) / Math.log(1024)), units.length - 1); return `${(value / 1024 ** index).toFixed(index ? 1 : 0)} ${units[index]}`; }
-function formatDuration(seconds: number) { if (seconds < 60) return `${seconds} 秒`; if (seconds < 3600) return `${Math.ceil(seconds / 60)} 分钟`; return `${Math.floor(seconds / 3600)} 小时 ${Math.ceil(seconds % 3600 / 60)} 分`; }
-function formatDate(value: number) { return new Intl.DateTimeFormat("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }).format(new Date(value)); }
+function formatDuration(seconds: number) {
+  // Task 33: 时长单位按当前 locale 输出，避免英文界面出现中文单位。
+  if (seconds < 60) return t("format.seconds", { n: Math.max(1, Math.round(seconds)) });
+  if (seconds < 3600) return t("format.minutes", { n: Math.ceil(seconds / 60) });
+  return t("format.hours", { h: Math.floor(seconds / 3600), m: Math.ceil(seconds % 3600 / 60) });
+}
+function formatDate(value: number) { return new Intl.DateTimeFormat(getLocale(), { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }).format(new Date(value)); }
 
-/** 队列调度可观察性（Task 15）：将等待原因枚举映射为简体中文说明。NotWaiting 返回 null。 */
+/** 队列调度可观察性（Task 15）：将等待原因枚举映射为本地化说明。NotWaiting 返回 null。 */
 function waitReasonText(reason: WaitReason): string | null {
   switch (reason.kind) {
     case "not-waiting": return null;
-    case "queued-behind": return `等待前面 ${reason.ahead_count} 个任务完成`;
-    case "waiting-media-tools": return "等待媒体工具安装";
-    case "waiting-user-confirmation": return "等待用户确认";
-    case "waiting-scheduled-time": return `等待计划时间：${formatScheduleTime(reason.scheduled_at)}`;
-    case "waiting-concurrency-limit": return `等待并发槽位（当前已满 ${reason.active_count} 个）`;
-    case "paused": return "用户已暂停";
-    case "paused-by-low-disk": return "磁盘空间不足已暂停";
-    case "paused-by-metered": return "计量网络下已自动暂停";
-    case "interrupted": return "任务已中断，可继续";
-    case "remote-changed": return "远端资源已变化";
-    case "unknown": return "未知状态";
+    case "queued-behind": return t("waitReason.queuedBehind", { count: reason.ahead_count });
+    case "waiting-media-tools": return t("waitReason.waitingMediaTools");
+    case "waiting-user-confirmation": return t("waitReason.waitingUserConfirmation");
+    case "waiting-scheduled-time": return t("waitReason.waitingScheduledTime", { time: formatScheduleTime(reason.scheduled_at) });
+    case "waiting-concurrency-limit": return t("waitReason.waitingConcurrencyLimit", { count: reason.active_count });
+    case "paused": return t("waitReason.paused");
+    case "paused-by-low-disk": return t("status.pausedByLowDiskShort");
+    case "paused-by-metered": return t("waitReason.pausedByMetered");
+    case "interrupted": return t("waitReason.interrupted");
+    case "remote-changed": return t("waitReason.remoteChanged");
+    case "unknown": return t("waitReason.unknown");
   }
 }
 /** 格式化计划时间戳字符串（Unix 毫秒）为本地时间 "YYYY/MM/DD HH:MM"。 */
 function formatScheduleTime(epochMsStr: string): string {
   const ms = Number(epochMsStr);
   if (!ms || !Number.isFinite(ms)) return "—";
-  return new Intl.DateTimeFormat("zh-CN", { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }).format(new Date(ms));
+  return new Intl.DateTimeFormat(getLocale(), { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }).format(new Date(ms));
 }
-function redactedUrl(value: string) { try { const url = new URL(value); url.username = ""; url.password = ""; url.search = ""; url.hash = ""; return url.toString(); } catch { return "地址格式无效"; } }
+function redactedUrl(value: string) { try { const url = new URL(value); url.username = ""; url.password = ""; url.search = ""; url.hash = ""; return url.toString(); } catch { return t("format.invalidUrl"); } }
 function hostOf(url: string) { try { return new URL(url).host; } catch { return url; } }
 function safeDisplayName(value: string) { return value.replace(/[<>:"/\\|?*]/g, "_").slice(0, 120); }
 
