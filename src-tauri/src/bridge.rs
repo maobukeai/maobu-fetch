@@ -20,7 +20,7 @@ use std::{
     sync::Arc,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
-use tauri::AppHandle;
+use tauri::{AppHandle, Manager};
 use tokio::sync::Mutex;
 
 type HmacSha256 = Hmac<Sha256>;
@@ -125,6 +125,8 @@ struct MediaCredentialSyncRequest {
 ///
 /// 仅暴露扩展弹窗需要的最小字段集，不包含 destination、headers、media 等敏感
 /// 或冗余数据。`progress` 为 0.0..=1.0；`total_bytes == 0` 时为 0。
+/// `total_bytes` 用于扩展弹窗展示文件大小与预计剩余时间；
+/// 旧扩展忽略未知字段，向后兼容。
 #[derive(Serialize)]
 struct RecentTaskSummary {
     id: String,
@@ -133,6 +135,7 @@ struct RecentTaskSummary {
     status: String,
     progress: f64,
     speed: u64,
+    total_bytes: u64,
     error: Option<String>,
 }
 
@@ -174,6 +177,7 @@ pub async fn run(manager: SharedManager, pairing: PairingService, app: AppHandle
         .route("/v1/tasks/{id}/action", post(task_action))
         .route("/v1/media/probe", post(probe_media))
         .route("/v1/media/credentials/sync", post(sync_media_credentials))
+        .route("/v1/focus", post(focus_window))
         .with_state(state);
     if let Ok(listener) = tokio::net::TcpListener::bind("127.0.0.1:17433").await {
         let _ = axum::serve(listener, router).await;
@@ -192,7 +196,10 @@ async fn health(State(state): State<BridgeState>) -> impl IntoResponse {
         "ready":true,
         "version": crate::updater::APP_VERSION,
         "takeover_enabled": settings.intercept_browser_downloads,
-        "min_file_size_mb": settings.min_file_size_mb
+        "min_file_size_mb": settings.min_file_size_mb,
+        // 桌面端"接管 magnet: 链接"开关，扩展据此决定是否拦截磁力点击。
+        // 旧扩展忽略未知字段；字段缺失时扩展按默认开处理。
+        "bt_magnet_enabled": settings.bt_intercept_magnet
     }))
 }
 async fn pair(
@@ -230,6 +237,33 @@ async fn add_task(
     let mut request: NewTaskRequest = serde_json::from_slice(&body)
         .map_err(|_| (StatusCode::BAD_REQUEST, "任务参数无效".into()))?;
     request.source = Some("browser".into());
+    // 2026-08-16 BT/磁力：url 字段承载 magnet: URI 时走 BT 内核。
+    // /v1 请求结构不变（§5），扩展按原协议发送即可。
+    if request.url.trim().to_ascii_lowercase().starts_with("magnet:") {
+        let settings = state.manager.settings().await;
+        if !settings.bt_intercept_magnet {
+            return Err((StatusCode::FORBIDDEN, "磁力接管已在桌面端设置中关闭".into()));
+        }
+        let bt_request = crate::models::BtNewTaskRequest {
+            source: request.url.trim().to_string(),
+            source_data_base64: None,
+            destination: request
+                .destination
+                .clone()
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty()),
+            selected_files: Vec::new(),
+            start_paused: false,
+            source_tag: Some("browser".into()),
+            streaming_priority: false,
+        };
+        let task = state
+            .manager
+            .add_bt(bt_request)
+            .await
+            .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+        return Ok((StatusCode::CREATED, Json(task)));
+    }
     let task = state
         .manager
         .add(request)
@@ -277,6 +311,7 @@ async fn recent_tasks(
                 status: task.status.as_str().to_string(),
                 progress,
                 speed: task.speed,
+                total_bytes: task.total_bytes,
                 error: task.error,
             }
         })
@@ -331,6 +366,31 @@ async fn open_file_for_task(state: &BridgeState, id: &str) -> Result<(), String>
     open::that(std::path::PathBuf::from(task.destination).join(task.file_name))
         .map_err(|e| e.to_string())
 }
+/// `POST /v1/focus`。
+///
+/// 唤起并聚焦桌面端主窗口。扩展在用户点击系统通知（"已添加任务"/"桌面端离线"等）
+/// 时调用，形成通知点击闭环。走完整 HMAC 签名校验，与其它写端点一致；
+/// 请求体为空 JSON `{}`（签名覆盖 `timestamp\n{}`）。
+async fn focus_window(
+    State(state): State<BridgeState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<StatusCode, (StatusCode, String)> {
+    authorize(&state, &headers, &body).await?;
+    focus_main_window(&state.app);
+    Ok(StatusCode::OK)
+}
+
+/// 与 `lib.rs` CLI `Run` 分支相同的唤窗序列：显示 + 还原 + 聚焦。
+/// 抽出为独立函数便于复用；窗口不存在（异常状态）时静默返回，不视为错误。
+fn focus_main_window(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.unminimize();
+        let _ = window.set_focus();
+    }
+}
+
 async fn probe_media(
     State(state): State<BridgeState>,
     headers: HeaderMap,
@@ -737,6 +797,7 @@ mod tests {
             status: "downloading".into(),
             progress: 0.5,
             speed: 1024,
+            total_bytes: 2048,
             error: None,
         };
         let value = serde_json::to_value(&summary).unwrap();
@@ -747,6 +808,8 @@ mod tests {
         assert!(object.contains_key("status"));
         assert!(object.contains_key("progress"));
         assert!(object.contains_key("speed"));
+        // 供扩展弹窗展示大小与预计剩余时间。
+        assert!(object.contains_key("total_bytes"));
         assert!(object.contains_key("error"));
         assert!(!object.contains_key("destination"));
         assert!(!object.contains_key("headers"));

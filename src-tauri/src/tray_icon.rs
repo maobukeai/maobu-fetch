@@ -216,6 +216,9 @@ mod tests {
             retry_policy_override: None,
             proxy_override: None,
             proxy_auth: None,
+        task_kind: Default::default(),
+        bt_meta: None,
+        bt_runtime: None,
         }
     }
 

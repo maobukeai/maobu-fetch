@@ -17,8 +17,8 @@ use reqwest::Client;
 use std::cmp::Ordering;
 use std::time::Duration;
 
-// TODO(user): 仓库地址占位符。发布前请填入真实 owner/repo，并在 release 流程中验证 GitHub Releases API 可访问。
-// 当前为开源项目主页占位（与 package.json、tauri.conf.json、extension/manifest.json 保持一致）。
+// 与 package.json、tauri.conf.json、extension/manifest.json 及 git remote 保持一致；
+// 发布流程中需验证 GitHub Releases API 可访问（见 AGENTS.md §10）。
 const GITHUB_OWNER: &str = "maobukeai";
 const GITHUB_REPO: &str = "maobu-fetch";
 

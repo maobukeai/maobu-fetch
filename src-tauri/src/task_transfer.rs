@@ -1,7 +1,7 @@
 use crate::models::{
     AppSettings, BackupBundle, BackupCipherInfo, BackupKdfInfo, BackupManifest, CategoryRule,
     CompletionAction, DownloadPreset, DownloadTask, FilenameCleanupRule, NewTaskRequest,
-    RestorePreview, SettingsDiff, TaskExportFile, TaskExportItem, UrlHistoryEntry,
+    RestorePreview, SavedView, SettingsDiff, TaskExportFile, TaskExportItem, UrlHistoryEntry,
     BACKUP_BUNDLE_VERSION, BACKUP_KDF_ITERATIONS, BACKUP_KEY_SIZE, BACKUP_NONCE_SIZE,
     BACKUP_SALT_SIZE, MAX_PRIORITY, MIN_PRIORITY,
 };
@@ -227,6 +227,7 @@ pub struct CurrentState<'a> {
     pub filename_cleanup_rules: &'a [FilenameCleanupRule],
     pub download_presets: &'a [DownloadPreset],
     pub url_history: &'a [UrlHistoryEntry],
+    pub saved_view_ids: &'a HashSet<String>,
     pub task_ids: &'a HashSet<String>,
 }
 
@@ -258,6 +259,7 @@ pub fn build_bundle(
     filename_cleanup_rules: Vec<FilenameCleanupRule>,
     download_presets: Vec<DownloadPreset>,
     url_history: Vec<UrlHistoryEntry>,
+    saved_views: Vec<SavedView>,
     app_version: &str,
     include_auth: bool,
 ) -> BackupBundle {
@@ -276,6 +278,7 @@ pub fn build_bundle(
         filename_cleanup_rules,
         download_presets,
         url_history,
+        saved_views,
         tasks,
         includes_auth: include_auth,
     }
@@ -486,6 +489,12 @@ pub fn compute_preview(bundle: &BackupBundle, current: &CurrentState<'_>) -> Res
         .filter(|h| !existing_urls.contains(h.url.as_str()))
         .count() as u32;
 
+    let new_saved_views = bundle
+        .saved_views
+        .iter()
+        .filter(|view| !current.saved_view_ids.contains(&view.id))
+        .count() as u32;
+
     let mut new_tasks = 0u32;
     let mut duplicate_tasks = 0u32;
     for task in &bundle.tasks {
@@ -505,6 +514,7 @@ pub fn compute_preview(bundle: &BackupBundle, current: &CurrentState<'_>) -> Res
         new_presets,
         override_presets,
         new_url_history,
+        new_saved_views,
         new_tasks,
         duplicate_tasks,
         includes_auth: bundle.includes_auth,
@@ -745,6 +755,9 @@ mod tests {
             retry_policy_override: None,
             proxy_override: None,
             proxy_auth: None,
+            task_kind: Default::default(),
+            bt_meta: None,
+            bt_runtime: None,
         }
     }
 
@@ -841,6 +854,11 @@ mod tests {
             vec![UrlHistoryEntry {
                 url: "https://example.com/file.zip".into(),
                 last_used: 1_700_000_000_000,
+            }],
+            vec![SavedView {
+                id: "view-1".into(),
+                name: "今日视频".into(),
+                filter: serde_json::json!({ "status": "downloading" }),
             }],
             "0.5.7",
             include_auth,
@@ -1036,12 +1054,15 @@ mod tests {
             last_used: 1,
         }];
         let current_task_ids: HashSet<String> = std::iter::once(existing_task.id.clone()).collect();
+        let current_saved_view_ids: HashSet<String> =
+            std::iter::once("view-1".into()).collect();
         let current = CurrentState {
             settings: &current_settings,
             category_rules: &current_category_rules,
             filename_cleanup_rules: &current_cleanup,
             download_presets: &current_presets,
             url_history: &current_history,
+            saved_view_ids: &current_saved_view_ids,
             task_ids: &current_task_ids,
         };
         let preview = compute_preview(&bundle, &current);
@@ -1052,6 +1073,7 @@ mod tests {
         assert_eq!(preview.new_presets, 0);
         assert_eq!(preview.override_presets, 1);
         assert_eq!(preview.new_url_history, 0); // 已存在
+        assert_eq!(preview.new_saved_views, 0); // view-1 已存在
         assert_eq!(preview.new_tasks, 0); // task ID 已存在
         assert_eq!(preview.duplicate_tasks, 1);
         assert!(!preview.settings_diff.identical);
@@ -1074,12 +1096,15 @@ mod tests {
         for t in &bundle.tasks {
             current_task_ids.insert(t.id.clone());
         }
+        let current_saved_view_ids: HashSet<String> =
+            bundle.saved_views.iter().map(|v| v.id.clone()).collect();
         let current = CurrentState {
             settings: &current_settings,
             category_rules: &current_rules,
             filename_cleanup_rules: &current_cleanup,
             download_presets: &current_presets,
             url_history: &current_history,
+            saved_view_ids: &current_saved_view_ids,
             task_ids: &current_task_ids,
         };
         let preview = compute_preview(&bundle, &current);

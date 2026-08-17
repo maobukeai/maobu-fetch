@@ -148,6 +148,15 @@ pub struct DownloadTask {
     /// 密码以 DPAPI 加密后的密文形式存储（见 `secure_storage`），不出现在日志或前端调试输出。
     #[serde(default)]
     pub proxy_auth: Option<ProxyAuth>,
+    /// 任务内核类型。旧数据库/旧 JSON 缺失时安全默认 `Http`（§2）。
+    #[serde(default)]
+    pub task_kind: TaskKind,
+    /// BT 任务持久化元数据；HTTP 任务恒为 `None`。
+    #[serde(default)]
+    pub bt_meta: Option<BtTaskMeta>,
+    /// BT 运行时状态（内存态、不持久化；仅随任务事件下发，`None` 不序列化）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bt_runtime: Option<BtRuntimeStatus>,
 }
 
 /// Task 31：代理认证信息。
@@ -170,6 +179,116 @@ pub struct DownloadSegment {
     pub end_byte: u64,
     pub downloaded_bytes: u64,
     pub status: String,
+}
+
+/// 任务内核类型（2026-08-16 BT 经负责人批准纳入，AGENTS.md §3）。
+///
+/// - `Http`：并发 HTTP Range 内核（§3 HTTP 约束）。
+/// - `Bt`：aria2 BT/磁力内核（§3 BT/磁力内核约束）。
+///
+/// 旧数据库与旧 JSON 缺失该字段时默认 `Http`，保证向后兼容（§2）。
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum TaskKind {
+    #[default]
+    Http,
+    Bt,
+}
+
+impl TaskKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Http => "http",
+            Self::Bt => "bt",
+        }
+    }
+
+    pub fn from_db(value: &str) -> Self {
+        match value {
+            "bt" => Self::Bt,
+            _ => Self::Http,
+        }
+    }
+}
+
+/// BT 任务持久化元数据（存储于 `tasks.bt_meta_json` 列）。
+///
+/// 仅 `task_kind = Bt` 的任务携带；HTTP 任务恒为 `None`。
+#[derive(Clone, Debug, Serialize, Deserialize, Default, PartialEq)]
+pub struct BtTaskMeta {
+    /// 40 位十六进制小写 infohash。磁力任务创建时即可从 `xt` 解析；
+    /// .torrent 任务在 aria2 接受添加后回填。
+    #[serde(default)]
+    pub info_hash: String,
+    /// 用户勾选的文件索引（aria2 `select-file` 1 基索引）。空 = 下载全部文件。
+    #[serde(default)]
+    pub selected_files: Vec<u32>,
+    /// 元数据获取后的显示名（磁力 `dn` 参数或种子 name）。
+    /// 元数据未就绪时为 `None`，UI 必须显示"待获取"而非伪造名称（§3 BT 约束）。
+    #[serde(default)]
+    pub display_name: Option<String>,
+    /// 磁力元数据是否已获取（.torrent 任务创建即为 true）。
+    #[serde(default)]
+    pub metadata_ready: bool,
+    /// 拖放创建的 .torrent 内容（STANDARD base64）。aria2 接受添加并落盘
+    /// 会话后即不再依赖；保留用于暂停任务的后续恢复添加。旧数据缺失为 None。
+    #[serde(default)]
+    pub torrent_data_base64: Option<String>,
+    /// 边下边看（2026-08-17）：优先下载每个文件的首尾分片
+    /// （aria2 `bt-prioritize-piece=head=16M,tail=16M`），便于预览播放。
+    /// 旧数据缺失时默认 false。
+    #[serde(default)]
+    pub streaming_priority: bool,
+}
+
+/// 种子内单个文件条目（`bt_task_files` 命令返回，供文件勾选 UI）。
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BtFileEntry {
+    /// aria2 1 基文件索引。
+    pub index: u32,
+    /// 种子内相对路径（去除首个目录前缀后的展示路径）。
+    pub path: String,
+    pub length_bytes: u64,
+    pub selected: bool,
+}
+
+/// BT 任务运行时状态（内存态：随任务事件增量下发，不持久化到数据库）。
+#[derive(Clone, Debug, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct BtRuntimeStatus {
+    pub num_seeds: u32,
+    pub num_peers: u32,
+    pub upload_speed: u64,
+    /// 磁力元数据获取阶段为 true（此时无文件名/大小可展示）。
+    pub fetching_metadata: bool,
+    /// 累计上传字节（分享率 = uploaded / total）。旧事件缺省 0。
+    #[serde(default)]
+    pub uploaded_bytes: u64,
+    /// aria2 报告本机正在做种上传。旧事件缺省 false。
+    #[serde(default)]
+    pub seeding: bool,
+}
+
+/// 新建 BT 任务请求（`bt_task_add` 命令）。
+#[derive(Clone, Debug, Serialize, Deserialize, Default)]
+pub struct BtNewTaskRequest {
+    /// `magnet:` URI 或本地 `.torrent` 文件绝对路径；
+    /// 携带 `source_data_base64` 时此字段仅作显示名（拖放的种子文件名）。
+    pub source: String,
+    /// 拖放 .torrent 的文件内容（STANDARD base64）。存在时优先于路径读取。
+    #[serde(default)]
+    pub source_data_base64: Option<String>,
+    /// 目标目录；`None` 时使用全局下载目录（不套用分类规则：BT 无 URL 域名可匹配）。
+    pub destination: Option<String>,
+    /// 勾选的 1 基文件索引；空 = 全部文件。
+    #[serde(default)]
+    pub selected_files: Vec<u32>,
+    #[serde(default)]
+    pub start_paused: bool,
+    /// 任务来源标记（desktop / extension / clipboard），用于完成动作白名单。
+    pub source_tag: Option<String>,
+    /// 边下边看：优先下载首尾分片（2026-08-17）。旧请求缺失默认 false。
+    #[serde(default)]
+    pub streaming_priority: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Default, PartialEq, Eq)]
@@ -691,6 +810,67 @@ pub struct AppSettings {
     /// YouTube PO Token 凭证（防止 YouTube 反爬虫拦截 bot 验证）。
     #[serde(default)]
     pub youtube_po_token: String,
+    /// BT 做种策略：任务完成后是否继续上传。默认 false（§3 BT 约束：做种默认关闭）。
+    #[serde(default)]
+    pub bt_seed_enabled: bool,
+    /// BT 做种分享率目标（如 1.0 = 上传量达到下载量后停止）。仅在
+    /// `bt_seed_enabled = true` 时生效。默认 1.0。
+    #[serde(default = "default_bt_seed_ratio")]
+    pub bt_seed_ratio: f64,
+    /// BT 全局上传限速（KB/s），下载期与做种期均生效（BT 协议需要少量上传）。
+    /// 0 = 不限制。默认 2048（2 MB/s）。
+    #[serde(default = "default_bt_upload_limit_kbps")]
+    pub bt_upload_limit_kbps: u64,
+    /// 扩展/剪贴板是否接管 magnet: 链接。默认 true（可关闭，§5 不得静默接管）。
+    #[serde(default = "default_bt_intercept_magnet")]
+    pub bt_intercept_magnet: bool,
+    /// BT 额外 Tracker 列表（2026-08-17）：每行一个 URL，追加到 aria2
+    /// `--bt-tracker` 全局选项，加快磁力元数据获取（纯 DHT 冷启动慢）。
+    /// 空 = 不追加。旧 JSON 缺失时默认空。
+    #[serde(default)]
+    pub bt_extra_trackers: String,
+    /// 分时段限速规则（2026-08-17）：每日时间窗口内用独立限速覆盖全局限速。
+    ///
+    /// `None` 表示未配置（等效于不启用）。旧 JSON 缺失此字段时通过 serde
+    /// 默认 `None` 安全回退，行为与旧版本完全一致。
+    #[serde(default)]
+    pub scheduled_limit: Option<ScheduledSpeedLimit>,
+}
+
+/// 分时段限速规则（2026-08-17）。
+///
+/// - `start_minutes`/`end_minutes`：本地时间一天内的分钟数（0..=1439，闭区间）；
+///   `start > end` 表示跨午夜窗口（如 22:00–06:00）；
+/// - `limit_kbps`：窗口内的全局限速；0 表示窗口内不限速（如夜间全速）。
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ScheduledSpeedLimit {
+    pub enabled: bool,
+    pub start_minutes: u32,
+    pub end_minutes: u32,
+    pub limit_kbps: u64,
+}
+
+impl ScheduledSpeedLimit {
+    /// 校验字段范围：分钟必须在 0..=1439 内。限速允许任意非负值
+    /// （0 = 窗口内不限速是合法语义），由 UI 引导合理输入。
+    pub fn validate(&self) -> Result<(), String> {
+        if self.start_minutes > 1439 || self.end_minutes > 1439 {
+            return Err("分时段限速的时间必须在 00:00–23:59 之间".into());
+        }
+        Ok(())
+    }
+}
+
+fn default_bt_seed_ratio() -> f64 {
+    1.0
+}
+
+fn default_bt_upload_limit_kbps() -> u64 {
+    2048
+}
+
+fn default_bt_intercept_magnet() -> bool {
+    true
 }
 
 /// 自定义快捷键设置（Task 21）。
@@ -869,11 +1049,17 @@ impl Default for AppSettings {
             notify_on_failure: default_notify_on_failure(),
             notify_sound_enabled: default_notify_sound_enabled(),
             notify_failure_sound_enabled: default_notify_failure_sound_enabled(),
+            scheduled_limit: None,
             pac_script_path: None,
             metered_auto_pause: default_metered_auto_pause(),
             user_resumed_after_metered: false,
             shortcut_keys: Some(ShortcutKeys::default()),
             youtube_po_token: String::new(),
+            bt_seed_enabled: false,
+            bt_seed_ratio: default_bt_seed_ratio(),
+            bt_upload_limit_kbps: default_bt_upload_limit_kbps(),
+            bt_intercept_magnet: default_bt_intercept_magnet(),
+            bt_extra_trackers: String::new(),
         }
     }
 }
@@ -979,6 +1165,8 @@ pub enum ToolPhase {
 pub enum ToolComponent {
     YtDlp,
     Ffmpeg,
+    /// 2026-08-16 BT 批准：aria2 按需安装组件（§6，仅提取 aria2c.exe 与许可证文本）。
+    Aria2,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1002,6 +1190,20 @@ pub struct ToolStatus {
     pub ffmpeg_source: String,
     pub yt_dlp_resolved_path: Option<String>,
     pub ffmpeg_resolved_path: Option<String>,
+    /// aria2 组件可用性（BT 功能前置条件）。独立于 `state` 字段：
+    /// `state` 仍描述媒体下载组件（yt-dlp + FFmpeg）的就绪状态。
+    #[serde(default)]
+    pub aria2_available: bool,
+    #[serde(default)]
+    pub aria2_version: String,
+    #[serde(default)]
+    pub aria2_download_bytes: u64,
+    #[serde(default)]
+    pub aria2_installed_bytes: u64,
+    #[serde(default)]
+    pub aria2_source: String,
+    #[serde(default)]
+    pub aria2_resolved_path: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1009,6 +1211,21 @@ pub struct DetectedMediaTools {
     pub yt_dlp_path: Option<String>,
     pub ffmpeg_path: Option<String>,
     pub ffprobe_path: Option<String>,
+}
+
+/// yt-dlp 在线更新检查结果（仅检查与提醒，下载需用户确认，AGENTS.md §6）。
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct YtDlpUpdateInfo {
+    /// 本地已安装版本（来自版本记录文件，缺失时回退编译期内置版本）。
+    pub installed_version: String,
+    /// GitHub 官方最新 release 版本号（CalVer，如 `2026.09.06`）。
+    pub latest_version: String,
+    /// 最新版本是否高于本地版本。
+    pub has_update: bool,
+    /// 最新版 `yt-dlp.exe` 资产大小（字节），用于空间预估与进度显示。
+    pub size_bytes: u64,
+    /// release 页面地址，供前端"查看发布说明"跳转。
+    pub release_url: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
@@ -1385,6 +1602,17 @@ pub const BACKUP_NONCE_SIZE: usize = 12;
 /// PBKDF2 盐长度（字节），16 字节已足够防彩虹表。
 pub const BACKUP_SALT_SIZE: usize = 16;
 
+/// 保存的快捷视图（Task 25 快捷视图 SQLite 持久化，2026-08-17）。
+///
+/// `filter` 为前端 `AdvancedFilter` 的透明 JSON——后端不解释其字段语义，
+/// 仅做持久化与回放，前端筛选模型演进时无需数据库迁移。
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct SavedView {
+    pub id: String,
+    pub name: String,
+    pub filter: serde_json::Value,
+}
+
 /// 完整备份 bundle（Task 27）。
 ///
 /// 包含设置、分类规则、文件名清理规则、下载预设、URL 历史、任务列表。
@@ -1417,6 +1645,10 @@ pub struct BackupBundle {
     /// URL 历史记录列表（最近 20 条）。
     #[serde(default)]
     pub url_history: Vec<UrlHistoryEntry>,
+    /// 保存的快捷视图列表（2026-08-17 纳入备份）。
+    /// 旧版本备份缺失此字段时安全回退为空列表。
+    #[serde(default)]
+    pub saved_views: Vec<SavedView>,
     /// 任务列表（保留状态与历史，恢复时按 ID 去重）。
     #[serde(default)]
     pub tasks: Vec<DownloadTask>,
@@ -1503,6 +1735,9 @@ pub struct RestorePreview {
     /// 新增的 URL 历史条数（按 URL 比对）。
     #[serde(default)]
     pub new_url_history: u32,
+    /// 新增/覆盖的快捷视图数量（按 ID 比对）。
+    #[serde(default)]
+    pub new_saved_views: u32,
     /// 新增的任务数量（按 ID 比对，当前数据库中不存在）。
     #[serde(default)]
     pub new_tasks: u32,
@@ -1555,6 +1790,9 @@ pub struct RestoreStats {
     /// 已添加（或更新 `last_used`）的 URL 历史条数。
     #[serde(default)]
     pub url_history_added: u32,
+    /// 已应用的快捷视图数量（新增 + 覆盖）。
+    #[serde(default)]
+    pub saved_views_applied: u32,
     /// 是否替换了应用设置（备份中包含 settings 字段时为 true）。
     #[serde(default)]
     pub settings_replaced: bool,
@@ -1829,6 +2067,42 @@ mod tests {
 
         let restored: AppSettings = serde_json::from_value(value).unwrap();
         assert!(!restored.frosted_glass);
+    }
+
+    #[test]
+    fn old_settings_json_defaults_scheduled_limit_to_none() {
+        // 2026-08-17 分时段限速：旧 JSON 无此字段时必须安全回退为未启用，
+        // 行为与旧版本完全一致（AGENTS.md §2 新增序列化字段安全默认值）。
+        let mut value = serde_json::to_value(AppSettings::default()).unwrap();
+        value.as_object_mut().unwrap().remove("scheduled_limit");
+
+        let restored: AppSettings = serde_json::from_value(value).unwrap();
+        assert_eq!(restored.scheduled_limit, None);
+    }
+
+    #[test]
+    fn scheduled_limit_serializes_roundtrip_and_validates() {
+        let schedule = ScheduledSpeedLimit {
+            enabled: true,
+            start_minutes: 1320, // 22:00
+            end_minutes: 360,    // 06:00，跨午夜窗口
+            limit_kbps: 0,       // 夜间不限速
+        };
+        let mut settings = AppSettings::default();
+        settings.scheduled_limit = Some(schedule.clone());
+        let json = serde_json::to_string(&settings).unwrap();
+        assert!(json.contains("\"scheduled_limit\""));
+        let restored: AppSettings = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.scheduled_limit, Some(schedule.clone()));
+        assert!(schedule.validate().is_ok());
+
+        let invalid = ScheduledSpeedLimit {
+            enabled: true,
+            start_minutes: 1440, // 越界
+            end_minutes: 360,
+            limit_kbps: 1024,
+        };
+        assert!(invalid.validate().is_err());
     }
 
     #[test]
@@ -2611,6 +2885,9 @@ mod tests {
             response_status: None,
             content_type: None,
             accepts_ranges: None,
+            task_kind: Default::default(),
+            bt_meta: None,
+            bt_runtime: None,
         };
         let json = serde_json::to_string(&task).unwrap();
         let restored: DownloadTask = serde_json::from_str(&json).unwrap();

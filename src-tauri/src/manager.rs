@@ -1,10 +1,11 @@
 use crate::{
     models::{
-        AppSettings, BackoffStrategy, BatchTaskRequest, CollisionPolicy, CompletionAction,
-        ConnectionState, DownloadPreset, DownloadSegment, DownloadTask, LowDiskPayload,
-        NewTaskRequest, PowerAction, PowerActionPhase, PowerActionState, ProxyAuth, RestorePreview,
-        RestoreStats, RetryPolicy, SegmentStatus, SelfcheckReport, TaskConnectionsEvent,
-        TaskProgressEvent, TaskStatus, WaitReason, MAX_PRIORITY, MIN_PRIORITY,
+        AppSettings, BackoffStrategy, BatchTaskRequest, BtNewTaskRequest, BtTaskMeta,
+        CollisionPolicy, CompletionAction, ConnectionState, DownloadPreset, DownloadSegment,
+        DownloadTask, LowDiskPayload, NewTaskRequest, PowerAction, PowerActionPhase,
+        PowerActionState, ProxyAuth, RestorePreview, RestoreStats, RetryPolicy, SegmentStatus,
+        SelfcheckReport, TaskConnectionsEvent, TaskKind, TaskProgressEvent, TaskStatus, WaitReason,
+        MAX_PRIORITY, MIN_PRIORITY,
     },
     secure_storage::encrypt_password,
     store::Store,
@@ -111,8 +112,10 @@ pub struct DownloadManager {
     path_reservation: Mutex<()>,
     power_action: Mutex<PowerActionRuntime>,
     dispatcher: Notify,
-    app: AppHandle,
+    pub(crate) app: AppHandle,
     bandwidth_scheduler: BandwidthScheduler,
+    /// BT/磁力引擎（aria2 子进程 + gid 绑定）。2026-08-16 批准纳入。
+    pub bt: crate::bt::BtEngine,
 }
 
 impl DownloadManager {
@@ -132,6 +135,7 @@ impl DownloadManager {
             dispatcher: Notify::new(),
             app,
             bandwidth_scheduler: BandwidthScheduler::new(bandwidth_limit),
+            bt: crate::bt::BtEngine::new(),
         });
         // Mark every Downloading task as Interrupted and validate shard files
         // before the scheduler starts. recover_interrupted still handles the
@@ -141,6 +145,9 @@ impl DownloadManager {
         manager.recover_interrupted().await?;
         let scheduler = manager.clone();
         tauri::async_runtime::spawn(async move { scheduler.scheduler_loop().await });
+        // 分时段限速轮询（2026-08-17）：窗口切换时重算生效限速。
+        let limiter = manager.clone();
+        tauri::async_runtime::spawn(async move { limiter.scheduled_limit_loop().await });
         Ok(manager)
     }
 
@@ -184,12 +191,53 @@ impl DownloadManager {
         self.store.save_settings(&settings).await?;
         *self.client.write().await = new_client;
         *self.settings.write().await = settings.clone();
-        self.bandwidth_scheduler
-            .set_limit(settings.speed_limit_kbps * 1024);
+        // 分时段限速（2026-08-17）：立即按当前本地时间应用生效限速，
+        // 而不是等下一次窗口轮询；aria2 同步也使用同一生效值。
+        // 非 Windows 环境 local_minute_of_day 返回 None，保持基础限速。
+        let effective = bandwidth::effective_global_limit_kbps(
+            settings.speed_limit_kbps,
+            settings.scheduled_limit.as_ref(),
+            bandwidth::local_minute_of_day(),
+        );
+        self.bandwidth_scheduler.set_limit(effective * 1024);
         let _ = crate::autostart::sync_autostart(settings.auto_start);
+        // BT 引擎：全局限速/做种策略即时同步（aria2 运行中才生效，未运行时
+        // 由下次启动参数承接）。失败仅记录，不阻断设置保存。
+        let mut aria2_settings = settings.clone();
+        aria2_settings.speed_limit_kbps = effective;
+        if let Err(error) = self.bt.apply_settings(&aria2_settings).await {
+            tracing::warn!(error = %error, "同步 BT 设置到 aria2 失败");
+        }
         self.dispatcher.notify_waiters();
         let _ = self.app.emit("settings-updated", settings);
         Ok(())
+    }
+
+    /// 分时段限速轮询：每 30 秒按本地时间重算生效限速，窗口切换时
+    /// 同步 HTTP 内核调度器与 aria2（§3 全局限速必须覆盖两个内核）。
+    ///
+    /// 生效值未变化时不做任何下发，避免无效 RPC。非 Windows 环境下
+    /// `local_minute_of_day` 返回 `None`，循环空转不干预限速。
+    async fn scheduled_limit_loop(self: Arc<Self>) {
+        let mut applied: Option<u64> = None;
+        loop {
+            let settings = self.settings.read().await.clone();
+            let effective = bandwidth::effective_global_limit_kbps(
+                settings.speed_limit_kbps,
+                settings.scheduled_limit.as_ref(),
+                bandwidth::local_minute_of_day(),
+            );
+            if applied != Some(effective) {
+                applied = Some(effective);
+                self.bandwidth_scheduler.set_limit(effective * 1024);
+                let mut aria2_settings = settings.clone();
+                aria2_settings.speed_limit_kbps = effective;
+                if let Err(error) = self.bt.apply_settings(&aria2_settings).await {
+                    tracing::warn!(error = %error, "同步分时段限速到 aria2 失败");
+                }
+            }
+            tokio::time::sleep(Duration::from_secs(30)).await;
+        }
     }
 
     pub async fn power_action_state(&self) -> PowerActionState {
@@ -362,6 +410,9 @@ impl DownloadManager {
             retry_policy_override: None,
             proxy_override: None,
             proxy_auth: None,
+            task_kind: TaskKind::Http,
+            bt_meta: None,
+            bt_runtime: None,
         };
         self.reserve_output_path(&mut task).await?;
         self.store.upsert_task(&task).await?;
@@ -526,8 +577,23 @@ impl DownloadManager {
                 if let Some(token) = self.controls.lock().await.remove(id) {
                     token.cancel();
                 }
-                self.clear_parts(&task).await;
+                if task.task_kind == TaskKind::Bt {
+                    // BT：丢弃 aria2 侧下载记录与控制文件；数据文件按重名
+                    // 策略由 aria2 自动改名，不删除用户文件（§7）。
+                    let _ = self.bt.remove_task(id).await;
+                    task.bt_meta = task.bt_meta.take().map(|mut meta| {
+                        meta.metadata_ready = false;
+                        meta.display_name = None;
+                        meta
+                    });
+                    if task.file_name.is_empty() {
+                        task.category = "other".into();
+                    }
+                } else {
+                    self.clear_parts(&task).await;
+                }
                 task.downloaded_bytes = 0;
+                task.total_bytes = 0;
                 task.segments.clear();
                 task.etag = None;
                 task.last_modified = None;
@@ -538,6 +604,7 @@ impl DownloadManager {
                 task.active_connections = 0;
                 task.retry_count = 0;
                 task.completed_at = None;
+                task.bt_runtime = None;
                 task.status = TaskStatus::Queued;
             }
             _ => return Err("未知任务操作".into()),
@@ -559,6 +626,148 @@ impl DownloadManager {
         Ok(())
     }
 
+    /// 新建 BT/磁力任务（`bt_task_add` 命令入口，roadmap BT-04/05）。
+    ///
+    /// 与 HTTP 任务的关键差异：
+    /// - 磁力元数据获取前不写文件名/大小（§3 BT 约束，UI 显示"待获取"）；
+    /// - 不做 HTTP 语义的输出路径预留：重名由 aria2 `auto-file-renaming=true`
+    ///   处理（rename 策略，`allow-overwrite=false` 保证绝不静默覆盖，§7）；
+    /// - 分类规则需要 URL 域名，磁力无域名，直接使用全局下载目录。
+    pub async fn add_bt(&self, request: BtNewTaskRequest) -> Result<DownloadTask, String> {
+        let source = request.source.trim().to_string();
+        if source.is_empty() {
+            return Err("请输入 magnet: 磁力链接或选择 .torrent 种子文件".into());
+        }
+        let settings = self.settings().await;
+        if crate::media_tools::resolve_aria2(&self.app).is_none() {
+            return Err(
+                "BT 组件（aria2）未安装：请先在 设置 → BT/磁力 中安装后再添加任务".into(),
+            );
+        }
+        let is_magnet = source.to_ascii_lowercase().starts_with("magnet:");
+        // 拖放 .torrent：内容走 base64（source 仅作显示文件名），校验后随
+        // 元数据持久化，暂停任务的后续恢复添加不依赖原文件是否仍在磁盘上。
+        let inline_data = request
+            .source_data_base64
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        let (url, initial_name, meta) = if let Some(data) = inline_data {
+            use base64::Engine as _;
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(data)
+                .map_err(|_| "种子文件内容无效（base64 解码失败）".to_string())?;
+            crate::bt::process::validate_torrent_bytes(&bytes)?;
+            let stem = Path::new(&source)
+                .file_stem()
+                .and_then(|value| value.to_str())
+                .map(str::to_owned)
+                .filter(|value| !value.is_empty())
+                .unwrap_or_else(|| "种子任务".into());
+            let meta = BtTaskMeta {
+                info_hash: String::new(),
+                selected_files: request.selected_files.clone(),
+                display_name: None,
+                metadata_ready: true,
+                torrent_data_base64: Some(data.to_string()),
+                streaming_priority: request.streaming_priority,
+            };
+            (source, stem, meta)
+        } else if is_magnet {
+            let info = crate::bt::magnet::parse_magnet(&source)?;
+            let meta = BtTaskMeta {
+                info_hash: info.info_hash,
+                selected_files: request.selected_files.clone(),
+                display_name: info.display_name.clone(),
+                metadata_ready: false,
+                torrent_data_base64: None,
+                streaming_priority: request.streaming_priority,
+            };
+            // 磁力提示名仅作占位展示（UI 标注"待确认"），不得当作最终文件名。
+            (source, info.display_name.unwrap_or_default(), meta)
+        } else {
+            let path = Path::new(&source);
+            crate::bt::process::validate_torrent_file(path)?;
+            let stem = path
+                .file_stem()
+                .and_then(|value| value.to_str())
+                .map(str::to_owned)
+                .unwrap_or_else(|| "种子任务".into());
+            let meta = BtTaskMeta {
+                // .torrent 的 infohash 由 aria2 接受添加后回填（无 bencode 依赖）。
+                info_hash: String::new(),
+                selected_files: request.selected_files.clone(),
+                display_name: None,
+                metadata_ready: true,
+                torrent_data_base64: None,
+                streaming_priority: request.streaming_priority,
+            };
+            (source, stem, meta)
+        };
+        let destination = match request.destination.as_deref().map(str::trim) {
+            Some(dir) if !dir.is_empty() => normalize_directory(dir),
+            _ => normalize_directory(&settings.download_dir),
+        };
+        let display_name_for_file = safe_name(&initial_name);
+        let task = DownloadTask {
+            id: Uuid::new_v4().to_string(),
+            url,
+            file_name: display_name_for_file,
+            destination,
+            total_bytes: 0,
+            downloaded_bytes: 0,
+            speed: 0,
+            eta_seconds: None,
+            status: if request.start_paused {
+                TaskStatus::Paused
+            } else {
+                TaskStatus::Queued
+            },
+            error: None,
+            created_at: now(),
+            completed_at: None,
+            scheduled_at: None,
+            category: category(&initial_name),
+            queue_position: self.store.next_queue_position().await?,
+            priority: 0,
+            retry_count: 0,
+            max_retries: settings.max_retries,
+            checksum_sha256: None,
+            expected_checksum: None,
+            source: request.source_tag.unwrap_or_else(|| "desktop".into()),
+            etag: None,
+            last_modified: None,
+            final_url: None,
+            response_status: None,
+            content_type: None,
+            accepts_ranges: None,
+            headers: HashMap::new(),
+            media: None,
+            per_task_speed_limit: 0,
+            collision_policy: CollisionPolicy::Rename,
+            completion_action: CompletionAction::None,
+            connection_count: 1,
+            active_connections: 0,
+            segments: Vec::new(),
+            retry_policy_override: None,
+            proxy_override: None,
+            proxy_auth: None,
+            task_kind: TaskKind::Bt,
+            bt_meta: Some(meta),
+            bt_runtime: None,
+        };
+        self.store.upsert_task(&task).await?;
+        self.register_power_action_target(&task.id).await;
+        self.emit_task("created", &task);
+        self.dispatcher.notify_waiters();
+        Ok(task)
+    }
+
+    /// 程序退出路径：优雅关闭 aria2（保存会话，保证重启可恢复，§3 BT）。
+    pub async fn shutdown_bt(&self) {
+        self.bt.shutdown().await;
+    }
+
     pub async fn remove(self: &SharedManager, id: &str, delete_file: bool) -> Result<(), String> {
         if let Some(token) = self.controls.lock().await.remove(id) {
             token.cancel();
@@ -573,7 +782,17 @@ impl DownloadManager {
 
         if let Some(task) = self.store.get_task(id).await? {
             let is_completed = task.status == TaskStatus::Completed;
-            if delete_file || !is_completed {
+            if task.task_kind == TaskKind::Bt {
+                // BT：先移除 aria2 侧下载与控制文件，再按用户选择删除数据文件。
+                // delete_task_files 只删任务目录内的普通文件，绝不递归删目录（§7）。
+                let _ = self.bt.remove_task(id).await;
+                if delete_file || !is_completed {
+                    let deleted = crate::bt::delete_task_files(&task).await;
+                    if !deleted.is_empty() {
+                        tracing::info!(task_id = %task.id, files = deleted.len(), "已删除 BT 任务数据文件");
+                    }
+                }
+            } else if delete_file || !is_completed {
                 let path = PathBuf::from(&task.destination).join(&task.file_name);
                 // 1. Delete target file if requesting delete_file or task is incomplete
                 let _ = fs::remove_file(&path).await;
@@ -1104,9 +1323,11 @@ impl DownloadManager {
         // 普通下载任务会在 HTTP Range 路径中被覆盖为真实连接数。
         // 注意：用户直接提交媒体 URL（不点"分析媒体"）时 task.media 可能为 None，
         // 需要同时检查 URL 是否属于已知媒体平台（抖音/YouTube/TikTok 等）。
+        // BT 任务同理：元数据获取阶段无真实连接数，占用 1 个槽位表示活动。
         if task.media.is_some()
             || crate::media_platforms::detect_platform(&task.url)
                 != crate::media_platforms::MediaPlatform::Unknown
+            || task.task_kind == TaskKind::Bt
         {
             task.active_connections = 1;
         }
@@ -1148,7 +1369,13 @@ impl DownloadManager {
                         break;
                     }
                 }
-                let result = manager.download_once(task.clone(), token.clone()).await;
+                // BT 任务走 aria2 引擎（轮询真实状态），HTTP/媒体任务走下载内核。
+                // 返回语义一致：Ok = 完成；Err 前缀决定重试或终态。
+                let result = if task.task_kind == TaskKind::Bt {
+                    crate::bt::run_task(&manager, task.clone(), token.clone()).await
+                } else {
+                    manager.download_once(task.clone(), token.clone()).await
+                };
                 if token.is_cancelled() {
                     break;
                 }
@@ -1168,7 +1395,12 @@ impl DownloadManager {
                         // 完成后必须从 task.headers 中移除。
                         clear_auth_headers(&mut finished.headers);
                         let settings = manager.settings().await;
-                        if settings.verify_after_download || finished.expected_checksum.is_some() {
+                        // BT 完成判定即 aria2 分片哈希校验通过（§3 BT），不再
+                        // 对多文件种子目录做 HTTP 语义的整文件校验。
+                        let needs_file_verify = finished.task_kind == TaskKind::Http
+                            && (settings.verify_after_download
+                                || finished.expected_checksum.is_some());
+                        if needs_file_verify {
                             let _ = manager.store.upsert_task(&finished).await;
                             let _ = manager.verify_checksum(&id).await;
                         } else {
@@ -1217,6 +1449,11 @@ impl DownloadManager {
                         // and persisted. Do not retry — the user must free
                         // space or change the destination before resuming.
                         // Break without overriding the status.
+                        break;
+                    }
+                    Err(error) if error.starts_with(crate::bt::BT_TERMINAL_PREFIX) => {
+                        // BT 终态失败（组件缺失/进程死亡/aria2 error）：
+                        // 任务状态已由引擎落库为 Failed，此处不重试、不覆盖状态。
                         break;
                     }
                     Err(error) if is_network_error(&error) => {
@@ -3197,6 +3434,7 @@ impl DownloadManager {
         let filename_cleanup_rules = self.store.filename_cleanup_rule_list().await?;
         let download_presets = self.store.download_preset_list().await?;
         let url_history = self.store.url_history_list().await?;
+        let saved_views = self.store.saved_view_list().await?;
         let bundle = crate::task_transfer::build_bundle(
             settings,
             tasks,
@@ -3204,6 +3442,7 @@ impl DownloadManager {
             filename_cleanup_rules,
             download_presets,
             url_history,
+            saved_views,
             env!("CARGO_PKG_VERSION"),
             include_auth,
         );
@@ -3228,12 +3467,20 @@ impl DownloadManager {
         let url_history = self.store.url_history_list().await?;
         let tasks = self.store.list_tasks().await?;
         let task_ids: HashSet<String> = tasks.into_iter().map(|t| t.id).collect();
+        let saved_view_ids: HashSet<String> = self
+            .store
+            .saved_view_list()
+            .await?
+            .into_iter()
+            .map(|view| view.id)
+            .collect();
         let current = crate::task_transfer::CurrentState {
             settings: &settings,
             category_rules: &category_rules,
             filename_cleanup_rules: &filename_cleanup_rules,
             download_presets: &download_presets,
             url_history: &url_history,
+            saved_view_ids: &saved_view_ids,
             task_ids: &task_ids,
         };
         let mut preview = crate::task_transfer::compute_preview(&bundle, &current);
@@ -4658,6 +4905,9 @@ fn validate_settings(s: &AppSettings) -> Result<(), String> {
     }
     validate_tool_path(&s.ffmpeg_path, "ffmpeg.exe", "FFmpeg")?;
     validate_tool_path(&s.ffprobe_path, "ffprobe.exe", "FFprobe")?;
+    if let Some(schedule) = s.scheduled_limit.as_ref() {
+        schedule.validate()?;
+    }
     Ok(())
 }
 fn validate_tool_path(value: &str, expected_name: &str, label: &str) -> Result<(), String> {
@@ -4798,7 +5048,7 @@ fn build_task_client(s: &AppSettings, task: &DownloadTask) -> Result<reqwest::Cl
     }
     builder.build().map_err(|e| e.to_string())
 }
-fn safe_name(input: &str) -> String {
+pub(crate) fn safe_name(input: &str) -> String {
     let value: String = input
         .chars()
         .map(|c| {
@@ -4842,7 +5092,7 @@ fn validate_rename_filename(trimmed: &str) -> Result<(), String> {
     }
     Ok(())
 }
-fn category(name: &str) -> String {
+pub(crate) fn category(name: &str) -> String {
     match Path::new(name)
         .extension()
         .and_then(|x| x.to_str())
@@ -5335,6 +5585,9 @@ mod tests {
             retry_policy_override: None,
             proxy_override: None,
             proxy_auth: None,
+        task_kind: Default::default(),
+        bt_meta: None,
+        bt_runtime: None,
         }
     }
     #[test]
@@ -5890,6 +6143,9 @@ mod tests {
             retry_policy_override: None,
             proxy_override: None,
             proxy_auth: None,
+        task_kind: Default::default(),
+        bt_meta: None,
+        bt_runtime: None,
         }
     }
 

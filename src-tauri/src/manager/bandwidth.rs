@@ -292,6 +292,76 @@ fn apply_command(command: Command, state: &mut SchedulerState) {
     }
 }
 
+// ---- 分时段限速（2026-08-17）----
+
+/// 判断本地分钟数是否落在 `[start, end]` 闭区间窗口内，支持跨午夜
+/// （`start > end` 时窗口为 start..=1439 ∪ 0..=end，如 22:00–06:00）。
+pub fn minute_within_window(minute: u32, start: u32, end: u32) -> bool {
+    if start <= end {
+        minute >= start && minute <= end
+    } else {
+        minute >= start || minute <= end
+    }
+}
+
+/// 计算当前生效的全局限速（KB/s）。
+///
+/// - 规则缺失、未启用或本地时间不可用（`None`，非 Windows 开发环境）：
+///   返回 `base_kbps`（行为与旧版本一致）；
+/// - 当前本地时间在窗口内：返回 `limit_kbps`（0 表示窗口内不限速，
+///   覆盖掉全局限速——这是"夜间全速"的合法语义）；
+/// - 窗口外：返回 `base_kbps`。
+pub fn effective_global_limit_kbps(
+    base_kbps: u64,
+    schedule: Option<&crate::models::ScheduledSpeedLimit>,
+    minute_of_day: Option<u32>,
+) -> u64 {
+    let Some(schedule) = schedule else {
+        return base_kbps;
+    };
+    if !schedule.enabled {
+        return base_kbps;
+    }
+    let Some(minute) = minute_of_day else {
+        return base_kbps;
+    };
+    if minute_within_window(minute, schedule.start_minutes, schedule.end_minutes) {
+        schedule.limit_kbps
+    } else {
+        base_kbps
+    }
+}
+
+/// 当前本地时间一天内的分钟数（0..=1439）。
+///
+/// 通过 Win32 `GetLocalTime` 直接读取（产品仅面向 Windows，AGENTS.md §1），
+/// 不引入 chrono 等新依赖（§8）。非 Windows 开发环境返回 `None`，
+/// 分时段限速退化为全局设置。
+pub fn local_minute_of_day() -> Option<u32> {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Foundation::SYSTEMTIME;
+        use windows_sys::Win32::System::SystemInformation::GetLocalTime;
+        let mut time = SYSTEMTIME {
+            wYear: 0,
+            wMonth: 0,
+            wDayOfWeek: 0,
+            wDay: 0,
+            wHour: 0,
+            wMinute: 0,
+            wSecond: 0,
+            wMilliseconds: 0,
+        };
+        // GetLocalTime 无返回值、不会失败（填充调用方提供的缓冲区）。
+        unsafe { GetLocalTime(&mut time) };
+        Some(time.wHour as u32 * 60 + time.wMinute as u32)
+    }
+    #[cfg(not(windows))]
+    {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -315,6 +385,96 @@ mod tests {
         assert_eq!(priority_weight(0), 2);
         assert_eq!(priority_weight(1), 1);
         assert_eq!(priority_weight(1000), 1);
+    }
+
+    // ---- 分时段限速 ----
+
+    use crate::models::ScheduledSpeedLimit;
+
+    fn schedule(enabled: bool, start: u32, end: u32, limit: u64) -> ScheduledSpeedLimit {
+        ScheduledSpeedLimit {
+            enabled,
+            start_minutes: start,
+            end_minutes: end,
+            limit_kbps: limit,
+        }
+    }
+
+    #[test]
+    fn window_normal_range_is_inclusive() {
+        // 09:00–18:00（540..=1080）
+        assert!(minute_within_window(540, 540, 1080), "start inclusive");
+        assert!(minute_within_window(1080, 540, 1080), "end inclusive");
+        assert!(minute_within_window(720, 540, 1080), "middle inside");
+        assert!(!minute_within_window(539, 540, 1080), "before window");
+        assert!(!minute_within_window(1081, 540, 1080), "after window");
+    }
+
+    #[test]
+    fn window_wrapping_midnight_spans_both_sides() {
+        // 22:00–06:00（1320..=360，跨午夜）
+        assert!(minute_within_window(1320, 1320, 360), "22:00 in");
+        assert!(minute_within_window(1439, 1320, 360), "23:59 in");
+        assert!(minute_within_window(0, 1320, 360), "00:00 in");
+        assert!(minute_within_window(360, 1320, 360), "06:00 in");
+        assert!(!minute_within_window(719, 1320, 360), "11:59 out");
+        assert!(!minute_within_window(1319, 1320, 360), "21:59 out");
+    }
+
+    #[test]
+    fn window_single_minute_point_matches_only_itself() {
+        assert!(minute_within_window(600, 600, 600));
+        assert!(!minute_within_window(599, 600, 600));
+        assert!(!minute_within_window(601, 600, 600));
+    }
+
+    #[test]
+    fn effective_limit_falls_back_to_base_without_schedule() {
+        assert_eq!(effective_global_limit_kbps(4096, None, Some(720)), 4096);
+        let disabled = schedule(false, 540, 1080, 1024);
+        assert_eq!(
+            effective_global_limit_kbps(4096, Some(&disabled), Some(720)),
+            4096,
+            "disabled schedule must not override"
+        );
+    }
+
+    #[test]
+    fn effective_limit_overrides_inside_window_and_restores_outside() {
+        let rule = schedule(true, 540, 1080, 1024);
+        assert_eq!(
+            effective_global_limit_kbps(4096, Some(&rule), Some(720)),
+            1024,
+            "inside window uses scheduled limit"
+        );
+        assert_eq!(
+            effective_global_limit_kbps(4096, Some(&rule), Some(200)),
+            4096,
+            "outside window restores base limit"
+        );
+    }
+
+    #[test]
+    fn effective_limit_zero_inside_window_means_unlimited() {
+        // 夜间全速：全局白天限 2048 KB/s，窗口 22:00–06:00 内不限速。
+        let rule = schedule(true, 1320, 360, 0);
+        assert_eq!(
+            effective_global_limit_kbps(2048, Some(&rule), Some(1400)),
+            0,
+            "inside window unlimited"
+        );
+        assert_eq!(
+            effective_global_limit_kbps(2048, Some(&rule), Some(720)),
+            2048,
+            "daytime keeps base limit"
+        );
+    }
+
+    #[test]
+    fn local_minute_of_day_is_within_valid_range() {
+        if let Some(minute) = local_minute_of_day() {
+            assert!(minute <= 1439, "minute-of-day must be 0..=1439, got {minute}");
+        }
     }
 
     #[test]

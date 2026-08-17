@@ -1,8 +1,8 @@
 use crate::models::{
     AppSettings, BackupBundle, CategoryRule, CategoryRuleType, CollisionPolicy, CompletionAction,
     DownloadPreset, DownloadSegment, DownloadTask, FilenameCleanupRule, MediaCredential,
-    MediaSelection, PlatformCompatibility, PlatformNamingTemplate, RestoreStats, SupportLevel, Tag,
-    TaskStatus, TaskTemplate, UrlHistoryEntry,
+    MediaSelection, PlatformCompatibility, PlatformNamingTemplate, RestoreStats, SavedView,
+    SupportLevel, Tag, TaskStatus, TaskTemplate, UrlHistoryEntry,
 };
 use crate::secure_storage::{decrypt_password, encrypt_password};
 use rusqlite::{params, Connection, OptionalExtension, Row};
@@ -52,6 +52,10 @@ impl Store {
         // 旧数据库迁移后所有现有任务的这两个字段均为 NULL，反序列化为 None。
         ensure_task_column(&connection, "proxy_override", "TEXT")?;
         ensure_task_column(&connection, "proxy_auth_json", "TEXT")?;
+        // 2026-08-16 BT/磁力：任务内核类型（旧库迁移后全部回填 'http'）与
+        // BT 元数据 JSON（旧库迁移后为 NULL，反序列化为 None）。
+        ensure_task_column(&connection, "task_kind", "TEXT NOT NULL DEFAULT 'http'")?;
+        ensure_task_column(&connection, "bt_meta_json", "TEXT")?;
         seed_builtin_download_presets(&connection)?;
         // Task 20: 文件名清理规则。新表通过 SCHEMA 中 CREATE TABLE IF NOT EXISTS 创建；
         // 此处仅插入内置默认规则（INSERT OR IGNORE 不覆盖用户改动）。
@@ -151,6 +155,9 @@ impl Store {
                 retry_policy_override: None,
                 proxy_override: None,
                 proxy_auth: None,
+                task_kind: crate::models::TaskKind::Http,
+                bt_meta: None,
+                bt_runtime: None,
             };
             Self::upsert_with(&connection, &task)?;
         }
@@ -230,7 +237,11 @@ impl Store {
                     task.proxy_override.as_deref(),
                     task.proxy_auth.as_ref().and_then(|auth| {
                         serde_json::to_string(auth).ok()
-                    })
+                    }),
+                    task.task_kind.as_str(),
+                    task.bt_meta
+                        .as_ref()
+                        .and_then(|meta| serde_json::to_string(meta).ok())
                 ],
             )
             .map_err(|e| e.to_string())?;
@@ -676,6 +687,98 @@ impl Store {
             .execute("DELETE FROM url_history", [])
             .map_err(|e| e.to_string())?;
         Ok(())
+    }
+
+    // ===== 快捷视图 CRUD（Task 25，2026-08-17 从 localStorage 迁入 SQLite）=====
+
+    /// 校验快捷视图字段：id/name 非空，name 去首尾空白后仍需有内容。
+    /// `filter` 允许任意 JSON 对象（前端 AdvancedFilter 透明存储）。
+    fn validate_saved_view(view: &SavedView) -> Result<(String, String), String> {
+        let id = view.id.trim();
+        let name = view.name.trim();
+        if id.is_empty() {
+            return Err("快捷视图 ID 不能为空".into());
+        }
+        if name.is_empty() {
+            return Err("快捷视图名称不能为空".into());
+        }
+        if !view.filter.is_object() {
+            return Err("快捷视图筛选条件必须是 JSON 对象".into());
+        }
+        Ok((id.to_string(), name.to_string()))
+    }
+
+    /// 列出全部快捷视图，按创建时间升序（与迁移前 localStorage 顺序一致）。
+    /// 单条 filter_json 损坏时该视图回退为 Null 筛选，不影响其余视图。
+    pub async fn saved_view_list(&self) -> Result<Vec<SavedView>, String> {
+        let connection = self.connection.lock().await;
+        let mut stmt = connection
+            .prepare("SELECT id,name,filter_json FROM saved_views ORDER BY created_at ASC, id ASC")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |row| {
+                let filter_json: String = row.get(2)?;
+                Ok(SavedView {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    filter: serde_json::from_str(&filter_json).unwrap_or(serde_json::Value::Null),
+                })
+            })
+            .map_err(|e| e.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+    }
+
+    /// 新增或更新快捷视图（按 id upsert）。
+    pub async fn saved_view_upsert(&self, view: &SavedView) -> Result<(), String> {
+        let (id, name) = Self::validate_saved_view(view)?;
+        let filter_json = serde_json::to_string(&view.filter).map_err(|e| e.to_string())?;
+        let now_ms = now_unix_millis();
+        self.connection
+            .lock()
+            .await
+            .execute(
+                "INSERT INTO saved_views(id,name,filter_json,created_at) VALUES(?1,?2,?3,?4) \
+                 ON CONFLICT(id) DO UPDATE SET name=excluded.name, filter_json=excluded.filter_json",
+                params![id, name, filter_json, now_ms],
+            )
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    /// 删除快捷视图。id 不存在时静默成功（幂等删除）。
+    pub async fn saved_view_delete(&self, id: &str) -> Result<(), String> {
+        let trimmed = id.trim();
+        if trimmed.is_empty() {
+            return Err("快捷视图 ID 不能为空".into());
+        }
+        self.connection
+            .lock()
+            .await
+            .execute("DELETE FROM saved_views WHERE id=?1", [trimmed])
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    /// 用给定列表整体替换快捷视图（localStorage 一次性迁移与备份恢复使用）。
+    ///
+    /// 事务内先清空再写入，失败整体回滚。空列表等效清空。
+    pub async fn saved_view_replace_all(&self, views: &[SavedView]) -> Result<(), String> {
+        let mut connection = self.connection.lock().await;
+        let tx = connection.transaction().map_err(|e| e.to_string())?;
+        tx.execute_batch("DELETE FROM saved_views")
+            .map_err(|e| e.to_string())?;
+        let now_ms = now_unix_millis();
+        for (index, view) in views.iter().enumerate() {
+            let (id, name) = Self::validate_saved_view(view)?;
+            let filter_json = serde_json::to_string(&view.filter).map_err(|e| e.to_string())?;
+            // 保留原顺序：created_at 依次递增。
+            tx.execute(
+                "INSERT INTO saved_views(id,name,filter_json,created_at) VALUES(?1,?2,?3,?4)",
+                params![id, name, filter_json, now_ms + index as i64],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        tx.commit().map_err(|e| e.to_string())
     }
 
     // ===== Task 25: 标签 CRUD 与任务-标签关联操作 =====
@@ -1382,6 +1485,18 @@ impl Store {
             stats.url_history_added += 1;
         }
 
+        // 5.5 快捷视图 (saved_views)：按 ID upsert（2026-08-17 纳入备份）。
+        for view in &bundle.saved_views {
+            let filter_json = serde_json::to_string(&view.filter).map_err(|e| e.to_string())?;
+            tx.execute(
+                "INSERT INTO saved_views(id,name,filter_json,created_at) VALUES(?1,?2,?3,?4) \
+                 ON CONFLICT(id) DO UPDATE SET name=excluded.name, filter_json=excluded.filter_json",
+                params![view.id, view.name, filter_json, now_unix_millis()],
+            )
+            .map_err(|e| e.to_string())?;
+            stats.saved_views_applied += 1;
+        }
+
         // 6. 任务列表 (tasks)
         let mut restored_tasks = Vec::new();
         for task in sanitized_tasks {
@@ -1682,8 +1797,8 @@ fn seed_builtin_platform_naming_templates(connection: &Connection) -> Result<(),
 /// Task 44：在打开数据库时按 `INSERT OR IGNORE` 写入 6 条内置平台兼容性记录。
 ///
 /// 内置记录：
-/// - YouTube / 哔哩哔哩：`Verified`（经过完整回归测试，预期可用）
-/// - 抖音 / TikTok / Twitter / 微博：`Experimental`（基本可用但成功率受
+/// - 哔哩哔哩 / 抖音 / Twitter：`Verified`（经过完整回归测试，预期可用）
+/// - TikTok / 微博 / YouTube：`Experimental`（基本可用但成功率受
 ///   平台变更影响，可能需要用户手动提供 Cookie）
 ///
 /// `INSERT OR IGNORE` 保证用户对内置记录的修改（同 platform）不会被覆盖；
@@ -1697,7 +1812,7 @@ fn seed_builtin_platform_compatibility(connection: &Connection) -> Result<(), St
         ("bilibili", "verified", "哔哩哔哩普通视频、多P合集、番剧剧集与实时直播流均可正常下载"),
         ("douyin", "verified", "抖音短链、图集、单视频及实时直播流全功能正常支持"),
         ("tiktok", "experimental", "TikTok 普通视频、图集可下载，部分内容受地区限制"),
-        ("twitter", "experimental", "Twitter/X 普通推文视频可下载，需提供 Cookie"),
+        ("twitter", "verified", "Twitter/X 普通推文、图集及 Spaces 音频可下载，敏感内容需提供 Cookie"),
         ("weibo", "experimental", "微博普通视频、图集可下载，需提供 Cookie"),
         ("youtube", "experimental", "YouTube 普通视频、直播回放、短视频受反爬机制影响"),
     ];
@@ -1706,7 +1821,7 @@ fn seed_builtin_platform_compatibility(connection: &Connection) -> Result<(), St
             .execute(
                 "INSERT INTO platform_compatibility(platform,level,notes,known_issues_json,last_tested_at) \
                  VALUES(?1,?2,?3,'[]','') \
-                 ON CONFLICT(platform) DO UPDATE SET level=?2, notes=?3 WHERE notes = '哔哩哔哩普通视频、番剧、直播回放可正常下载' OR notes = '抖音短链、图集、单视频全功能正常支持' OR notes = 'YouTube 普通视频、直播回放、短视频可正常下载'",
+                 ON CONFLICT(platform) DO UPDATE SET level=?2, notes=?3 WHERE notes = '哔哩哔哩普通视频、番剧、直播回放可正常下载' OR notes = '抖音短链、图集、单视频全功能正常支持' OR notes = 'YouTube 普通视频、直播回放、短视频可正常下载' OR notes = 'Twitter/X 普通推文视频可下载，需提供 Cookie'",
                 params![platform, level, notes],
             )
             .map_err(|e| e.to_string())?;
@@ -1726,6 +1841,9 @@ fn task_from_row(row: &Row<'_>) -> rusqlite::Result<DownloadTask> {
     // Task 31: proxy_override / proxy_auth_json 同样以 NULL 起步。
     let proxy_override: Option<String> = row.get("proxy_override")?;
     let proxy_auth_json: Option<String> = row.get("proxy_auth_json")?;
+    // BT/磁力：task_kind 列 NOT NULL DEFAULT 'http'；bt_meta_json 旧库为 NULL。
+    let task_kind: String = row.get("task_kind")?;
+    let bt_meta_json: Option<String> = row.get("bt_meta_json")?;
     Ok(DownloadTask {
         id: row.get("id")?,
         url: row.get("url")?,
@@ -1773,6 +1891,11 @@ fn task_from_row(row: &Row<'_>) -> rusqlite::Result<DownloadTask> {
         proxy_auth: proxy_auth_json
             .as_deref()
             .and_then(|s| serde_json::from_str::<crate::models::ProxyAuth>(s).ok()),
+        task_kind: crate::models::TaskKind::from_db(&task_kind),
+        bt_meta: bt_meta_json
+            .as_deref()
+            .and_then(|s| serde_json::from_str::<crate::models::BtTaskMeta>(s).ok()),
+        bt_runtime: None,
     })
 }
 
@@ -1787,7 +1910,8 @@ CREATE TABLE IF NOT EXISTS tasks (
   content_type TEXT, accepts_ranges INTEGER, headers_json TEXT NOT NULL DEFAULT '{}',
   media_json TEXT NOT NULL DEFAULT 'null', per_task_speed_limit INTEGER NOT NULL DEFAULT 0, collision_policy TEXT NOT NULL DEFAULT '"rename"',
   connection_count INTEGER NOT NULL DEFAULT 8, segments_json TEXT NOT NULL DEFAULT '[]',
-  completion_action TEXT NOT NULL DEFAULT '"none"'
+  completion_action TEXT NOT NULL DEFAULT '"none"',
+  task_kind TEXT NOT NULL DEFAULT 'http', bt_meta_json TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_tasks_status_queue ON tasks(status, priority DESC, queue_position ASC);
 CREATE TABLE IF NOT EXISTS segments (
@@ -1817,6 +1941,14 @@ CREATE TABLE IF NOT EXISTS url_history (
   last_used INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_url_history_last_used ON url_history(last_used DESC);
+-- 2026-08-17 快捷视图表（Task 25 从 localStorage 迁入 SQLite）。
+-- filter_json 为前端 AdvancedFilter 的透明 JSON，后端不解释字段语义。
+CREATE TABLE IF NOT EXISTS saved_views (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  filter_json TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);
 -- Task 20: 文件名清理规则表。pattern 为正则表达式，replacement 为替换字符串。
 -- enabled=1 启用，priority 升序遍历。
 CREATE TABLE IF NOT EXISTS filename_cleanup_rules (
@@ -1900,9 +2032,9 @@ CREATE TABLE IF NOT EXISTS platform_compatibility (
 "#;
 
 const UPSERT_TASK: &str = r#"
-INSERT INTO tasks(id,url,file_name,destination,total_bytes,downloaded_bytes,speed,eta_seconds,status,error,created_at,completed_at,scheduled_at,category,queue_position,priority,retry_count,max_retries,checksum_sha256,expected_checksum,source,etag,last_modified,final_url,response_status,content_type,accepts_ranges,headers_json,media_json,per_task_speed_limit,collision_policy,connection_count,segments_json,completion_action,retry_policy_override,proxy_override,proxy_auth_json)
-VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26,?27,?28,?29,?30,?31,?32,?33,?34,?35,?36,?37)
-ON CONFLICT(id) DO UPDATE SET url=excluded.url,file_name=excluded.file_name,destination=excluded.destination,total_bytes=excluded.total_bytes,downloaded_bytes=excluded.downloaded_bytes,speed=excluded.speed,eta_seconds=excluded.eta_seconds,status=excluded.status,error=excluded.error,completed_at=excluded.completed_at,scheduled_at=excluded.scheduled_at,category=excluded.category,queue_position=excluded.queue_position,priority=excluded.priority,retry_count=excluded.retry_count,max_retries=excluded.max_retries,checksum_sha256=excluded.checksum_sha256,expected_checksum=excluded.expected_checksum,source=excluded.source,etag=excluded.etag,last_modified=excluded.last_modified,final_url=excluded.final_url,response_status=excluded.response_status,content_type=excluded.content_type,accepts_ranges=excluded.accepts_ranges,headers_json=excluded.headers_json,media_json=excluded.media_json,per_task_speed_limit=excluded.per_task_speed_limit,collision_policy=excluded.collision_policy,connection_count=excluded.connection_count,segments_json=excluded.segments_json,completion_action=excluded.completion_action,retry_policy_override=excluded.retry_policy_override,proxy_override=excluded.proxy_override,proxy_auth_json=excluded.proxy_auth_json
+INSERT INTO tasks(id,url,file_name,destination,total_bytes,downloaded_bytes,speed,eta_seconds,status,error,created_at,completed_at,scheduled_at,category,queue_position,priority,retry_count,max_retries,checksum_sha256,expected_checksum,source,etag,last_modified,final_url,response_status,content_type,accepts_ranges,headers_json,media_json,per_task_speed_limit,collision_policy,connection_count,segments_json,completion_action,retry_policy_override,proxy_override,proxy_auth_json,task_kind,bt_meta_json)
+VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26,?27,?28,?29,?30,?31,?32,?33,?34,?35,?36,?37,?38,?39)
+ON CONFLICT(id) DO UPDATE SET url=excluded.url,file_name=excluded.file_name,destination=excluded.destination,total_bytes=excluded.total_bytes,downloaded_bytes=excluded.downloaded_bytes,speed=excluded.speed,eta_seconds=excluded.eta_seconds,status=excluded.status,error=excluded.error,completed_at=excluded.completed_at,scheduled_at=excluded.scheduled_at,category=excluded.category,queue_position=excluded.queue_position,priority=excluded.priority,retry_count=excluded.retry_count,max_retries=excluded.max_retries,checksum_sha256=excluded.checksum_sha256,expected_checksum=excluded.expected_checksum,source=excluded.source,etag=excluded.etag,last_modified=excluded.last_modified,final_url=excluded.final_url,response_status=excluded.response_status,content_type=excluded.content_type,accepts_ranges=excluded.accepts_ranges,headers_json=excluded.headers_json,media_json=excluded.media_json,per_task_speed_limit=excluded.per_task_speed_limit,collision_policy=excluded.collision_policy,connection_count=excluded.connection_count,segments_json=excluded.segments_json,completion_action=excluded.completion_action,retry_policy_override=excluded.retry_policy_override,proxy_override=excluded.proxy_override,proxy_auth_json=excluded.proxy_auth_json,task_kind=excluded.task_kind,bt_meta_json=excluded.bt_meta_json
 "#;
 
 fn ensure_task_column(connection: &Connection, name: &str, definition: &str) -> Result<(), String> {
@@ -1966,6 +2098,9 @@ mod tests {
             retry_policy_override: None,
             proxy_override: None,
             proxy_auth: None,
+            task_kind: Default::default(),
+            bt_meta: None,
+            bt_runtime: None,
         }
     }
 
@@ -2047,6 +2182,82 @@ mod tests {
         ] {
             assert!(columns.iter().any(|column| column == expected));
         }
+    }
+
+    /// 2026-08-16 BT/磁力：旧库（无 task_kind / bt_meta_json 列）打开后
+    /// 必须完成增量迁移，旧任务读出为 HTTP 任务且 bt_meta 为 None；
+    /// BT 任务（含元数据）写入后重启可完整读回（AGENTS.md §2、§9）。
+    #[test]
+    fn migrates_old_tasks_and_round_trips_bt_meta() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = directory.path().join("lumaget.db");
+        {
+            let connection = Connection::open(&database).unwrap();
+            connection.execute_batch(
+                r#"CREATE TABLE tasks (
+                  id TEXT PRIMARY KEY, url TEXT NOT NULL, file_name TEXT NOT NULL, destination TEXT NOT NULL,
+                  total_bytes INTEGER NOT NULL DEFAULT 0, downloaded_bytes INTEGER NOT NULL DEFAULT 0, speed INTEGER NOT NULL DEFAULT 0,
+                  eta_seconds INTEGER, status TEXT NOT NULL, error TEXT, created_at INTEGER NOT NULL, completed_at INTEGER, scheduled_at INTEGER,
+                  category TEXT NOT NULL DEFAULT 'other', queue_position INTEGER NOT NULL DEFAULT 0, priority INTEGER NOT NULL DEFAULT 0,
+                  retry_count INTEGER NOT NULL DEFAULT 0, max_retries INTEGER NOT NULL DEFAULT 3, checksum_sha256 TEXT, expected_checksum TEXT,
+                  source TEXT NOT NULL DEFAULT 'desktop', etag TEXT, last_modified TEXT, headers_json TEXT NOT NULL DEFAULT '{}',
+                  media_json TEXT NOT NULL DEFAULT 'null', per_task_speed_limit INTEGER NOT NULL DEFAULT 0,
+                  collision_policy TEXT NOT NULL DEFAULT '"rename"', connection_count INTEGER NOT NULL DEFAULT 8,
+                  segments_json TEXT NOT NULL DEFAULT '[]'
+                );
+                INSERT INTO tasks(id,url,file_name,destination,status,created_at,headers_json,media_json,collision_policy,segments_json)
+                VALUES('legacy-1','https://example.com/a.zip','a.zip','D:/dl','paused',100,'{}','null','"rename"','[]');"#,
+            )
+            .unwrap();
+        }
+
+        let store = Store::open(directory.path().to_path_buf()).unwrap();
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        runtime.block_on(async {
+            // 旧任务迁移后：默认 HTTP 内核、无 BT 元数据。
+            let legacy = store.get_task("legacy-1").await.unwrap().unwrap();
+            assert_eq!(legacy.task_kind, crate::models::TaskKind::Http);
+            assert!(legacy.bt_meta.is_none());
+            assert!(legacy.bt_runtime.is_none());
+
+            // 写入 BT 任务并重启读回：kind 与 bt_meta 完整保留。
+            let mut bt_task = legacy.clone();
+            bt_task.id = "bt-1".into();
+            bt_task.task_kind = crate::models::TaskKind::Bt;
+            bt_task.url = "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567".into();
+            bt_task.bt_meta = Some(crate::models::BtTaskMeta {
+                info_hash: "0123456789abcdef0123456789abcdef01234567".into(),
+                selected_files: vec![1, 2, 5],
+                display_name: Some("ubuntu".into()),
+                metadata_ready: true,
+                // 拖放创建的种子内容必须随任务持久化，重启后恢复添加仍可用。
+                torrent_data_base64: Some("ZDRpbmZvAAAAAAAA".into()),
+                streaming_priority: false,
+            });
+            store.upsert_task(&bt_task).await.unwrap();
+        });
+
+        // 模拟重启：重新打开数据库。
+        drop(store);
+        let store = Store::open(directory.path().to_path_buf()).unwrap();
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        runtime.block_on(async {
+            let restored = store.get_task("bt-1").await.unwrap().unwrap();
+            assert_eq!(restored.task_kind, crate::models::TaskKind::Bt);
+            let meta = restored.bt_meta.as_ref().unwrap();
+            assert_eq!(meta.info_hash, "0123456789abcdef0123456789abcdef01234567");
+            assert_eq!(meta.selected_files, vec![1, 2, 5]);
+            assert_eq!(meta.display_name.as_deref(), Some("ubuntu"));
+            assert!(meta.metadata_ready);
+            assert_eq!(meta.torrent_data_base64.as_deref(), Some("ZDRpbmZvAAAAAAAA"));
+            // 运行时状态不持久化。
+            assert!(restored.bt_runtime.is_none());
+            // 旧任务不受影响。
+            let legacy = store.get_task("legacy-1").await.unwrap().unwrap();
+            assert_eq!(legacy.task_kind, crate::models::TaskKind::Http);
+            // 旧结构 bt_meta 无 torrent_data_base64 字段时反序列化为 None。
+            assert!(legacy.bt_meta.is_none());
+        });
     }
 
     #[test]
@@ -2492,6 +2703,91 @@ mod tests {
             assert!(result.unwrap_err().contains("URL"));
             let list = store.url_history_list().await.unwrap();
             assert!(list.is_empty());
+        });
+    }
+
+    // ===== 快捷视图（saved_views）=====
+
+    fn sample_saved_view(id: &str, name: &str) -> SavedView {
+        SavedView {
+            id: id.into(),
+            name: name.into(),
+            filter: serde_json::json!({ "status": "downloading", "source": "browser" }),
+        }
+    }
+
+    /// upsert → list 往返；更新同 id 时覆盖 name/filter 且不新增行。
+    #[test]
+    fn saved_view_upsert_list_round_trip() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::open(directory.path().to_path_buf()).unwrap();
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        runtime.block_on(async {
+            store.saved_view_upsert(&sample_saved_view("v1", "下载中")).await.unwrap();
+            store.saved_view_upsert(&sample_saved_view("v2", "来自扩展")).await.unwrap();
+            let list = store.saved_view_list().await.unwrap();
+            assert_eq!(list.len(), 2);
+            assert_eq!(list[0].id, "v1");
+            assert_eq!(list[1].id, "v2");
+            assert_eq!(list[0].filter["status"], "downloading");
+
+            // 同 id 再保存 → 覆盖而非新增
+            let mut updated = sample_saved_view("v1", "改名");
+            updated.filter = serde_json::json!({ "status": "completed" });
+            store.saved_view_upsert(&updated).await.unwrap();
+            let list = store.saved_view_list().await.unwrap();
+            assert_eq!(list.len(), 2);
+            assert_eq!(list[0].name, "改名");
+            assert_eq!(list[0].filter["status"], "completed");
+        });
+    }
+
+    /// 删除幂等；replace_all 整体替换并保留传入顺序。
+    #[test]
+    fn saved_view_delete_and_replace_all() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::open(directory.path().to_path_buf()).unwrap();
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        runtime.block_on(async {
+            store.saved_view_upsert(&sample_saved_view("v1", "一")).await.unwrap();
+            store.saved_view_delete("v1").await.unwrap();
+            // 再删一次不报错（幂等）
+            store.saved_view_delete("v1").await.unwrap();
+            assert!(store.saved_view_list().await.unwrap().is_empty());
+
+            store
+                .saved_view_replace_all(&[
+                    sample_saved_view("a", "甲"),
+                    sample_saved_view("b", "乙"),
+                    sample_saved_view("c", "丙"),
+                ])
+                .await
+                .unwrap();
+            let list = store.saved_view_list().await.unwrap();
+            assert_eq!(
+                list.iter().map(|v| v.id.as_str()).collect::<Vec<_>>(),
+                vec!["a", "b", "c"],
+                "replace_all 保留传入顺序"
+            );
+        });
+    }
+
+    /// 空名称 / 非 JSON 对象 filter 拒绝写入（中文错误）。
+    #[test]
+    fn saved_view_validation_rejects_invalid_input() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::open(directory.path().to_path_buf()).unwrap();
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        runtime.block_on(async {
+            let empty_name = SavedView { id: "v1".into(), name: "  ".into(), filter: serde_json::json!({}) };
+            let err = store.saved_view_upsert(&empty_name).await.unwrap_err();
+            assert!(err.contains("名称"));
+
+            let bad_filter = SavedView { id: "v2".into(), name: "好名".into(), filter: serde_json::json!("not-an-object") };
+            let err = store.saved_view_upsert(&bad_filter).await.unwrap_err();
+            assert!(err.contains("JSON"));
+
+            assert!(store.saved_view_list().await.unwrap().is_empty());
         });
     }
 
@@ -3398,7 +3694,7 @@ mod tests {
             assert_eq!(list[2].platform, "tiktok");
             assert_eq!(list[2].level, SupportLevel::Experimental);
             assert_eq!(list[3].platform, "twitter");
-            assert_eq!(list[3].level, SupportLevel::Experimental);
+            assert_eq!(list[3].level, SupportLevel::Verified);
             assert_eq!(list[4].platform, "weibo");
             assert_eq!(list[4].level, SupportLevel::Experimental);
             assert_eq!(list[5].platform, "youtube");
@@ -3517,6 +3813,40 @@ mod tests {
             assert_eq!(
                 douyin.notes,
                 "抖音短链、图集、单视频及实时直播流全功能正常支持"
+            );
+        });
+    }
+
+    /// Twitter 提升为 Verified：旧版本数据库中未修改的 experimental 记录
+    /// （旧文案）在重新打开时应升级为 verified 新文案；用户修改过的记录不受影响。
+    #[test]
+    fn platform_compatibility_seed_upgrades_old_twitter_record() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().to_path_buf();
+        {
+            let store = Store::open(path.clone()).unwrap();
+            let connection = store.connection.blocking_lock();
+            // 模拟旧版本数据库：Twitter 仍为 experimental + 旧文案
+            connection
+                .execute(
+                    "UPDATE platform_compatibility SET level='experimental', notes='Twitter/X 普通推文视频可下载，需提供 Cookie' WHERE platform='twitter'",
+                    [],
+                )
+                .unwrap();
+        }
+        // 重新打开数据库（执行增量升级 seed）
+        let store = Store::open(path).unwrap();
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        runtime.block_on(async {
+            let twitter = store
+                .platform_compatibility_get("twitter")
+                .await
+                .unwrap()
+                .expect("twitter record should exist");
+            assert_eq!(twitter.level, SupportLevel::Verified);
+            assert_eq!(
+                twitter.notes,
+                "Twitter/X 普通推文、图集及 Spaces 音频可下载，敏感内容需提供 Cookie"
             );
         });
     }

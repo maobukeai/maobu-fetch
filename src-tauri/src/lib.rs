@@ -1,5 +1,6 @@
 mod autostart;
 mod bridge;
+mod bt;
 mod cache;
 pub mod cli;
 mod deep_link;
@@ -47,9 +48,9 @@ use models::{
     MediaCredentialCheckResult,
     MediaProbeResult, NewTaskRequest, PairingInfo, PlatformCompatibility, PlatformNamingTemplate,
     PowerAction, PowerActionState, PrecheckRequest, PrecheckResult, ProxyAuth, ProxyTestResult,
-    RestorePreview, RestoreStats, RetryPolicy, Tag, TaskTemplate, TaskTemplateTestResult,
+    RestorePreview, RestoreStats, RetryPolicy, SavedView, Tag, TaskTemplate, TaskTemplateTestResult,
     ToolComponent, ToolStatus, UpdateCheckResult, UpdateDownloadResult, ExtensionUpdateResult,
-    UrlHistoryEntry, WaitReason,
+    UrlHistoryEntry, WaitReason, YtDlpUpdateInfo,
 };
 use std::{path::PathBuf, sync::Arc};
 use store::Store;
@@ -82,6 +83,61 @@ async fn tasks_add_batch(
     manager: State<'_, SharedManager>,
 ) -> Result<Vec<DownloadTask>, String> {
     manager.inner().add_batch(request).await
+}
+
+/// 新建 BT/磁力任务（2026-08-16 批准）。`source` 为 magnet: URI 或本地
+/// .torrent 文件绝对路径；元数据获取前任务不携带文件名/大小（§3 BT）。
+#[tauri::command]
+async fn bt_task_add(
+    request: crate::models::BtNewTaskRequest,
+    manager: State<'_, SharedManager>,
+) -> Result<DownloadTask, String> {
+    manager.inner().add_bt(request).await
+}
+
+/// 列出 BT 任务种子内的文件（磁力需元数据获取完成，否则返回
+/// `BT_METADATA_PENDING:` 前缀中文错误供前端提示稍后重试）。
+#[tauri::command]
+async fn bt_task_files(
+    id: String,
+    manager: State<'_, SharedManager>,
+) -> Result<Vec<crate::models::BtFileEntry>, String> {
+    let task = manager
+        .inner()
+        .store
+        .get_task(&id)
+        .await?
+        .ok_or_else(|| "任务不存在".to_string())?;
+    if task.task_kind != crate::models::TaskKind::Bt {
+        return Err("该任务不是 BT 任务".into());
+    }
+    manager.inner().bt.files_of(&id, &task.destination).await
+}
+
+/// 勾选/取消勾选 BT 任务内文件（1 基索引，至少保留一个）。
+#[tauri::command]
+async fn bt_select_files(
+    id: String,
+    indices: Vec<u32>,
+    manager: State<'_, SharedManager>,
+) -> Result<(), String> {
+    let task = manager
+        .inner()
+        .store
+        .get_task(&id)
+        .await?
+        .ok_or_else(|| "任务不存在".to_string())?;
+    if task.task_kind != crate::models::TaskKind::Bt {
+        return Err("该任务不是 BT 任务".into());
+    }
+    manager.inner().bt.select_files(&id, &indices).await?;
+    // 持久化勾选，重启恢复后仍按用户选择执行。
+    let mut updated = task;
+    if let Some(meta) = updated.bt_meta.as_mut() {
+        meta.selected_files = indices;
+    }
+    manager.inner().store.upsert_task(&updated).await?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -617,6 +673,37 @@ async fn media_tools_check_update(
     manager: State<'_, SharedManager>,
 ) -> Result<ToolStatus, String> {
     Ok(tools.status(&app, &manager.settings().await).await)
+}
+
+/// 检查 yt-dlp 官方最新版本（仅检查，不下载，AGENTS.md §6）。
+///
+/// 通过 GitHub Releases API 读取 yt-dlp 官方仓库最新 release 的版本号、
+/// `yt-dlp.exe` 资产大小与官方 SHA-256，并与本地已安装版本比较。
+/// 失败时返回可操作的中文错误（限流、网络不可达等）。
+#[tauri::command]
+async fn media_tools_check_yt_dlp_update(
+    app: tauri::AppHandle,
+    tools: State<'_, MediaTools>,
+    manager: State<'_, SharedManager>,
+) -> Result<YtDlpUpdateInfo, String> {
+    tools
+        .check_yt_dlp_update(&app, &manager.settings().await)
+        .await
+}
+
+/// 用户确认后把 yt-dlp 更新到官方最新版本。
+///
+/// 安装时由后端重新拉取最新规格（不信任前端参数），下载地址强制限定
+/// yt-dlp 官方仓库，SHA-256 来自 GitHub 官方资产 digest，校验失败不落盘。
+#[tauri::command]
+async fn media_tools_update_yt_dlp(
+    app: tauri::AppHandle,
+    tools: State<'_, MediaTools>,
+    manager: State<'_, SharedManager>,
+) -> Result<(), String> {
+    tools
+        .update_yt_dlp_latest(app, manager.settings().await)
+        .await
 }
 
 /// Task 26.2 / 26.5：检查猫步下载器应用更新。
@@ -1339,6 +1426,35 @@ async fn url_history_list(
 #[tauri::command]
 async fn url_history_clear(manager: State<'_, SharedManager>) -> Result<(), String> {
     manager.store.url_history_clear().await
+}
+
+// ===== 快捷视图 CRUD 命令（Task 25，2026-08-17 从 localStorage 迁入 SQLite）=====
+
+/// 列出全部快捷视图，按创建时间升序。
+#[tauri::command]
+async fn saved_view_list(manager: State<'_, SharedManager>) -> Result<Vec<SavedView>, String> {
+    manager.store.saved_view_list().await
+}
+
+/// 新增或更新快捷视图（按 id upsert）。
+#[tauri::command]
+async fn saved_view_upsert(view: SavedView, manager: State<'_, SharedManager>) -> Result<(), String> {
+    manager.store.saved_view_upsert(&view).await
+}
+
+/// 删除快捷视图（幂等）。
+#[tauri::command]
+async fn saved_view_delete(id: String, manager: State<'_, SharedManager>) -> Result<(), String> {
+    manager.store.saved_view_delete(&id).await
+}
+
+/// 整体替换快捷视图列表（localStorage 一次性迁移用）。
+#[tauri::command]
+async fn saved_view_replace_all(
+    views: Vec<SavedView>,
+    manager: State<'_, SharedManager>,
+) -> Result<(), String> {
+    manager.store.saved_view_replace_all(&views).await
 }
 
 // ===== Task 25: 标签 CRUD 与任务-标签关联命令 =====
@@ -2064,6 +2180,9 @@ async fn cli_add(
         retry_policy_override: None,
         proxy_override: None,
         proxy_auth: None,
+        task_kind: crate::models::TaskKind::Http,
+        bt_meta: None,
+        bt_runtime: None,
     };
 
     store.upsert_task(&task).await?;
@@ -2671,6 +2790,9 @@ pub fn run() {
             tasks_list,
             task_add,
             tasks_add_batch,
+            bt_task_add,
+            bt_task_files,
+            bt_select_files,
             tasks_export,
             tasks_import,
             backup_export,
@@ -2716,6 +2838,8 @@ pub fn run() {
             media_tools_remove,
             media_tool_remove,
             media_tools_check_update,
+            media_tools_check_yt_dlp_update,
+            media_tools_update_yt_dlp,
             app_check_update,
             app_update_download,
             app_update_run_installer,
@@ -2768,8 +2892,23 @@ pub fn run() {
             export_recent_logs,
             app_exit,
             network_check_metered,
-            app_get_info
+            app_get_info,
+            saved_view_list,
+            saved_view_upsert,
+            saved_view_delete,
+            saved_view_replace_all
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running Maobu Fetch");
+        .build(tauri::generate_context!())
+        .expect("error while building Maobu Fetch")
+        .run(|app_handle, event| {
+            // 程序退出前优雅关闭 aria2：保存会话与控制文件，重启后可恢复
+            // （AGENTS.md §3 BT/磁力内核：暂停/退出必须保持可恢复状态）。
+            if let tauri::RunEvent::Exit = event {
+                if let Some(manager) = app_handle.try_state::<SharedManager>() {
+                    tauri::async_runtime::block_on(async move {
+                        manager.shutdown_bt().await;
+                    });
+                }
+            }
+        });
 }
