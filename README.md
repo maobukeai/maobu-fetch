@@ -6,7 +6,7 @@
   <b>专为 Windows 10/11 设计的本地优先、高效紧凑型多线程下载管理器</b>
 </p>
 
-[![Version](https://img.shields.io/badge/version-0.6.9-blue.svg)](https://github.com/maobukeai/maobu-fetch/releases/tag/v0.6.9)
+[![Version](https://img.shields.io/badge/version-0.7.0-blue.svg)](https://github.com/maobukeai/maobu-fetch/releases/tag/v0.7.0)
 [![Tauri](https://img.shields.io/badge/Tauri-v2.0-24C8D8.svg?logo=tauri&logoColor=white)](https://tauri.app)
 [![React](https://img.shields.io/badge/React-v19.0-61DAFB.svg?logo=react&logoColor=black)](https://react.dev)
 [![Rust](https://img.shields.io/badge/Rust-v1.80+-000000.svg?logo=rust&logoColor=white)](https://www.rust-lang.org)
@@ -35,6 +35,7 @@
 - 🛡️ **数据一致性校验**：续传自动校验 ETag 与 Last-Modified 标头，支持完成后自动 SHA-256 完整性哈希比对。
 - 🌐 **本地安全桥与 MV3 扩展**：提供 Chrome & Edge 原生 Manifest V3 扩展，采用本地 `127.0.0.1` HMAC-SHA256 签名与一次性配对码机制安全接管下载。
 - 🎬 **按需媒体增强内核**：解耦组件设计，提供 `yt-dlp` 与 `FFmpeg` 安全按需安装与版本校验，支持 Bilibili 1080P/4K、YouTube Dash 流视频智能抓取。
+- 🧲 **BT/磁力下载**：基于未修改官方 aria2 的按需安装 BT 内核，支持磁力链接与 `.torrent`，元数据获取、文件勾选、做种策略（默认关闭）与全局限速联动。
 - 🎨 **Windows 11 效率型原生 UI**：融入 Win11 Acrylic 亚克力磨砂玻璃视效，184px 分类导航、40px 命令栏与全宽切片进度条，支持深浅色及高 DPI 自适应。
 - ⚡ **智能断点续传与重试**：网络波动、系统休眠后自动挂起并安全续接，保护半成品分片不损坏。
 
@@ -66,7 +67,7 @@
 #### 📦 插件安装与配置指南
 
 1. **下载插件包**：
-   前往 GitHub Releases 页面下载最新版本的 [`extension.zip`](https://github.com/maobukeai/maobu-fetch/releases/tag/v0.6.9) 并解压到本地文件夹。
+   前往 GitHub Releases 页面下载最新版本的 [`extension.zip`](https://github.com/maobukeai/maobu-fetch/releases/latest) 并解压到本地文件夹。
 2. **开启浏览器开发者模式**：
    - **Chrome**：在地址栏输入 `chrome://extensions/`，开启右上角的 **开发者模式**。
    - **Edge**：在地址栏输入 `edge://extensions/`，开启左侧的 **开发者模式**。
@@ -112,7 +113,7 @@
 
 ## ⚙️ 功能详解
 
-系统设置分为 7 大核心模块，涵盖从存储路径到媒体解析的全方位配置：
+系统设置共 15 个分区，涵盖从存储路径、并发调度、代理网络、浏览器接管、媒体组件、BT/磁力到外观快捷键的全方位配置。以下为核心模块详解：
 
 ### 1. 基础与存储设置 (General Settings)
 
@@ -174,7 +175,7 @@
   <img src="docs/assets/08_settings_media.webp" alt="媒体工具" width="100%" />
 </div>
 
-- **按需安装**：一键安装固定签名可信来源的 `yt-dlp` (2026.06.09) 与 `FFmpeg` (8.1.2)，存放于应用数据目录。
+- **按需安装**：一键安装固定签名可信来源的 `yt-dlp` (2026.07.04) 与 `FFmpeg` (8.1.2)，存放于应用数据目录。
 - **自动混流与提取**：支持视频音频分离下载后由 FFmpeg 无损封装为标准 MP4/MKV。
 
 ---
