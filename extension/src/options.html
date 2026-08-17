@@ -13,16 +13,51 @@
       <label for="allowHosts">仅接管这些域名</label>
       <textarea id="allowHosts" placeholder="每行一个域名；留空表示不限制&#10;example.com"></textarea>
       <small>填写后仅接管名单中的域名及其子域名。</small>
+      <small id="allowHostsHint" class="hint hidden"></small>
     </section>
     <section>
       <label for="blockHosts">不接管这些域名</label>
       <textarea id="blockHosts" placeholder="每行一个域名&#10;updates.example.com"></textarea>
       <small>黑名单优先于白名单，匹配域名及其子域名。</small>
+      <small id="blockHostsHint" class="hint hidden"></small>
     </section>
     <section>
       <label for="extensions">仅接管这些文件类型</label>
       <textarea id="extensions" placeholder="每行一个扩展名；留空表示不限制&#10;zip&#10;exe"></textarea>
       <small>不用输入点号，支持 1–12 位字母或数字。</small>
+      <small id="extensionsHint" class="hint hidden"></small>
+    </section>
+    <section>
+      <label for="snifferHosts">流嗅探站点</label>
+      <textarea id="snifferHosts" placeholder="每行一个域名；留空表示全部关闭&#10;example.com"></textarea>
+      <small>仅对这些站点记录页面播放器发出的媒体直链（m3u8/mp4 等），保存在内存中且不上传，用于悬浮按钮直连下载。默认关闭。</small>
+      <small id="snifferHostsHint" class="hint hidden"></small>
+    </section>
+    <section>
+      <label for="customMediaDomains">额外 Cookie 同步域名</label>
+      <textarea id="customMediaDomains" placeholder="每行一个域名&#10;example.com"></textarea>
+      <small>在这些站点打开页面时，把当前登录 Cookie 同步给桌面端媒体凭证库（内置抖音/B 站/YouTube 等平台之外的自定义站点）。</small>
+      <small id="customMediaDomainsHint" class="hint hidden"></small>
+    </section>
+    <section>
+      <label for="testUrl">规则测试器</label>
+      <div class="tester">
+        <input id="testUrl" type="url" placeholder="粘贴下载链接，测试是否会被接管">
+        <div class="tester-row">
+          <input id="testFile" placeholder="文件名（可选）" aria-label="测试用文件名（可选）">
+          <input id="testSize" type="number" min="0" step="1" placeholder="大小 MB（可选）" aria-label="测试用文件大小（MB，可选）">
+          <button id="runTest" class="primary">测试</button>
+        </div>
+        <p id="testResult" role="status"></p>
+      </div>
+      <small>使用上方正在编辑的规则与站点记忆本地模拟判定，不发起网络请求。</small>
+    </section>
+    <section>
+      <label class="toggle-row" for="interceptMagnet">
+        <input type="checkbox" id="interceptMagnet" checked>
+        <span>接管网页中的磁力链接（magnet:）</span>
+      </label>
+      <small>开启后点击磁力链接会转交猫步下载器（需已配对且桌面端开启接管）；关闭或桌面端不可用时回退为浏览器默认处理。</small>
     </section>
     <p id="message" role="status"></p>
     <footer>

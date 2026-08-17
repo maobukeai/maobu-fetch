@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <link rel="stylesheet" href="selection.css">
+  <title>发送链接到猫步下载器</title>
+</head>
+<body>
+  <main>
+    <header><img src="icon128.png" alt=""><div><b>发送链接到猫步下载器</b><span id="linkCount">0 条链接</span></div></header>
+    <div class="select-row">
+      <label><input type="checkbox" id="selectAll" checked> 全选</label>
+      <span class="hint">确认后才会添加下载任务</span>
+    </div>
+    <div id="selectionList" class="link-list"></div>
+    <p id="status" role="status"></p>
+    <footer>
+      <button id="cancel" class="secondary">取消</button>
+      <button id="send" class="primary" disabled>下载所选（0）</button>
+    </footer>
+  </main>
+  <script type="module" src="selection.js"></script>
+</body>
+</html>

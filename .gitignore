@@ -7,3 +7,7 @@ src-tauri/target/
 *.log
 downloads.json
 src-tauri/resources/tools/*.exe
+
+# 扩展构建产物不入库（AGENTS.md §8）
+extension/extension.zip
+extension/*.zip

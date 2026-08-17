@@ -1,3 +1,5 @@
+import { IGNORED_HISTORY_MAX, pushIgnoredEntry } from "./ignored-history.js";
+
 const HTTP_URL = /^https?:/i;
 
 const sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -17,6 +19,23 @@ const extensionFrom = (item, urls) => {
   return "";
 };
 
+/// 解析站点记忆选择（浮层"记住对此站点的选择"）。
+///
+/// `settings.siteChoices` 形如 `{ "example.com": "take" | "bypass" }`，
+/// 匹配规则与主机规则一致（精确或子域）。返回命中的值或 null。
+/// "bypass" 放行；"take" 强制接管（跳过 allowHosts/后缀/大小检查，
+/// 但不越过 blockHosts、桌面端开关与配对状态等安全限制）。
+const resolveSiteChoice = (hosts, choices) => {
+  for (const hostname of hosts) {
+    for (const [choiceHost, value] of Object.entries(choices || {})) {
+      if ((value === "take" || value === "bypass") && matchesHost(hostname, [choiceHost])) {
+        return value;
+      }
+    }
+  }
+  return null;
+};
+
 export function evaluateDownload(item, settings, runtimeId, swStartTime = 0, options = {}) {
   if (!settings.intercept) return { eligible: false, reason: "disabled" };
   // 桌面端"允许浏览器扩展接管下载"关闭时不接管（扩展与桌面端设置取交集；
@@ -24,6 +43,10 @@ export function evaluateDownload(item, settings, runtimeId, swStartTime = 0, opt
   if (settings.desktopTakeoverEnabled === false) return { eligible: false, reason: "desktop-disabled" };
   if (Date.now() < Number(settings.bypassUntil || 0)) return { eligible: false, reason: "bypass" };
   if (item.byExtensionId === runtimeId) return { eligible: false, reason: "self" };
+  // 其它扩展（如其它下载管理器）发起的下载不接管，避免双重管理与互相取消。
+  if (item.byExtensionId && item.byExtensionId !== runtimeId) {
+    return { eligible: false, reason: "other-extension" };
+  }
 
   // 校验浏览器重启/会话恢复载入的历史 DownloadItem：
   // 1. 若 item.startTime 早于扩展 Service Worker 启动时间（容许 2 秒误差距），属于历史任务。
@@ -49,16 +72,19 @@ export function evaluateDownload(item, settings, runtimeId, swStartTime = 0, opt
   if (hosts.some((hostname) => matchesHost(hostname, settings.blockHosts || []))) {
     return { eligible: false, reason: "blocked-host" };
   }
-  if ((settings.allowHosts || []).length && !hosts.some((hostname) => matchesHost(hostname, settings.allowHosts))) {
+  const siteChoice = resolveSiteChoice(hosts, settings.siteChoices);
+  if (siteChoice === "bypass") return { eligible: false, reason: "site-bypass" };
+  const forcedTake = siteChoice === "take";
+
+  if (!forcedTake && (settings.allowHosts || []).length && !hosts.some((hostname) => matchesHost(hostname, settings.allowHosts))) {
     return { eligible: false, reason: "not-allowed-host" };
   }
-
   const extension = extensionFrom(item, urls);
-  if ((settings.extensions || []).length && !settings.extensions.includes(extension)) {
+  if (!forcedTake && (settings.extensions || []).length && !settings.extensions.includes(extension)) {
     return { eligible: false, reason: "extension" };
   }
   const minimum = Number(settings.minSizeMb || 0) * 1024 * 1024;
-  if (item.totalBytes > 0 && item.totalBytes < minimum) return { eligible: false, reason: "size" };
+  if (!forcedTake && item.totalBytes > 0 && item.totalBytes < minimum) return { eligible: false, reason: "size" };
 
   return {
     eligible: true,
@@ -68,10 +94,15 @@ export function evaluateDownload(item, settings, runtimeId, swStartTime = 0, opt
   };
 }
 
+/// 等待重定向链稳定（自适应，P1-8）。
+///
+/// 原实现固定 80/180/320ms 三轮，多级跳转 CDN（finalUrl 仍在变化）时会在
+/// 链路中途取到临时中转 URL。现在：finalUrl 与上一轮相同且文件名就绪 → 提前
+/// 结束；仍在变化 → 继续轮询，总预算约 2 秒封顶。
 export async function refreshDownload(downloads, initial, wait = sleep) {
   let current = initial;
   let previousFinalUrl = current.finalUrl || "";
-  for (const delay of [80, 180, 320]) {
+  for (const delay of [80, 180, 320, 420, 450, 450]) {
     await wait(delay);
     const [fresh] = await downloads.search({ id: initial.id });
     if (!fresh) break;
@@ -84,6 +115,83 @@ export async function refreshDownload(downloads, initial, wait = sleep) {
   return current;
 }
 
+// ---- 接管看门狗（P0-4）----
+//
+// MV3 Service Worker 随时可能被回收。如果 SW 在"已 pause、尚未 resume/cancel"
+// 之间死亡，浏览器下载会永久停留在暂停状态。pause 前把下载 ID 记入
+// storage.session（随浏览器会话存续，跨 SW 重启可读），退出接管流程时清除；
+// background 的 alarms 看门狗定期调用 recoverStuckTakeovers 恢复超龄条目。
+export const TAKEOVER_STUCK_MS = 90_000;
+
+async function markPendingTakeover(id) {
+  try {
+    const session = chrome.storage?.session;
+    if (!session?.get || !session?.set) return;
+    const { pendingTakeover = {} } = await session.get("pendingTakeover");
+    pendingTakeover[String(id)] = Date.now();
+    await session.set({ pendingTakeover });
+  } catch { /* 标记失败不阻断接管；看门狗只是兜底。 */ }
+}
+
+async function clearPendingTakeover(id) {
+  try {
+    const session = chrome.storage?.session;
+    if (!session?.get || !session?.set) return;
+    const { pendingTakeover = {} } = await session.get("pendingTakeover");
+    if (!(String(id) in pendingTakeover)) return;
+    delete pendingTakeover[String(id)];
+    await session.set({ pendingTakeover });
+  } catch {}
+}
+
+/// 恢复卡死的接管下载：条目超过 TAKEOVER_STUCK_MS 仍未清除时，
+/// 若下载仍处于暂停态则 resume 放行，并移除标记。
+/// "任务已发送但 cancel 失败"的下载会被主动清除标记（有意保持暂停避免
+/// 产生重复文件），看门狗不会碰它们。
+export async function recoverStuckTakeovers(deps = {}) {
+  const downloads = deps.downloads || chrome.downloads;
+  const session = deps.session || chrome.storage?.session;
+  if (!downloads?.search || !session?.get || !session?.set) {
+    return { recovered: [], remaining: {} };
+  }
+  let pending = {};
+  try {
+    pending = { ...((await session.get("pendingTakeover"))?.pendingTakeover || {}) };
+  } catch {
+    return { recovered: [], remaining: {} };
+  }
+  const now = deps.now || Date.now();
+  const recovered = [];
+  for (const [idText, timestamp] of Object.entries(pending)) {
+    const id = Number(idText);
+    if (!Number.isInteger(id) || now - Number(timestamp || 0) < TAKEOVER_STUCK_MS) continue;
+    try {
+      const [item] = await downloads.search({ id });
+      if (item && item.paused) {
+        await downloads.resume(id);
+        recovered.push(id);
+      }
+    } catch { /* 下载可能已被接管完成并 erase；直接清除标记。 */ }
+    delete pending[idText];
+  }
+  try { await session.set({ pendingTakeover: pending }); } catch {}
+  return { recovered, remaining: pending };
+}
+
+/// 统一记录"被放行（未接管）"的下载（P2-14）。
+///
+/// 同时写两处：`lastIgnored`（最近一条，向后兼容）与 `ignoredList`
+/// （环形缓冲，默认 20 条，popup 诊断区展示并支持一键改用猫步下载）。
+async function recordIgnored(entry) {
+  try {
+    const { ignoredList = [] } = await chrome.storage.local.get("ignoredList");
+    await chrome.storage.local.set({
+      lastIgnored: entry,
+      ignoredList: pushIgnoredEntry(ignoredList, entry),
+    });
+  } catch {}
+}
+
 // 通知节流：时间戳同时写入内存与 chrome.storage.session。
 // MV3 Service Worker 空闲约 30 秒即被回收，纯内存节流在 SW 重启后失效，
 // 会导致开机/唤醒期每个下载都重复弹通知；storage.session 随浏览器会话存续，
@@ -93,6 +201,7 @@ const NOTIFY_COOLDOWNS = {
   error: 60_000,
   unpaired: 5 * 60_000,
   "cancel-error": 60_000,
+  "added": 60_000,
 };
 const memoryNotifyLast = {};
 
@@ -130,24 +239,21 @@ export function resetNotificationCooldownsForTest() {
 }
 
 export async function interceptBrowserDownload(initial, options) {
-  const { downloads, settings, runtimeId, sendTask, notify, wait, isDesktopOfflineError, swStartTime } = options;
+  const { downloads, settings, runtimeId, sendTask, notify, wait, isDesktopOfflineError, swStartTime, onTakenOver } = options;
   const preflight = evaluateDownload(initial, settings, runtimeId, swStartTime);
   if (!preflight.eligible) {
-    try {
-      await chrome.storage.local.set({
-        lastIgnored: {
-          url: initial.url,
-          filename: basename(initial.filename) || "未知文件",
-          size: initial.totalBytes,
-          reason: preflight.reason,
-          timestamp: Date.now()
-        }
-      });
-    } catch {}
+    await recordIgnored({
+      url: initial.url,
+      filename: basename(initial.filename) || "未知文件",
+      size: initial.totalBytes,
+      reason: preflight.reason,
+      timestamp: Date.now()
+    });
     try { await downloads.resume(initial.id); } catch {}
     return false;
   }
 
+  await markPendingTakeover(initial.id);
   try {
     await downloads.pause(initial.id);
   } catch {}
@@ -159,42 +265,39 @@ export async function interceptBrowserDownload(initial, options) {
     // paused/canResume/bytesReceived 不能再作为"历史任务"证据。
     const decision = evaluateDownload(item, settings, runtimeId, swStartTime, { reevaluation: true });
     if (!decision.eligible) {
-      try {
-        await chrome.storage.local.set({
-          lastIgnored: {
-            url: item.url,
-            filename: basename(item.filename) || "未知文件",
-            size: item.totalBytes,
-            reason: decision.reason,
-            timestamp: Date.now()
-          }
-        });
-      } catch {}
+      await recordIgnored({
+        url: item.url,
+        filename: basename(item.filename) || "未知文件",
+        size: item.totalBytes,
+        reason: decision.reason,
+        timestamp: Date.now()
+      });
       await downloads.resume(initial.id);
+      await clearPendingTakeover(initial.id);
       return false;
     }
-    await sendTask(decision.url, decision.fileName, { headers: decision.headers });
+    const created = await sendTask(decision.url, decision.fileName, { headers: decision.headers });
     taskSent = true;
     await downloads.cancel(initial.id);
     await downloads.erase({ id: initial.id });
+    await clearPendingTakeover(initial.id);
+    // created（含任务 id）透传给徽章撤销（P3：接管成功后 5 秒内可取消）。
+    onTakenOver?.(decision, created);
     return true;
   } catch (error) {
     if (!taskSent) {
-      // SubTask 13.5：桌面端离线时明确通知用户，并确保浏览器原生下载继续。
+      // SubTask 13.5：桌面端离线/无响应时明确通知用户，并确保浏览器原生下载继续。
       // 不静默失败；用户下载不丢失。
       const offline = isDesktopOfflineError ? isDesktopOfflineError(error) : isDefaultOfflineError(error);
-      try {
-        await chrome.storage.local.set({
-          lastIgnored: {
-            url: initial.url,
-            filename: basename(initial.filename) || "未知文件",
-            size: initial.totalBytes,
-            reason: offline ? "offline" : `error:${error.message || String(error)}`,
-            timestamp: Date.now()
-          }
-        });
-      } catch {}
+      await recordIgnored({
+        url: initial.url,
+        filename: basename(initial.filename) || "未知文件",
+        size: initial.totalBytes,
+        reason: offline ? "offline" : `error:${error.message || String(error)}`,
+        timestamp: Date.now()
+      });
       try { await downloads.resume(initial.id); } catch { /* 下载可能已由浏览器结束。 */ }
+      await clearPendingTakeover(initial.id);
       if (offline) {
         await notifyThrottled("offline", "桌面端离线，已回退浏览器下载", "点击此处打开猫步下载器", notify, "offline-warning");
       } else {
@@ -203,16 +306,19 @@ export async function interceptBrowserDownload(initial, options) {
       return false;
     }
     try { await downloads.cancel(initial.id); } catch { /* 保持暂停，避免产生重复文件。 */ }
+    // 有意保持暂停（防重复文件）：主动清除标记，看门狗不接管此下载。
+    await clearPendingTakeover(initial.id);
     await notifyThrottled("cancel-error", "任务已发送，但浏览器下载取消失败", "请在浏览器下载列表中手动取消重复任务", notify, "takeover-cancel-error");
     return true;
   }
 }
 
 // 默认离线判断（当 background.js 未注入 isDesktopOfflineError 时使用）。
+// AbortError（fetch 超时中止）与"桌面端进程僵死"等同处理：走浏览器回退。
 function isDefaultOfflineError(error) {
   const message = String(error?.message || error);
   return error instanceof TypeError
-    || /Failed to fetch|NetworkError|fetch failed|ECONNREFUSED|connect ECONN/i.test(message);
+    || /Failed to fetch|NetworkError|fetch failed|ECONNREFUSED|connect ECONN|abort|timed?\s*out/i.test(message);
 }
 
 // 接管前的配对预检：未持有桌面端令牌时直接放行浏览器下载，
@@ -227,17 +333,13 @@ export async function skipUnpairedDownload(item, notify) {
     return false; // 存储暂时不可读时不拦截下载，交由 sendTask 的错误路径兜底。
   }
   if (bridgeToken) return false;
-  try {
-    await chrome.storage.local.set({
-      lastIgnored: {
-        url: item.url,
-        filename: basename(item.filename) || "未知文件",
-        size: item.totalBytes,
-        reason: "unpaired",
-        timestamp: Date.now()
-      }
-    });
-  } catch {}
+  await recordIgnored({
+    url: item.url,
+    filename: basename(item.filename) || "未知文件",
+    size: item.totalBytes,
+    reason: "unpaired",
+    timestamp: Date.now()
+  });
   await notifyThrottled(
     "unpaired",
     "尚未与桌面端配对，本次由浏览器下载",
@@ -247,3 +349,5 @@ export async function skipUnpairedDownload(item, notify) {
   );
   return true;
 }
+
+export { notifyThrottled };

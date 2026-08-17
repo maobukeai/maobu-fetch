@@ -234,6 +234,48 @@ section {
   color: var(--danger);
 }
 
+/* 快速下载：磁力徽标 + 剪贴板粘贴按钮（P3） */
+.quick-row {
+  gap: 0;
+}
+.url-wrap {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  display: flex;
+}
+.url-wrap input {
+  padding-right: 30px;
+}
+.magnet-badge {
+  position: absolute;
+  right: 30px;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 12px;
+  pointer-events: none;
+}
+.quick .paste-btn {
+  position: absolute;
+  right: 0;
+  top: 0;
+  width: 30px;
+  height: 32px;
+  border: none;
+  border-left: 1px solid var(--border-strong);
+  border-radius: 0;
+  background: var(--control);
+  color: var(--subtle);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  z-index: 3;
+}
+.quick .paste-btn:hover {
+  color: var(--accent);
+  background: var(--accent-light);
+}
+
 .section-title {
   display: flex;
   align-items: center;
@@ -392,6 +434,119 @@ section {
 .rules > button:hover {
   background: var(--accent-light);
   border-color: var(--accent);
+}
+
+/* 更多接管设置（可折叠，P3：默认收起保持弹窗紧凑） */
+.rules-fold {
+  border-top: 1px solid var(--border);
+}
+
+.rules-fold summary {
+  list-style: none;
+  cursor: pointer;
+  min-height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 500;
+  user-select: none;
+}
+
+.rules-fold summary::-webkit-details-marker {
+  display: none;
+}
+
+.rules-fold summary::after {
+  content: "▸";
+  color: var(--subtle);
+  transition: transform 0.15s;
+}
+
+.rules-fold[open] summary::after {
+  transform: rotate(90deg);
+}
+
+.rules-fold summary:hover {
+  color: var(--accent);
+}
+
+.rules-fold > button {
+  width: 100%;
+  height: 30px;
+  margin: 8px 0 2px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--accent);
+  background: var(--control);
+  font-size: 10px;
+  font-weight: 500;
+  box-shadow: var(--shadow);
+  transition: background-color 0.15s, border-color 0.15s;
+}
+
+.rules-fold > button:hover {
+  background: var(--accent-light);
+  border-color: var(--accent);
+}
+
+/* 流嗅探面板（仅开启站点且有记录时显示） */
+.sniff-box .media {
+  max-height: 120px;
+}
+
+.site-actions button.active {
+  border-color: var(--success);
+  color: var(--success);
+  background: rgba(52, 199, 89, 0.1);
+}
+
+/* 活动任务聚合条 + 批量重试（长任务管理） */
+.task-summary-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: -2px 0 6px;
+  min-height: 16px;
+}
+
+.task-summary-row span {
+  color: var(--muted);
+  font-size: 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.task-summary-row button {
+  flex: 0 0 auto;
+  padding: 2px 8px;
+  border-radius: 5px;
+  border: 1px solid var(--border-strong);
+  background: var(--control);
+  color: var(--accent);
+  font-size: 10px;
+  font-weight: 500;
+}
+
+.task-summary-row button:hover {
+  border-color: var(--accent);
+  background: var(--accent-light);
+}
+
+.task-summary-row button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* 放行历史原因分组统计 */
+.diag-summary {
+  margin: 2px 0 6px;
+  color: var(--subtle);
+  font-size: 9px;
+  line-height: 1.4;
 }
 
 footer {
@@ -749,5 +904,137 @@ footer button:hover {
 
 .task-item .task-actions button.open {
   color: var(--success);
+}
+
+/* 当前站点快捷决策（P2-10） */
+.site-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.site-actions button {
+  flex: 1;
+  min-width: 72px;
+  height: 28px;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  color: var(--accent);
+  background: var(--control);
+  font-size: 10px;
+  font-weight: 500;
+  transition: background-color 0.15s, border-color 0.15s;
+}
+
+.site-actions button:hover {
+  background: var(--accent-light);
+  border-color: var(--accent);
+}
+
+#siteChoiceBadge {
+  padding: 1px 8px;
+  border-radius: 10px;
+  font-size: 9px;
+  font-weight: 600;
+}
+
+#siteChoiceBadge.take {
+  color: var(--success);
+  background: rgba(52, 199, 89, 0.14);
+}
+
+#siteChoiceBadge.bypass {
+  color: var(--warning);
+  background: rgba(255, 149, 0, 0.14);
+}
+
+/* 放行历史列表（P2-14） */
+.ignored-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 150px;
+  overflow-y: auto;
+}
+
+.ignored-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 40px;
+  border-top: 1px solid var(--border);
+  padding: 4px 0;
+}
+
+.ignored-item:first-child {
+  border-top: 0;
+}
+
+.ignored-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.ignored-info b {
+  display: block;
+  font-size: 10px;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ignored-info small {
+  display: block;
+  margin-top: 1px;
+  color: var(--subtle);
+  font-size: 8px;
+  line-height: 1.3;
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+.ignored-item > button {
+  flex-shrink: 0;
+  height: 24px;
+  padding: 0 8px;
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  color: var(--accent);
+  background: transparent;
+  font-size: 9px;
+  font-weight: 600;
+  transition: background-color 0.15s, color 0.15s;
+}
+
+.ignored-item > button:hover {
+  background: var(--accent);
+  color: #ffffff;
+}
+
+/* 最小文件大小：下拉 + 自定义输入（P3-21） */
+.min-size {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.min-size input {
+  width: 58px;
+  height: 26px;
+  padding: 0 6px;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background: var(--control);
+  color: var(--text);
+  font-size: 10px;
+  outline: none;
+}
+
+.min-size input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-light);
 }
 

@@ -49,6 +49,40 @@ test("applies file-type rules without intercepting unknown extensions", () => {
   assert.equal(blocked.reason, "extension");
 });
 
+test("skips downloads initiated by other extensions to avoid double management", () => {
+  const result = evaluateDownload({
+    id: 30, url: "https://example.com/a.zip", filename: "a.zip", totalBytes: 3_000_000,
+    byExtensionId: "another-download-manager",
+  }, settings, "extension-id");
+  assert.equal(result.eligible, false);
+  assert.equal(result.reason, "other-extension");
+  // 浏览器自身发起（byExtensionId 缺省）不受影响。
+  assert.equal(evaluateDownload({
+    id: 31, url: "https://example.com/a.zip", filename: "a.zip", totalBytes: 3_000_000,
+  }, settings, "extension-id").eligible, true);
+});
+
+test("passes the created desktop task to onTakenOver for undo support", async () => {
+  const fresh = {
+    id: 34, url: "https://example.com/file.zip", finalUrl: "https://example.com/file.zip",
+    filename: "file.zip", totalBytes: 3_000_000, referrer: "https://example.com/page",
+  };
+  const downloads = {
+    pause: async () => {}, search: async () => [fresh],
+    cancel: async () => {}, erase: async () => {}, resume: async () => {},
+  };
+  const taken = [];
+  const handled = await interceptBrowserDownload(fresh, {
+    downloads, settings, runtimeId: "extension-id", wait: async () => {},
+    sendTask: async () => ({ id: "task-undo-1", status: "queued" }),
+    onTakenOver: (decision, created) => taken.push({ decision, created }),
+  });
+  assert.equal(handled, true);
+  assert.equal(taken.length, 1);
+  assert.equal(taken[0].decision.fileName, "file.zip");
+  assert.equal(taken[0].created.id, "task-undo-1", "创建的任务 id 需透传给徽章撤销");
+});
+
 test("refreshes a download until the redirected URL and filename stabilize", async () => {
   const snapshots = [
     { id: 3, url: "https://github.com/a/b.zip", finalUrl: "https://codeload.github.com/a/b", filename: "" },
@@ -402,5 +436,121 @@ test("respects desktop-side takeover switch when provided", () => {
   // 桌面端开启（true）：正常评估。
   const enabled = evaluateDownload(item, { ...settings, desktopTakeoverEnabled: true }, "extension-id", swStartTime);
   assert.equal(enabled.eligible, true);
+});
+
+// ---- P2-10：站点记忆选择（siteChoices） ----
+
+const siteItem = {
+  id: 80, url: "https://cdn.example.com/file.zip", finalUrl: "https://cdn.example.com/file.zip",
+  filename: "file.zip", totalBytes: 3_000_000,
+};
+
+test("siteChoices: 记住 bypass 的站点直接放行", () => {
+  const result = evaluateDownload(siteItem, {
+    ...settings, siteChoices: { "example.com": "bypass" },
+  }, "extension-id");
+  assert.equal(result.eligible, false);
+  assert.equal(result.reason, "site-bypass");
+});
+
+test("siteChoices: 记住 take 的站点跳过大小/类型/白名单限制", () => {
+  const restrictive = {
+    ...settings,
+    minSizeMb: 100,           // 3 MB 文件本应因大小放行
+    extensions: ["iso"],      // zip 本应因类型放行
+    allowHosts: ["other.com"], // 本应因白名单放行
+    siteChoices: { "example.com": "take" },
+  };
+  const result = evaluateDownload(siteItem, restrictive, "extension-id");
+  assert.equal(result.eligible, true);
+});
+
+test("siteChoices: take 不越过黑名单与桌面端开关等安全限制", () => {
+  const blocked = evaluateDownload(siteItem, {
+    ...settings, blockHosts: ["cdn.example.com"], siteChoices: { "example.com": "take" },
+  }, "extension-id");
+  assert.equal(blocked.eligible, false);
+  assert.equal(blocked.reason, "blocked-host");
+
+  const desktopOff = evaluateDownload(siteItem, {
+    ...settings, desktopTakeoverEnabled: false, siteChoices: { "example.com": "take" },
+  }, "extension-id");
+  assert.equal(desktopOff.eligible, false);
+  assert.equal(desktopOff.reason, "desktop-disabled");
+});
+
+test("siteChoices: 仅精确域名或子域命中，无关域名不受影响", () => {
+  const unrelated = evaluateDownload(siteItem, {
+    ...settings, siteChoices: { "notexample.com": "bypass" },
+  }, "extension-id");
+  assert.equal(unrelated.eligible, true);
+  // 非法取值不生效。
+  const invalidValue = evaluateDownload(siteItem, {
+    ...settings, siteChoices: { "example.com": "whatever" },
+  }, "extension-id");
+  assert.equal(invalidValue.eligible, true);
+});
+
+// ---- P0-4：接管看门狗 recoverStuckTakeovers ----
+
+import { recoverStuckTakeovers, TAKEOVER_STUCK_MS } from "./interceptor.js";
+
+function makeWatchdogDeps({ sessionData, downloadsById, now }) {
+  const sessionStore = { ...sessionData };
+  const resumed = [];
+  const downloads = {
+    search: async ({ id }) => [downloadsById[id]] ?? [],
+    resume: async (id) => { resumed.push(id); },
+  };
+  const session = {
+    get: async (key) => ({ [key]: { ...sessionStore[key] } }),
+    set: async (entries) => { Object.assign(sessionStore, entries); },
+  };
+  return { downloads, session, resumed, sessionStore, now: now || Date.now() };
+}
+
+test("watchdog: 超龄且仍暂停的下载被恢复并移除标记", async () => {
+  const now = Date.now();
+  const deps = makeWatchdogDeps({
+    now,
+    sessionData: { pendingTakeover: { 101: now - TAKEOVER_STUCK_MS - 1000 } },
+    downloadsById: { 101: { id: 101, paused: true } },
+  });
+  const { recovered, remaining } = await recoverStuckTakeovers(deps);
+  assert.deepEqual(recovered, [101]);
+  assert.deepEqual(remaining, {});
+  assert.deepEqual(deps.resumed, [101]);
+});
+
+test("watchdog: 未超龄的标记保留不动", async () => {
+  const now = Date.now();
+  const pending = { 102: now - 1000 };
+  const deps = makeWatchdogDeps({
+    now, sessionData: { pendingTakeover: pending },
+    downloadsById: { 102: { id: 102, paused: true } },
+  });
+  const { recovered, remaining } = await recoverStuckTakeovers(deps);
+  assert.deepEqual(recovered, []);
+  assert.deepEqual(remaining, pending);
+  assert.deepEqual(deps.resumed, []);
+});
+
+test("watchdog: 下载已被接管完成（不存在/非暂停）时只清除标记，不误恢复", async () => {
+  const now = Date.now();
+  const deps = makeWatchdogDeps({
+    now,
+    sessionData: { pendingTakeover: { 103: now - TAKEOVER_STUCK_MS, 104: now - TAKEOVER_STUCK_MS } },
+    downloadsById: { 104: { id: 104, paused: false, state: "complete" } },
+  });
+  const { recovered, remaining } = await recoverStuckTakeovers(deps);
+  assert.deepEqual(recovered, []);
+  assert.deepEqual(remaining, {});
+  assert.deepEqual(deps.resumed, []);
+});
+
+test("watchdog: storage.session 不可用时安全返回空结果", async () => {
+  const result = await recoverStuckTakeovers({ session: undefined, downloads: { search: async () => [] } });
+  assert.deepEqual(result.recovered, []);
+  assert.deepEqual(result.remaining, {});
 });
 

@@ -20,3 +20,20 @@ button { height:34px; padding:0 14px; border:1px solid var(--border); border-rad
 button:hover { border-color:var(--accent); }
 button.primary { border-color:var(--accent); color:#fff; background:var(--accent); font-weight:600; }
 @media (max-width:520px) { footer { align-items:stretch; flex-direction:column-reverse; } footer div { display:grid; grid-template-columns:1fr 1fr; } button { width:100%; } }
+
+/* 即时校验提示（P3-18） */
+.hint { margin-top:4px; font-size:11px; }
+.hint.ok { color:#107c10; }
+.hint.bad { color:#c42b1c; }
+.hidden { display:none !important; }
+
+/* 规则测试器（P3-18） */
+.tester { display:flex; flex-direction:column; gap:8px; }
+.tester input { height:32px; padding:0 10px; border:1px solid var(--border); border-radius:6px; outline:0; color:inherit; background:var(--control); font:12px "Segoe UI",sans-serif; }
+.tester input:focus { border-color:var(--accent); box-shadow:0 0 0 2px color-mix(in srgb,var(--accent) 18%,transparent); }
+.tester-row { display:grid; grid-template-columns:minmax(0,1.2fr) minmax(0,0.8fr) auto; gap:8px; }
+.tester-row button { height:32px; }
+#testResult { min-height:18px; margin:2px 0 0; font-size:12px; }
+#testResult.ok { color:#107c10; }
+#testResult.bad { color:#c42b1c; }
+@media (max-width:520px) { .tester-row { grid-template-columns:1fr; } }

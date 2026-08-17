@@ -16,7 +16,7 @@ globalThis.crypto ??= webcrypto;
 // 因此 background.js 改为顶层 await 动态导入。
 globalThis.chrome = {
   storage: { local: { get: async () => ({}), set: async () => {} }, session: { set: async () => {} } },
-  runtime: { id: "test-extension-id", onInstalled: { addListener: () => {} }, onMessage: { addListener: () => {} } },
+  runtime: { id: "test-extension-id", onInstalled: { addListener: () => {} }, onMessage: { addListener: (fn) => { (globalThis.__bgMessageHandlers ||= []).push(fn); } } },
   contextMenus: { removeAll: (cb) => cb && cb(), create: () => {}, onClicked: { addListener: () => {} } },
   downloads: { onCreated: { addListener: () => {} } },
   tabs: { query: async () => [], sendMessage: async () => ({}), onUpdated: { addListener: () => {} } },
@@ -173,8 +173,24 @@ test("overlay bypass: when content script returns bypass=true, confirmTakeoverWi
     }
   );
   assert.equal(result, false, "should NOT proceed with takeover when user clicks bypass");
+  // 页面内浮层关闭 + 事后轻提示已是明确反馈，普通绕过不再叠加系统通知。
+  assert.equal(notifications.length, 0);
+});
+
+test("overlay bypass: remembered bypass still notifies via legacy remember field", async () => {
+  const notifications = [];
+  const result = await confirmTakeoverWithOverlay(
+    { id: 11, url: "https://example.com/file.zip", finalUrl: "https://example.com/file.zip", filename: "file.zip", referrer: "https://example.com/page" },
+    { intercept: true, bypassUntil: 0 },
+    {
+      queryTabs: async () => [{ id: 42, url: "https://example.com/page" }],
+      sendMessage: async () => ({ bypass: true, remember: true, host: "example.com" }),
+      notify: (title, message) => notifications.push({ title, message }),
+    }
+  );
+  assert.equal(result, false);
   assert.equal(notifications.length, 1);
-  assert.match(notifications[0].title, /临时绕过/);
+  assert.match(notifications[0].title, /已记住/);
 });
 
 test("overlay bypass: when content script returns bypass=false, takeover proceeds", async () => {
@@ -263,6 +279,50 @@ test("findSourceTab: returns null when no http(s) tab available", async () => {
     { queryTabs: async () => [{ id: 1, url: "chrome://settings" }] }
   );
   assert.equal(tab, null);
+});
+
+test("findSourceTab: falls back to a background tab matching the download referrer", async () => {
+  const activeTab = { id: 7, url: "https://active.example/home", active: true };
+  const sourceTab = { id: 8, url: "https://downloads.example/page", active: false };
+  const tab = await findSourceTab(
+    { url: "https://cdn.example/file.zip", referrer: "https://downloads.example/page", finalUrl: "https://cdn.example/file.zip" },
+    { queryTabs: async (q) => (q && q.currentWindow ? [activeTab] : [activeTab, sourceTab]) }
+  );
+  assert.equal(tab.id, 8, "活动标签与下载来源不符时应改用 referrer 同源标签");
+});
+
+// === 浮层消息载荷（富决策信息）===
+test("overlay message carries size/host/delay for a richer takeover prompt", async () => {
+  const messages = [];
+  await confirmTakeoverWithOverlay(
+    { id: 9, url: "https://cdn.example/file.zip", finalUrl: "https://cdn.example/file.zip", filename: "file.zip", totalBytes: 5_000_000, referrer: "https://downloads.example/page" },
+    { intercept: true, bypassUntil: 0 },
+    {
+      queryTabs: async () => [{ id: 42, url: "https://downloads.example/page" }],
+      sendMessage: async (tabId, msg) => { messages.push(msg); return { bypass: false }; },
+      notify: () => {},
+    }
+  );
+  assert.equal(messages.length, 1);
+  assert.equal(messages[0].host, "cdn.example");
+  assert.equal(messages[0].sizeBytes, 5_000_000);
+  assert.equal(messages[0].delayMs, 1500, "未设置 autoDelayMs 时默认 1500ms");
+  assert.equal(messages[0].mode, "auto");
+});
+
+test("overlay is skipped entirely when auto delay is 0 (always take over)", async () => {
+  let sendMessageCalled = false;
+  const result = await confirmTakeoverWithOverlay(
+    { id: 10, url: "https://example.com/file.zip", finalUrl: "https://example.com/file.zip", filename: "file.zip", totalBytes: 3_000_000 },
+    { intercept: true, bypassUntil: 0, autoDelayMs: 0 },
+    {
+      queryTabs: async () => [{ id: 42, url: "https://example.com/page" }],
+      sendMessage: async () => { sendMessageCalled = true; return { bypass: false }; },
+      notify: () => {},
+    }
+  );
+  assert.equal(result, true);
+  assert.equal(sendMessageCalled, false, "0 秒延迟应等效总是接管，不弹浮层");
 });
 
 // === SubTask 13.1/13.2：最近任务列表与操作（协议层测试）===
@@ -423,16 +483,18 @@ test("media detection: content.js only queries semantic elements (a[download], v
 });
 
 test("media detection: overlay uses inline styles (CSP-safe) and 1.5s timeout", () => {
-  const contentSource = readFileSync(join(__dirname, "content.js"), "utf8");
+  // 浮层/徽章等 UI 组件已拆分到 content-ui.js（先于 content.js 注入），两份源码合并断言。
+  const contentSource = readFileSync(join(__dirname, "content.js"), "utf8")
+    + readFileSync(join(__dirname, "content-ui.js"), "utf8");
   // 浮层使用 inline style（避免 CSP 阻止 <style> 标签）
-  assert.ok(contentSource.includes("Object.assign(overlay.style,"), "overlay must use inline styles");
-  // 1.5 秒超时
-  assert.ok(contentSource.includes("1500"), "overlay must have 1500ms timeout");
+  assert.ok(contentSource.includes("Object.assign(") && contentSource.includes(".style,"), "overlay must use inline styles");
+  // 1.5 秒默认倒计时
+  assert.ok(contentSource.includes("1500"), "overlay must have 1500ms default timeout");
   // 浮层消息类型
   assert.ok(contentSource.includes('"show-overlay"'), "must listen for show-overlay message");
-  // 绕过响应
-  assert.ok(contentSource.includes("{ bypass: true }"), "must respond with bypass: true on user click");
-  assert.ok(contentSource.includes("{ bypass: false }"), "must respond with bypass: false on timeout");
+  // 绕过决策统一走 resolveOverlay(bypass, source)：点击传 (true, "user")、超时按模式传。
+  assert.ok(/resolveOverlay\(true, "user"\)/.test(contentSource), "must resolve bypass=true on user click");
+  assert.ok(/resolveOverlay\(false, "user"\)/.test(contentSource), "must resolve take on ask-mode user click");
 });
 
 // === SubTask 45.6：浏览器扩展临时登录态测试 ===
@@ -777,4 +839,136 @@ test("exportCurrentPageCookies: does not write to chrome.storage.local", async (
     const json = JSON.stringify(write);
     assert.ok(!json.includes("secret-export-token"), "cookie must not be persisted");
   }
+});
+
+// === BT-08：magnet: 链接接管消息处理器（send-magnet）===
+// 任何前置条件不满足（扩展开关/桌面端设置/配对/离线）都返回 fallback: true，
+// 由 content script 把链接交还浏览器原生处理（§5 离线回退，不丢失用户下载）。
+
+const MAGNET_URI = "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567&dn=test";
+
+function sendBackgroundMessage(handler, message) {
+  return new Promise((resolve) => {
+    handler(message, { tab: { id: 1 } }, resolve);
+  });
+}
+
+async function withMagnetEnv({ storageLocal = {}, fetchImpl }, run) {
+  const { chrome } = createChromeMock({ storageLocal });
+  const originalChrome = globalThis.chrome;
+  const originalFetch = globalThis.fetch;
+  globalThis.chrome = chrome;
+  globalThis.fetch = fetchImpl;
+  try {
+    return await run(globalThis.__bgMessageHandlers.at(-1));
+  } finally {
+    globalThis.chrome = originalChrome;
+    globalThis.fetch = originalFetch;
+  }
+}
+
+test("send-magnet: 非法磁力（无 xt=urn:btih）返回 fallback", async () => {
+  await withMagnetEnv({ storageLocal: { bridgeToken: "tok" }, fetchImpl: async () => assert.fail("不应发起网络请求") },
+    async (handler) => {
+      const response = await sendBackgroundMessage(handler, { type: "send-magnet", url: "magnet:?dn=bad" });
+      assert.equal(response.ok, false);
+      assert.equal(response.fallback, true);
+    });
+});
+
+test("send-magnet: 扩展开关关闭时交还浏览器", async () => {
+  await withMagnetEnv(
+    { storageLocal: { bridgeToken: "tok", interceptMagnet: false }, fetchImpl: async () => assert.fail("不应发起网络请求") },
+    async (handler) => {
+      const response = await sendBackgroundMessage(handler, { type: "send-magnet", url: MAGNET_URI });
+      assert.equal(response.ok, false);
+      assert.equal(response.fallback, true);
+    });
+});
+
+test("send-magnet: 桌面端关闭磁力接管（health bt_magnet_enabled=false）时交还浏览器", async () => {
+  const { resetDesktopGateCacheForTest } = await import("./background.js");
+  resetDesktopGateCacheForTest();
+  const calls = [];
+  await withMagnetEnv(
+    {
+      storageLocal: { bridgeToken: "tok" },
+      fetchImpl: async (url) => {
+        calls.push(String(url));
+        return { ok: true, status: 200, json: async () => ({ takeover_enabled: true, bt_magnet_enabled: false }) };
+      },
+    },
+    async (handler) => {
+      const response = await sendBackgroundMessage(handler, { type: "send-magnet", url: MAGNET_URI });
+      assert.equal(response.ok, false);
+      assert.equal(response.fallback, true);
+      assert.ok(calls.some((url) => url.includes("/v1/health")), "必须先读取桌面端设置");
+      assert.ok(!calls.some((url) => url.includes("/v1/tasks")), "未通过开关校验不得创建任务");
+    });
+});
+
+test("send-magnet: 未配对时节流提示并交还浏览器", async () => {
+  const { resetDesktopGateCacheForTest } = await import("./background.js");
+  resetDesktopGateCacheForTest();
+  const calls = [];
+  await withMagnetEnv(
+    {
+      storageLocal: {},
+      fetchImpl: async (url) => {
+        calls.push(String(url));
+        return { ok: true, status: 200, json: async () => ({ bt_magnet_enabled: true }) };
+      },
+    },
+    async (handler) => {
+      const response = await sendBackgroundMessage(handler, { type: "send-magnet", url: MAGNET_URI });
+      assert.equal(response.ok, false);
+      assert.equal(response.fallback, true);
+      assert.ok(!calls.some((url) => url.includes("/v1/tasks")), "未配对不得创建任务");
+    });
+});
+
+test("send-magnet: 桌面端离线时交还浏览器（offline 标记）", async () => {
+  const { resetDesktopGateCacheForTest } = await import("./background.js");
+  resetDesktopGateCacheForTest();
+  await withMagnetEnv(
+    {
+      storageLocal: { bridgeToken: "tok" },
+      fetchImpl: async (url) => {
+        if (String(url).includes("/v1/health")) return { ok: true, status: 200, json: async () => ({ bt_magnet_enabled: true }) };
+        throw new TypeError("Failed to fetch");
+      },
+    },
+    async (handler) => {
+      const response = await sendBackgroundMessage(handler, { type: "send-magnet", url: MAGNET_URI });
+      assert.equal(response.ok, false);
+      assert.equal(response.fallback, true);
+      assert.equal(response.offline, true);
+    });
+});
+
+test("send-magnet: 校验全部通过时创建 BT 任务", async () => {
+  const { resetDesktopGateCacheForTest } = await import("./background.js");
+  resetDesktopGateCacheForTest();
+  const taskBodies = [];
+  await withMagnetEnv(
+    {
+      storageLocal: { bridgeToken: "tok" },
+      fetchImpl: async (url, options = {}) => {
+        if (String(url).includes("/v1/health")) {
+          return { ok: true, status: 200, json: async () => ({ takeover_enabled: true, bt_magnet_enabled: true }) };
+        }
+        if (String(url).includes("/v1/tasks") && options.method === "POST") {
+          taskBodies.push(JSON.parse(options.body));
+          return { ok: true, status: 201, json: async () => ({ id: "bt-1" }) };
+        }
+        return { ok: true, status: 200, json: async () => ({}) };
+      },
+    },
+    async (handler) => {
+      const response = await sendBackgroundMessage(handler, { type: "send-magnet", url: MAGNET_URI });
+      assert.equal(response.ok, true);
+      assert.equal(taskBodies.length, 1);
+      assert.equal(taskBodies[0].url, MAGNET_URI);
+      assert.equal(taskBodies[0].source, "browser");
+    });
 });
