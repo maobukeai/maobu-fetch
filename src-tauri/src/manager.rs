@@ -29,7 +29,6 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use tauri::{AppHandle, Emitter};
-use tauri_plugin_notification::NotificationExt;
 use tokio::{
     fs::{self, OpenOptions},
     io::{AsyncReadExt, AsyncWriteExt, BufWriter},
@@ -639,11 +638,6 @@ impl DownloadManager {
             return Err("请输入 magnet: 磁力链接或选择 .torrent 种子文件".into());
         }
         let settings = self.settings().await;
-        if crate::media_tools::resolve_aria2(&self.app).is_none() {
-            return Err(
-                "BT 组件（aria2）未安装：请先在 设置 → BT/磁力 中安装后再添加任务".into(),
-            );
-        }
         let is_magnet = source.to_ascii_lowercase().starts_with("magnet:");
         // 拖放 .torrent：内容走 base64（source 仅作显示文件名），校验后随
         // 元数据持久化，暂停任务的后续恢复添加不依赖原文件是否仍在磁盘上。
@@ -773,36 +767,29 @@ impl DownloadManager {
             token.cancel();
         }
 
-        // Wait for the task runtime thread to exit completely (freeing file handles)
+        // 等待正在运行的 worker 退出（最多等待 1 秒）
         let mut retries = 0;
-        while self.task_runtime.read().await.contains_key(id) && retries < 30 {
-            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        while self.task_runtime.read().await.contains_key(id) && retries < 20 {
+            tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
             retries += 1;
         }
 
         if let Some(task) = self.store.get_task(id).await? {
             let is_completed = task.status == TaskStatus::Completed;
             if task.task_kind == TaskKind::Bt {
-                // BT：先移除 aria2 侧下载与控制文件，再按用户选择删除数据文件。
-                // delete_task_files 只删任务目录内的普通文件，绝不递归删目录（§7）。
                 let _ = self.bt.remove_task(id).await;
                 if delete_file || !is_completed {
-                    let deleted = crate::bt::delete_task_files(&task).await;
-                    if !deleted.is_empty() {
-                        tracing::info!(task_id = %task.id, files = deleted.len(), "已删除 BT 任务数据文件");
-                    }
+                    let _ = crate::bt::delete_task_files(&task).await;
                 }
             } else if delete_file || !is_completed {
                 let path = PathBuf::from(&task.destination).join(&task.file_name);
-                // 1. Delete target file if requesting delete_file or task is incomplete
                 let _ = fs::remove_file(&path).await;
-                // 2. Delete temporary .lumaget file
                 let temp_path = PathBuf::from(format!("{}.lumaget", path.to_string_lossy()));
                 let _ = fs::remove_file(&temp_path).await;
-                // 3. Clear all part segment files
                 self.clear_parts(&task).await;
             }
         }
+
         self.store.remove_task(id).await?;
         let _ = self.app.emit("task-removed", id.to_string());
         Ok(())
@@ -1023,7 +1010,7 @@ impl DownloadManager {
             .unwrap_or((ChecksumAlgorithm::Sha256, String::new()));
         let hash = digest_file(&path, algorithm).await?;
         task.checksum_sha256 = Some(hash.clone());
-        if let Some(expected) = &task.expected_checksum {
+        if task.expected_checksum.is_some() {
             if !expected_clean.eq_ignore_ascii_case(&hash) {
                 task.status = TaskStatus::Failed;
                 task.error = Some(format!("{} 校验不一致", algorithm.label()));

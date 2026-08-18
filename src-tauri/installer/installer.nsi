@@ -76,6 +76,7 @@ Var UpdateMode
 Var NoShortcutMode
 Var WixMode
 Var OldMainBinaryName
+Var AppStartMenuFolder
 
 Name "${PRODUCTNAME}"
 BrandingText "${COPYRIGHT}"
@@ -166,38 +167,19 @@ VIAddVersionKey "ProductVersion" "${VERSION}"
 !define MUI_LANGDLL_REGISTRY_VALUENAME "Installer Language"
 
 ; Installer pages, must be ordered as they appear
-; 1. Welcome Page
-!define MUI_PAGE_CUSTOMFUNCTION_PRE SkipIfPassive
-!insertmacro MUI_PAGE_WELCOME
-
-; 2. License Page (if defined)
-!if "${LICENSE}" != ""
-  !define MUI_PAGE_CUSTOMFUNCTION_PRE SkipIfPassive
-  !insertmacro MUI_PAGE_LICENSE "${LICENSE}"
-!endif
-
-; 3. Install mode (if it is set to `both`)
+; 极简一键极速安装流程：移除冗余的欢迎页、许可证页和开始菜单选单页，直达目录确认与安装
+; 1. Install mode (if it is set to `both`)
 !if "${INSTALLMODE}" == "both"
   !define MUI_PAGE_CUSTOMFUNCTION_PRE SkipIfPassive
   !insertmacro MULTIUSER_PAGE_INSTALLMODE
 !endif
 
-; 4. Custom page to ask user if he wants to reinstall/uninstall
+; 2. Custom page to ask user if he wants to reinstall/uninstall
 ;    only if a previous installation was detected
 Var ReinstallPageCheck
 Page custom PageReinstall PageLeaveReinstall
 Function PageReinstall
   ; Uninstall previous WiX installation if exists.
-  ;
-  ; A WiX installer stores the installation info in registry
-  ; using a UUID and so we have to loop through all keys under
-  ; `HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall`
-  ; and check if `DisplayName` and `Publisher` keys match ${PRODUCTNAME} and ${MANUFACTURER}
-  ;
-  ; This has a potential issue that there maybe another installation that matches
-  ; our ${PRODUCTNAME} and ${MANUFACTURER} but wasn't installed by our WiX installer,
-  ; however, this should be fine since the user will have to confirm the uninstallation
-  ; and they can chose to abort it if doesn't make sense.
   StrCpy $0 0
   wix_loop:
     EnumRegKey $1 HKLM "SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall" $0
@@ -260,11 +242,6 @@ Function PageReinstall
   ${EndIf}
 
   ; Skip showing the page if passive
-  ;
-  ; Note that we don't call this earlier at the begining
-  ; of this function because we need to populate some variables
-  ; related to current installed version if detected and whether
-  ; we are downgrading or not.
   ${If} $PassiveMode = 1
     Call PageLeaveReinstall
   ${Else}
@@ -346,6 +323,9 @@ Function PageLeaveReinstall
   ${EndIf}
 
   reinst_uninstall:
+    ; 检查并请求关闭正在运行的程序，防止文件锁死
+    !insertmacro CheckIfAppIsRunning "${MAINBINARYNAME}.exe" "${PRODUCTNAME}"
+
     HideWindow
     ClearErrors
 
@@ -354,11 +334,21 @@ Function PageLeaveReinstall
       ExecWait '$R1' $0
     ${Else}
       ReadRegStr $4 SHCTX "${MANUPRODUCTKEY}" ""
+      ${If} $4 == ""
+        StrCpy $4 "$INSTDIR"
+      ${EndIf}
       ReadRegStr $R1 SHCTX "${UNINSTKEY}" "UninstallString"
-      ${IfThen} $UpdateMode = 1 ${|} StrCpy $R1 "$R1 /UPDATE" ${|} ; append /UPDATE
-      ${IfThen} $PassiveMode = 1 ${|} StrCpy $R1 "$R1 /P" ${|} ; append /P
-      StrCpy $R1 "$R1 _?=$4" ; append uninstall directory
-      ExecWait '$R1' $0
+      ; 剥离可能已有的外层双引号以安全构建带参命令
+      ${WordReplace} "$R1" '"' "" "+" $R2
+
+      StrCpy $R3 ""
+      ${IfThen} $UpdateMode = 1 ${|} StrCpy $R3 "$R3 /UPDATE" ${|} ; append /UPDATE
+      ${IfThen} $PassiveMode = 1 ${|} StrCpy $R3 "$R3 /P" ${|} ; append /P
+      ; _?= 必须是最后一个参数，严格包裹双引号防止目录含空格（如 Program Files）时被截断导致 NSIS Error
+      ${If} $4 != ""
+        StrCpy $R3 '$R3 _?="$4"'
+      ${EndIf}
+      ExecWait '"$R2"$R3' $0
     ${EndIf}
 
     BringToFront
@@ -378,18 +368,18 @@ Function PageLeaveReinstall
         Abort
       ${EndIf}
 
-      ; Other erros? show generic error message and return to select un/reinstall page
+      ; Other errors? show generic error message and return to select un/reinstall page
       MessageBox MB_ICONEXCLAMATION "$(unableToUninstall)"
       Abort
     ${EndIf}
   reinst_done:
 FunctionEnd
 
-; 5. Choose install directory page
+; 3. Choose install directory page（极速安装主界面）
 !define MUI_PAGE_CUSTOMFUNCTION_PRE SkipIfPassive
 !insertmacro MUI_PAGE_DIRECTORY
 
-; 5.5 安装选项页（猫步下载器定制）：开机自动启动
+; 3.5 安装选项页（猫步下载器定制）：开机自动启动
 Var AutoStartCheckbox
 Var AutoStartState
 Page custom InstallOptionsShow InstallOptionsLeave
@@ -412,20 +402,10 @@ Function InstallOptionsLeave
   ${NSD_GetState} $AutoStartCheckbox $AutoStartState
 FunctionEnd
 
-; 6. Start menu shortcut page
-Var AppStartMenuFolder
-!if "${STARTMENUFOLDER}" != ""
-  !define MUI_PAGE_CUSTOMFUNCTION_PRE SkipIfPassive
-  !define MUI_STARTMENUPAGE_DEFAULTFOLDER "${STARTMENUFOLDER}"
-!else
-  !define MUI_PAGE_CUSTOMFUNCTION_PRE Skip
-!endif
-!insertmacro MUI_PAGE_STARTMENU Application $AppStartMenuFolder
-
-; 7. Installation page
+; 4. Installation page（安装释放中）
 !insertmacro MUI_PAGE_INSTFILES
 
-; 8. Finish page
+; 5. Finish page（极速完成）
 ;
 ; Don't auto jump to finish page after installation page,
 ; because the installation page has useful info that can be used debug any issues with the installer.

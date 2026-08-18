@@ -140,6 +140,34 @@ async fn bt_select_files(
     Ok(())
 }
 
+/// 预解析种子文件或磁力链接（新建任务前预览文件列表与总大小）。
+#[tauri::command]
+async fn bt_inspect_torrent(
+    source: Option<String>,
+    torrent_path: Option<String>,
+    torrent_base64: Option<String>,
+    manager: State<'_, SharedManager>,
+) -> Result<crate::models::BtTorrentInspectResult, String> {
+    if let Some(base64_str) = torrent_base64.filter(|s| !s.trim().is_empty()) {
+        use base64::Engine as _;
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(base64_str.trim())
+            .map_err(|e| format!("解码 Base64 失败: {e}"))?;
+        return crate::bt::inspect_torrent_bytes(&bytes);
+    }
+    let input = source.or(torrent_path).unwrap_or_default().trim().to_string();
+    if input.is_empty() {
+        return Err("请提供种子文件路径、磁力链接或 Base64 数据".into());
+    }
+    if input.to_lowercase().starts_with("magnet:") {
+        return manager.inner().bt.inspect_magnet(&input, 12).await;
+    }
+    if std::path::Path::new(&input).exists() {
+        return crate::bt::inspect_torrent_file(std::path::Path::new(&input)).await;
+    }
+    Err("无效的种子文件路径或磁力链接".into())
+}
+
 #[tauri::command]
 async fn tasks_export(path: String, manager: State<'_, SharedManager>) -> Result<usize, String> {
     manager.export_tasks(&path).await
@@ -424,9 +452,84 @@ async fn task_wait_reason(
 }
 
 #[tauri::command]
-async fn task_open_file(id: String, manager: State<'_, SharedManager>) -> Result<(), String> {
+async fn task_open_file(
+    id: String,
+    file_path: Option<String>,
+    manager: State<'_, SharedManager>,
+) -> Result<(), String> {
     let task = manager.store.get_task(&id).await?.ok_or("任务不存在")?;
-    open::that(PathBuf::from(task.destination).join(task.file_name)).map_err(|e| e.to_string())
+    let dest_dir = PathBuf::from(&task.destination);
+
+    // 1. 如果指定了具体子文件路径
+    if let Some(sub) = file_path.filter(|s| !s.trim().is_empty()) {
+        let direct_path = dest_dir.join(&sub);
+        if direct_path.exists() && direct_path.is_file() {
+            return open::that(&direct_path).map_err(|e| format!("打开文件失败: {e}"));
+        }
+        let nested_path = dest_dir.join(&task.file_name).join(&sub);
+        if nested_path.exists() && nested_path.is_file() {
+            return open::that(&nested_path).map_err(|e| format!("打开文件失败: {e}"));
+        }
+    }
+
+    let is_media_ext = |p: &std::path::Path| -> bool {
+        p.extension()
+            .and_then(|ext| ext.to_str())
+            .map(|ext| matches!(ext.to_ascii_lowercase().as_str(), "mp4" | "mkv" | "avi" | "mov" | "flv" | "wmv" | "ts" | "webm" | "mp3" | "flac" | "wav" | "m4a" | "aac"))
+            .unwrap_or(false)
+    };
+
+    // 2. 检查 task.destination / task.file_name
+    let main_path = dest_dir.join(&task.file_name);
+    if main_path.exists() && main_path.is_file() {
+        return open::that(&main_path).map_err(|e| format!("打开文件失败: {e}"));
+    }
+
+    // 3. 递归在下载目录及子目录中搜索已下载或正在下载的媒体文件（按体积排序）
+    let mut search_dirs = Vec::new();
+    if main_path.exists() && main_path.is_dir() {
+        search_dirs.push(main_path);
+    }
+    search_dirs.push(dest_dir.clone());
+
+    let mut largest_media: Option<(PathBuf, u64)> = None;
+    for dir in search_dirs {
+        if let Ok(mut entries) = tokio::fs::read_dir(&dir).await {
+            while let Ok(Some(entry)) = entries.next_entry().await {
+                let p = entry.path();
+                if p.is_file() && is_media_ext(&p) {
+                    let len = entry.metadata().await.map(|m| m.len()).unwrap_or(0);
+                    if len > 0 && (largest_media.is_none() || len > largest_media.as_ref().unwrap().1) {
+                        largest_media = Some((p, len));
+                    }
+                } else if p.is_dir() {
+                    if let Ok(mut sub_entries) = tokio::fs::read_dir(&p).await {
+                        while let Ok(Some(sub_entry)) = sub_entries.next_entry().await {
+                            let sub_p = sub_entry.path();
+                            if sub_p.is_file() && is_media_ext(&sub_p) {
+                                let len = sub_entry.metadata().await.map(|m| m.len()).unwrap_or(0);
+                                if len > 0 && (largest_media.is_none() || len > largest_media.as_ref().unwrap().1) {
+                                    largest_media = Some((sub_p, len));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if let Some((media_path, len)) = largest_media {
+        if len > 0 {
+            return open::that(&media_path).map_err(|e| format!("唤起本地播放器失败: {e}"));
+        }
+    }
+
+    if task.status == crate::models::TaskStatus::Downloading || task.status == crate::models::TaskStatus::Queued {
+        return Err("视频文件正在缓冲中（首段数据尚未写入磁盘），请等待下载产生进度后再点击播放".into());
+    }
+
+    Err("未在下载目录中找到可播放的媒体文件".into())
 }
 
 #[tauri::command]
@@ -2793,6 +2896,7 @@ pub fn run() {
             bt_task_add,
             bt_task_files,
             bt_select_files,
+            bt_inspect_torrent,
             tasks_export,
             tasks_import,
             backup_export,

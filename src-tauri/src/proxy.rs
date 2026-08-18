@@ -69,7 +69,7 @@ pub fn validate_proxy_url(url: &str) -> Result<(), String> {
     let prefix = allowed
         .iter()
         .find(|p| lower.starts_with(*p))
-        .ok_or_else(|| "代理地址必须以 http://、https:// 或 socks5:// 开头".to_string())?;
+        .ok_or_else(|| "代理地址必须以 http://、https://、socks5:// 或 socks5h:// 开头".to_string())?;
     // 显式校验 authority 段：`scheme://` 之后必须紧跟非空主机（不允许直接出现 `/`、`?`、`#` 或结束）。
     // 这样可以拦截 `http://` 和 `http:///path`（authority 为空），
     // 弥补 `url::Url::parse` 对这类输入的解析差异。

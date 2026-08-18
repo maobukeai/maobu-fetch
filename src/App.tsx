@@ -4,7 +4,7 @@ import { open as pickPath, save as savePath } from "@tauri-apps/plugin-dialog";
 import { open as openUrl } from "@tauri-apps/plugin-shell";
 import {
   AlertCircle, AlertTriangle, Archive, ArrowLeft, Bookmark, Check, CheckCircle2, CheckSquare, ChevronDown, ChevronUp, ChevronsDown, ChevronsUp, CirclePause, Clock, Copy,
-  Download, ExternalLink, Eye, File, FileAudio, FileImage, FileText, Film, FolderOpen,
+  Download, ExternalLink, Eye, File, FileAudio, FileImage, FileText, Film, Folder, FolderOpen,
   Gauge, Globe2, Heart, HelpCircle, Info, ListFilter, LoaderCircle, MessageCircle, MonitorDown, MoreHorizontal, Network,
   PanelRightClose, PanelRightOpen, Pause, Play, Plus, RefreshCw, RotateCcw, Save, Search, Settings, Keyboard,
   ShieldCheck, SlidersHorizontal, Sparkles, Square, Tag as TagIcon, Trash2, Unplug, Video, X, Zap,
@@ -19,7 +19,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { LogicalSize } from "@tauri-apps/api/dpi";
 import type {
-  AdvancedFilter, AppInfo, AppSettings, BackoffStrategy, CategoryRule, CategoryRuleType, CollisionPolicy, ColorScheme, CompletionAction, ConnectionState, DeepLinkReceivedPayload, DownloadPreset, DownloadTask, DuplicateCheckResult, DuplicateMatch, DuplicateType, ExtensionCompatibilityResult, FilenameCleanupRule, FilterKey, MediaCredential, MediaCredentialCheckResult, MediaFormat, MediaPlatform, MediaProbeResult, MeteredNetworkDetectedPayload,
+  AdvancedFilter, AppInfo, AppSettings, BackoffStrategy, BtFileEntry, BtTorrentInspectResult, CategoryRule, CategoryRuleType, CollisionPolicy, ColorScheme, CompletionAction, ConnectionState, DeepLinkReceivedPayload, DownloadPreset, DownloadTask, DuplicateCheckResult, DuplicateMatch, DuplicateType, ExtensionCompatibilityResult, FilenameCleanupRule, FilterKey, MediaCredential, MediaCredentialCheckResult, MediaFormat, MediaPlatform, MediaProbeResult, MeteredNetworkDetectedPayload,
   NewTaskRequest, PairingInfo, PlatformCompatibility, PlatformNamingTemplate, PowerAction, PowerActionState, PrecheckResult, ProxyAuth, QuickView, RestorePreview, RetryPolicy, SegmentStatus, SelfcheckReport, Tag,
   TaskConnectionsEvent, TaskNotificationPayload, TaskStatus, TaskTagsMap, TaskTemplate, TaskTemplateTestResult, ToolComponent, ToolStatus, UpdateCheckResult, UpdateDownloadResult, UpdateProgressPayload, ExtensionUpdateResult, UrlHistoryEntry, WaitReason, ShortcutKeys, YtDlpUpdateInfo,
 } from "./types";
@@ -1608,7 +1608,7 @@ export default function App() {
             >
               <div className="task-grid">
               <div className="table-header"><label><input type="checkbox" aria-label={t("toolbar.selectAll")} checked={visible.length > 0 && visible.every((task) => selected.has(task.id))} onChange={() => setSelected(visible.every((task) => selected.has(task.id)) ? new Set() : new Set(visible.map((task) => task.id)))} /></label>{[["file_name",t("table.fileName"),""],["total_bytes",t("table.size"),"size"],["status",t("table.status"),"status"],["connection_count",t("table.connection"),"connection"],["downloaded_bytes",t("table.progress"),"progress"],["speed",t("table.speed"),"speed"],["eta_seconds",t("table.eta"),"eta"],[showCompletedAt ? "completed_at" : "created_at",showCompletedAt ? t("table.completedAt") : t("table.createdAt"),"created"]].map(([key,label,widthKey]) => <span key={key} onClick={() => setSort((current) => ({ key: key as keyof DownloadTask, desc: current.key === key ? !current.desc : ["created_at", "completed_at"].includes(key) }))}>{label}{widthKey && <i className="column-resizer" onMouseDown={(event) => beginResize(widthKey, event)} />}</span>)}<span /></div>
-              <div className="task-rows">{loading ? <div className="center-state"><LoaderCircle className="spin" /></div> : visible.length === 0 ? <EmptyState filter={filter} view={view} onAdd={() => setNewOpen(true)} /> : visible.map((task) => <TaskRow key={task.id} task={task} showCompletedAt={showCompletedAt} taskTagList={taskTags[task.id] ?? []} selected={selected.has(task.id)} notify={notify} onSelect={() => { setPrimaryTaskId(task.id); setSelected((current) => { const next = new Set(current); next.has(task.id) ? next.delete(task.id) : next.add(task.id); return next; }); }} onOpen={() => task.status === "completed" && void api.openFile(task.id).catch((error) => notify(String(error), "error"))} onContext={(event) => { event.preventDefault(); setPrimaryTaskId(task.id); setContext({ x: event.clientX, y: event.clientY, id: task.id }); if (!selected.has(task.id)) setSelected(new Set([task.id])); }} onMouseDown={(taskItem, evt) => { setPrimaryTaskId(taskItem.id); handleTaskMouseDown(taskItem, evt); }} onCheckboxMouseDown={(evt) => handleCheckboxMouseDown(task.id, selected.has(task.id), evt)} onCheckboxMouseEnter={() => handleCheckboxMouseEnter(task.id)} />)}</div>
+              <div className="task-rows">{loading ? <div className="center-state"><LoaderCircle className="spin" /></div> : visible.length === 0 ? <EmptyState filter={filter} view={view} onAdd={() => setNewOpen(true)} /> : visible.map((task) => <TaskRow key={task.id} task={task} showCompletedAt={showCompletedAt} taskTagList={taskTags[task.id] ?? []} selected={selected.has(task.id)} notify={notify} onSelect={() => { setPrimaryTaskId(task.id); setSelected((current) => { const next = new Set(current); next.has(task.id) ? next.delete(task.id) : next.add(task.id); return next; }); }} onOpen={() => (task.status === "completed" || (task.task_kind === "bt" && task.downloaded_bytes > 0)) && void api.openFile(task.id).catch((error) => notify(String(error), "error"))} onContext={(event) => { event.preventDefault(); setPrimaryTaskId(task.id); setContext({ x: event.clientX, y: event.clientY, id: task.id }); if (!selected.has(task.id)) setSelected(new Set([task.id])); }} onMouseDown={(taskItem, evt) => { setPrimaryTaskId(taskItem.id); handleTaskMouseDown(taskItem, evt); }} onCheckboxMouseDown={(evt) => handleCheckboxMouseDown(task.id, selected.has(task.id), evt)} onCheckboxMouseEnter={() => handleCheckboxMouseEnter(task.id)} />)}</div>
             </div></div>
             {showDetails && <Details task={activeTask} onClose={() => setShowDetails(false)} notify={notify} selectedCount={selected.size} onOpenProxySettings={() => { setSettingsOpen(true); }} onOpenYouTubeModal={() => setYoutubeModalTaskId(activeTask?.id || "")} onTagsChanged={refreshTags} />}
           </section>
@@ -1822,9 +1822,7 @@ function TaskRow({ task, selected, showCompletedAt, taskTagList, notify, onSelec
       <div style={{ minWidth: 0, flex: 1 }}>
         <div className="name-title-row">
           <strong title={task.file_name}>
-            {task.task_kind === "bt" && !task.bt_meta?.metadata_ready
-              ? t("table.btMetadataPending")
-              : task.file_name || t("table.btMetadataPending")}
+            {task.file_name || (task.task_kind === "bt" ? t("table.btMetadataPending") : "—")}
           </strong>
           {task.task_kind === "bt" && (
             <span className="bt-task-badge" title={t("table.btBadgeTitle")}>
@@ -1840,17 +1838,19 @@ function TaskRow({ task, selected, showCompletedAt, taskTagList, notify, onSelec
       </div>
     </div>
     <span>
-      {task.task_kind === "bt" && !task.bt_meta?.metadata_ready
-        ? t("table.btMetadataPending")
-        : task.total_bytes
-          ? formatBytes(task.total_bytes)
-          : task.downloaded_bytes
-            ? formatBytes(task.downloaded_bytes)
+      {task.total_bytes > 0
+        ? formatBytes(task.total_bytes)
+        : task.downloaded_bytes > 0
+          ? formatBytes(task.downloaded_bytes)
+          : task.task_kind === "bt"
+            ? t("table.btMetadataPending")
             : "—"}
     </span>
     <span className={`task-status ${task.status}`}>
       {task.status === "downloading" && isMediaTask(task) && task.downloaded_bytes === 0 && task.active_connections === 0 && !task.error
         ? statusText.parsing
+        : task.status === "downloading" && task.task_kind === "bt" && (!task.bt_meta?.metadata_ready || task.total_bytes === 0)
+        ? t("table.btMetadataFetching")
         : statusText[task.status]}
       {btRuntimeActive(task) && task.bt_runtime?.seeding && (
         <span className="bt-seed-badge" title={t("table.seedingTitle")}>{t("table.seeding")}</span>
@@ -1867,11 +1867,9 @@ function TaskRow({ task, selected, showCompletedAt, taskTagList, notify, onSelec
     </span>
     <span className="connection-count">
       {task.task_kind === "bt"
-        ? task.bt_runtime
-          ? <span title={t("table.btConnTitle", { peers: task.bt_runtime.num_peers, seeds: task.bt_runtime.num_seeds })}>
-              {task.bt_runtime.num_peers}<small> {t("table.btPeerUnit")}</small>
-            </span>
-          : "—"
+        ? <span title={t("table.btConnTitle", { peers: task.bt_runtime?.num_peers ?? task.active_connections, seeds: task.bt_runtime?.num_seeds ?? 0 })}>
+            {task.bt_runtime?.num_peers ?? task.active_connections}<small> {t("table.btPeerUnit")}</small>
+          </span>
         : <>
             {task.status === "downloading" ? `${task.active_connections}/${task.connection_count}` : task.connection_count}<small> {t("table.connectionUnit")}</small>
           </>}
@@ -1891,10 +1889,28 @@ function TaskRow({ task, selected, showCompletedAt, taskTagList, notify, onSelec
           </span>
         )}
       </div>
-      {/* 元数据未就绪时总长未知，百分比必然为 0 且无意义——与文件名/大小列一致显示"待获取"。 */}
-      <span>{task.status === "completed" ? "100%" : task.task_kind === "bt" && !task.bt_meta?.metadata_ready ? t("table.btMetadataPending") : `${progress.toFixed(0)}%`}</span>
+      <span>{task.status === "completed" ? "100%" : task.total_bytes > 0 ? `${progress.toFixed(0)}%` : task.task_kind === "bt" ? (task.bt_meta?.metadata_ready ? "0%" : t("table.btMetadataPending")) : `${progress.toFixed(0)}%`}</span>
     </div>
-    <span title={btRuntimeActive(task) && task.bt_runtime?.seeding ? t("table.seedingTitle") : undefined}>{taskSpeedCellText(task)}</span><span>{task.eta_seconds ? formatDuration(task.eta_seconds) : "—"}</span><span>{formatDate(showCompletedAt ? task.completed_at ?? task.created_at : task.created_at)}</span><button className="row-menu" onClick={(event) => { event.stopPropagation(); onContext(event); }}><MoreHorizontal size={15} /></button>
+    <span title={btRuntimeActive(task) && task.bt_runtime?.seeding ? t("table.seedingTitle") : undefined}>{taskSpeedCellText(task)}</span>
+    <span>{task.eta_seconds ? formatDuration(task.eta_seconds) : "—"}</span>
+    <span>{formatDate(showCompletedAt ? task.completed_at ?? task.created_at : task.created_at)}</span>
+    <div style={{ display: "inline-flex", alignItems: "center", gap: "2px" }}>
+      {(task.task_kind === "bt" || task.category === "video" || task.category === "audio") && (task.status === "completed" || (task.status === "downloading" && task.downloaded_bytes > 0)) && (
+        <button
+          type="button"
+          className="row-menu"
+          onClick={(event) => {
+            event.stopPropagation();
+            void api.openFile(task.id).catch((e) => notify(String(e), "error"));
+          }}
+          title={task.status === "completed" ? "播放文件" : "🎬 边下边看 / 实时播放"}
+          style={{ color: "var(--accent, #0078d4)" }}
+        >
+          <Film size={14} />
+        </button>
+      )}
+      <button type="button" className="row-menu" onClick={(event) => { event.stopPropagation(); onContext(event); }}><MoreHorizontal size={15} /></button>
+    </div>
   </div>;
 }
 function CatDownloadMark() { return <svg viewBox="0 0 1024 1024" aria-hidden="true"><rect x="48" y="48" width="928" height="928" rx="220" fill="#f5f5f7" /><path d="M302 360 358 230l112 78c28-9 56-14 86-14s58 5 86 14l112-78 56 130v214c0 151-113 254-254 254S302 725 302 574V360Z" fill="#1d1d1f" /><path d="M556 392v218m-86-82 86 86 86-86" fill="none" stroke="#f5f5f7" strokeWidth="58" strokeLinecap="round" strokeLinejoin="round" /><path d="M445 694h222" fill="none" stroke="#0a84ff" strokeWidth="58" strokeLinecap="round" /><circle cx="428" cy="430" r="19" fill="#f5f5f7" /><circle cx="684" cy="430" r="19" fill="#f5f5f7" /><path d="M755 700c86 15 119-50 76-103" fill="none" stroke="#1d1d1f" strokeWidth="48" strokeLinecap="round" /></svg>; }
@@ -3054,18 +3070,18 @@ function TaskProxySection({ task, notify }: { task: DownloadTask; notify: (text:
       {editing && (
         <div className="task-retry-policy-editor">
           <div className="settings-group-content">
-            <SettingRow label="代理模式">
+            <SettingRow label={t("settings.netProxyMode")}>
               <div className="fluent-segmented-control settings-segmented">
-                <button type="button" disabled={saving} className={mode === "global" ? "active" : ""} onClick={() => setMode("global")}>使用全局</button>
-                <button type="button" disabled={saving} className={mode === "disable" ? "active" : ""} onClick={() => setMode("disable")}>不使用代理</button>
-                <button type="button" disabled={saving} className={mode === "custom" ? "active" : ""} onClick={() => setMode("custom")}>手动代理</button>
+                <button type="button" disabled={saving} className={mode === "global" ? "active" : ""} onClick={() => setMode("global")}>{t("settings.netProxyModeGlobal")}</button>
+                <button type="button" disabled={saving} className={mode === "disable" ? "active" : ""} onClick={() => setMode("disable")}>{t("settings.netProxyModeNone")}</button>
+                <button type="button" disabled={saving} className={mode === "custom" ? "active" : ""} onClick={() => setMode("custom")}>{t("settings.netProxyModeManual")}</button>
               </div>
             </SettingRow>
             {mode === "custom" && <>
-              <SettingRow label="代理地址"><input value={customUrl} onChange={(e) => setCustomUrl(e.target.value)} placeholder="http://host:port 或 socks5://host:port 或 socks5h://host:port" disabled={saving} /></SettingRow>
-              <SettingRow label="用户名"><input value={username} onChange={(e) => setUsername(e.target.value)} placeholder="匿名代理可留空" disabled={saving} /></SettingRow>
-              <SettingRow label="密码"><input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="留空表示无认证" disabled={saving} /></SettingRow>
-              <SettingRow label="测试连通性">
+              <SettingRow label={t("settings.netProxyAddressLabel")}><input value={customUrl} onChange={(e) => setCustomUrl(e.target.value)} placeholder={t("settings.netProxyAddressPlaceholder")} disabled={saving} /></SettingRow>
+              <SettingRow label={t("settings.netProxyUsername")}><input value={username} onChange={(e) => setUsername(e.target.value)} placeholder={t("settings.netProxyUsernamePlaceholder")} disabled={saving} /></SettingRow>
+              <SettingRow label={t("settings.netProxyPassword")}><input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder={t("settings.netProxyPasswordPlaceholder")} disabled={saving} /></SettingRow>
+              <SettingRow label={t("settings.netTestConnectivity")}>
                 <ProxyTestButton
                   proxyUrl={customUrl}
                   auth={username || password ? { username, password } : null}
@@ -3843,6 +3859,11 @@ function NewTaskDialog({ settings, allTasks, onClose, onCreated, defaultUrl, def
   const [btStartPaused, setBtStartPaused] = useState(false);
   // 边下边看（2026-08-17）：BT 任务优先下载首尾分片，便于预览播放。
   const [btStreaming, setBtStreaming] = useState(false);
+  // BT 种子预览与文件勾选状态
+  const [btInspectResult, setBtInspectResult] = useState<BtTorrentInspectResult | null>(null);
+  const [btInspecting, setBtInspecting] = useState(false);
+  const [selectedBtFileIndices, setSelectedBtFileIndices] = useState<Set<number>>(new Set());
+  const [btInspectOpen, setBtInspectOpen] = useState(false);
   // 磁盘不足确认（替代原生 window.confirm）；override 暂存 performSubmit 的文件名参数。
   const [diskConfirm, setDiskConfirm] = useState<{ override?: string } | null>(null);
   const [schedule, setSchedule] = useState(""); const [policy, setPolicy] = useState<CollisionPolicy>(settings.default_collision_policy);
@@ -3914,6 +3935,40 @@ function NewTaskDialog({ settings, allTasks, onClose, onCreated, defaultUrl, def
   // Task 19: 解析多行 URL，过滤空行 / 非 http(s) 行，去重（保留首次出现的顺序）。
   // `lines` 用于后续预检 / 批量创建；`skippedCount` 用于 UI 反馈被忽略的行数。
   const { lines, skippedCount, duplicateCount, sequenceExpanded, sequenceError } = parseMultilineUrls(urls);
+
+  const inspectTorrentContent = useCallback(async (pathOrMagnet?: string, base64?: string) => {
+    const single = lines.length === 1 ? lines[0].trim() : "";
+    const isMagnet = single.toLowerCase().startsWith("magnet:");
+    const isTorrent = !isMagnet && single !== "" && !/^https?:/i.test(single) && /\.torrent$/i.test(single);
+    const targetSource = pathOrMagnet || (isMagnet ? single : isTorrent ? single : undefined);
+    const targetBase64 = base64 || torrentData?.base64;
+    if (!targetSource && !targetBase64) return;
+    setBtInspecting(true);
+    try {
+      const result = await api.inspectTorrent({
+        source: targetSource,
+        torrentPath: isTorrent ? targetSource : undefined,
+        torrentBase64: targetBase64,
+      });
+      setBtInspectResult(result);
+      setSelectedBtFileIndices(new Set(result.files.map((f: BtFileEntry) => f.index)));
+      setBtInspectOpen(true);
+      if (result.name && !userEditedFileName.current) {
+        setFileName(result.name);
+      }
+    } catch (err) {
+      console.warn("解析种子/磁力失败:", err);
+      notify?.(String(err), "error");
+    } finally {
+      setBtInspecting(false);
+    }
+  }, [lines, torrentData, notify]);
+
+  useEffect(() => {
+    if (defaultTorrent?.base64) {
+      void inspectTorrentContent(undefined, defaultTorrent.base64);
+    }
+  }, [defaultTorrent, inspectTorrentContent]);
   // Task 11: 自动分类与保存规则支持。当 URL/文件名/Content-Type 变化时自动匹配规则预填目录（仅在用户未手动选择目录时）。
   useEffect(() => {
     const firstUrl = lines[0];
@@ -4338,6 +4393,7 @@ function NewTaskDialog({ settings, allTasks, onClose, onCreated, defaultUrl, def
           source: torrentData ? torrentData.name : firstLine,
           source_data_base64: torrentData ? torrentData.base64 : null,
           destination: destination && destination.trim() !== "" ? destination : null,
+          selected_files: selectedBtFileIndices.size > 0 ? Array.from(selectedBtFileIndices) : undefined,
           start_paused: btStartPaused,
           streaming_priority: btStreaming,
           source_tag: "desktop",
@@ -4657,69 +4713,163 @@ function NewTaskDialog({ settings, allTasks, onClose, onCreated, defaultUrl, def
                 placeholder={t("newTask.urlPlaceholder")}
                 aria-label={t("newTask.urlAriaLabel")}
               />
-              {/* 2026-08-16 BT/磁力：本地 .torrent 种子文件选择。 */}
-              <button
-                type="button"
-                className="torrent-pick-button"
-                title="选择本地 .torrent 种子文件（走 BT 内核下载）"
-                onClick={async () => {
-                  const picked = await pickPath({
-                    multiple: false,
-                    filters: [{ name: "BitTorrent 种子", extensions: ["torrent"] }],
-                  });
-                  if (typeof picked === "string" && picked) {
-                    setUrls(picked);
-                    setTorrentData(null);
-                    setMedia(undefined);
-                    userEditedFileName.current = false;
-                    const stem = picked.replace(/\\/g, "/").split("/").pop()?.replace(/\.torrent$/i, "") || "";
-                    if (stem) setFileName(stem);
-                  }
-                }}
-              >
-                <FileText size={12} /> 种子文件
-              </button>
-              {/* 2026-08-16 BT/磁力：磁力/种子识别徽标（元数据获取前名称待确认）。 */}
-              {(() => {
-                const single = lines.length === 1 ? lines[0].trim() : "";
-                const magnet = single.toLowerCase().startsWith("magnet:");
-                const torrent = !magnet && single !== "" && !/^https?:/i.test(single) && /\.torrent$/i.test(single);
-                if (!magnet && !torrent) return null;
-                return (
-                  <span
-                    className="bt-input-badge"
-                    title={magnet ? "将作为 BT 任务下载：元数据获取完成后才显示真实文件名与大小" : "将作为 BT 任务下载该种子"}
-                  >
-                    <Zap size={9} strokeWidth={2.5} /> {magnet ? "磁力任务" : "种子任务"}
-                  </span>
-                );
-              })()}
-              {/* BT/磁力：识别到磁力/种子输入时提供"创建后暂停"与"边下边看"。 */}
-              {(() => {
-                const single = lines.length === 1 ? lines[0].trim() : "";
-                const magnetOrTorrent = single !== "" && (single.toLowerCase().startsWith("magnet:") || (!/^https?:/i.test(single) && /\.torrent$/i.test(single)));
-                if (!magnetOrTorrent) return null;
-                return (
-                  <div className="bt-input-options">
-                    <label className="bt-start-paused-toggle" title={t("newTask.btStartPausedHint")}>
-                      <input
-                        type="checkbox"
-                        checked={btStartPaused}
-                        onChange={(e) => setBtStartPaused(e.target.checked)}
-                      />
-                      {t("newTask.btStartPaused")}
-                    </label>
-                    <label className="bt-start-paused-toggle" title={t("newTask.btStreamingHint")}>
-                      <input
-                        type="checkbox"
-                        checked={btStreaming}
-                        onChange={(e) => setBtStreaming(e.target.checked)}
-                      />
-                      {t("newTask.btStreaming")}
-                    </label>
+            </div>
+            {/* 输入框下方独立操作工具栏（单行整合徽标、选项与按钮） */}
+            <div className="url-input-tools-bar">
+              <div className="url-input-tools-left">
+                {/* 2026-08-16 BT/磁力：磁力/种子识别徽标与配置选项 */}
+                {(() => {
+                  const single = lines.length === 1 ? lines[0].trim() : "";
+                  const magnet = single.toLowerCase().startsWith("magnet:");
+                  const torrent = !magnet && single !== "" && !/^https?:/i.test(single) && /\.torrent$/i.test(single);
+                  if (!magnet && !torrent && !torrentData) return null;
+                  return (
+                    <>
+                      <span
+                        className="bt-input-badge"
+                        title={magnet ? "将作为 BT 任务下载：元数据获取完成后才显示真实文件名与大小" : "将作为 BT 任务下载该种子"}
+                      >
+                        <Zap size={10} strokeWidth={2.5} /> {magnet ? "磁力任务" : "种子任务"}
+                      </span>
+                      <label className="bt-start-paused-toggle" title={t("newTask.btStartPausedHint")}>
+                        <input
+                          type="checkbox"
+                          checked={btStartPaused}
+                          onChange={(e) => setBtStartPaused(e.target.checked)}
+                        />
+                        {t("newTask.btStartPaused")}
+                      </label>
+                      <label className="bt-start-paused-toggle" title={t("newTask.btStreamingHint")}>
+                        <input
+                          type="checkbox"
+                          checked={btStreaming}
+                          onChange={(e) => setBtStreaming(e.target.checked)}
+                        />
+                        {t("newTask.btStreaming")}
+                      </label>
+                    </>
+                  );
+                })()}
+              </div>
+              <div className="url-input-tools-right">
+                {/* 预览文件按钮 */}
+                {(() => {
+                  const single = lines.length === 1 ? lines[0].trim() : "";
+                  const magnet = single.toLowerCase().startsWith("magnet:");
+                  const torrent = !magnet && single !== "" && !/^https?:/i.test(single) && /\.torrent$/i.test(single);
+                  if (!magnet && !torrent && !torrentData) return null;
+                  return (
+                    <button
+                      type="button"
+                      className="torrent-pick-button"
+                      disabled={btInspecting}
+                      onClick={() => {
+                        if (btInspectResult) {
+                          setBtInspectOpen((prev) => !prev);
+                        } else {
+                          void inspectTorrentContent();
+                        }
+                      }}
+                      title={magnet ? "从 DHT/Trackers 网络获取种子元数据并预览/勾选文件" : "解析并查看种子内的文件列表，勾选需要下载的文件"}
+                    >
+                      <Search size={11} className={btInspecting ? "spin" : undefined} />
+                      {btInspecting ? (magnet ? "获取元数据中..." : "解析中...") : btInspectResult ? (btInspectOpen ? "收起文件" : "展开文件") : "预览文件"}
+                    </button>
+                  );
+                })()}
+                {/* 2026-08-16 BT/磁力：本地 .torrent 种子文件选择与预解析。 */}
+                <button
+                  type="button"
+                  className="torrent-pick-button"
+                  title="选择本地 .torrent 种子文件（走 BT 内核下载）"
+                  onClick={async () => {
+                    const picked = await pickPath({
+                      multiple: false,
+                      filters: [{ name: "BitTorrent 种子", extensions: ["torrent"] }],
+                    });
+                    if (typeof picked === "string" && picked) {
+                      setUrls(picked);
+                      setTorrentData(null);
+                      setMedia(undefined);
+                      userEditedFileName.current = false;
+                      const stem = picked.replace(/\\/g, "/").split("/").pop()?.replace(/\.torrent$/i, "") || "";
+                      if (stem) setFileName(stem);
+                      void inspectTorrentContent(picked);
+                    }
+                  }}
+                >
+                  <FileText size={12} /> 种子文件
+                </button>
+              </div>
+            </div>
+            {/* BT 种子文件勾选预览面板 */}
+            {btInspectResult && btInspectOpen && (
+                <div className="bt-preview-box">
+                  <div className="bt-preview-header">
+                    <span style={{ fontWeight: 600, display: "inline-flex", alignItems: "center", gap: "4px" }}>
+                      <Folder size={13} /> {btInspectResult.name}
+                    </span>
+                    <div style={{ display: "inline-flex", gap: "10px", alignItems: "center" }}>
+                      <span style={{ color: "var(--text-secondary, #666)" }}>
+                        已选 {selectedBtFileIndices.size} / {btInspectResult.files.length} 个文件 · 共 {formatBytes(
+                          btInspectResult.files
+                            .filter((f: BtFileEntry) => selectedBtFileIndices.has(f.index))
+                            .reduce((sum: number, f: BtFileEntry) => sum + f.length_bytes, 0)
+                        )}
+                      </span>
+                      <button
+                        type="button"
+                        className="link-button"
+                        style={{ fontSize: "11px", color: "var(--accent, #0078d4)", background: "transparent", border: "none", cursor: "pointer" }}
+                        onClick={() => {
+                          if (selectedBtFileIndices.size === btInspectResult.files.length) {
+                            setSelectedBtFileIndices(new Set());
+                          } else {
+                            setSelectedBtFileIndices(new Set(btInspectResult.files.map((f: BtFileEntry) => f.index)));
+                          }
+                        }}
+                      >
+                        {selectedBtFileIndices.size === btInspectResult.files.length ? "全不选" : "全选"}
+                      </button>
+                    </div>
                   </div>
-                );
-              })()}
+                  <div className="bt-preview-list">
+                    {btInspectResult.files.map((file: BtFileEntry) => {
+                      const isChecked = selectedBtFileIndices.has(file.index);
+                      return (
+                        <label
+                          key={file.index}
+                          className={`bt-preview-item ${isChecked ? "checked" : ""}`}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={isChecked}
+                            onChange={(e) => {
+                              const next = new Set(selectedBtFileIndices);
+                              if (e.target.checked) {
+                                next.add(file.index);
+                              } else {
+                                if (next.size <= 1) {
+                                  notify?.("至少需要保留一个选中的文件", "error");
+                                  return;
+                                }
+                                next.delete(file.index);
+                              }
+                              setSelectedBtFileIndices(next);
+                            }}
+                          />
+                          <span className="bt-preview-item-name" title={file.path}>
+                            {file.path}
+                          </span>
+                          <span className="bt-preview-item-size">
+                            {formatBytes(file.length_bytes)}
+                          </span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
               {/* Task 19: 历史下拉。聚焦时显示最近 20 条 URL 历史，点击填充到输入框。 */}
               {historyOpen && urlHistory.length > 0 && (
                 <div className="url-history-dropdown" role="listbox" aria-label="最近 URL 历史">
@@ -4767,7 +4917,6 @@ function NewTaskDialog({ settings, allTasks, onClose, onCreated, defaultUrl, def
                   </ul>
                 </div>
               )}
-            </div>
             {(skippedCount > 0 || duplicateCount > 0 || sequenceError) && (
               <div className="url-parse-hint" style={sequenceError ? { color: "var(--danger)" } : undefined}>
                 {sequenceError && <span>{sequenceError}</span>}
@@ -5756,15 +5905,15 @@ function SettingsPage({ value, onChange, onClose, notify, totalSpeed = 0, active
         <p className="settings-note">{t("settings.archiveDesc")}</p>
       </SettingsGroup>
     </>}
-    {section === "download" && <SettingsGroup title="保存与性能">
+    {section === "download" && <SettingsGroup title={t("settings.groupSavePerformance")}>
       <div className="settings-group-content">
-        <SettingRow label="默认下载目录"><input value={draft.download_dir} onChange={(e) => set("download_dir", e.target.value)} /></SettingRow>
-        <SettingRow label="文件重名"><div className="fluent-segmented-control settings-segmented"><button type="button" className={draft.default_collision_policy === "rename" ? "active" : ""} onClick={() => set("default_collision_policy", "rename")}>自动重命名</button><button type="button" className={draft.default_collision_policy === "overwrite" ? "active" : ""} onClick={() => set("default_collision_policy", "overwrite")}>覆盖</button><button type="button" className={draft.default_collision_policy === "skip" ? "active" : ""} onClick={() => set("default_collision_policy", "skip")}>跳过</button></div></SettingRow>
-        <SettingRow label="默认完成动作"><div className="setting-completion-action"><CompletionActionEditor value={draft.default_completion_action} onChange={(a) => set("default_completion_action", a)} /></div></SettingRow>
-        <Toggle label="低内存模式（1 个任务、每任务最多 2 路连接）" checked={draft.low_memory_mode} onChange={(v) => set("low_memory_mode", v)} />
-        <SettingRow label="同时下载任务"><input type="number" min="1" max="16" value={draft.concurrent_downloads} onChange={(e) => set("concurrent_downloads", +e.target.value)} /></SettingRow>
-        <SettingRow label={`每任务连接数 (${draft.connections_per_download} 路)`}><div className="settings-slider-wrapper"><input type="range" min="0" max="5" step="1" value={[1, 2, 4, 8, 16, 32].indexOf(draft.connections_per_download)} onChange={(e) => { const values = [1, 2, 4, 8, 16, 32]; set("connections_per_download", values[+e.target.value]); }} className="fluent-slider" /><div className="slider-ticks"><span>1</span><span>2</span><span>4</span><span>8</span><span>16</span><span>32</span></div></div></SettingRow>
-        <SettingRow label="全局限速（KB/s）"><input type="number" min="0" value={draft.speed_limit_kbps} onChange={(e) => set("speed_limit_kbps", +e.target.value)} /></SettingRow>
+        <SettingRow label={t("settings.downloadDirLabel")}><input value={draft.download_dir} onChange={(e) => set("download_dir", e.target.value)} /></SettingRow>
+        <SettingRow label={t("settings.collisionLabel")}><div className="fluent-segmented-control settings-segmented"><button type="button" className={draft.default_collision_policy === "rename" ? "active" : ""} onClick={() => set("default_collision_policy", "rename")}>{t("settings.collisionRename")}</button><button type="button" className={draft.default_collision_policy === "overwrite" ? "active" : ""} onClick={() => set("default_collision_policy", "overwrite")}>{t("settings.collisionOverwrite")}</button><button type="button" className={draft.default_collision_policy === "skip" ? "active" : ""} onClick={() => set("default_collision_policy", "skip")}>{t("settings.collisionSkip")}</button></div></SettingRow>
+        <SettingRow label={t("settings.completionDefaultLabel")}><div className="setting-completion-action"><CompletionActionEditor value={draft.default_completion_action} onChange={(a) => set("default_completion_action", a)} /></div></SettingRow>
+        <Toggle label={t("settings.lowMemoryLabel")} checked={draft.low_memory_mode} onChange={(v) => set("low_memory_mode", v)} />
+        <SettingRow label={t("settings.concurrentLabel")}><input type="number" min="1" max="16" value={draft.concurrent_downloads} onChange={(e) => set("concurrent_downloads", +e.target.value)} /></SettingRow>
+        <SettingRow label={t("settings.connectionsPerTaskLabel", { count: draft.connections_per_download })}><div className="settings-slider-wrapper"><input type="range" min="0" max="5" step="1" value={[1, 2, 4, 8, 16, 32].indexOf(draft.connections_per_download)} onChange={(e) => { const values = [1, 2, 4, 8, 16, 32]; set("connections_per_download", values[+e.target.value]); }} className="fluent-slider" /><div className="slider-ticks"><span>1</span><span>2</span><span>4</span><span>8</span><span>16</span><span>32</span></div></div></SettingRow>
+        <SettingRow label={t("settings.globalLimitLabel")}><input type="number" min="0" value={draft.speed_limit_kbps} onChange={(e) => set("speed_limit_kbps", +e.target.value)} /></SettingRow>
         <Toggle label={t("settings.scheduledLimitLabel")} checked={draft.scheduled_limit?.enabled ?? false} onChange={(v) => set("scheduled_limit", { enabled: v, start_minutes: draft.scheduled_limit?.start_minutes ?? 540, end_minutes: draft.scheduled_limit?.end_minutes ?? 1080, limit_kbps: draft.scheduled_limit?.limit_kbps ?? 2048 })} />
         {draft.scheduled_limit?.enabled && <>
           <SettingRow label={t("settings.scheduledLimitRange")}>
@@ -5776,9 +5925,9 @@ function SettingsPage({ value, onChange, onClose, notify, totalSpeed = 0, active
           </SettingRow>
           <SettingRow label={t("settings.scheduledLimitValue")}><input type="number" min="0" value={draft.scheduled_limit.limit_kbps} onChange={(e) => set("scheduled_limit", { ...draft.scheduled_limit!, enabled: true, limit_kbps: Math.max(0, +e.target.value || 0) })} /></SettingRow>
         </>}
-        <Toggle label="完成后计算 SHA-256" checked={draft.verify_after_download} onChange={(v) => set("verify_after_download", v)} />
+        <Toggle label={t("settings.verifyShaLabel")} checked={draft.verify_after_download} onChange={(v) => set("verify_after_download", v)} />
       </div>
-      <p className="settings-note">开启低内存模式后使用更小的合并缓冲区和连接池；不会改写并发偏好，关闭后自动恢复。</p>
+      <p className="settings-note">{t("settings.lowMemoryNote")}</p>
     </SettingsGroup>}
     {section === "network" && <>
       <SettingsGroup title={t("settings.netProxyGroup")}>
@@ -8517,6 +8666,14 @@ function ContextMenu({ x, y, task, selectedTaskIds, allTasks = [], close, notify
     case "verifying":
     case "waiting-network":
       sections.push(<button key="pause" onClick={() => void action("pause")}><Pause size={13} />{t("contextMenu.pause")}</button>);
+      if (task.task_kind === "bt" || task.category === "video" || task.category === "audio") {
+        sections.push(
+          <button key="stream-play" onClick={() => void api.openFile(task.id).then(close).catch((e) => notify(String(e), "error"))}>
+            <Film size={13} />
+            {t("contextMenu.streamPlay")}
+          </button>
+        );
+      }
       break;
     case "paused":
       sections.push(<button key="resume" onClick={() => void action("resume")}><Play size={13} />{t("contextMenu.resume")}</button>);

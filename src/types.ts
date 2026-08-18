@@ -252,6 +252,15 @@ export interface BtFileEntry {
   path: string;
   length_bytes: number;
   selected: boolean;
+  downloaded_bytes?: number;
+}
+
+/** 种子文件预解析结果（新建任务弹窗预览）。 */
+export interface BtTorrentInspectResult {
+  info_hash: string;
+  name: string;
+  total_bytes: number;
+  files: BtFileEntry[];
 }
 
 /** 新建 BT 任务请求（`bt_task_add`）。source 为 magnet: URI、.torrent 绝对路径或拖放种子文件名。 */

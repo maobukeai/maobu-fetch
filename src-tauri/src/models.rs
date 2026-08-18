@@ -244,12 +244,23 @@ pub struct BtTaskMeta {
 /// 种子内单个文件条目（`bt_task_files` 命令返回，供文件勾选 UI）。
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BtFileEntry {
-    /// aria2 1 基文件索引。
+    /// 1 基文件索引。
     pub index: u32,
     /// 种子内相对路径（去除首个目录前缀后的展示路径）。
     pub path: String,
     pub length_bytes: u64,
     pub selected: bool,
+    #[serde(default)]
+    pub downloaded_bytes: u64,
+}
+
+/// 种子文件预解析结果（新建任务弹窗预览）。
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BtTorrentInspectResult {
+    pub info_hash: String,
+    pub name: String,
+    pub total_bytes: u64,
+    pub files: Vec<BtFileEntry>,
 }
 
 /// BT 任务运行时状态（内存态：随任务事件增量下发，不持久化到数据库）。

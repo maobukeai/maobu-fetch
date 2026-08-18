@@ -70,36 +70,15 @@ export function BtSettingsSection({
         <div>
           <div className="bt-settings-label">{t("bt.componentLabel")}</div>
           <div className="bt-settings-sub">
-            {aria2Available
-              ? `${t("bt.componentInstalled")} · aria2 ${toolStatus?.aria2_version ?? ""} · ${formatBytes(toolStatus?.aria2_installed_bytes ?? 0)}`
-              : t("bt.componentMissing")}
+            {t("bt.componentInstalled")} · {toolStatus?.aria2_version || "librqbit"} · {t("bt.outOfBox")}
           </div>
         </div>
         <div className="bt-settings-actions">
-          {aria2Installing ? (
-            <span className="bt-progress-hint">
-              {t("bt.componentInstalling")} {toolStatus && toolStatus.total_bytes > 0
-                ? `${Math.round((toolStatus.downloaded_bytes / toolStatus.total_bytes) * 100)}%`
-                : ""}
-            </span>
-          ) : aria2Available ? (
-            <button type="button" disabled={busy || disabled} onClick={() => void removeAria2()}>
-              {t("bt.componentRemove")}
-            </button>
-          ) : (
-            <button
-              type="button"
-              className="primary"
-              disabled={busy || disabled}
-              title={toolStatus ? t("bt.componentInstallSizeHint", { size: formatBytes(toolStatus.aria2_download_bytes ?? 0) }) : undefined}
-              onClick={() => void installAria2()}
-            >
-              {t("bt.componentInstall")}
-            </button>
-          )}
+          <span className="bt-badge-inline" style={{ color: "var(--accent, #3b82f6)", fontWeight: 500 }}>
+            {t("bt.ready")}
+          </span>
         </div>
       </div>
-      {error && <p className="bt-settings-error">{error}</p>}
 
       <div className="bt-settings-row">
         <div>

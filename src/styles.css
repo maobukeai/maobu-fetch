@@ -4093,50 +4093,74 @@ svg { flex: 0 0 auto; }
   border: 1px solid rgba(0, 120, 212, 0.22);
   flex-shrink: 0;
 }
+/* 新建任务对话框：输入框下方独立操作工具栏（杜绝遮挡输入文本） */
+.url-input-tools-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 6px;
+  gap: 8px;
+}
+.url-input-tools-left,
+.url-input-tools-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
 /* 新建任务对话框：磁力/种子识别徽标 */
 .bt-input-badge {
-  position: absolute;
-  right: 84px;
-  bottom: 6px;
   display: inline-flex;
   align-items: center;
   gap: 3px;
-  padding: 1px 6px;
-  border-radius: 3px;
-  font-size: 10px;
+  padding: 3px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 500;
   color: var(--accent, #0078d4);
   background: rgba(0, 120, 212, 0.10);
   border: 1px solid rgba(0, 120, 212, 0.22);
   pointer-events: none;
+  white-space: nowrap;
 }
-/* 新建任务对话框：.torrent 文件选择按钮 */
+/* 新建任务对话框：.torrent 文件选择与预览按钮 */
 .torrent-pick-button {
-  position: absolute;
-  right: 6px;
-  bottom: 6px;
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  padding: 2px 8px;
-  font-size: 11px;
+  padding: 3px 10px;
+  font-size: 11.5px;
+  height: 26px;
   border-radius: 4px;
   border: 1px solid var(--border, rgba(0, 0, 0, 0.15));
   background: var(--bg-surface, #fbfbfb);
-  color: var(--text-secondary, #555);
+  color: var(--text, #333);
   cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.15s ease;
 }
-.torrent-pick-button:hover { border-color: var(--accent, #0078d4); color: var(--accent, #0078d4); }
+.torrent-pick-button:hover {
+  border-color: var(--accent, #0078d4);
+  color: var(--accent, #0078d4);
+  background: rgba(0, 120, 212, 0.04);
+}
 .url-input-wrap { position: relative; }
-.bt-input-options { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 6px; }
 .bt-start-paused-toggle {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  font-size: 11px;
-  color: var(--text-secondary, #555);
+  gap: 5px;
+  font-size: 11.5px;
+  color: var(--text-secondary, #444);
   cursor: pointer;
   user-select: none;
   -webkit-user-select: none;
+  white-space: nowrap;
+}
+.bt-start-paused-toggle input[type="checkbox"] {
+  width: 14px !important;
+  height: 14px !important;
+  min-height: 14px !important;
+  margin: 0 !important;
+  cursor: pointer;
 }
 /* 设置页 BT 分区：Tracker 多行输入 */
 .bt-trackers-input {
@@ -4261,4 +4285,73 @@ svg { flex: 0 0 auto; }
 }
 .bt-privacy-card svg { color: #b8860b; flex-shrink: 0; margin-top: 1px; }
 .bt-privacy-card strong { font-size: 11px; }
+
+/* 新建任务对话框：BT 种子/磁力文件预览面板 */
+.form-field input[type="checkbox"],
+.bt-preview-box input[type="checkbox"] {
+  width: 14px !important;
+  min-width: 14px !important;
+  max-width: 14px !important;
+  height: 14px !important;
+  min-height: 14px !important;
+  max-height: 14px !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  flex-shrink: 0 !important;
+  accent-color: var(--accent, #0078d4);
+  cursor: pointer;
+}
+.bt-preview-box {
+  width: 100%;
+  margin-top: 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-surface, #fff);
+  padding: 8px 10px;
+  box-sizing: border-box;
+}
+.bt-preview-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 6px;
+  font-size: 11.5px;
+}
+.bt-preview-list {
+  max-height: 160px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.bt-preview-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 6px;
+  border-radius: 4px;
+  font-size: 11.5px;
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.1s;
+}
+.bt-preview-item:hover {
+  background: var(--bg-subtle, rgba(0, 0, 0, 0.04));
+}
+.bt-preview-item.checked {
+  background: rgba(0, 120, 212, 0.08);
+}
+.bt-preview-item-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text, #111);
+}
+.bt-preview-item-size {
+  color: var(--text-secondary, #666);
+  font-size: 11px;
+  flex-shrink: 0;
+}
 .bt-privacy-card p { font-size: 11px; margin: 2px 0 0; color: var(--text-secondary, #666); }

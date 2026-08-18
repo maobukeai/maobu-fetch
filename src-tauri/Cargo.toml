@@ -1,6 +1,6 @@
 [package]
 name = "maobu-fetch"
-version = "0.7.0"
+version = "0.8.0"
 description = "A clean-room open-source download manager"
 authors = ["Maobu Fetch contributors"]
 license = "MIT"
@@ -42,6 +42,8 @@ base64 = "0.22"
 httpdate = "1"
 zip = { version = "4", default-features = false, features = ["deflate"] }
 fs2 = "0.4"
+# 纯 Rust BitTorrent 引擎（零外部进程依赖，支持 BT v1/v2、DHT、PEX）
+librqbit = { version = "9.0", default-features = false, features = ["rust-tls"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-notification = "2"
 tauri-plugin-clipboard-manager = "2"

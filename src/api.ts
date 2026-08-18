@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { AppInfo, AppSettings, BtFileEntry, BtNewTaskRequest, CacheClearResult, CacheInspectResult, CategoryRule, CategoryRuleTestResult, CompletionAction, DeepLinkReceivedPayload, DetectedMediaTools, DownloadPreset, DownloadTask, DuplicateCheckResult, ErrorDiagnosis, ExtensionCompatibilityResult, ExtensionUpdateResult, FilenameCleanupRule, MediaCredential, MediaCredentialCheckResult, MediaPlatform, MediaProbeResult, MeteredNetworkDetectedPayload, NewTaskRequest, PairingInfo, PlatformCompatibility, PlatformNamingTemplate, PowerAction, PowerActionState, PrecheckRequest, PrecheckResult, ProxyAuth, ProxyTestResult, QuickView, RestorePreview, RestoreStats, RetryPolicy, SelfcheckReport, Tag, TaskEvent, TaskNotificationPayload, TaskTagsMap, TaskTemplate, TaskTemplateTestResult, ToolComponent, ToolStatus, UpdateCheckResult, UpdateDownloadResult, UpdateProgressPayload, UrlHistoryEntry, WaitReason, YtDlpUpdateInfo } from "./types";
+import type { AppInfo, AppSettings, BtFileEntry, BtNewTaskRequest, BtTorrentInspectResult, CacheClearResult, CacheInspectResult, CategoryRule, CategoryRuleTestResult, CompletionAction, DeepLinkReceivedPayload, DetectedMediaTools, DownloadPreset, DownloadTask, DuplicateCheckResult, ErrorDiagnosis, ExtensionCompatibilityResult, ExtensionUpdateResult, FilenameCleanupRule, MediaCredential, MediaCredentialCheckResult, MediaPlatform, MediaProbeResult, MeteredNetworkDetectedPayload, NewTaskRequest, PairingInfo, PlatformCompatibility, PlatformNamingTemplate, PowerAction, PowerActionState, PrecheckRequest, PrecheckResult, ProxyAuth, ProxyTestResult, QuickView, RestorePreview, RestoreStats, RetryPolicy, SelfcheckReport, Tag, TaskEvent, TaskNotificationPayload, TaskTagsMap, TaskTemplate, TaskTemplateTestResult, ToolComponent, ToolStatus, UpdateCheckResult, UpdateDownloadResult, UpdateProgressPayload, UrlHistoryEntry, WaitReason, YtDlpUpdateInfo } from "./types";
 
 export const isDesktop = () => "__TAURI_INTERNALS__" in window;
 const call = <T>(command: string, args?: Record<string, unknown>): Promise<T> => isDesktop() ? invoke<T>(command, args) : Promise.reject(new Error("请运行猫步下载器桌面应用"));
@@ -13,6 +13,13 @@ export const api = {
    * .torrent 文件绝对路径。元数据获取前任务不携带文件名/大小。
    */
   addBt: (request: BtNewTaskRequest) => call<DownloadTask>("bt_task_add", { request }),
+  /** 预解析种子文件或磁力链接（新建任务前预览文件列表与总大小）。 */
+  inspectTorrent: (params: { source?: string; torrentPath?: string; torrentBase64?: string }) =>
+    call<BtTorrentInspectResult>("bt_inspect_torrent", {
+      source: params.source,
+      torrent_path: params.torrentPath,
+      torrent_base64: params.torrentBase64,
+    }),
   /** 列出 BT 任务种子内文件。磁力元数据未就绪时抛 `BT_METADATA_PENDING:` 前缀错误。 */
   btTaskFiles: (id: string) => call<BtFileEntry[]>("bt_task_files", { id }),
   /** 勾选/取消勾选 BT 任务内文件（1 基索引，至少保留一个）。 */
@@ -52,7 +59,7 @@ export const api = {
   powerActionState: () => isDesktop() ? call<PowerActionState>("power_action_get") : Promise.resolve({ action: "none", phase: "idle", remaining_seconds: 0, target_count: 0 } as PowerActionState),
   armPowerAction: (action: PowerAction) => call<PowerActionState>("power_action_arm", { action }),
   cancelPowerAction: () => call<PowerActionState>("power_action_cancel"),
-  openFile: (id: string) => call<void>("task_open_file", { id }),
+  openFile: (id: string, filePath?: string) => call<void>("task_open_file", { id, filePath }),
   openFolder: (id: string) => call<void>("task_open_folder", { id }),
   openExternalUrl: (url: string) => call<void>("open_external_url", { url }),
   verify: (id: string) => call<string>("task_verify", { id }),

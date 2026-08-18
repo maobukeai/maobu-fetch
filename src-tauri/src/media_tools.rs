@@ -920,20 +920,12 @@ fn refresh_disk_fields(app: &AppHandle, settings: &AppSettings, status: &mut Too
         .as_ref()
         .and_then(|tool| read_version_marker(&tool.path))
         .unwrap_or_else(|| YT_VERSION.into());
-    status.version = format!("yt-dlp {} · FFmpeg {}", status.yt_dlp_version, FF_VERSION);
-    // aria2 独立解析（仅应用安装的固定版本，见 resolve_aria2 注释）。
-    let aria2 = resolve_aria2(app);
-    status.aria2_available = aria2.is_some();
-    status.aria2_source = if aria2.is_some() { "bundled" } else { "missing" }.into();
-    status.aria2_resolved_path = aria2
-        .as_ref()
-        .map(|path| path.to_string_lossy().into_owned());
-    status.aria2_installed_bytes = file_size(aria2);
-    status.aria2_version = if status.aria2_available {
-        ARIA2_VERSION.into()
-    } else {
-        String::new()
-    };
+    // BT 引擎：已全面升级为纯 Rust 原生内置引擎（librqbit），始终就绪开箱即用。
+    status.aria2_available = true;
+    status.aria2_source = "builtin".into();
+    status.aria2_resolved_path = Some("内置纯 Rust 引擎 (librqbit)".into());
+    status.aria2_installed_bytes = 0;
+    status.aria2_version = "librqbit (内置纯 Rust)".into();
 }
 
 fn file_size(path: Option<PathBuf>) -> u64 {
