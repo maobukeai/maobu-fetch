@@ -333,19 +333,27 @@ Function PageLeaveReinstall
       ReadRegStr $R1 HKLM "$R6" "UninstallString"
       ExecWait '$R1' $0
     ${Else}
-      ReadRegStr $4 SHCTX "${MANUPRODUCTKEY}" ""
-      ${If} $4 == ""
-        StrCpy $4 "$INSTDIR"
-      ${EndIf}
       ReadRegStr $R1 SHCTX "${UNINSTKEY}" "UninstallString"
       ; 剥离可能已有的外层双引号以安全构建带参命令
       ${WordReplace} "$R1" '"' "" "+" $R2
 
+      ; 优先从卸载程序自身路径推导真实物理安装目录
+      ${GetParent} "$R2" $4
+
+      ; 兜底：如果无法推导或目录不存在，尝试从注册表读取
+      ${If} $4 == ""
+      ${OrIfNot} ${FileExists} "$4"
+        ReadRegStr $4 SHCTX "${UNINSTKEY}" "InstallLocation"
+        ${WordReplace} "$4" '"' "" "+" $4
+      ${EndIf}
+
       StrCpy $R3 ""
-      ${IfThen} $UpdateMode = 1 ${|} StrCpy $R3 "$R3 /UPDATE" ${|} ; append /UPDATE
+      ${IfThen} $UpdateMode = 1 ${|} StrCpy $R3 " /UPDATE" ${|} ; append /UPDATE
       ${IfThen} $PassiveMode = 1 ${|} StrCpy $R3 "$R3 /P" ${|} ; append /P
-      ; _?= 必须是最后一个参数，严格包裹双引号防止目录含空格（如 Program Files）时被截断导致 NSIS Error
+      ; 仅当真实目录存在且非占位符时才传递 _?= 参数
       ${If} $4 != ""
+      ${AndIf} ${FileExists} "$4"
+      ${AndIfNot} "$4" == "${PLACEHOLDER_INSTALL_DIR}"
         StrCpy $R3 '$R3 _?="$4"'
       ${EndIf}
       ExecWait '"$R2"$R3' $0
@@ -355,8 +363,10 @@ Function PageLeaveReinstall
 
     ${IfThen} ${Errors} ${|} StrCpy $0 2 ${|} ; ExecWait failed, set fake exit code
 
+    ; 检查旧版程序是否仍未卸载
     ${If} $0 <> 0
-    ${OrIf} ${FileExists} "$INSTDIR\${MAINBINARYNAME}.exe"
+    ${AndIf} $4 != ""
+    ${AndIf} ${FileExists} "$4\${MAINBINARYNAME}.exe"
       ; User cancelled wix uninstaller? return to select un/reinstall page
       ${If} $WixMode = 1
       ${AndIf} $0 = 1602
@@ -725,9 +735,7 @@ Section Install
   !endif
 
   ; Create start menu shortcut
-  !insertmacro MUI_STARTMENU_WRITE_BEGIN Application
-    Call CreateOrUpdateStartMenuShortcut
-  !insertmacro MUI_STARTMENU_WRITE_END
+  Call CreateOrUpdateStartMenuShortcut
 
   ; Create desktop shortcut for silent and passive installers
   ; because finish page will be skipped
@@ -830,7 +838,7 @@ Section Uninstall
     !insertmacro DeleteAppUserModelId
 
     ; Remove start menu shortcut
-    !insertmacro MUI_STARTMENU_GETFOLDER Application $AppStartMenuFolder
+    StrCpy $AppStartMenuFolder "${PRODUCTNAME}"
     !insertmacro IsShortcutTarget "$SMPROGRAMS\$AppStartMenuFolder\${PRODUCTNAME}.lnk" "$INSTDIR\${MAINBINARYNAME}.exe"
     Pop $0
     ${If} $0 = 1
