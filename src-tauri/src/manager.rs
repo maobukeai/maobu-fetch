@@ -795,6 +795,48 @@ impl DownloadManager {
         Ok(())
     }
 
+    /// 归档任务至历史记录（保留下载链接、目录与元数据，供日后查阅并一键重新下载）。
+    pub async fn archive(self: &SharedManager, id: &str, delete_file: bool) -> Result<(), String> {
+        if let Some(token) = self.controls.lock().await.remove(id) {
+            token.cancel();
+        }
+
+        // 等待正在运行的 worker 退出（最多等待 1 秒）
+        let mut retries = 0;
+        while self.task_runtime.read().await.contains_key(id) && retries < 20 {
+            tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+            retries += 1;
+        }
+
+        if let Some(mut task) = self.store.get_task(id).await? {
+            let is_completed = task.status == TaskStatus::Completed;
+            if task.task_kind == TaskKind::Bt {
+                let _ = self.bt.remove_task(id).await;
+                if delete_file || !is_completed {
+                    let _ = crate::bt::delete_task_files(&task).await;
+                }
+            } else if delete_file || !is_completed {
+                let path = PathBuf::from(&task.destination).join(&task.file_name);
+                let _ = fs::remove_file(&path).await;
+                let temp_path = PathBuf::from(format!("{}.lumaget", path.to_string_lossy()));
+                let _ = fs::remove_file(&temp_path).await;
+                self.clear_parts(&task).await;
+            }
+
+            task.status = TaskStatus::Cancelled;
+            if task.completed_at.is_none() {
+                task.completed_at = Some(now());
+            }
+            task.speed = 0;
+            task.eta_seconds = None;
+            task.active_connections = 0;
+            self.store.upsert_task(&task).await?;
+            self.emit_task("updated", &task);
+            self.dispatcher.notify_waiters();
+        }
+        Ok(())
+    }
+
     pub async fn reorder(&self, ids: &[String]) -> Result<(), String> {
         self.store.reorder(ids).await?;
         let _ = self.app.emit("queue-updated", ids);

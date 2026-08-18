@@ -151,7 +151,7 @@
   },
   "empty": {
     "noHistoryTasks": "No tasks in history",
-    "noHistoryTasksDesc": "Completed tasks older than the archive threshold, or older tasks exceeding the main list limit, will be moved here automatically.",
+    "noHistoryTasksDesc": "Deleted, completed, or archived tasks are preserved here. You can view original links/directories and re-download anytime.",
     "noTasks": "No download tasks yet",
     "noTasksInCategory": "No tasks in this category",
     "noTasksDesc": "Add a link, or send a download from the Chrome / Edge extension.",

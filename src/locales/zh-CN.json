@@ -151,7 +151,7 @@
   },
   "empty": {
     "noHistoryTasks": "历史中暂无任务",
-    "noHistoryTasksDesc": "已完成且超过归档天数的任务，或超出主列表阈值的旧任务会自动归入此处。",
+    "noHistoryTasksDesc": "在主列表中删除、已完成归档或超期的任务均会保留在此处，您可随时查看下载链接与保存目录，并一键重新下载。",
     "noTasks": "还没有下载任务",
     "noTasksInCategory": "此分类中没有任务",
     "noTasksDesc": "添加链接，或从 Chrome / Edge 扩展发送下载。",

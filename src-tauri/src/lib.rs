@@ -309,6 +309,15 @@ async fn task_remove(
     manager.inner().remove(&id, delete_file).await
 }
 
+#[tauri::command]
+async fn task_archive(
+    id: String,
+    delete_file: bool,
+    manager: State<'_, SharedManager>,
+) -> Result<(), String> {
+    manager.inner().archive(&id, delete_file).await
+}
+
 /// Task 21.2：重命名任务文件名。
 ///
 /// 仅允许 `Queued`（等待中，即未开始）状态的任务重命名，避免与活动分片、
@@ -2909,6 +2918,7 @@ pub fn run() {
             proxy_test,
             tasks_bulk_action,
             task_remove,
+            task_archive,
             task_rename,
             queue_reorder,
             settings_get,

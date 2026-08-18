@@ -51,6 +51,7 @@ export const api = {
     call<ProxyTestResult>("proxy_test", { proxyUrl, auth }),
   bulkAction: (ids: string[], action: string) => call<void>("tasks_bulk_action", { ids, action }),
   remove: (id: string, deleteFile: boolean) => call<void>("task_remove", { id, deleteFile }),
+  archive: (id: string, deleteFile: boolean) => call<void>("task_archive", { id, deleteFile }),
   /** Task 21.2：重命名任务文件名。仅 Queued 状态可用；后端会校验合法性和重名。 */
   rename: (id: string, newFilename: string) => call<DownloadTask>("task_rename", { id, newFilename }),
   reorder: (ids: string[]) => call<void>("queue_reorder", { ids }),

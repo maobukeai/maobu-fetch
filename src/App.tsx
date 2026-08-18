@@ -1008,7 +1008,7 @@ export default function App() {
     const mainTasks: DownloadTask[] = [];
     const historyTasks: DownloadTask[] = [];
     for (const task of tasks) {
-      if (isOldCompleted(task) || overflowIds.has(task.id)) {
+      if (task.status === "cancelled" || isOldCompleted(task) || overflowIds.has(task.id)) {
         historyTasks.push(task);
       } else {
         mainTasks.push(task);
@@ -1096,6 +1096,14 @@ export default function App() {
   };
   const bulk = async (action: string) => {
     try {
+      if (view === "history" && (action === "resume" || action === "redownload")) {
+        for (const id of selected) {
+          await api.action(id, "redownload");
+        }
+        setSelected(new Set());
+        notify("已重新加入下载队列并开始下载");
+        return;
+      }
       const ids = action === "resume"
         ? [...selected].filter((id) => { const t = tasks.find((task) => task.id === id); return t && !["completed", "cancelled"].includes(t.status); })
         : [...selected];
@@ -1106,11 +1114,28 @@ export default function App() {
   };
   const removeSelected = async (deleteFile: boolean) => {
     try {
+      const isHistory = view === "history";
       const selectedList = tasks.filter((t) => selected.has(t.id));
       const hasIncomplete = selectedList.some((t) => t.status !== "completed");
-      for (const id of selected) await api.remove(id, deleteFile);
+      for (const id of selected) {
+        if (isHistory) {
+          await api.remove(id, deleteFile);
+        } else {
+          await api.archive(id, deleteFile);
+        }
+      }
       setSelected(new Set());
-      notify(deleteFile ? "任务和文件已删除" : hasIncomplete ? "任务记录及未完成文件已清理" : "任务记录已删除");
+      notify(
+        isHistory
+          ? deleteFile
+            ? "已从历史中彻底删除任务及文件"
+            : "已从历史中彻底删除任务记录"
+          : deleteFile
+            ? "任务文件已删除，下载链接已归档至历史记录"
+            : hasIncomplete
+              ? "未完成任务已清理，下载链接已保留至历史记录"
+              : "任务已移入历史记录（可在历史中随时重新下载）"
+      );
     } catch (error) { notify(String(error), "error"); }
   };
   // Task 24.3: 清空历史视图——仅删除当前归入历史的任务，不动主列表。
@@ -1205,21 +1230,30 @@ export default function App() {
   };
   const handleDeleteTasks = useCallback(async (taskIds: Set<string>, deleteFile: boolean) => {
     if (taskIds.size === 0) return;
+    const isHistoryView = view === "history";
     const taskList = tasks.filter((t) => taskIds.has(t.id));
     const hasIncomplete = taskList.some((t) => t.status !== "completed");
     const succeeded: string[] = [];
     try {
       for (const id of taskIds) {
-        await api.remove(id, deleteFile);
+        if (isHistoryView) {
+          await api.remove(id, deleteFile);
+        } else {
+          await api.archive(id, deleteFile);
+        }
         succeeded.push(id);
       }
       const count = succeeded.length;
       notify(
-        deleteFile
-          ? count === 1 ? "任务和文件已删除" : `${count} 个任务和文件已删除`
-          : hasIncomplete
-          ? count === 1 ? "任务及未完成文件已清理" : `${count} 个任务及未完成文件已清理`
-          : count === 1 ? "任务记录已删除" : `${count} 个任务记录已删除`
+        isHistoryView
+          ? deleteFile
+            ? count === 1 ? "已从历史中彻底删除任务及文件" : `已从历史中彻底删除 ${count} 个任务及文件`
+            : count === 1 ? "已从历史中彻底删除任务记录" : `已从历史中彻底删除 ${count} 个任务记录`
+          : deleteFile
+            ? count === 1 ? "任务文件已删除，下载链接已归档至历史记录" : `${count} 个任务文件已删除，链接已归档至历史`
+            : hasIncomplete
+            ? count === 1 ? "任务及未完成文件已清理，下载链接已保留至历史记录" : `${count} 个任务及未完成文件已清理，链接已保留至历史`
+            : count === 1 ? "任务已移入历史记录（可随时在历史中重新下载）" : `${count} 个任务已移入历史记录`
       );
     } catch (error) {
       notify(String(error), "error");
@@ -1233,7 +1267,7 @@ export default function App() {
         setPrimaryTaskId((prev) => prev && succeeded.includes(prev) ? undefined : prev);
       }
     }
-  }, [notify, tasks]);
+  }, [notify, tasks, view]);
 
   // Task 21.1: 任务列表全局快捷键。
   // - 仅在主列表区域使用：当焦点在 input/textarea/contenteditable 时不触发，
@@ -1907,6 +1941,22 @@ function TaskRow({ task, selected, showCompletedAt, taskTagList, notify, onSelec
           style={{ color: "var(--accent, #0078d4)" }}
         >
           <Film size={14} />
+        </button>
+      )}
+      {(task.status === "cancelled" || task.status === "completed") && (
+        <button
+          type="button"
+          className="row-menu"
+          onClick={(event) => {
+            event.stopPropagation();
+            void api.action(task.id, "redownload").then(() => {
+              notify("已重新加入下载队列并开始下载");
+            }).catch((e) => notify(String(e), "error"));
+          }}
+          title={t("contextMenu.redownload") || "重新下载"}
+          style={{ color: "var(--accent, #0078d4)" }}
+        >
+          <RefreshCw size={13} />
         </button>
       )}
       <button type="button" className="row-menu" onClick={(event) => { event.stopPropagation(); onContext(event); }}><MoreHorizontal size={15} /></button>
@@ -8717,9 +8767,40 @@ function ContextMenu({ x, y, task, selectedTaskIds, allTasks = [], close, notify
       }
       sections.push(<button key="redownload" onClick={() => void action("redownload")}><RefreshCw size={13} />{t("contextMenu.redownload")}{countTag}</button>);
       break;
+    case "cancelled":
+      sections.push(
+        <button key="redownload" onClick={() => void action("redownload")}>
+          <RefreshCw size={13} />
+          {t("contextMenu.redownload")}{countTag}
+        </button>
+      );
+      if (targetTaskIds.size <= 1) {
+        sections.push(
+          <button key="open-folder" onClick={() => void api.openFolder(task.id).then(close).catch((e) => notify(String(e), "error"))}>
+            <FolderOpen size={13} />
+            {t("contextMenu.openFolder")}
+          </button>
+        );
+      }
+      sections.push(
+        <button key="copy-path" onClick={() => {
+          if (targetTaskIds.size <= 1) {
+            void copyText(t("contextMenu.filePathLabel"), buildFilePath());
+          } else {
+            const paths = targetTasks.map((t) => {
+              const sep = t.destination.endsWith("\\") || t.destination.endsWith("/") ? "" : "\\";
+              return `${t.destination}${sep}${t.file_name}`;
+            }).join("\n");
+            void copyText(t("contextMenu.filePathLabel"), paths);
+          }
+        }}>
+          <Copy size={13} />
+          {t("contextMenu.copyFilePath")}{countTag}
+        </button>
+      );
+      break;
     case "queued":
     case "scheduled":
-    case "cancelled":
     default:
       break;
   }
@@ -8747,17 +8828,18 @@ function ContextMenu({ x, y, task, selectedTaskIds, allTasks = [], close, notify
   if (sections.length > 0) pushSep();
   sections.push(<button key="copy-url" onClick={() => void copyUrls()}><Copy size={13} />{t("contextMenu.copyLink")}{countTag}</button>);
 
+  const isHistoryOrCancelled = task.status === "cancelled";
   pushSep();
   sections.push(
     <button key="delete-record" className="danger" onClick={() => void confirmDelete(false)}>
       <Trash2 size={13} />
-      {t("dialogs.deleteRecordOnly")}{countTag}
+      {isHistoryOrCancelled ? (t("dialogs.deletePermanently") || "彻底删除记录") : t("dialogs.deleteRecordOnly")}{countTag}
     </button>
   );
   sections.push(
     <button key="delete-file" className="danger" onClick={() => void confirmDelete(true)}>
       <Trash2 size={13} />
-      {t("dialogs.deleteRecordAndFile")}{countTag}
+      {isHistoryOrCancelled ? (t("dialogs.deletePermanentlyAndFile") || "彻底删除记录与本地文件") : t("dialogs.deleteRecordAndFile")}{countTag}
     </button>
   );
 
