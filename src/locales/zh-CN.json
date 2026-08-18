@@ -303,6 +303,8 @@
     "deleteRecordOnlyDesc": "仅从列表中移除下载记录，保留已下载的本地文件。",
     "deleteRecordAndFile": "删除记录和文件",
     "deleteRecordAndFileDesc": "从列表中移除记录，并从磁盘中永久删除已下载的文件。",
+    "deletePermanently": "彻底删除记录",
+    "deletePermanentlyAndFile": "彻底删除记录和文件",
     "forceDeleteTitle": "确认删除文件",
     "forceDeleteMessage": "确定要彻底删除选中的 {count} 个任务和对应的本地文件吗？",
     "forceDeleteConfirm": "将永久删除 {count} 个任务及其文件，此操作无法撤销。",

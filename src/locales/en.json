@@ -303,6 +303,8 @@
     "deleteRecordOnlyDesc": "Remove the download record from the list, keeping the downloaded local files.",
     "deleteRecordAndFile": "Delete Record and File",
     "deleteRecordAndFileDesc": "Remove the record from the list and permanently delete the downloaded files from disk.",
+    "deletePermanently": "Delete Permanently",
+    "deletePermanentlyAndFile": "Delete Permanently and File",
     "forceDeleteTitle": "Confirm file deletion",
     "forceDeleteMessage": "Are you sure you want to permanently delete the selected {count} tasks and their files?",
     "forceDeleteConfirm": "This will permanently delete {count} tasks and their files. This action cannot be undone.",
