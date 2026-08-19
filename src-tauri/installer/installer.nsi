@@ -350,13 +350,17 @@ Function PageLeaveReinstall
       StrCpy $R3 ""
       ${IfThen} $UpdateMode = 1 ${|} StrCpy $R3 " /UPDATE" ${|} ; append /UPDATE
       ${IfThen} $PassiveMode = 1 ${|} StrCpy $R3 "$R3 /P" ${|} ; append /P
-      ; 仅当真实目录存在且非占位符时才传递 _?= 参数
+      ; 仅当真实目录存在且非占位符时才传递 _?= 参数（NSIS 规定 _?= 后面不得加引号）
       ${If} $4 != ""
       ${AndIf} ${FileExists} "$4"
       ${AndIfNot} "$4" == "${PLACEHOLDER_INSTALL_DIR}"
-        StrCpy $R3 '$R3 _?="$4"'
+        StrCpy $R3 "$R3 _?=$4"
       ${EndIf}
-      ExecWait '"$R2"$R3' $0
+      ${If} ${FileExists} "$R2"
+        ExecWait '"$R2"$R3' $0
+      ${Else}
+        StrCpy $0 0
+      ${EndIf}
     ${EndIf}
 
     BringToFront
@@ -718,7 +722,7 @@ Section Install
   WriteRegStr SHCTX "${UNINSTKEY}" "DisplayIcon" "$\"$INSTDIR\${MAINBINARYNAME}.exe$\""
   WriteRegStr SHCTX "${UNINSTKEY}" "DisplayVersion" "${VERSION}"
   WriteRegStr SHCTX "${UNINSTKEY}" "Publisher" "${MANUFACTURER}"
-  WriteRegStr SHCTX "${UNINSTKEY}" "InstallLocation" "$\"$INSTDIR$\""
+  WriteRegStr SHCTX "${UNINSTKEY}" "InstallLocation" "$INSTDIR"
   WriteRegStr SHCTX "${UNINSTKEY}" "UninstallString" "$\"$INSTDIR\uninstall.exe$\""
   WriteRegDWORD SHCTX "${UNINSTKEY}" "NoModify" "1"
   WriteRegDWORD SHCTX "${UNINSTKEY}" "NoRepair" "1"
