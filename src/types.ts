@@ -443,6 +443,10 @@ export interface AppSettings {
   bt_intercept_magnet?: boolean;
   /** BT 额外 Tracker 列表（每行一个 URL）。空 = 不追加。 */
   bt_extra_trackers?: string;
+  /** BT Tracker 订阅源 URL。 */
+  bt_tracker_subscribe_url?: string;
+  /** 是否自动更新 Tracker 订阅。 */
+  bt_tracker_auto_update?: boolean;
   /** 分时段限速规则（2026-08-17）。`null`/缺省 = 未配置。 */
   scheduled_limit?: ScheduledSpeedLimit | null;
 }
@@ -562,7 +566,7 @@ export type MediaType = "video" | "audio" | "gallery" | "mixed" | "collection";
 export interface MediaEpisode { index: number; title: string; url: string; duration?: number; }
 export interface MediaProbeResult { title: string; thumbnail?: string; extractor?: string; duration?: number; formats: MediaFormat[]; subtitles: string[]; drm: boolean; media_type: MediaType; episodes?: MediaEpisode[]; }
 export interface TaskEvent { task: DownloadTask; event: string; }
-export type FilterKey = "all" | TaskStatus | "images" | "video" | "audio" | "documents" | "archives" | "apps";
+export type FilterKey = "all" | TaskStatus | "images" | "video" | "audio" | "documents" | "archives" | "apps" | "bt";
 
 // Task 26: 应用更新检查与提醒（只检查不自动下载，AGENTS.md §6）。
 export interface UpdateInfo {

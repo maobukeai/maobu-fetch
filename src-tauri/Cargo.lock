@@ -3168,7 +3168,7 @@ dependencies = [
 
 [[package]]
 name = "maobu-fetch"
-version = "0.8.0"
+version = "0.8.5"
 dependencies = [
  "aes-gcm",
  "axum",

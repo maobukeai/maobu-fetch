@@ -23,6 +23,7 @@
   const isContextValid = () => {
     try { return Boolean(chrome?.runtime?.id); } catch { return false; }
   };
+  const isDownloadableMagnet = (value) => /^magnet:\?[^#]*xt=urn:btih:/i.test(String(value || "").trim());
   const truncate = (value, max) => {
     const text = String(value || "");
     return text.length > max ? text.slice(0, max - 1) + "…" : text;
@@ -301,7 +302,11 @@
   }
 
   async function openFabMenu() {
-    const items = [{ label: "复制下载链接", value: "copy" }];
+    const items = [
+      { label: "⬇ 下载当前媒体", value: "send-current" },
+      { label: "📋 复制下载链接", value: "copy" },
+      { label: "📦 抓取本页全部资源与链接", value: "grab-resources" },
+    ];
     if (fabMode === "page") {
       let mediaQuality = "best";
       try {
@@ -314,10 +319,14 @@
     items.push({ label: "在此站点隐藏悬浮按钮", value: "hide" });
     try {
       Ui?.showFabMenu?.(fabElement, items, (value) => {
-        if (value === "copy") {
+        if (value === "send-current") {
+          sendToDesktop();
+        } else if (value === "copy") {
           void (navigator.clipboard?.writeText?.(fabUrl) || Promise.reject())
             .then(() => showBadge("info", "已复制链接"))
             .catch(() => showBadge("error", "复制失败：页面不允许访问剪贴板"));
+        } else if (value === "grab-resources") {
+          void sendMessageSafe({ type: "grab-page-resources" });
         } else if (value?.startsWith("quality:")) {
           const quality = value.slice("quality:".length);
           try { void chrome.storage.local.set({ mediaQuality: quality }); } catch {}
@@ -349,7 +358,7 @@
 
   // 窗口缩放时重新收拢位置，避免悬浮按钮跑出可视区域。
   window.addEventListener("resize", () => {
-    if (fabElement) applyFabPosition(fabElement);
+    if (fabElement && isContextValid()) applyFabPosition(fabElement);
   });
 
   // ==================== magnet: 链接点击拦截（BT-08） ====================
@@ -432,6 +441,45 @@
       sniffedItems = Array.isArray(message.items) ? message.items : [];
       syncFab();
       sendResponse({ ok: true });
+      return false;
+    }
+    if (message?.type === "grab-page-resources") {
+      const items = [];
+      const seen = new Set();
+      const pushItem = (url, title, type) => {
+        const raw = String(url || "").trim();
+        if (!raw || seen.has(raw)) return;
+        if (!isDownloadableMagnet(raw) && !/^https?:\/\//i.test(raw)) return;
+        seen.add(raw);
+        items.push({ url: raw, title: String(title || "").trim() || raw, type: type || "link" });
+      };
+
+      document.querySelectorAll("video, audio, source").forEach((el) => {
+        const src = el.currentSrc || el.src;
+        if (src) pushItem(src, document.title, el.tagName.toLowerCase());
+      });
+
+      for (const el of Array.from(document.links || [])) {
+        const href = el.href;
+        const text = el.innerText || el.textContent || el.title || el.download || "";
+        if (href) pushItem(href, text, el.hasAttribute("download") ? "download" : "link");
+      }
+
+      for (const el of Array.from(document.images || [])) {
+        const src = el.currentSrc || el.src;
+        const title = el.alt || el.title || "";
+        if (src && /^https?:\/\//i.test(src)) pushItem(src, title, "image");
+      }
+
+      for (const s of sniffedItems) {
+        if (s?.url) pushItem(s.url, s.title || s.name, s.kind || "video");
+      }
+
+      for (const f of found.values()) {
+        if (f?.url) pushItem(f.url, f.title, f.type);
+      }
+
+      sendResponse({ ok: true, items });
       return false;
     }
     return false;

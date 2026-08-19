@@ -136,7 +136,7 @@ header i.unpaired {
   font-weight: 500;
   cursor: pointer;
   transition: all 0.2s;
-  margin-right: 4px;
+  margin-right: 2px;
 }
 .top-bypass-btn:hover {
   background: var(--accent);
@@ -150,6 +150,24 @@ header i.unpaired {
 .top-bypass-btn.active:hover {
   background: var(--warning);
   color: #ffffff;
+}
+.github-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border-radius: 6px;
+  color: var(--muted);
+  background: transparent;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: color 0.15s, background-color 0.15s;
+}
+.github-btn:hover {
+  color: var(--text);
+  background: var(--accent-light);
 }
 
 section {
@@ -909,20 +927,29 @@ footer button:hover {
 /* 当前站点快捷决策（P2-10） */
 .site-actions {
   display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
 }
 
 .site-actions button {
   flex: 1;
-  min-width: 72px;
+  min-width: 0;
   height: 28px;
+  padding: 0 4px;
   border: 1px solid var(--border-strong);
   border-radius: 6px;
   color: var(--accent);
   background: var(--control);
-  font-size: 10px;
+  font-size: 10.5px;
   font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
   transition: background-color 0.15s, border-color 0.15s;
 }
 

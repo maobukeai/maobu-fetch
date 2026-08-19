@@ -333,6 +333,24 @@ async fn task_rename(
 }
 
 #[tauri::command]
+async fn task_refresh_url(
+    id: String,
+    new_url: String,
+    headers: Option<std::collections::HashMap<String, String>>,
+    manager: State<'_, SharedManager>,
+) -> Result<DownloadTask, String> {
+    manager.refresh_url(&id, &new_url, headers).await
+}
+
+#[tauri::command]
+async fn bt_update_trackers(
+    subscribe_url: Option<String>,
+    manager: State<'_, SharedManager>,
+) -> Result<usize, String> {
+    manager.fetch_and_update_trackers(subscribe_url.as_deref()).await
+}
+
+#[tauri::command]
 async fn queue_reorder(ids: Vec<String>, manager: State<'_, SharedManager>) -> Result<(), String> {
     manager.reorder(&ids).await
 }
@@ -2920,6 +2938,8 @@ pub fn run() {
             task_remove,
             task_archive,
             task_rename,
+            task_refresh_url,
+            bt_update_trackers,
             queue_reorder,
             settings_get,
             settings_save,

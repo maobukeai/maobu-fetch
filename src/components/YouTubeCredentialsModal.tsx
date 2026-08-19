@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { KeyRound, Globe, FileText, Check, AlertCircle, RefreshCw } from "lucide-react";
-import { Modal } from "../App";
+import { Modal } from "./common/Modal";
 import { api } from "../api";
 
 export interface YouTubeCredentialsModalProps {

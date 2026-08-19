@@ -58,7 +58,7 @@ test("wiring: options.js 的字段/hint id 都存在于 options.html", () => {
 
 test("wiring: selection.js 引用的元素 id 都存在于 selection.html", () => {
   const ids = htmlIds(read("selection.html"));
-  for (const id of ["selectionList", "status", "send", "selectAll", "linkCount", "cancel"]) {
+  for (const id of ["selectionList", "status", "send", "selectAll", "linkCount", "cancel", "searchFilter", "categoryChips", "invertSelection", "filteredHint"]) {
     assert.ok(ids.has(id), `selection.html 缺少 #${id}`);
   }
 });
@@ -70,9 +70,10 @@ test("wiring: selection.js 引用的元素 id 都存在于 selection.html", () =
 const BACKGROUND_HANDLED = [
   "media", "pair", "health", "send", "download-page-media", "probe", "send-magnet",
   "bypass", "sniffed-media", "sniff-toggle", "recent-tasks", "task-action", "sync-cookies",
+  "grab-page-resources",
 ];
 // content script 必须处理的消息类型（background 经 tabs.sendMessage 推送）。
-const CONTENT_HANDLED = ["show-overlay", "show-badge", "sniffed-media"];
+const CONTENT_HANDLED = ["show-overlay", "show-badge", "sniffed-media", "grab-page-resources"];
 
 test("wiring: background 处理全部已知扩展消息类型", () => {
   const bg = read("background.js");

@@ -1,5 +1,5 @@
 <!doctype html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="popup.css"><title>猫步下载器</title></head><body><main>
-  <header><img src="icon128.png" alt=""><div><b>猫步下载器</b><span>Maobu Fetch · <em id="connection" style="font-style:normal">正在检测桌面端…</em></span></div><button id="topBypass" class="top-bypass-btn" title="点击临时暂停接管 10 分钟">⏸ 暂停接管 10m</button><i id="status"></i></header>
+  <header><img src="icon128.png" alt=""><div><b>猫步下载器</b><span>Maobu Fetch · <em id="connection" style="font-style:normal">正在检测桌面端…</em></span></div><button id="topBypass" class="top-bypass-btn" title="点击临时暂停接管 10 分钟">⏸ 暂停接管 10m</button><button id="openGithub" class="github-btn" title="访问 GitHub 开源项目" aria-label="GitHub"><svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.53 1.032 1.53 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z"/></svg></button><i id="status"></i></header>
   <section id="pairBox" class="pair hidden"><b>连接桌面端</b><p>在猫步下载器的设置 → 浏览器中查看一次性配对码。</p><div><input id="pairCode" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="6 位配对码" aria-label="6 位配对码"><button id="pair">配对</button></div></section>
   <section id="updateBox" class="pair hidden"><b>扩展需要更新</b><p id="updateText"></p><div><button id="reloadExt">重载扩展</button></div></section>
   <section class="quick"><label>快速下载</label><div class="quick-row"><div class="url-wrap" id="urlWrap"><span id="magnetBadge" class="magnet-badge hidden" title="检测到磁力链接，将作为 BT 任务下载">🧲</span><input id="url" placeholder="粘贴下载链接或 magnet: 磁力链接" aria-label="下载链接"><button id="paste" class="paste-btn" title="从剪贴板粘贴链接">⎘</button></div><button id="send">发送</button></div><p id="message">连接状态检测中…</p></section>
@@ -17,9 +17,10 @@
     <div class="site-actions">
       <button id="siteAlwaysTake" title="此站点的下载总是交给猫步下载器（跳过大小/类型规则）">总是接管</button>
       <button id="siteAlwaysBypass" title="此站点的下载总是由浏览器处理">总是放行</button>
+      <button id="grabPageResources" title="提取当前页面中的全部音视频、图片、压缩包与下载链接">📦 抓取资源</button>
+      <button id="sniffToggle" title="为此站点开启流嗅探：记录页面播放器发出的媒体直链（仅内存，不上传）">流嗅探：关</button>
       <button id="siteClearChoice" class="hidden" title="清除记住的站点选择">清除记忆</button>
       <button id="restoreFab" class="hidden" title="重新在此站点显示页内悬浮下载按钮">恢复悬浮按钮</button>
-      <button id="sniffToggle" title="为此站点开启流嗅探：记录页面播放器发出的媒体直链（仅内存，不上传）">流嗅探：关</button>
     </div>
   </section>
   <section id="sniffBox" class="sniff-box hidden">

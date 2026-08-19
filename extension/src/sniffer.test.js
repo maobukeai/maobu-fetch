@@ -98,17 +98,19 @@ test("attachSniffer: 仅记录已开启站点的媒体 URL 并推送给对应标
   await new Promise((resolve) => setTimeout(resolve, 10)); // 等待域名表异步加载
 
   listeners.before({ tabId: 3, url: "https://video.example/hls/index.m3u8?tok=1" });
+  listeners.before({ tabId: 3, url: "https://cdn.othercdn.com/seg.m4s", initiator: "https://video.example" }); // 开启站点的跨域 CDN 媒体流
   listeners.before({ tabId: 3, url: "https://other.example/clip.mp4" }); // 未开启嗅探的站点
   listeners.before({ tabId: 3, url: "https://video.example/page.html" }); // 非媒体扩展名
   listeners.before({ tabId: -1, url: "https://video.example/a.mp4" }); // 非页面请求
 
-  assert.equal(sent.length, 1, "只有开启站点的媒体 URL 会推送");
+  assert.equal(sent.length, 2, "开启站点的主机直连或跨域 CDN 媒体 URL 均会推送");
   assert.equal(sent[0][0], 3);
   assert.equal(sent[0][1].type, "sniffed-media");
   assert.equal(sent[0][1].items.at(-1).url, "https://video.example/hls/index.m3u8?tok=1");
+  assert.equal(sent[1][1].items.at(-1).url, "https://cdn.othercdn.com/seg.m4s");
 
   const items = bridge.getItems(3);
-  assert.equal(items.length, 1);
+  assert.equal(items.length, 2);
   assert.equal(items[0].kind, "stream");
   assert.equal(bridge.isHostEnabled("www.video.example"), true);
   assert.equal(bridge.isHostEnabled("other.example"), false);

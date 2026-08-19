@@ -102,6 +102,12 @@ async function health() {
 await health().catch(() => {});
 const reloadExtEl = $("reloadExt");
 if (reloadExtEl) reloadExtEl.onclick = () => chrome.runtime.reload();
+const openGithubEl = $("openGithub");
+if (openGithubEl) {
+  openGithubEl.onclick = () => {
+    chrome.tabs.create({ url: "https://github.com/maobukeai/maobu-fetch" });
+  };
+}
 const refreshEl = $("refresh");
 if (refreshEl) refreshEl.onclick = async () => {
   await health().catch(() => {});
@@ -475,6 +481,15 @@ const siteAlwaysTakeEl = $("siteAlwaysTake");
 if (siteAlwaysTakeEl) siteAlwaysTakeEl.onclick = () => { void writeSiteChoice("take"); message("已记住：此站点总是接管"); };
 const siteAlwaysBypassEl = $("siteAlwaysBypass");
 if (siteAlwaysBypassEl) siteAlwaysBypassEl.onclick = () => { void writeSiteChoice("bypass"); message("已记住：此站点由浏览器下载"); };
+const grabPageResourcesEl = $("grabPageResources");
+if (grabPageResourcesEl) grabPageResourcesEl.onclick = async () => {
+  try {
+    await call({ type: "grab-page-resources", tabId });
+    window.close();
+  } catch (e) {
+    message("抓取失败: " + String(e));
+  }
+};
 const siteClearChoiceEl = $("siteClearChoice");
 if (siteClearChoiceEl) siteClearChoiceEl.onclick = () => { void writeSiteChoice(null); message("已清除站点记忆"); };
 const restoreFabEl = $("restoreFab");

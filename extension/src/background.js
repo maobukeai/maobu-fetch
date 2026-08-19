@@ -89,10 +89,59 @@ chrome.runtime.onInstalled.addListener(() => {
   chrome.contextMenus.removeAll(() => {
     chrome.contextMenus.create({ id: "lumaget-link", title: "使用猫步下载器下载链接", contexts: ["link"] });
     chrome.contextMenus.create({ id: "lumaget-media", title: "使用猫步下载器下载媒体", contexts: ["video", "audio", "image"] });
+    chrome.contextMenus.create({ id: "lumaget-page-grab", title: "使用猫步下载器批量抓取本页资源与链接", contexts: ["page"] });
     chrome.contextMenus.create({ id: "lumaget-page", title: "使用猫步下载器分析当前页面", contexts: ["page"] });
     chrome.contextMenus.create({ id: "lumaget-selection", title: "使用猫步下载器下载选中文字中的链接", contexts: ["selection"] });
   });
 });
+
+async function openResourceGrabberForTab(tab) {
+  if (!tab?.id) return;
+  let items = [];
+  try {
+    const res = await chrome.tabs.sendMessage(tab.id, { type: "grab-page-resources" });
+    if (res?.items) items = res.items;
+  } catch {
+    try {
+      if (chrome.scripting?.executeScript) {
+        await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["src/content-ui.js", "src/content.js"] });
+        const res = await chrome.tabs.sendMessage(tab.id, { type: "grab-page-resources" });
+        if (res?.items) items = res.items;
+      }
+    } catch {}
+  }
+  if (snifferBridge) {
+    const sniffed = snifferBridge.getItems(tab.id) || [];
+    for (const s of sniffed) {
+      if (s?.url && !items.some((it) => (it.url || it) === s.url)) {
+        items.push({ url: s.url, title: s.title || s.name, type: s.kind || "video" });
+      }
+    }
+  }
+  if (!items.length) {
+    notify("本页暂无资源", "未在当前页面探测到音视频、图片或下载链接");
+    return;
+  }
+  const selectionUrl = chrome.runtime.getURL(`src/selection.html#${encodeURIComponent(JSON.stringify(items))}`);
+  try {
+    if (chrome.windows?.create) {
+      await chrome.windows.create({
+        url: selectionUrl,
+        type: "popup",
+        width: 680,
+        height: 560,
+      });
+    } else {
+      await chrome.tabs.create({ url: selectionUrl });
+    }
+  } catch {
+    try {
+      await chrome.tabs.create({ url: selectionUrl });
+    } catch {
+      notify("打开失败", "无法创建提取器窗口");
+    }
+  }
+}
 
 // ---- 页面媒体发送（右键"分析当前页面"、悬浮按钮 page 模式、快捷键共用） ----
 // 附带当前页 Cookie：B 站等平台风控要求 buvid 等 Cookie，裸请求会被 412 拦截。
@@ -122,6 +171,10 @@ async function sendPageMedia(url, title, cookieStoreId) {
 }
 
 chrome.contextMenus.onClicked.addListener(async (info, tab) => {
+  if (info.menuItemId === "lumaget-page-grab") {
+    await openResourceGrabberForTab(tab);
+    return;
+  }
   // 选中文字链接：提取磁力与 HTTP(S) 链接（最多 5 条）。
   // 单条直接发送；多条先打开预览页勾选确认，避免一次性批量添加任务。
   if (info.menuItemId === "lumaget-selection") {
@@ -466,6 +519,21 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
         cookie: message.cookie
       });
       if (!response.ok) throw new Error(await response.text() || `HTTP ${response.status}`);
+      return { ok: true };
+    }
+    if (message.type === "grab-page-resources") {
+      let targetTab = null;
+      if (message.tabId) {
+        try { targetTab = await chrome.tabs.get(Number(message.tabId)); } catch {}
+      }
+      if (!targetTab) targetTab = sender.tab;
+      if (!targetTab) {
+        const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+        targetTab = tabs[0];
+      }
+      if (targetTab) {
+        await openResourceGrabberForTab(targetTab);
+      }
       return { ok: true };
     }
     return { ok: false, error: "未知请求" };

@@ -135,9 +135,18 @@ export function attachSniffer(deps = {}) {
   const onBeforeRequest = (details) => {
     if (!details || !(details.tabId >= 0)) return;
     if (!isSniffableMediaUrl(details.url)) return;
-    let hostname = "";
-    try { hostname = new URL(details.url).hostname.toLowerCase(); } catch { return; }
-    if (!hostMatchesList(hostname, enabledHosts)) return;
+
+    let initiatorHost = "";
+    if (details.initiator) {
+      try { initiatorHost = new URL(details.initiator).hostname.toLowerCase(); } catch {}
+    }
+    let requestHost = "";
+    try { requestHost = new URL(details.url).hostname.toLowerCase(); } catch {}
+
+    const isMatch = (initiatorHost && hostMatchesList(initiatorHost, enabledHosts))
+      || (requestHost && hostMatchesList(requestHost, enabledHosts));
+    if (!isMatch) return;
+
     const list = pushSniffedItem(sniffed.get(details.tabId) || [], details.url);
     sniffed.set(details.tabId, list);
     // 推送给 content script（FAB 直连用最新 10 条）；页面无接收方时静默忽略。

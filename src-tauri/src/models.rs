@@ -840,6 +840,12 @@ pub struct AppSettings {
     /// 空 = 不追加。旧 JSON 缺失时默认空。
     #[serde(default)]
     pub bt_extra_trackers: String,
+    /// BT Tracker 订阅源 URL（2026-08-19）：远程 Tracker 列表订阅地址，用于自动更新 Trackers。
+    #[serde(default = "default_bt_tracker_subscribe_url")]
+    pub bt_tracker_subscribe_url: String,
+    /// 是否自动更新 Trackers。
+    #[serde(default)]
+    pub bt_tracker_auto_update: bool,
     /// 分时段限速规则（2026-08-17）：每日时间窗口内用独立限速覆盖全局限速。
     ///
     /// `None` 表示未配置（等效于不启用）。旧 JSON 缺失此字段时通过 serde
@@ -882,6 +888,10 @@ fn default_bt_upload_limit_kbps() -> u64 {
 
 fn default_bt_intercept_magnet() -> bool {
     true
+}
+
+fn default_bt_tracker_subscribe_url() -> String {
+    "https://raw.githubusercontent.com/ngosang/trackerslist/master/trackers_best.txt".to_string()
 }
 
 /// 自定义快捷键设置（Task 21）。
@@ -1071,6 +1081,8 @@ impl Default for AppSettings {
             bt_upload_limit_kbps: default_bt_upload_limit_kbps(),
             bt_intercept_magnet: default_bt_intercept_magnet(),
             bt_extra_trackers: String::new(),
+            bt_tracker_subscribe_url: default_bt_tracker_subscribe_url(),
+            bt_tracker_auto_update: false,
         }
     }
 }

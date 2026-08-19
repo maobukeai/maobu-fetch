@@ -27,6 +27,7 @@ export interface DiagnosisPanelProps {
   /** 跳转到设置页的代理部分（disable_proxy 动作）。 */
   onOpenProxySettings?: () => void;
   onOpenYouTubeModal?: () => void;
+  onOpenRefreshUrl?: () => void;
   /** 完成诊断后建议刷新任务列表，调用方传入。 */
   onTaskChanged?: () => void;
 }
@@ -37,7 +38,7 @@ export interface DiagnosisPanelProps {
  * 当任务进入 Failed / Interrupted / RemoteChanged / PausedByLowDisk 时自动调用
  * `api.diagnose(id)` 获取诊断结果。
  */
-export function DiagnosisPanel({ taskId, status, notify, onOpenProxySettings, onOpenYouTubeModal, onTaskChanged }: DiagnosisPanelProps) {
+export function DiagnosisPanel({ taskId, status, notify, onOpenProxySettings, onOpenYouTubeModal, onOpenRefreshUrl, onTaskChanged }: DiagnosisPanelProps) {
   const [diagnosis, setDiagnosis] = useState<ErrorDiagnosis | null | undefined>(undefined);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string>();
@@ -110,7 +111,11 @@ export function DiagnosisPanel({ taskId, status, notify, onOpenProxySettings, on
     try {
       switch (action.action_id) {
         case "refetch_url":
-          notify("请从浏览器重新获取链接，粘贴后再次创建任务。");
+          if (onOpenRefreshUrl) {
+            onOpenRefreshUrl();
+          } else {
+            notify("请从浏览器重新获取链接，粘贴后再次创建任务。");
+          }
           break;
         case "clear_shards":
           // 后端未提供独立 "clear-shards" 动作时回退到 redownload。

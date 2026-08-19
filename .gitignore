@@ -11,3 +11,10 @@ src-tauri/resources/tools/*.exe
 # 扩展构建产物不入库（AGENTS.md §8）
 extension/extension.zip
 extension/*.zip
+
+# 临时元数据与工具缓存
+.mission_ledger.json
+.superpowers/
+.trae/
+.zcode/
+.codegraph/

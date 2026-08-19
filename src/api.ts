@@ -54,6 +54,12 @@ export const api = {
   archive: (id: string, deleteFile: boolean) => call<void>("task_archive", { id, deleteFile }),
   /** Task 21.2：重命名任务文件名。仅 Queued 状态可用；后端会校验合法性和重名。 */
   rename: (id: string, newFilename: string) => call<DownloadTask>("task_rename", { id, newFilename }),
+  /** 刷新/更新任务的下载链接（支持过期临时直链无缝刷新续传）。 */
+  refreshTaskUrl: (id: string, newUrl: string, headers?: Record<string, string>) =>
+    call<DownloadTask>("task_refresh_url", { id, new_url: newUrl, headers }),
+  /** 从订阅源拉取并更新 BT Trackers。 */
+  updateBtTrackers: (subscribeUrl?: string) =>
+    call<number>("bt_update_trackers", { subscribe_url: subscribeUrl }),
   reorder: (ids: string[]) => call<void>("queue_reorder", { ids }),
   settings: () => call<AppSettings>("settings_get"),
   saveSettings: (settings: AppSettings) => call<void>("settings_save", { settings }),

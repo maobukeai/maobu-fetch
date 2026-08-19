@@ -6,7 +6,7 @@
   <b>专为 Windows 10/11 设计的本地优先、高效紧凑型多线程下载管理器</b>
 </p>
 
-[![Version](https://img.shields.io/badge/version-0.7.0-blue.svg)](https://github.com/maobukeai/maobu-fetch/releases/tag/v0.7.0)
+[![Version](https://img.shields.io/badge/version-0.8.5-blue.svg)](https://github.com/maobukeai/maobu-fetch/releases/tag/v0.8.5)
 [![Tauri](https://img.shields.io/badge/Tauri-v2.0-24C8D8.svg?logo=tauri&logoColor=white)](https://tauri.app)
 [![React](https://img.shields.io/badge/React-v19.0-61DAFB.svg?logo=react&logoColor=black)](https://react.dev)
 [![Rust](https://img.shields.io/badge/Rust-v1.80+-000000.svg?logo=rust&logoColor=white)](https://www.rust-lang.org)
