@@ -288,7 +288,15 @@ async fn fetch_directory_tree(
             if json.get("error").and_then(|v| v.as_str()) == Some("need_pass_code") {
                 return Err("NEED_PASS_CODE".into());
             }
+            if let Some(err_code) = json.get("error").and_then(|v| v.as_str()) {
+                if err_code == "file_not_found" {
+                    break;
+                }
+            }
             if let Some(desc) = json.get("error_description").and_then(|v| v.as_str()) {
+                if desc.contains("not found") || desc.contains("not exist") {
+                    break;
+                }
                 return Err(desc.to_string());
             }
 
@@ -334,9 +342,13 @@ async fn fetch_directory_tree(
                     web_content_link,
                 });
 
-                if is_folder {
+                if is_folder && results.len() < 300 {
                     queue.push_back((id, item_path));
                 }
+            }
+
+            if results.len() >= 300 {
+                break;
             }
 
             page_token = json
@@ -347,6 +359,9 @@ async fn fetch_directory_tree(
             if page_token.is_none() || page_token.as_deref() == Some("") {
                 break;
             }
+        }
+        if results.len() >= 300 {
+            break;
         }
     }
 
@@ -378,26 +393,64 @@ pub async fn inspect_pikpak_share(
         }
     }
 
-    match fetch_directory_tree(
+    let initial_parent = parsed.parent_id.as_deref().unwrap_or("");
+    let fetch_res = fetch_directory_tree(
         &parsed.share_id,
-        parsed.parent_id.as_deref().unwrap_or(""),
+        initial_parent,
         &mut pass_code_token,
         &captcha_token,
         &device_sign,
         device_id,
     )
-    .await
-    {
+    .await;
+
+    let tree_res = match fetch_res {
+        Ok(items) if !items.is_empty() => Ok(items),
+        Ok(_) if !initial_parent.is_empty() => {
+            // initial_parent 结果为空，自动回退到根目录重试
+            fetch_directory_tree(
+                &parsed.share_id,
+                "",
+                &mut pass_code_token,
+                &captcha_token,
+                &device_sign,
+                device_id,
+            )
+            .await
+        }
+        Err(e) if e == "NEED_PASS_CODE" => Err(e),
+        Err(_) if !initial_parent.is_empty() => {
+            // initial_parent 抓取失败，自动回退到根目录重试
+            fetch_directory_tree(
+                &parsed.share_id,
+                "",
+                &mut pass_code_token,
+                &captcha_token,
+                &device_sign,
+                device_id,
+            )
+            .await
+        }
+        other => other,
+    };
+
+    match tree_res {
         Ok(all_items) => {
-            let file_count = all_items.iter().filter(|i| i.kind == "drive#file").count();
-            let folder_count = all_items.iter().filter(|i| i.kind == "drive#folder").count();
-            let total_size: u64 = all_items
+            let total_size = all_items
                 .iter()
                 .filter(|i| i.kind == "drive#file")
-                .map(|f| f.size)
+                .map(|i| i.size)
                 .sum();
+            let file_count = all_items.iter().filter(|i| i.kind == "drive#file").count();
+            let folder_count = all_items
+                .iter()
+                .filter(|i| i.kind == "drive#folder")
+                .count();
 
-            let title = if let Some(first) = all_items.iter().find(|i| i.kind == "drive#file") {
+            // 优先使用首个顶层文件夹名或首个文件名作为标题
+            let title = if let Some(top_folder) = all_items.iter().find(|i| i.kind == "drive#folder" && !i.path.contains('/')) {
+                top_folder.name.clone()
+            } else if let Some(first) = all_items.iter().find(|i| i.kind == "drive#file") {
                 first.name.clone()
             } else {
                 "PikPak 分享资源".to_string()
@@ -527,5 +580,15 @@ mod tests {
                 println!("resolve_pikpak_file result: {:?}", direct);
             }
         }
+    }
+
+    #[tokio::test]
+    async fn test_inspect_subpath_fallback() {
+        let url = "https://mypikpak.com/s/VNRmoFmoroRROhEkho_8kY_1o1/AAAAxJpd7I7-5c9AQu-d5mNlo1_VNR";
+        let device_id = hex::encode(rand::random::<[u8; 16]>());
+        let res = inspect_pikpak_share(url, None, &device_id).await;
+        assert!(res.is_ok(), "子目录失效时必须自动回退根目录并成功解析: {:?}", res);
+        let info = res.unwrap();
+        assert!(!info.files.is_empty(), "必须拉取到文件");
     }
 }

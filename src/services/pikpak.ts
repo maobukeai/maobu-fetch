@@ -418,8 +418,8 @@ async function fetchShareDirectoryLevel(
 
       result.push(fileItem);
 
-      // 如果是子文件夹，递归拉取子项
-      if (isFolder) {
+      // 如果是子文件夹且未超出数量上限，递归拉取子项
+      if (isFolder && result.length < 300) {
         const subItems = await fetchShareDirectoryLevel(
           shareId,
           item.id,
@@ -428,10 +428,11 @@ async function fetchShareDirectoryLevel(
         );
         result.push(...subItems);
       }
+      if (result.length >= 300) break;
     }
 
     pageToken = data.next_page_token;
-  } while (pageToken);
+  } while (pageToken && result.length < 300);
 
   return result;
 }
@@ -490,12 +491,36 @@ export async function inspectPikPakShare(
   }
 
   try {
-    const allItems = await fetchShareDirectoryLevel(
-      parsed.shareId,
-      parsed.parentId || "",
-      passCodeToken,
-      ""
-    );
+    let allItems: PikPakFileItem[] = [];
+    try {
+      allItems = await fetchShareDirectoryLevel(
+        parsed.shareId,
+        parsed.parentId || "",
+        passCodeToken,
+        ""
+      );
+    } catch (fetchErr: any) {
+      if (fetchErr.message === "NEED_PASS_CODE") throw fetchErr;
+      if (parsed.parentId) {
+        allItems = await fetchShareDirectoryLevel(
+          parsed.shareId,
+          "",
+          passCodeToken,
+          ""
+        );
+      } else {
+        throw fetchErr;
+      }
+    }
+
+    if (allItems.length === 0 && parsed.parentId) {
+      allItems = await fetchShareDirectoryLevel(
+        parsed.shareId,
+        "",
+        passCodeToken,
+        ""
+      );
+    }
 
     const onlyFiles = allItems.filter((i) => i.kind === "drive#file");
     const folderCount = allItems.filter((i) => i.kind === "drive#folder").length;
