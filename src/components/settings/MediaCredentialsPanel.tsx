@@ -83,6 +83,24 @@ function MediaCredentialsGuideModal({ onClose }: { onClose: () => void }) {
               </p>
               <span className="tip">用于突破年龄限制及会员专属视频下载。</span>
             </div>
+            <div className="platform-guide-card">
+              <h4>
+                百度网盘 <code>pan.baidu.com</code>
+              </h4>
+              <p>
+                必须包含 <code>BDUSS</code>、<code>STOKEN</code>、<code>BAIDUID</code>
+              </p>
+              <span className="tip">用于百度网盘 SVIP 高速直链解析与自动转存。</span>
+            </div>
+            <div className="platform-guide-card">
+              <h4>
+                夸克网盘 <code>pan.quark.cn</code>
+              </h4>
+              <p>
+                必须包含 <code>cookie</code>（建议通过扩展一键同步）
+              </p>
+              <span className="tip">用于夸克 VIP 4K/大文件极速直链下载。</span>
+            </div>
           </div>
         </div>
 
@@ -396,6 +414,29 @@ export function MediaCredentialsPanel({
                 placeholder="如 bilibili.com (裸域名，不含 http:// 或 https:// 协议前缀)"
                 disabled={!isNew}
               />
+              {isNew && (
+                <div style={{ display: "flex", gap: "6px", flexWrap: "wrap", marginTop: "4px" }}>
+                  {[
+                    { name: "百度网盘", domain: "pan.baidu.com" },
+                    { name: "夸克网盘", domain: "pan.quark.cn" },
+                    { name: "PikPak", domain: "mypikpak.com" },
+                    { name: "B站", domain: "bilibili.com" },
+                    { name: "抖音", domain: "douyin.com" },
+                    { name: "YouTube", domain: "youtube.com" },
+                    { name: "Twitter/X", domain: "twitter.com" },
+                  ].map((p) => (
+                    <button
+                      key={p.domain}
+                      type="button"
+                      className="input-button"
+                      style={{ fontSize: "11px", padding: "1px 6px" }}
+                      onClick={() => onDomainChange(p.domain)}
+                    >
+                      {p.name}
+                    </button>
+                  ))}
+                </div>
+              )}
             </Field>
             <Field label="Cookie">
               <textarea

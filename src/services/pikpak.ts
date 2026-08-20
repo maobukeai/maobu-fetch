@@ -418,8 +418,9 @@ async function fetchShareDirectoryLevel(
 
       result.push(fileItem);
 
-      // 如果是子文件夹且未超出数量上限，递归拉取子项
-      if (isFolder && result.length < 300) {
+      // 如果是子文件夹且未超出真实文件数量上限，递归拉取子项
+      const currentFilesCount = result.filter((i) => i.kind === "drive#file").length;
+      if (isFolder && currentFilesCount < 200) {
         const subItems = await fetchShareDirectoryLevel(
           shareId,
           item.id,
@@ -428,11 +429,11 @@ async function fetchShareDirectoryLevel(
         );
         result.push(...subItems);
       }
-      if (result.length >= 300) break;
+      if (result.filter((i) => i.kind === "drive#file").length >= 200) break;
     }
 
     pageToken = data.next_page_token;
-  } while (pageToken && result.length < 300);
+  } while (pageToken && result.filter((i) => i.kind === "drive#file").length < 200);
 
   return result;
 }

@@ -236,6 +236,10 @@ fn normalize_cookie_domain(domain: &str) -> String {
             }
         }
         crate::media_platforms::MediaPlatform::PikPak => ".mypikpak.com".to_string(),
+        crate::media_platforms::MediaPlatform::Quark => ".quark.cn".to_string(),
+        crate::media_platforms::MediaPlatform::BaiduPan => ".baidu.com".to_string(),
+        crate::media_platforms::MediaPlatform::Lanzou => ".lanzoux.com".to_string(),
+        crate::media_platforms::MediaPlatform::Pan123 => ".123pan.com".to_string(),
         crate::media_platforms::MediaPlatform::Unknown => {
             let platforms = [
                 ("douyin.com", ".douyin.com"),

@@ -1,7 +1,7 @@
-import type { PikPakShareInfo } from "../../services/pikpak";
+import type { QuarkShareInfo } from "../../services/quark";
 import { CloudSharePicker } from "./CloudSharePicker";
 
-export function PikPakPicker({
+export function QuarkPicker({
   shareInfo,
   selectedIds,
   onChange,
@@ -9,7 +9,7 @@ export function PikPakPicker({
   verifyingPassCode,
   passCodeError,
 }: {
-  shareInfo: PikPakShareInfo;
+  shareInfo: QuarkShareInfo;
   selectedIds: Set<string>;
   onChange: (next: Set<string>) => void;
   onVerifyPassCode?: (passCode: string) => void;
@@ -18,9 +18,9 @@ export function PikPakPicker({
 }) {
   return (
     <CloudSharePicker
-      platform="pikpak"
-      platformDisplayName="PikPak"
-      themeColor="#6366f1"
+      platform="quark"
+      platformDisplayName="夸克网盘"
+      themeColor="#d97706"
       shareInfo={{
         title: shareInfo.title,
         files: shareInfo.files.map((f) => ({
@@ -30,19 +30,20 @@ export function PikPakPicker({
           size: f.size,
           path: f.path,
           extension: f.file_extension,
-          mimeType: f.mime_type,
+          category: f.format_type,
+          mimeType: f.format_type,
         })),
-        fileCount: shareInfo.fileCount,
-        folderCount: shareInfo.folderCount,
-        totalSize: shareInfo.totalSize,
-        passCodeRequired: shareInfo.passCodeRequired,
+        fileCount: shareInfo.file_count,
+        folderCount: shareInfo.folder_count,
+        totalSize: shareInfo.total_size,
+        passCodeRequired: shareInfo.pass_code_required,
       }}
       selectedIds={selectedIds}
       onChange={onChange}
       onVerifyPassCode={onVerifyPassCode}
       verifyingPassCode={verifyingPassCode}
       passCodeError={passCodeError}
-      tipText="💡 PikPak 支持免会员高速直链下载与视频流提取。"
+      tipText="💡 夸克 SVIP 账号可享受最高 50MB/s 极速下载；普通账号受夸克官方带宽限制。"
     />
   );
 }

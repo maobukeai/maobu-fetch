@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { AppInfo, AppSettings, BtFileEntry, BtNewTaskRequest, BtTorrentInspectResult, CacheClearResult, CacheInspectResult, CategoryRule, CategoryRuleTestResult, CompletionAction, DeepLinkReceivedPayload, DetectedMediaTools, DownloadPreset, DownloadTask, DuplicateCheckResult, ErrorDiagnosis, ExtensionCompatibilityResult, ExtensionUpdateResult, FilenameCleanupRule, MediaCredential, MediaCredentialCheckResult, MediaPlatform, MediaProbeResult, MeteredNetworkDetectedPayload, NewTaskRequest, PairingInfo, PlatformCompatibility, PlatformNamingTemplate, PowerAction, PowerActionState, PrecheckRequest, PrecheckResult, ProxyAuth, ProxyTestResult, QuickView, RestorePreview, RestoreStats, RetryPolicy, SelfcheckReport, Tag, TaskEvent, TaskNotificationPayload, TaskTagsMap, TaskTemplate, TaskTemplateTestResult, ToolComponent, ToolStatus, UpdateCheckResult, UpdateDownloadResult, UpdateProgressPayload, UrlHistoryEntry, WaitReason, YtDlpUpdateInfo } from "./types";
+import type { AppInfo, AppSettings, BtFileEntry, BtNewTaskRequest, BtTorrentInspectResult, CacheClearResult, CacheInspectResult, CategoryRule, CategoryRuleTestResult, CompletionAction, DeepLinkReceivedPayload, DetectedMediaTools, DownloadPreset, DownloadTask, DuplicateCheckResult, ErrorDiagnosis, ExtensionCompatibilityResult, ExtensionUpdateResult, FilenameCleanupRule, LanzouDirectUrlResult, LanzouShareInfo, MediaCredential, MediaCredentialCheckResult, MediaPlatform, MediaProbeResult, MeteredNetworkDetectedPayload, NewTaskRequest, PairingInfo, Pan123DirectUrlResult, Pan123ShareInfo, PlatformCompatibility, PlatformNamingTemplate, PowerAction, PowerActionState, PrecheckRequest, PrecheckResult, ProxyAuth, ProxyTestResult, QuickView, RestorePreview, RestoreStats, RetryPolicy, SelfcheckReport, Tag, TaskEvent, TaskNotificationPayload, TaskTagsMap, TaskTemplate, TaskTemplateTestResult, ToolComponent, ToolStatus, UpdateCheckResult, UpdateDownloadResult, UpdateProgressPayload, UrlHistoryEntry, WaitReason, YtDlpUpdateInfo } from "./types";
 
 export const isDesktop = () => "__TAURI_INTERNALS__" in window;
 const call = <T>(command: string, args?: Record<string, unknown>): Promise<T> => isDesktop() ? invoke<T>(command, args) : Promise.reject(new Error("请运行猫步下载器桌面应用"));
@@ -314,6 +314,103 @@ export const api = {
       passCodeToken: params.passCodeToken || null,
       device_id: params.deviceId,
       deviceId: params.deviceId,
+    }),
+  /** 夸克网盘分享解析（Rust 后端发起，彻底规避 Webview CORS）。 */
+  quarkInspectShare: (params: { url: string; pass_code?: string; cookie?: string }) =>
+    call<any>("quark_inspect_share", {
+      url: params.url,
+      pass_code: params.pass_code || null,
+      passCode: params.pass_code || null,
+      cookie: params.cookie || null,
+    }),
+  /** 夸克网盘单文件直链获取（Rust 后端发起）。 */
+  quarkResolveFile: (params: { pwd_id: string; fid: string; share_fid_token?: string; stoken?: string; cookie?: string }) =>
+    call<any>("quark_resolve_file", {
+      pwd_id: params.pwd_id,
+      pwdId: params.pwd_id,
+      fid: params.fid,
+      share_fid_token: params.share_fid_token || null,
+      shareFidToken: params.share_fid_token || null,
+      stoken: params.stoken || null,
+      cookie: params.cookie || null,
+    }),
+  /** 百度网盘分享解析（Rust 后端发起，彻底规避 Webview CORS）。 */
+  baidupanInspectShare: (params: { url: string; pass_code?: string; cookie?: string }) =>
+    call<any>("baidupan_inspect_share", {
+      url: params.url,
+      pass_code: params.pass_code || null,
+      passCode: params.pass_code || null,
+      cookie: params.cookie || null,
+    }),
+  /** 百度网盘单文件直链获取（Rust 后端发起）。 */
+  baidupanResolveFile: (params: {
+    surl: string;
+    fs_id: string;
+    share_id?: string;
+    uk?: string;
+    sign?: string;
+    timestamp?: number;
+    seckey?: string;
+    randsk?: string;
+    cookie?: string;
+  }) =>
+    call<any>("baidupan_resolve_file", {
+      surl: params.surl,
+      fs_id: params.fs_id,
+      fsId: params.fs_id,
+      share_id: params.share_id || null,
+      shareId: params.share_id || null,
+      uk: params.uk || null,
+      sign: params.sign || null,
+      timestamp: params.timestamp || null,
+      seckey: params.seckey || null,
+      randsk: params.randsk || null,
+      cookie: params.cookie || null,
+    }),
+  /** 蓝奏云分享解析（Rust 后端发起）。 */
+  lanzouInspectShare: (params: { url: string; pass_code?: string }) =>
+    call<LanzouShareInfo>("lanzou_inspect_share", {
+      url: params.url,
+      pass_code: params.pass_code || null,
+      passCode: params.pass_code || null,
+    }),
+  /** 蓝奏云单文件直链获取（Rust 后端发起）。 */
+  lanzouResolveFile: (params: { share_url: string; file_id?: string; pass_code?: string }) =>
+    call<LanzouDirectUrlResult>("lanzou_resolve_file", {
+      share_url: params.share_url,
+      shareUrl: params.share_url,
+      file_id: params.file_id || null,
+      fileId: params.file_id || null,
+      pass_code: params.pass_code || null,
+      passCode: params.pass_code || null,
+    }),
+  /** 123云盘公开分享解析（Rust 后端发起）。 */
+  pan123InspectShare: (params: { url: string; pass_code?: string }) =>
+    call<Pan123ShareInfo>("pan123_inspect_share", {
+      url: params.url,
+      pass_code: params.pass_code || null,
+      passCode: params.pass_code || null,
+    }),
+  /** 123云盘单文件直链获取（Rust 后端发起）。 */
+  pan123ResolveFile: (params: {
+    share_key: string;
+    file_id: number;
+    s3_key_flag: string;
+    size: number;
+    etag: string;
+    pass_code?: string;
+  }) =>
+    call<Pan123DirectUrlResult>("pan123_resolve_file", {
+      share_key: params.share_key,
+      shareKey: params.share_key,
+      file_id: params.file_id,
+      fileId: params.file_id,
+      s3_key_flag: params.s3_key_flag,
+      s3KeyFlag: params.s3_key_flag,
+      size: params.size,
+      etag: params.etag,
+      pass_code: params.pass_code || null,
+      passCode: params.pass_code || null,
     }),
   subscribe: async (handler: (event: TaskEvent | { removed: string }) => void): Promise<UnlistenFn[]> => {
     if (!isDesktop()) return [];

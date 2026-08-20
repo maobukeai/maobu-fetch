@@ -1032,6 +1032,10 @@ export type MediaPlatform =
   | "bilibili"
   | "weibo"
   | "pikpak"
+  | "quark"
+  | "baidupan"
+  | "lanzou"
+  | "pan123"
   | "unknown";
 
 /**
@@ -1071,6 +1075,10 @@ export function mediaPlatformDisplayName(platform: MediaPlatform): string {
     case "bilibili": return "哔哩哔哩";
     case "weibo": return "微博";
     case "pikpak": return "PikPak 网盘";
+    case "quark": return "夸克网盘";
+    case "baidupan": return "百度网盘";
+    case "lanzou": return "蓝奏云";
+    case "pan123": return "123云盘";
     case "unknown": return "";
   }
 }
@@ -1196,4 +1204,52 @@ export function supportLevelColor(level: SupportLevel): string {
     case "experimental": return "var(--warning-color, #f59e0b)";
     case "unsupported": return "var(--danger-color, #ef4444)";
   }
+}
+
+export interface LanzouFileItem {
+  id: string;
+  name: string;
+  size: number;
+  size_formatted: string;
+  time: string;
+  kind: "file" | "folder" | string;
+  url: string;
+}
+
+export interface LanzouShareInfo {
+  share_id: string;
+  share_url: string;
+  title: string;
+  is_folder: boolean;
+  requires_password: boolean;
+  files: LanzouFileItem[];
+}
+
+export interface LanzouDirectUrlResult {
+  url: string;
+  headers: Record<string, string>;
+}
+
+export interface Pan123FileItem {
+  id: number;
+  name: string;
+  size: number;
+  size_formatted: string;
+  etag: string;
+  s3_key_flag: string;
+  kind: "file" | "folder" | string;
+}
+
+export interface Pan123ShareInfo {
+  share_key: string;
+  share_url: string;
+  title: string;
+  is_folder: boolean;
+  requires_password: boolean;
+  files: Pan123FileItem[];
+}
+
+export interface Pan123DirectUrlResult {
+  url: string;
+  headers: Record<string, string>;
 }

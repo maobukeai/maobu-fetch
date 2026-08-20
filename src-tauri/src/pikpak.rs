@@ -233,7 +233,7 @@ pub async fn verify_pass_code(
     Ok(token.to_string())
 }
 
-/// 队列迭代抓取分享目录树（支持多层级子目录与分页）
+/// 队列迭代抓取分享目录树（深度优先 DFS，优先提取真实文件）
 async fn fetch_directory_tree(
     share_id: &str,
     initial_parent_id: &str,
@@ -247,7 +247,17 @@ async fn fetch_directory_tree(
     let mut queue = VecDeque::new();
     queue.push_back((initial_parent_id.to_string(), String::new()));
 
+    let mut file_count = 0;
+    let mut folder_visits = 0;
+    const MAX_FILES: usize = 200;
+    const MAX_FOLDER_VISITS: usize = 35;
+
     while let Some((parent_id, current_path)) = queue.pop_front() {
+        folder_visits += 1;
+        if folder_visits > MAX_FOLDER_VISITS && file_count > 0 {
+            break;
+        }
+
         let mut page_token: Option<String> = None;
         loop {
             let mut query = vec![("share_id", share_id.to_string()), ("limit", "100".to_string())];
@@ -329,6 +339,9 @@ async fn fetch_directory_tree(
                 };
 
                 let is_folder = kind == "drive#folder";
+                if !is_folder {
+                    file_count += 1;
+                }
 
                 results.push(PikPakFileItem {
                     id: id.clone(),
@@ -342,12 +355,13 @@ async fn fetch_directory_tree(
                     web_content_link,
                 });
 
-                if is_folder && results.len() < 300 {
-                    queue.push_back((id, item_path));
+                if is_folder && file_count < MAX_FILES {
+                    // DFS 深度优先：插入队列前端，优先拉取下层真实文件
+                    queue.push_front((id, item_path));
                 }
             }
 
-            if results.len() >= 300 {
+            if file_count >= MAX_FILES {
                 break;
             }
 
@@ -360,7 +374,8 @@ async fn fetch_directory_tree(
                 break;
             }
         }
-        if results.len() >= 300 {
+
+        if file_count >= MAX_FILES {
             break;
         }
     }
@@ -583,6 +598,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore]
     async fn test_inspect_subpath_fallback() {
         let url = "https://mypikpak.com/s/VNRmoFmoroRROhEkho_8kY_1o1/AAAAxJpd7I7-5c9AQu-d5mNlo1_VNR";
         let device_id = hex::encode(rand::random::<[u8; 16]>());

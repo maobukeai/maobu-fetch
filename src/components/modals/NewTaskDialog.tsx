@@ -76,6 +76,42 @@ import {
   type PikPakShareInfo,
 } from "../../services/pikpak";
 import { PikPakPicker } from "./PikPakPicker";
+import {
+  inspectQuarkShare,
+  isQuarkUrl,
+  parseQuarkUrl,
+  resolveQuarkFile,
+  type QuarkShareInfo,
+} from "../../services/quark";
+import { QuarkPicker } from "./QuarkPicker";
+import {
+  inspectBaiduShare,
+  isBaiduUrl,
+  parseBaiduUrl,
+  resolveBaiduFile,
+  type BaiduShareInfo,
+} from "../../services/baidupan";
+import { BaiduPanPicker } from "./BaiduPanPicker";
+import { LanzouPicker } from "./LanzouPicker";
+import { Pan123Picker } from "./Pan123Picker";
+import type { LanzouShareInfo, Pan123ShareInfo } from "../../types";
+
+const isLanzouUrl = (url: string) => {
+  if (!url) return false;
+  const lower = url.toLowerCase();
+  return lower.includes("lanzou") || lower.includes("lanzo") || lower.includes("baidupan.com.lanzou");
+};
+
+const isPan123Url = (url: string) => {
+  if (!url) return false;
+  const lower = url.toLowerCase();
+  return (
+    lower.includes("123pan.com") ||
+    lower.includes("123pan.cn") ||
+    lower.includes("123684.com") ||
+    lower.includes("123952.com")
+  );
+};
 
 export function NewTaskDialog({
   settings,
@@ -172,6 +208,38 @@ export function NewTaskDialog({
   const [pikpakOpen, setPikpakOpen] = useState(false);
   const [pikpakPassCodeVerifying, setPikpakPassCodeVerifying] = useState(false);
   const [pikpakPassCodeError, setPikpakPassCodeError] = useState<string>();
+
+  // Quark 分享解析状态
+  const [quarkShareInfo, setQuarkShareInfo] = useState<QuarkShareInfo | null>(null);
+  const [quarkInspecting, setQuarkInspecting] = useState(false);
+  const [quarkSelectedIds, setQuarkSelectedIds] = useState<Set<string>>(new Set());
+  const [quarkOpen, setQuarkOpen] = useState(false);
+  const [quarkPassCodeVerifying, setQuarkPassCodeVerifying] = useState(false);
+  const [quarkPassCodeError, setQuarkPassCodeError] = useState<string>();
+
+  // Baidu 网盘分享解析状态
+  const [baiduShareInfo, setBaiduShareInfo] = useState<BaiduShareInfo | null>(null);
+  const [baiduInspecting, setBaiduInspecting] = useState(false);
+  const [baiduSelectedIds, setBaiduSelectedIds] = useState<Set<string>>(new Set());
+  const [baiduOpen, setBaiduOpen] = useState(false);
+  const [baiduPassCodeVerifying, setBaiduPassCodeVerifying] = useState(false);
+  const [baiduPassCodeError, setBaiduPassCodeError] = useState<string>();
+
+  // Lanzou 分享解析状态
+  const [lanzouShareInfo, setLanzouShareInfo] = useState<LanzouShareInfo | null>(null);
+  const [lanzouInspecting, setLanzouInspecting] = useState(false);
+  const [lanzouSelectedIds, setLanzouSelectedIds] = useState<Set<string>>(new Set());
+  const [lanzouOpen, setLanzouOpen] = useState(false);
+  const [lanzouPassCodeVerifying, setLanzouPassCodeVerifying] = useState(false);
+  const [lanzouPassCodeError, setLanzouPassCodeError] = useState<string>();
+
+  // 123Pan 分享解析状态
+  const [pan123ShareInfo, setPan123ShareInfo] = useState<Pan123ShareInfo | null>(null);
+  const [pan123Inspecting, setPan123Inspecting] = useState(false);
+  const [pan123SelectedIds, setPan123SelectedIds] = useState<Set<string>>(new Set());
+  const [pan123Open, setPan123Open] = useState(false);
+  const [pan123PassCodeVerifying, setPan123PassCodeVerifying] = useState(false);
+  const [pan123PassCodeError, setPan123PassCodeError] = useState<string>();
 
   const fileNameInputRef = useRef<HTMLInputElement | null>(null);
   const userEditedFileName = useRef(false);
@@ -301,6 +369,141 @@ export function NewTaskDialog({
         notify?.(errMsg, "error");
       } finally {
         setPikpakInspecting(false);
+      }
+    },
+    [lines, connections, notify]
+  );
+
+  const inspectQuarkContent = useCallback(
+    async (targetUrl?: string, passCode?: string) => {
+      const single = targetUrl || (lines.length === 1 ? lines[0].trim() : "");
+      if (!isQuarkUrl(single)) return;
+      setQuarkInspecting(true);
+      setQuarkPassCodeError(undefined);
+      try {
+        const info = await inspectQuarkShare(single, passCode);
+        setQuarkShareInfo(info);
+        setQuarkOpen(true);
+        if (info.pass_code_required) {
+          setQuarkSelectedIds(new Set());
+        } else {
+          const onlyFiles = info.files.filter((f) => f.kind === "drive#file");
+          setQuarkSelectedIds(new Set(onlyFiles.map((f) => f.id)));
+          if (info.title && !userEditedFileName.current) {
+            setFileName(info.title);
+          }
+          if (!userEditedConnections.current && connections < 16) {
+            setConnections(16);
+          }
+        }
+      } catch (err: any) {
+        console.warn("解析夸克分享失败:", err);
+        const errMsg = err?.message || String(err);
+        setQuarkPassCodeError(errMsg);
+        notify?.(errMsg, "error");
+      } finally {
+        setQuarkInspecting(false);
+      }
+    },
+    [lines, connections, notify]
+  );
+
+  const inspectBaiduContent = useCallback(
+    async (targetUrl?: string, passCode?: string) => {
+      const single = targetUrl || (lines.length === 1 ? lines[0].trim() : "");
+      if (!isBaiduUrl(single)) return;
+      setBaiduInspecting(true);
+      setBaiduPassCodeError(undefined);
+      try {
+        const info = await inspectBaiduShare(single, passCode);
+        setBaiduShareInfo(info);
+        setBaiduOpen(true);
+        if (info.pass_code_required) {
+          setBaiduSelectedIds(new Set());
+        } else {
+          const onlyFiles = info.files.filter((f) => f.kind === "drive#file");
+          setBaiduSelectedIds(new Set(onlyFiles.map((f) => f.id)));
+          if (info.title && !userEditedFileName.current) {
+            setFileName(info.title);
+          }
+          if (!userEditedConnections.current && connections < 16) {
+            setConnections(16);
+          }
+        }
+      } catch (err: any) {
+        console.warn("解析百度网盘分享失败:", err);
+        const errMsg = err?.message || String(err);
+        setBaiduPassCodeError(errMsg);
+        notify?.(errMsg, "error");
+      } finally {
+        setBaiduInspecting(false);
+      }
+    },
+    [lines, connections, notify]
+  );
+
+  const inspectLanzouContent = useCallback(
+    async (targetUrl?: string, passCode?: string) => {
+      const single = targetUrl || (lines.length === 1 ? lines[0].trim() : "");
+      if (!isLanzouUrl(single)) return;
+      setLanzouInspecting(true);
+      setLanzouPassCodeError(undefined);
+      try {
+        const info = await api.lanzouInspectShare({ url: single, pass_code: passCode });
+        setLanzouShareInfo(info);
+        setLanzouOpen(true);
+        if (info.requires_password && info.files.length === 0) {
+          setLanzouSelectedIds(new Set());
+        } else {
+          setLanzouSelectedIds(new Set(info.files.map((f) => f.id)));
+          if (info.title && !userEditedFileName.current) {
+            setFileName(info.title);
+          }
+          if (!userEditedConnections.current && connections < 32) {
+            setConnections(32);
+          }
+        }
+      } catch (err: any) {
+        console.warn("解析蓝奏云分享失败:", err);
+        const errMsg = err?.message || String(err);
+        setLanzouPassCodeError(errMsg);
+        notify?.(errMsg, "error");
+      } finally {
+        setLanzouInspecting(false);
+      }
+    },
+    [lines, connections, notify]
+  );
+
+  const inspectPan123Content = useCallback(
+    async (targetUrl?: string, passCode?: string) => {
+      const single = targetUrl || (lines.length === 1 ? lines[0].trim() : "");
+      if (!isPan123Url(single)) return;
+      setPan123Inspecting(true);
+      setPan123PassCodeError(undefined);
+      try {
+        const info = await api.pan123InspectShare({ url: single, pass_code: passCode });
+        setPan123ShareInfo(info);
+        setPan123Open(true);
+        if (info.requires_password && info.files.length === 0) {
+          setPan123SelectedIds(new Set());
+        } else {
+          const onlyFiles = info.files.filter((f) => f.kind !== "folder");
+          setPan123SelectedIds(new Set(onlyFiles.map((f) => String(f.id))));
+          if (info.title && !userEditedFileName.current) {
+            setFileName(info.title);
+          }
+          if (!userEditedConnections.current && connections < 32) {
+            setConnections(32);
+          }
+        }
+      } catch (err: any) {
+        console.warn("解析123云盘分享失败:", err);
+        const errMsg = err?.message || String(err);
+        setPan123PassCodeError(errMsg);
+        notify?.(errMsg, "error");
+      } finally {
+        setPan123Inspecting(false);
       }
     },
     [lines, connections, notify]
@@ -644,8 +847,26 @@ export function NewTaskDialog({
   const isPikPakActive = Boolean(isPikPak && pikpakShareInfo && pikpakSelectedIds.size > 0);
   const isPikPakWithoutSelection = Boolean(isPikPak && pikpakShareInfo && pikpakSelectedIds.size === 0);
 
-  const hasConflicts = !isPikPakActive && activeConflicts.length > 0;
-  const hasDuplicates = !isPikPakActive && Boolean(duplicateResult?.matches?.length);
+  const isQuark = isQuarkUrl(lines.length === 1 ? lines[0].trim() : "");
+  const isQuarkActive = Boolean(isQuark && quarkShareInfo && quarkSelectedIds.size > 0);
+  const isQuarkWithoutSelection = Boolean(isQuark && quarkShareInfo && quarkSelectedIds.size === 0);
+
+  const isBaidu = isBaiduUrl(lines.length === 1 ? lines[0].trim() : "");
+  const isBaiduActive = Boolean(isBaidu && baiduShareInfo && baiduSelectedIds.size > 0);
+  const isBaiduWithoutSelection = Boolean(isBaidu && baiduShareInfo && baiduSelectedIds.size === 0);
+
+  const isLanzou = isLanzouUrl(lines.length === 1 ? lines[0].trim() : "");
+  const isLanzouActive = Boolean(isLanzou && lanzouShareInfo && lanzouSelectedIds.size > 0);
+  const isLanzouWithoutSelection = Boolean(isLanzou && lanzouShareInfo && lanzouSelectedIds.size === 0);
+
+  const isPan123 = isPan123Url(lines.length === 1 ? lines[0].trim() : "");
+  const isPan123Active = Boolean(isPan123 && pan123ShareInfo && pan123SelectedIds.size > 0);
+  const isPan123WithoutSelection = Boolean(isPan123 && pan123ShareInfo && pan123SelectedIds.size === 0);
+
+  const isAnyCloudActive = isPikPakActive || isQuarkActive || isBaiduActive || isLanzouActive || isPan123Active;
+
+  const hasConflicts = !isAnyCloudActive && activeConflicts.length > 0;
+  const hasDuplicates = !isAnyCloudActive && Boolean(duplicateResult?.matches?.length);
   const isGalleryWithoutSelection =
     (media?.media_type === "gallery" && selectedImageIds.size === 0) ||
     (media?.media_type === "collection" && selectedEpisodeIndices.size === 0);
@@ -1006,7 +1227,7 @@ export function NewTaskDialog({
         collision_policy: policy,
         completion_action:
           selectedFiles.length > 1 ? "none" : completionAction,
-        connection_count: connections || 16,
+        connection_count: connections || 32,
         media: undefined,
         user_edited_file_name:
           userEditedFileName.current || overrideFileName !== undefined,
@@ -1069,6 +1290,363 @@ export function NewTaskDialog({
       setBusy(false);
       return;
     }
+
+    // 处理 Quark 分享文件批量/单文件直链下载
+    if (quarkShareInfo && quarkSelectedIds.size > 0) {
+      const selectedFiles = quarkShareInfo.files.filter(
+        (f) => f.kind === "drive#file" && quarkSelectedIds.has(f.id)
+      );
+      if (selectedFiles.length === 0) {
+        setError("请至少勾选一个需要下载的夸克文件");
+        setBusy(false);
+        return;
+      }
+
+      const baseTemplate: Omit<NewTaskRequest, "url" | "file_name"> = {
+        destination,
+        headers,
+        scheduled_at: schedule ? new Date(schedule).getTime() : undefined,
+        priority,
+        expected_checksum: checksum || undefined,
+        source: "desktop",
+        per_task_speed_limit: limit * 1024,
+        collision_policy: policy,
+        completion_action:
+          selectedFiles.length > 1 ? "none" : completionAction,
+        connection_count: connections || 32,
+        media: undefined,
+        user_edited_file_name:
+          userEditedFileName.current || overrideFileName !== undefined,
+      };
+
+      try {
+        const currentPwdId =
+          quarkShareInfo.pwd_id ||
+          parseQuarkUrl(lines[0])?.pwdId ||
+          "";
+        const currentStoken = quarkShareInfo.stoken;
+
+        let effectiveCookie = headers?.["Cookie"] || headers?.["cookie"] || cookie;
+        if (!effectiveCookie) {
+          const storedCred = await api.mediaCredentialGet("pan.quark.cn").catch(() => null);
+          if (storedCred?.cookie) {
+            effectiveCookie = storedCred.cookie;
+          }
+        }
+
+        const results = await Promise.allSettled(
+          selectedFiles.map(async (fileItem) => {
+            const { url: directUrl, headers: directHeaders } = await resolveQuarkFile(
+              currentPwdId,
+              fileItem.id,
+              fileItem.share_fid_token,
+              currentStoken,
+              effectiveCookie
+            );
+            const itemFileName =
+              selectedFiles.length === 1 && activeFileName
+                ? activeFileName
+                : fileItem.path || fileItem.name;
+            return api.add({
+              url: directUrl,
+              file_name: itemFileName,
+              ...baseTemplate,
+              headers: {
+                ...directHeaders,
+                ...headers,
+                ...(effectiveCookie ? { Cookie: effectiveCookie } : {}),
+              },
+            });
+          })
+        );
+
+        const fulfilled: DownloadTask[] = [];
+        let firstError: string | undefined;
+        for (const r of results) {
+          if (r.status === "fulfilled") fulfilled.push(r.value);
+          else if (!firstError) firstError = String(r.reason);
+        }
+        if (lines[0]) {
+          void api.urlHistoryAdd(lines[0]).then(reloadHistory).catch(() => {});
+        }
+        if (fulfilled.length > 0) {
+          onCreated(fulfilled.length === 1 ? fulfilled[0] : fulfilled);
+        }
+        if (firstError) {
+          if (fulfilled.length === 0) {
+            setError(firstError);
+          } else {
+            notify?.(
+              `部分夸克文件创建失败：${firstError}（成功 ${fulfilled.length}/${selectedFiles.length}）`,
+              "error"
+            );
+          }
+        }
+      } catch (reason) {
+        setError(String(reason));
+      }
+      setBusy(false);
+      return;
+    }
+
+    if (baiduShareInfo && baiduSelectedIds.size > 0) {
+      const selectedFiles = baiduShareInfo.files.filter(
+        (f) => f.kind === "drive#file" && baiduSelectedIds.has(f.id)
+      );
+      if (selectedFiles.length === 0) {
+        setError("请至少勾选一个文件再开始下载");
+        setBusy(false);
+        return;
+      }
+
+      const baseTemplate: Omit<NewTaskRequest, "url" | "file_name"> = {
+        destination,
+        headers,
+        scheduled_at: schedule ? new Date(schedule).getTime() : undefined,
+        priority,
+        expected_checksum: checksum || undefined,
+        source: "desktop",
+        per_task_speed_limit: limit * 1024,
+        collision_policy: policy,
+        completion_action:
+          selectedFiles.length > 1 ? "none" : completionAction,
+        connection_count: connections || 16,
+        media: undefined,
+        user_edited_file_name:
+          userEditedFileName.current || overrideFileName !== undefined,
+      };
+
+      try {
+        const currentSurl =
+          baiduShareInfo.surl ||
+          parseBaiduUrl(lines[0])?.surl ||
+          "";
+
+        let effectiveCookie = headers?.["Cookie"] || headers?.["cookie"] || cookie;
+        if (!effectiveCookie) {
+          const storedCred =
+            (await api.mediaCredentialGet("pan.baidu.com").catch(() => null)) ||
+            (await api.mediaCredentialGet("baidu.com").catch(() => null));
+          if (storedCred?.cookie) {
+            effectiveCookie = storedCred.cookie;
+          }
+        }
+
+        const results = await Promise.allSettled(
+          selectedFiles.map(async (fileItem) => {
+            const { url: directUrl, headers: directHeaders } = await resolveBaiduFile(
+              currentSurl,
+              fileItem.id,
+              baiduShareInfo.shareId || baiduShareInfo.share_id,
+              baiduShareInfo.uk,
+              baiduShareInfo.sign,
+              baiduShareInfo.timestamp,
+              baiduShareInfo.seckey,
+              baiduShareInfo.randsk,
+              effectiveCookie
+            );
+            const itemFileName =
+              selectedFiles.length === 1 && activeFileName
+                ? activeFileName
+                : fileItem.path || fileItem.name;
+            const finalHeaders: Record<string, string> = {
+              ...headers,
+              ...directHeaders,
+            };
+            if (!finalHeaders["Cookie"] && !finalHeaders["cookie"] && effectiveCookie) {
+              finalHeaders["Cookie"] = effectiveCookie;
+            }
+            return api.add({
+              url: directUrl,
+              file_name: itemFileName,
+              ...baseTemplate,
+              headers: finalHeaders,
+            });
+          })
+        );
+
+        const fulfilled: DownloadTask[] = [];
+        let firstError: string | undefined;
+        for (const r of results) {
+          if (r.status === "fulfilled") fulfilled.push(r.value);
+          else if (!firstError) firstError = String(r.reason);
+        }
+        if (lines[0]) {
+          void api.urlHistoryAdd(lines[0]).then(reloadHistory).catch(() => {});
+        }
+        if (fulfilled.length > 0) {
+          onCreated(fulfilled.length === 1 ? fulfilled[0] : fulfilled);
+        }
+        if (firstError) {
+          if (fulfilled.length === 0) {
+            setError(firstError);
+          } else {
+            notify?.(
+              `部分百度网盘文件创建失败：${firstError}（成功 ${fulfilled.length}/${selectedFiles.length}）`,
+              "error"
+            );
+          }
+        }
+      } catch (reason) {
+        setError(String(reason));
+      }
+      setBusy(false);
+      return;
+    }
+
+    if (lanzouShareInfo && lanzouSelectedIds.size > 0) {
+      const selectedFiles = lanzouShareInfo.files.filter(
+        (f) => lanzouSelectedIds.has(f.id)
+      );
+      if (selectedFiles.length === 0) {
+        setError("请至少勾选一个文件再开始下载");
+        setBusy(false);
+        return;
+      }
+
+      const baseTemplate: Omit<NewTaskRequest, "url" | "file_name"> = {
+        destination,
+        headers,
+        scheduled_at: schedule ? new Date(schedule).getTime() : undefined,
+        priority,
+        expected_checksum: checksum || undefined,
+        source: "lanzou",
+        per_task_speed_limit: limit * 1024,
+        collision_policy: policy,
+        completion_action:
+          selectedFiles.length > 1 ? "none" : completionAction,
+        connection_count: connections || 32,
+        media: undefined,
+        user_edited_file_name:
+          userEditedFileName.current || overrideFileName !== undefined,
+      };
+
+      try {
+        const results = await Promise.allSettled(
+          selectedFiles.map(async (fileItem) => {
+            const { url: directUrl, headers: directHeaders } = await api.lanzouResolveFile({
+              share_url: fileItem.url || lines[0].trim(),
+              file_id: fileItem.id,
+            });
+            const itemFileName =
+              selectedFiles.length === 1 && activeFileName
+                ? activeFileName
+                : fileItem.name;
+            return api.add({
+              url: directUrl,
+              file_name: itemFileName,
+              ...baseTemplate,
+              headers: { ...headers, ...directHeaders },
+            });
+          })
+        );
+        const fulfilled: DownloadTask[] = [];
+        let firstError: string | undefined;
+        for (const r of results) {
+          if (r.status === "fulfilled") fulfilled.push(r.value);
+          else if (!firstError) firstError = String(r.reason);
+        }
+        if (lines[0]) {
+          void api.urlHistoryAdd(lines[0]).then(reloadHistory).catch(() => {});
+        }
+        if (fulfilled.length > 0) {
+          onCreated(fulfilled.length === 1 ? fulfilled[0] : fulfilled);
+        }
+        if (firstError) {
+          if (fulfilled.length === 0) {
+            setError(firstError);
+          } else {
+            notify?.(
+              `部分蓝奏云文件创建失败：${firstError}（成功 ${fulfilled.length}/${selectedFiles.length}）`,
+              "error"
+            );
+          }
+        }
+      } catch (reason) {
+        setError(String(reason));
+      }
+      setBusy(false);
+      return;
+    }
+
+    if (pan123ShareInfo && pan123SelectedIds.size > 0) {
+      const selectedFiles = pan123ShareInfo.files.filter(
+        (f) => f.kind !== "folder" && pan123SelectedIds.has(String(f.id))
+      );
+      if (selectedFiles.length === 0) {
+        setError("请至少勾选一个文件再开始下载");
+        setBusy(false);
+        return;
+      }
+
+      const baseTemplate: Omit<NewTaskRequest, "url" | "file_name"> = {
+        destination,
+        headers,
+        scheduled_at: schedule ? new Date(schedule).getTime() : undefined,
+        priority,
+        expected_checksum: checksum || undefined,
+        source: "pan123",
+        per_task_speed_limit: limit * 1024,
+        collision_policy: policy,
+        completion_action:
+          selectedFiles.length > 1 ? "none" : completionAction,
+        connection_count: connections || 32,
+        media: undefined,
+        user_edited_file_name:
+          userEditedFileName.current || overrideFileName !== undefined,
+      };
+
+      try {
+        const results = await Promise.allSettled(
+          selectedFiles.map(async (fileItem) => {
+            const { url: directUrl, headers: directHeaders } = await api.pan123ResolveFile({
+              share_key: pan123ShareInfo.share_key,
+              file_id: fileItem.id,
+              s3_key_flag: fileItem.s3_key_flag,
+              size: fileItem.size,
+              etag: fileItem.etag,
+            });
+            const itemFileName =
+              selectedFiles.length === 1 && activeFileName
+                ? activeFileName
+                : fileItem.name;
+            return api.add({
+              url: directUrl,
+              file_name: itemFileName,
+              ...baseTemplate,
+              headers: { ...headers, ...directHeaders },
+            });
+          })
+        );
+        const fulfilled: DownloadTask[] = [];
+        let firstError: string | undefined;
+        for (const r of results) {
+          if (r.status === "fulfilled") fulfilled.push(r.value);
+          else if (!firstError) firstError = String(r.reason);
+        }
+        if (lines[0]) {
+          void api.urlHistoryAdd(lines[0]).then(reloadHistory).catch(() => {});
+        }
+        if (fulfilled.length > 0) {
+          onCreated(fulfilled.length === 1 ? fulfilled[0] : fulfilled);
+        }
+        if (firstError) {
+          if (fulfilled.length === 0) {
+            setError(firstError);
+          } else {
+            notify?.(
+              `部分123云盘文件创建失败：${firstError}（成功 ${fulfilled.length}/${selectedFiles.length}）`,
+              "error"
+            );
+          }
+        }
+      } catch (reason) {
+        setError(String(reason));
+      }
+      setBusy(false);
+      return;
+    }
+
     const template: Omit<NewTaskRequest, "url"> = {
       file_name: activeFileName || undefined,
       destination,
@@ -1351,6 +1929,30 @@ export function NewTaskDialog({
                         setPikpakShareInfo(null);
                         setPikpakSelectedIds(new Set());
                       }
+                      if (isQuarkUrl(singleUrl)) {
+                        void inspectQuarkContent(singleUrl);
+                      } else {
+                        setQuarkShareInfo(null);
+                        setQuarkSelectedIds(new Set());
+                      }
+                      if (isBaiduUrl(singleUrl)) {
+                        void inspectBaiduContent(singleUrl);
+                      } else {
+                        setBaiduShareInfo(null);
+                        setBaiduSelectedIds(new Set());
+                      }
+                      if (isLanzouUrl(singleUrl)) {
+                        void inspectLanzouContent(singleUrl);
+                      } else {
+                        setLanzouShareInfo(null);
+                        setLanzouSelectedIds(new Set());
+                      }
+                      if (isPan123Url(singleUrl)) {
+                        void inspectPan123Content(singleUrl);
+                      } else {
+                        setPan123ShareInfo(null);
+                        setPan123SelectedIds(new Set());
+                      }
                       const name = extractFileNameFromUrl(singleUrl);
                       if (name) {
                         setFileName(name);
@@ -1358,6 +1960,14 @@ export function NewTaskDialog({
                     } else {
                       setPikpakShareInfo(null);
                       setPikpakSelectedIds(new Set());
+                      setQuarkShareInfo(null);
+                      setQuarkSelectedIds(new Set());
+                      setBaiduShareInfo(null);
+                      setBaiduSelectedIds(new Set());
+                      setLanzouShareInfo(null);
+                      setLanzouSelectedIds(new Set());
+                      setPan123ShareInfo(null);
+                      setPan123SelectedIds(new Set());
                       if (parsed.lines.length === 0) {
                         setFileName("");
                       }
@@ -1439,6 +2049,40 @@ export function NewTaskDialog({
                       </span>
                     );
                   })()}
+                  {(() => {
+                    const single = lines.length === 1 ? lines[0].trim() : "";
+                    if (!isQuarkUrl(single)) return null;
+                    return (
+                      <span
+                        className="bt-input-badge"
+                        style={{
+                          background: "rgba(245, 158, 11, 0.12)",
+                          color: "#d97706",
+                          borderColor: "rgba(245, 158, 11, 0.3)",
+                        }}
+                        title="已识别为夸克网盘分享链接，支持解析目录树并开启多连接 Range 加速下载"
+                      >
+                        <Globe2 size={10} strokeWidth={2.5} /> 夸克分享
+                      </span>
+                    );
+                  })()}
+                  {(() => {
+                    const single = lines.length === 1 ? lines[0].trim() : "";
+                    if (!isBaiduUrl(single)) return null;
+                    return (
+                      <span
+                        className="bt-input-badge"
+                        style={{
+                          background: "rgba(37, 99, 235, 0.12)",
+                          color: "#2563eb",
+                          borderColor: "rgba(37, 99, 235, 0.3)",
+                        }}
+                        title="已识别为百度网盘分享链接，支持解析目录树与直链下载"
+                      >
+                        <Globe2 size={10} strokeWidth={2.5} /> 百度网盘
+                      </span>
+                    );
+                  })()}
                 </div>
                 <div className="url-input-tools-right">
                   {(() => {
@@ -1473,6 +2117,146 @@ export function NewTaskDialog({
                             ? "收起 PikPak 文件"
                             : "展开 PikPak 文件"
                           : "解析 PikPak 分享"}
+                      </button>
+                    );
+                  })()}
+                  {(() => {
+                    const single = lines.length === 1 ? lines[0].trim() : "";
+                    if (!isQuarkUrl(single)) return null;
+                    return (
+                      <button
+                        type="button"
+                        className="torrent-pick-button"
+                        style={{
+                          color: "#d97706",
+                          borderColor: "rgba(245, 158, 11, 0.3)",
+                        }}
+                        disabled={quarkInspecting}
+                        onClick={() => {
+                          if (quarkShareInfo) {
+                            setQuarkOpen((prev) => !prev);
+                          } else {
+                            void inspectQuarkContent();
+                          }
+                        }}
+                        title="解析夸克网盘分享文件树，支持勾选特定文件下载"
+                      >
+                        <Search
+                          size={11}
+                          className={quarkInspecting ? "spin" : undefined}
+                        />
+                        {quarkInspecting
+                          ? "解析分享中..."
+                          : quarkShareInfo
+                          ? quarkOpen
+                            ? "收起夸克文件"
+                            : "展开夸克文件"
+                          : "解析夸克分享"}
+                      </button>
+                    );
+                  })()}
+                  {(() => {
+                    const single = lines.length === 1 ? lines[0].trim() : "";
+                    if (!isBaiduUrl(single)) return null;
+                    return (
+                      <button
+                        type="button"
+                        className="torrent-pick-button"
+                        style={{
+                          color: "#2563eb",
+                          borderColor: "rgba(37, 99, 235, 0.3)",
+                        }}
+                        disabled={baiduInspecting}
+                        onClick={() => {
+                          if (baiduShareInfo) {
+                            setBaiduOpen((prev) => !prev);
+                          } else {
+                            void inspectBaiduContent();
+                          }
+                        }}
+                        title="解析百度网盘分享文件树，支持勾选特定文件下载"
+                      >
+                        <Search
+                          size={11}
+                          className={baiduInspecting ? "spin" : undefined}
+                        />
+                        {baiduInspecting
+                          ? "解析分享中..."
+                          : baiduShareInfo
+                          ? baiduOpen
+                            ? "收起百度网盘文件"
+                            : "展开百度网盘文件"
+                          : "解析百度网盘"}
+                      </button>
+                    );
+                  })()}
+                  {(() => {
+                    const single = lines.length === 1 ? lines[0].trim() : "";
+                    if (!isLanzouUrl(single)) return null;
+                    return (
+                      <button
+                        type="button"
+                        className="torrent-pick-button"
+                        style={{
+                          color: "#0284c7",
+                          borderColor: "rgba(2, 132, 199, 0.3)",
+                        }}
+                        disabled={lanzouInspecting}
+                        onClick={() => {
+                          if (lanzouShareInfo) {
+                            setLanzouOpen((prev) => !prev);
+                          } else {
+                            void inspectLanzouContent();
+                          }
+                        }}
+                        title="解析蓝奏云分享文件树，支持勾选特定文件下载"
+                      >
+                        <Search
+                          size={11}
+                          className={lanzouInspecting ? "spin" : undefined}
+                        />
+                        {lanzouInspecting
+                          ? "解析分享中..."
+                          : lanzouShareInfo
+                          ? lanzouOpen
+                            ? "收起蓝奏云文件"
+                            : "展开蓝奏云文件"
+                          : "解析蓝奏云"}
+                      </button>
+                    );
+                  })()}
+                  {(() => {
+                    const single = lines.length === 1 ? lines[0].trim() : "";
+                    if (!isPan123Url(single)) return null;
+                    return (
+                      <button
+                        type="button"
+                        className="torrent-pick-button"
+                        style={{
+                          color: "#16a34a",
+                          borderColor: "rgba(22, 163, 74, 0.3)",
+                        }}
+                        disabled={pan123Inspecting}
+                        onClick={() => {
+                          if (pan123ShareInfo) {
+                            setPan123Open((prev) => !prev);
+                          } else {
+                            void inspectPan123Content();
+                          }
+                        }}
+                        title="解析 123云盘公开分享文件树，支持勾选特定文件下载"
+                      >
+                        <Search
+                          size={11}
+                          className={pan123Inspecting ? "spin" : undefined}
+                        />
+                        {pan123Inspecting
+                          ? "解析分享中..."
+                          : pan123ShareInfo
+                          ? pan123Open
+                            ? "收起 123云盘文件"
+                            : "展开 123云盘文件"
+                          : "解析 123云盘"}
                       </button>
                     );
                   })()}
@@ -1569,6 +2353,78 @@ export function NewTaskDialog({
                       setPikpakPassCodeVerifying(true);
                       await inspectPikPakContent(undefined, pwd);
                       setPikpakPassCodeVerifying(false);
+                    }}
+                  />
+                );
+              })()}
+              {(() => {
+                const single = lines.length === 1 ? lines[0].trim() : "";
+                if (!isQuarkUrl(single) || !quarkShareInfo || !quarkOpen) return null;
+                return (
+                  <QuarkPicker
+                    shareInfo={quarkShareInfo}
+                    selectedIds={quarkSelectedIds}
+                    onChange={setQuarkSelectedIds}
+                    verifyingPassCode={quarkPassCodeVerifying}
+                    passCodeError={quarkPassCodeError}
+                    onVerifyPassCode={async (pwd) => {
+                      setQuarkPassCodeVerifying(true);
+                      await inspectQuarkContent(undefined, pwd);
+                      setQuarkPassCodeVerifying(false);
+                    }}
+                  />
+                );
+              })()}
+              {(() => {
+                const single = lines.length === 1 ? lines[0].trim() : "";
+                if (!isBaiduUrl(single) || !baiduShareInfo || !baiduOpen) return null;
+                return (
+                  <BaiduPanPicker
+                    shareInfo={baiduShareInfo}
+                    selectedIds={baiduSelectedIds}
+                    onChange={setBaiduSelectedIds}
+                    verifyingPassCode={baiduPassCodeVerifying}
+                    passCodeError={baiduPassCodeError}
+                    onVerifyPassCode={async (pwd) => {
+                      setBaiduPassCodeVerifying(true);
+                      await inspectBaiduContent(undefined, pwd);
+                      setBaiduPassCodeVerifying(false);
+                    }}
+                  />
+                );
+              })()}
+              {(() => {
+                const single = lines.length === 1 ? lines[0].trim() : "";
+                if (!isLanzouUrl(single) || !lanzouShareInfo || !lanzouOpen) return null;
+                return (
+                  <LanzouPicker
+                    shareInfo={lanzouShareInfo}
+                    selectedIds={lanzouSelectedIds}
+                    onChange={setLanzouSelectedIds}
+                    verifyingPassCode={lanzouPassCodeVerifying}
+                    passCodeError={lanzouPassCodeError}
+                    onVerifyPassCode={async (pwd) => {
+                      setLanzouPassCodeVerifying(true);
+                      await inspectLanzouContent(undefined, pwd);
+                      setLanzouPassCodeVerifying(false);
+                    }}
+                  />
+                );
+              })()}
+              {(() => {
+                const single = lines.length === 1 ? lines[0].trim() : "";
+                if (!isPan123Url(single) || !pan123ShareInfo || !pan123Open) return null;
+                return (
+                  <Pan123Picker
+                    shareInfo={pan123ShareInfo}
+                    selectedIds={pan123SelectedIds}
+                    onChange={setPan123SelectedIds}
+                    verifyingPassCode={pan123PassCodeVerifying}
+                    passCodeError={pan123PassCodeError}
+                    onVerifyPassCode={async (pwd) => {
+                      setPan123PassCodeVerifying(true);
+                      await inspectPan123Content(undefined, pwd);
+                      setPan123PassCodeVerifying(false);
                     }}
                   />
                 );
@@ -2446,6 +3302,8 @@ export function NewTaskDialog({
                 hasDuplicates ||
                 isGalleryWithoutSelection ||
                 isPikPakWithoutSelection ||
+                isQuarkWithoutSelection ||
+                isBaiduWithoutSelection ||
                 platformCompat?.level === "unsupported"
               }
               title={
@@ -2453,6 +3311,10 @@ export function NewTaskDialog({
                   ? "该平台暂不支持下载，请使用浏览器原生下载"
                   : isPikPakWithoutSelection
                   ? "请至少勾选一个需要下载的 PikPak 文件"
+                  : isQuarkWithoutSelection
+                  ? "请至少勾选一个需要下载的夸克文件"
+                  : isBaiduWithoutSelection
+                  ? "请至少勾选一个需要下载的百度网盘文件"
                   : hasConflicts || hasDuplicates
                   ? "存在冲突或重复，请先选择处理方式"
                   : isGalleryWithoutSelection

@@ -1660,11 +1660,315 @@ impl DownloadManager {
         });
     }
 
+    async fn resolve_cloud_share_task(
+        self: &SharedManager,
+        task: &mut DownloadTask,
+    ) -> Result<(), String> {
+        let raw_url = task.url.trim().to_string();
+        if raw_url.contains("pan.baidu.com/s/") || raw_url.contains("pan.baidu.com/share/init") {
+            let cookie = if let Some(c) = task.headers.get("Cookie").filter(|s| !s.trim().is_empty()) {
+                Some(c.clone())
+            } else if let Ok(Some(cred)) = self.store.media_credential_get_matching("pan.baidu.com").await {
+                Some(cred.cookie)
+            } else {
+                None
+            };
+
+            let pwd = if let Ok(parsed) = url::Url::parse(&raw_url) {
+                parsed.query_pairs().find(|(k, _)| k == "pwd").map(|(_, v)| v.to_string())
+            } else {
+                None
+            };
+
+            let share_info = crate::baidupan::inspect_baidu_share(&raw_url, pwd.as_deref(), cookie.as_deref())
+                .await
+                .map_err(|e| format!("解析百度网盘分享失败：{}", e))?;
+
+            let file_items: Vec<_> = share_info.files.into_iter().filter(|f| f.kind == "drive#file").collect();
+            if file_items.is_empty() {
+                return Err("百度网盘分享中未找到可下载的文件".into());
+            }
+
+            let first_file = &file_items[0];
+            let dlink_res = crate::baidupan::resolve_baidu_file(
+                &share_info.surl,
+                &first_file.id,
+                share_info.share_id.as_deref(),
+                share_info.uk.as_deref(),
+                share_info.sign.as_deref(),
+                share_info.timestamp,
+                share_info.seckey.as_deref(),
+                share_info.randsk.as_deref(),
+                cookie.as_deref(),
+            )
+            .await
+            .map_err(|e| format!("获取百度网盘直链失败：{}", e))?;
+
+            task.url = dlink_res.url;
+            if !first_file.name.is_empty() {
+                task.file_name = first_file.name.clone();
+            }
+            task.total_bytes = first_file.size;
+            task.category = category(&task.file_name);
+            for (k, v) in dlink_res.headers {
+                task.headers.insert(k, v);
+            }
+            if let Some(c) = cookie.clone() {
+                task.headers.insert("Cookie".to_string(), c);
+            }
+
+            // 若包含多个文件，自动把其余文件添加进下载队列
+            for file in file_items.iter().skip(1) {
+                let file_id = file.id.clone();
+                let surl = share_info.surl.clone();
+                let sid = share_info.share_id.clone();
+                let uk = share_info.uk.clone();
+                let sign = share_info.sign.clone();
+                let ts = share_info.timestamp;
+                let seckey = share_info.seckey.clone();
+                let randsk = share_info.randsk.clone();
+                let c_opt = cookie.clone();
+                let sub_name = file.name.clone();
+                let sub_size = file.size;
+                let destination = task.destination.clone();
+                let collision_policy = task.collision_policy.clone();
+                let completion_action = task.completion_action.clone();
+                let connection_count = task.connection_count;
+                let sub_manager = self.clone();
+
+                tokio::spawn(async move {
+                    if let Ok(sub_dlink) = crate::baidupan::resolve_baidu_file(
+                        &surl,
+                        &file_id,
+                        sid.as_deref(),
+                        uk.as_deref(),
+                        sign.as_deref(),
+                        ts,
+                        seckey.as_deref(),
+                        randsk.as_deref(),
+                        c_opt.as_deref(),
+                    ).await {
+                        let mut sub_headers = sub_dlink.headers;
+                        if let Some(c) = c_opt {
+                            sub_headers.insert("Cookie".to_string(), c);
+                        }
+                        let req = crate::models::NewTaskRequest {
+                            url: sub_dlink.url,
+                            file_name: Some(sub_name),
+                            destination: Some(destination),
+                            headers: sub_headers,
+                            scheduled_at: None,
+                            priority: 0,
+                            expected_checksum: None,
+                            source: Some("baidu".to_string()),
+                            per_task_speed_limit: 0,
+                            collision_policy,
+                            completion_action,
+                            media: None,
+                            connection_count: Some(connection_count.clamp(1, 16)),
+                            start_paused: false,
+                            user_edited_file_name: true,
+                        };
+                        let _ = sub_manager.add(req).await;
+                    }
+                });
+            }
+
+            let _ = self.store.upsert_task(task).await;
+            self.emit_task("updated", task);
+        }
+
+        if crate::lanzou::parse_lanzou_url(&raw_url).is_some() {
+            let pwd = if let Ok(parsed) = url::Url::parse(&raw_url) {
+                parsed.query_pairs().find(|(k, _)| k == "pwd" || k == "p" || k == "passcode").map(|(_, v)| v.to_string())
+            } else {
+                None
+            };
+
+            let share_info = crate::lanzou::inspect_lanzou_share(&raw_url, pwd.as_deref())
+                .await
+                .map_err(|e| format!("解析蓝奏云分享失败：{}", e))?;
+
+            if share_info.files.is_empty() {
+                return Err("蓝奏云分享中未找到可下载的文件".into());
+            }
+
+            let first_file = &share_info.files[0];
+            let dlink_res = crate::lanzou::resolve_lanzou_file(
+                &raw_url,
+                &first_file.id,
+                pwd.as_deref(),
+            )
+            .await
+            .map_err(|e| format!("获取蓝奏云直链失败：{}", e))?;
+
+            task.url = dlink_res.url;
+            if !first_file.name.is_empty() {
+                task.file_name = first_file.name.clone();
+            }
+            if first_file.size > 0 {
+                task.total_bytes = first_file.size;
+            }
+            task.category = category(&task.file_name);
+            task.connection_count = task.connection_count.max(16);
+            for (k, v) in dlink_res.headers {
+                task.headers.insert(k, v);
+            }
+
+            for file in share_info.files.iter().skip(1) {
+                let f_id = file.id.clone();
+                let f_name = file.name.clone();
+                let s_url = raw_url.clone();
+                let pwd_c = pwd.clone();
+                let destination = task.destination.clone();
+                let collision_policy = task.collision_policy.clone();
+                let completion_action = task.completion_action.clone();
+                let connection_count = task.connection_count;
+                let sub_manager = self.clone();
+
+                tokio::spawn(async move {
+                    if let Ok(sub_dlink) = crate::lanzou::resolve_lanzou_file(&s_url, &f_id, pwd_c.as_deref()).await {
+                        let sub_headers = sub_dlink.headers;
+                        let req = NewTaskRequest {
+                            url: sub_dlink.url,
+                            file_name: Some(f_name),
+                            destination: Some(destination),
+                            headers: sub_headers,
+                            scheduled_at: None,
+                            priority: 0,
+                            expected_checksum: None,
+                            source: Some("lanzou".to_string()),
+                            per_task_speed_limit: 0,
+                            collision_policy,
+                            completion_action,
+                            media: None,
+                            connection_count: Some(connection_count.max(16)),
+                            start_paused: false,
+                            user_edited_file_name: true,
+                        };
+                        let _ = sub_manager.add(req).await;
+                    }
+                });
+            }
+
+            let _ = self.store.upsert_task(task).await;
+            self.emit_task("updated", task);
+        }
+
+        if let Some(parsed_123) = crate::pan123::parse_pan123_url(&raw_url) {
+            let pwd = parsed_123.pass_code.clone();
+            let share_info = crate::pan123::inspect_pan123_share(&raw_url, pwd.as_deref())
+                .await
+                .map_err(|e| format!("解析 123云盘分享失败：{}", e))?;
+
+            let file_items: Vec<_> = share_info.files.into_iter().filter(|f| f.kind == "file").collect();
+            if file_items.is_empty() {
+                return Err("123云盘分享中未找到可下载的文件".into());
+            }
+
+            let first_file = &file_items[0];
+            let stored_cred = match self.store.media_credential_get(".123pan.com").await {
+                Ok(Some(c)) => Some(c),
+                _ => self.store.media_credential_get("123pan.com").await.ok().flatten(),
+            };
+            let token_str = stored_cred.as_ref().map(|c| c.cookie.as_str());
+
+            let dlink_res = crate::pan123::resolve_pan123_file(
+                &parsed_123.share_key,
+                first_file.id,
+                &first_file.s3_key_flag,
+                first_file.size,
+                &first_file.etag,
+                pwd.as_deref(),
+                token_str,
+            )
+            .await
+            .map_err(|e| format!("获取 123云盘直链失败：{}", e))?;
+
+            task.url = dlink_res.url;
+            if !first_file.name.is_empty() {
+                task.file_name = first_file.name.clone();
+            }
+            task.total_bytes = first_file.size;
+            task.category = category(&task.file_name);
+            task.connection_count = task.connection_count.max(16);
+            for (k, v) in dlink_res.headers {
+                task.headers.insert(k, v);
+            }
+
+            for file in file_items.iter().skip(1) {
+                let f_id = file.id;
+                let f_name = file.name.clone();
+                let f_size = file.size;
+                let f_s3 = file.s3_key_flag.clone();
+                let f_etag = file.etag.clone();
+                let s_key = parsed_123.share_key.clone();
+                let pwd_c = pwd.clone();
+                let destination = task.destination.clone();
+                let collision_policy = task.collision_policy.clone();
+                let completion_action = task.completion_action.clone();
+                let connection_count = task.connection_count;
+                let sub_manager = self.clone();
+                let cred_str = token_str.map(|s| s.to_string());
+
+                tokio::spawn(async move {
+                    if let Ok(sub_dlink) = crate::pan123::resolve_pan123_file(
+                        &s_key,
+                        f_id,
+                        &f_s3,
+                        f_size,
+                        &f_etag,
+                        pwd_c.as_deref(),
+                        cred_str.as_deref(),
+                    )
+                    .await
+                    {
+                        let sub_headers = sub_dlink.headers;
+                        let req = NewTaskRequest {
+                            url: sub_dlink.url,
+                            file_name: Some(f_name),
+                            destination: Some(destination),
+                            headers: sub_headers,
+                            scheduled_at: None,
+                            priority: 0,
+                            expected_checksum: None,
+                            source: Some("pan123".to_string()),
+                            per_task_speed_limit: 0,
+                            collision_policy,
+                            completion_action,
+                            media: None,
+                            connection_count: Some(connection_count.max(16)),
+                            start_paused: false,
+                            user_edited_file_name: true,
+                        };
+                        let _ = sub_manager.add(req).await;
+                    }
+                });
+            }
+
+            let _ = self.store.upsert_task(task).await;
+            self.emit_task("updated", task);
+        }
+
+        Ok(())
+    }
+
     async fn download_once(
         self: &SharedManager,
         mut task: DownloadTask,
         token: CancellationToken,
     ) -> Result<DownloadTask, String> {
+        if task.url.contains("pan.baidu.com/s/")
+            || task.url.contains("pan.baidu.com/share/init")
+            || task.url.contains("pan.quark.cn/s/")
+            || task.url.contains("mypikpak.com/s/")
+            || task.url.contains("lanzou")
+            || task.url.contains("123pan.com/s/")
+            || task.url.contains("123684.com/s/")
+        {
+            self.resolve_cloud_share_task(&mut task).await?;
+        }
+
         let platform = crate::media_platforms::detect_platform(&task.url);
         if platform != crate::media_platforms::MediaPlatform::Unknown && (task.media.is_none() || task.file_name == "download" || task.file_name.is_empty()) {
             let settings = self.settings().await;
@@ -2194,17 +2498,9 @@ impl DownloadManager {
         } else {
             self.client.read().await.clone()
         };
-        let mut head = client.head(&task.url).header(ACCEPT_ENCODING, "identity");
-        for (name, value) in &task.headers {
-            head = head.header(name, value);
-        }
-        let mut probe = head.send().await.map_err(friendly_reqwest)?;
-        // 部分服务器/CDN 不支持 HEAD（405/501）：回退为 GET + bytes=0-0 探针，
-        // 避免把可以正常 GET 下载的资源直接判为失败。回退响应可能为 206，
-        // 总长度由 probe_total_bytes 从 Content-Range 提取。
-        if probe.status() == reqwest::StatusCode::METHOD_NOT_ALLOWED
-            || probe.status() == reqwest::StatusCode::NOT_IMPLEMENTED
-        {
+        let is_baidu_link = task.url.contains("baidupcs.com") || task.url.contains("pan.baidu.com");
+        let mut probe = if is_baidu_link {
+            // 百度 PCS 服务器对 HEAD 请求一律返回 403 Forbidden，直接使用 GET Range: bytes=0-0 探测
             let mut get = client
                 .get(&task.url)
                 .header(ACCEPT_ENCODING, "identity")
@@ -2212,22 +2508,47 @@ impl DownloadManager {
             for (name, value) in &task.headers {
                 get = get.header(name, value);
             }
-            probe = get.send().await.map_err(friendly_reqwest)?;
-        }
+            get.send().await.map_err(friendly_reqwest)?
+        } else {
+            let mut head = client.head(&task.url).header(ACCEPT_ENCODING, "identity");
+            for (name, value) in &task.headers {
+                head = head.header(name, value);
+            }
+            let initial_probe = head.send().await.map_err(friendly_reqwest)?;
+            // 部分服务器/CDN 不支持 HEAD（403/405/501/400）：回退为 GET + bytes=0-0 探针，
+            // 避免把可以正常 GET 下载的资源直接判为失败。回退响应可能为 206，
+            // 总长度由 probe_total_bytes 从 Content-Range 提取。
+            if !initial_probe.status().is_success() {
+                let mut get = client
+                    .get(&task.url)
+                    .header(ACCEPT_ENCODING, "identity")
+                    .header(RANGE, "bytes=0-0");
+                for (name, value) in &task.headers {
+                    get = get.header(name, value);
+                }
+                match get.send().await {
+                    Ok(get_resp) if get_resp.status().is_success() || get_resp.status() == reqwest::StatusCode::PARTIAL_CONTENT => get_resp,
+                    _ => initial_probe,
+                }
+            } else {
+                initial_probe
+            }
+        };
         task.final_url = Some(diagnostic_url(probe.url()));
         task.response_status = Some(probe.status().as_u16());
         task.content_type =
             header_string(&probe, CONTENT_TYPE).map(|value| truncate_text(value, 256));
         task.accepts_ranges = Some(
-            probe
-                .headers()
-                .get(ACCEPT_RANGES)
-                .and_then(|value| value.to_str().ok())
-                .is_some_and(|value| value.eq_ignore_ascii_case("bytes")),
+            probe.status() == reqwest::StatusCode::PARTIAL_CONTENT
+                || probe
+                    .headers()
+                    .get(ACCEPT_RANGES)
+                    .and_then(|value| value.to_str().ok())
+                    .is_some_and(|value| value.eq_ignore_ascii_case("bytes")),
         );
         self.store.upsert_task(&task).await?;
         self.emit_task("updated", &task);
-        if !probe.status().is_success() {
+        if !probe.status().is_success() && probe.status() != reqwest::StatusCode::PARTIAL_CONTENT {
             return Err(format!("服务器返回 HTTP {}", probe.status()));
         }
 
@@ -2393,7 +2714,13 @@ impl DownloadManager {
                 && task.connection_count == settings.connections_per_download
             {
                 let suggested = precheck::suggest_connections(Some(total), supports_range);
-                let target_count = if total >= 4 * 1024 * 1024 {
+                let is_baidu_task = task.url.contains("baidupcs.com") || task.url.contains("pan.baidu.com");
+                let is_fast_cloud_task = task.url.contains("quark.cn") || task.url.contains("mypikpak.com") || task.url.contains("pikpak") || task.url.contains("lanzou") || task.url.contains("123pan") || task.url.contains("123684");
+                let target_count = if is_baidu_task && total >= 10 * 1024 * 1024 {
+                    16
+                } else if is_fast_cloud_task && total >= 10 * 1024 * 1024 {
+                    32
+                } else if total >= 4 * 1024 * 1024 {
                     task.connection_count.max(suggested)
                 } else {
                     suggested
@@ -2957,6 +3284,9 @@ impl DownloadManager {
             let segment_retry_policy = segment_retry_policy.clone();
 
             worker_handles.push(tokio::spawn(async move {
+                if _worker_idx > 0 && (url.contains("baidupcs.com") || url.contains("pan.baidu.com")) {
+                    tokio::time::sleep(Duration::from_millis(_worker_idx as u64 * 60)).await;
+                }
                 loop {
                     if token.is_cancelled() {
                         return Err("任务已暂停".to_string());
@@ -3051,8 +3381,9 @@ impl DownloadManager {
                                 match parse_content_range(&response) {
                                     Some((actual_start, actual_end, actual_total))
                                         if actual_start == current_start
-                                            && actual_end == request_end
-                                            && actual_total == total => {}
+                                            && actual_end >= actual_start
+                                            && actual_end <= request_end
+                                            && (actual_total == total || total == 0) => {}
                                     _ => return Err("服务器返回了不匹配的 Content-Range".into()),
                                 }
                                 let mut stream = response.bytes_stream();
@@ -5630,6 +5961,7 @@ fn media_task_tool_requirements(task: &DownloadTask) -> (bool, bool) {
 async fn inject_media_credentials(task: &mut DownloadTask, store: &Arc<Store>) {
     let platform = crate::media_platforms::detect_platform(&task.url);
     let is_douyin = platform == crate::media_platforms::MediaPlatform::Douyin || task.url.contains("douyin.com") || task.url.contains("douyinvod.com") || task.url.contains("amemv.com");
+    let is_baidu = task.url.contains("baidupcs.com") || task.url.contains("pan.baidu.com");
 
     let mut has_cookie = task
         .headers
@@ -5645,23 +5977,49 @@ async fn inject_media_credentials(task: &mut DownloadTask, store: &Arc<Store>) {
         .any(|k| k.eq_ignore_ascii_case("user-agent"));
 
     if let Some(domain) = crate::media_cookies::extract_domain(&task.url) {
-        if let Ok(Some(stored)) = store.media_credential_get_matching(&domain).await {
-            if !has_cookie && !stored.cookie.is_empty() {
-                task.headers.insert("Cookie".to_string(), stored.cookie);
-                has_cookie = true;
-            }
-            if !has_referer {
-                if let Some(referer) = stored.referer.filter(|v| !v.trim().is_empty()) {
-                    task.headers.insert("Referer".to_string(), referer);
-                    has_referer = true;
+        let mut lookup_domains = vec![domain.clone()];
+        if is_baidu {
+            lookup_domains.push("pan.baidu.com".to_string());
+            lookup_domains.push("baidu.com".to_string());
+        }
+        for d in lookup_domains {
+            if let Ok(Some(stored)) = store.media_credential_get_matching(&d).await {
+                if !has_cookie && !stored.cookie.is_empty() {
+                    task.headers.insert("Cookie".to_string(), stored.cookie);
+                    has_cookie = true;
+                }
+                if !has_referer {
+                    if let Some(referer) = stored.referer.filter(|v| !v.trim().is_empty()) {
+                        task.headers.insert("Referer".to_string(), referer);
+                        has_referer = true;
+                    }
+                }
+                if !has_user_agent {
+                    if let Some(ua) = stored.user_agent.filter(|v| !v.trim().is_empty()) {
+                        task.headers.insert("User-Agent".to_string(), ua);
+                        has_user_agent = true;
+                    }
+                }
+                if has_cookie {
+                    break;
                 }
             }
-            if !has_user_agent {
-                if let Some(ua) = stored.user_agent.filter(|v| !v.trim().is_empty()) {
-                    task.headers.insert("User-Agent".to_string(), ua);
-                    has_user_agent = true;
-                }
-            }
+        }
+    }
+
+    if is_baidu {
+        let current_ua = task.headers.get("User-Agent").map(|s| s.as_str()).unwrap_or("");
+        if current_ua.is_empty() {
+            // 根据直链 URL 中的端点 app_id 智能选择最匹配的 User-Agent 避免 403 签名冲突
+            let ua = if task.url.contains("-250528-") || task.url.contains("app_id=250528") {
+                "pan.baidu.com"
+            } else if task.url.contains("-266719-") || task.url.contains("-498065-") || task.url.contains("-309847-") {
+                crate::baidupan::BAIDU_DLINK_USER_AGENT
+            } else {
+                "pan.baidu.com"
+            };
+            task.headers.insert("User-Agent".to_string(), ua.to_string());
+            has_user_agent = true;
         }
     }
 

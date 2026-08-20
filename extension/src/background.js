@@ -678,7 +678,27 @@ async function syncCookiesForDomain(domain, url, cookieStoreId) {
     // 无痕窗口的 Cookie 在独立 store 中，必须显式指定 storeId 才能读到。
     const params = { url };
     if (cookieStoreId) params.storeId = cookieStoreId;
-    const cookies = await chrome.cookies.getAll(params);
+    let cookies = await chrome.cookies.getAll(params).catch(() => []);
+
+    // 顶级域或主站 Cookie 补充拉取并去重合并（例如 .quark.cn 与 pan.quark.cn）
+    if (domain) {
+      const extraDomains = [domain, domain.replace(/^(?:pan|drive|www)\./i, "")];
+      for (const d of extraDomains) {
+        if (!d) continue;
+        const subCookies = await chrome.cookies.getAll({
+          domain: d.startsWith(".") ? d : `.${d}`,
+          ...(cookieStoreId ? { storeId: cookieStoreId } : {})
+        }).catch(() => []);
+        const map = new Map(cookies.map(c => [c.name, c]));
+        for (const sc of subCookies) {
+          if (sc?.name && !map.has(sc.name)) {
+            map.set(sc.name, sc);
+          }
+        }
+        cookies = Array.from(map.values());
+      }
+    }
+
     if (!cookies || cookies.length === 0) return;
     const cookieHeader = buildCookieHeader(cookies);
     if (!cookieHeader) return;

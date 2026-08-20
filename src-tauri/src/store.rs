@@ -1808,9 +1808,14 @@ fn seed_builtin_platform_compatibility(connection: &Connection) -> Result<(), St
     // 双引号在 SQL 字符串里需要双写（`""` 表示一个双引号）。
     // 这里使用 raw string + format! 便于阅读，并预转义中文 notes 中的双引号。
     // 各平台 known_issues 为空数组（暂无已知问题，后续可由前端编辑补充）。
-    let rows: [(&str, &str, &str); 6] = [
+    let rows: [(&str, &str, &str); 11] = [
+        ("baidupan", "experimental", "百度网盘公开与加密分享解析，自动转存提取直链与多线程下载，需提供 Cookie"),
         ("bilibili", "verified", "哔哩哔哩普通视频、多P合集、番剧剧集与实时直播流均可正常下载"),
         ("douyin", "verified", "抖音短链、图集、单视频及实时直播流全功能正常支持"),
+        ("lanzou", "verified", "蓝奏云单文件与目录树分享解析，免登录提取 32 线程高速直链"),
+        ("pan123", "experimental", "123云盘公开与受限分享解析，目录树多选，公开免登录/受限需提供凭证，支持 32 线程并发下载"),
+        ("pikpak", "verified", "PikPak 公开与加密分享、海量目录树解析，支持 16/32 线程极速并发下载"),
+        ("quark", "verified", "夸克网盘公开与加密分享、目录树解析，支持 16/32 线程并发下载"),
         ("tiktok", "experimental", "TikTok 普通视频、图集可下载，部分内容受地区限制"),
         ("twitter", "verified", "Twitter/X 普通推文、图集及 Spaces 音频可下载，敏感内容需提供 Cookie"),
         ("weibo", "experimental", "微博普通视频、图集可下载，需提供 Cookie"),
@@ -1821,7 +1826,7 @@ fn seed_builtin_platform_compatibility(connection: &Connection) -> Result<(), St
             .execute(
                 "INSERT INTO platform_compatibility(platform,level,notes,known_issues_json,last_tested_at) \
                  VALUES(?1,?2,?3,'[]','') \
-                 ON CONFLICT(platform) DO UPDATE SET level=?2, notes=?3 WHERE notes = '哔哩哔哩普通视频、番剧、直播回放可正常下载' OR notes = '抖音短链、图集、单视频全功能正常支持' OR notes = 'YouTube 普通视频、直播回放、短视频可正常下载' OR notes = 'Twitter/X 普通推文视频可下载，需提供 Cookie'",
+                 ON CONFLICT(platform) DO UPDATE SET level=?2, notes=?3 WHERE notes = '哔哩哔哩普通视频、番剧、直播回放可正常下载' OR notes = '抖音短链、图集、单视频全功能正常支持' OR notes = 'YouTube 普通视频、直播回放、短视频可正常下载' OR notes = 'Twitter/X 普通推文视频可下载，需提供 Cookie' OR platform = 'pan123' OR platform = 'lanzou'",
                 params![platform, level, notes],
             )
             .map_err(|e| e.to_string())?;
@@ -3697,23 +3702,22 @@ mod tests {
         let runtime = tokio::runtime::Runtime::new().unwrap();
         runtime.block_on(async {
             let list = store.platform_compatibility_list().await.unwrap();
-            assert_eq!(list.len(), 6, "expected 6 builtin records, got {}", list.len());
-            // 按 platform 升序：bilibili / douyin / tiktok / twitter / weibo / youtube
-            assert_eq!(list[0].platform, "bilibili");
-            assert_eq!(list[0].level, SupportLevel::Verified);
-            assert_eq!(list[1].platform, "douyin");
-            assert_eq!(list[1].level, SupportLevel::Verified);
-            assert_eq!(list[2].platform, "tiktok");
-            assert_eq!(list[2].level, SupportLevel::Experimental);
-            assert_eq!(list[3].platform, "twitter");
-            assert_eq!(list[3].level, SupportLevel::Verified);
-            assert_eq!(list[4].platform, "weibo");
-            assert_eq!(list[4].level, SupportLevel::Experimental);
-            assert_eq!(list[5].platform, "youtube");
-            assert_eq!(list[5].level, SupportLevel::Experimental);
+            assert_eq!(list.len(), 11, "expected 11 builtin records, got {}", list.len());
+            // 包含所有内置平台
+            let platforms: Vec<&str> = list.iter().map(|item| item.platform.as_str()).collect();
+            assert!(platforms.contains(&"baidupan"));
+            assert!(platforms.contains(&"bilibili"));
+            assert!(platforms.contains(&"douyin"));
+            assert!(platforms.contains(&"lanzou"));
+            assert!(platforms.contains(&"pan123"));
+            assert!(platforms.contains(&"pikpak"));
+            assert!(platforms.contains(&"quark"));
+            assert!(platforms.contains(&"tiktok"));
+            assert!(platforms.contains(&"twitter"));
+            assert!(platforms.contains(&"weibo"));
+            assert!(platforms.contains(&"youtube"));
             // notes 不为空（含中文说明）
             assert!(!list[0].notes.is_empty());
-            assert!(!list[5].notes.is_empty());
             // known_issues 默认为空数组
             assert!(list[0].known_issues.is_empty());
         });
@@ -3743,6 +3747,20 @@ mod tests {
                 .expect("douyin record should exist");
             assert_eq!(douyin.platform, "douyin");
             assert_eq!(douyin.level, SupportLevel::Verified);
+
+            let lanzou = store
+                .platform_compatibility_get("lanzou")
+                .await
+                .unwrap()
+                .expect("lanzou record should exist");
+            assert_eq!(lanzou.level, SupportLevel::Verified);
+
+            let pan123 = store
+                .platform_compatibility_get("pan123")
+                .await
+                .unwrap()
+                .expect("pan123 record should exist");
+            assert_eq!(pan123.level, SupportLevel::Experimental);
         });
     }
 
@@ -3882,7 +3900,7 @@ mod tests {
         let runtime = tokio::runtime::Runtime::new().unwrap();
         runtime.block_on(async {
             let list = store.platform_compatibility_list().await.unwrap();
-            assert_eq!(list.len(), 6);
+            assert_eq!(list.len(), 11);
             // 损坏 JSON 降级为空数组，不报错
             let youtube = list.iter().find(|r| r.platform == "youtube").unwrap();
             assert!(youtube.known_issues.is_empty());

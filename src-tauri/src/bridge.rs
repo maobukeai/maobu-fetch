@@ -485,6 +485,12 @@ async fn sync_media_credentials(
         "x.com",
         "mypikpak.com",
         "mypikpak.net",
+        "quark.cn",
+        "pan.quark.cn",
+        "drive.quark.cn",
+        "pan.baidu.com",
+        "yun.baidu.com",
+        "baidu.com",
     ];
     let is_supported = supported
         .iter()

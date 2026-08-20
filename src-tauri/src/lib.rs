@@ -1,4 +1,5 @@
 mod autostart;
+mod baidupan;
 mod bridge;
 mod bt;
 mod cache;
@@ -22,6 +23,9 @@ mod media_tools;
 mod models;
 mod network_awareness;
 mod pikpak;
+mod quark;
+mod lanzou;
+mod pan123;
 // Task 31：代理配置精细化（resolve_proxy / test_proxy）与 DPAPI 安全存储。
 mod proxy;
 // Task 34：便携版模式。检测 EXE 同目录 maobu.portable 标记文件，
@@ -2755,6 +2759,189 @@ async fn pikpak_resolve_file(
     .await
 }
 
+#[tauri::command]
+async fn quark_inspect_share(
+    url: String,
+    pass_code: Option<String>,
+    passCode: Option<String>,
+    cookie: Option<String>,
+    manager: State<'_, SharedManager>,
+) -> Result<quark::QuarkShareInfo, String> {
+    let effective_pass_code = pass_code.or(passCode);
+    let mut effective_cookie = cookie;
+    if effective_cookie.as_deref().unwrap_or("").trim().is_empty() {
+        if let Ok(Some(cred)) = manager.store.media_credential_get_matching("pan.quark.cn").await {
+            if !cred.cookie.trim().is_empty() {
+                effective_cookie = Some(cred.cookie);
+            }
+        }
+    }
+    quark::inspect_quark_share(&url, effective_pass_code, effective_cookie).await
+}
+
+#[tauri::command]
+async fn quark_resolve_file(
+    pwd_id: Option<String>,
+    pwdId: Option<String>,
+    fid: Option<String>,
+    share_fid_token: Option<String>,
+    shareFidToken: Option<String>,
+    stoken: Option<String>,
+    cookie: Option<String>,
+    manager: State<'_, SharedManager>,
+) -> Result<quark::QuarkDirectUrlResult, String> {
+    let effective_pwd_id = pwd_id.or(pwdId).ok_or("缺少 pwd_id")?;
+    let effective_fid = fid.ok_or("缺少 fid")?;
+    let effective_share_fid_token = share_fid_token.or(shareFidToken);
+    let mut effective_cookie = cookie;
+    if effective_cookie.as_deref().unwrap_or("").trim().is_empty() {
+        if let Ok(Some(cred)) = manager.store.media_credential_get_matching("pan.quark.cn").await {
+            if !cred.cookie.trim().is_empty() {
+                effective_cookie = Some(cred.cookie);
+            }
+        }
+    }
+    quark::resolve_quark_file(
+        &effective_pwd_id,
+        &effective_fid,
+        effective_share_fid_token.as_deref(),
+        stoken.as_deref(),
+        effective_cookie.as_deref()
+    ).await
+}
+
+#[tauri::command]
+async fn baidupan_inspect_share(
+    url: String,
+    pass_code: Option<String>,
+    passCode: Option<String>,
+    cookie: Option<String>,
+    manager: State<'_, SharedManager>,
+) -> Result<baidupan::BaiduShareInfo, String> {
+    let effective_pass_code = pass_code.or(passCode);
+    let mut effective_cookie = cookie;
+    if effective_cookie.as_deref().unwrap_or("").trim().is_empty() {
+        if let Ok(Some(cred)) = manager.store.media_credential_get_matching("pan.baidu.com").await {
+            if !cred.cookie.trim().is_empty() {
+                effective_cookie = Some(cred.cookie);
+            }
+        }
+    }
+    baidupan::inspect_baidu_share(&url, effective_pass_code.as_deref(), effective_cookie.as_deref()).await
+}
+
+#[tauri::command]
+async fn baidupan_resolve_file(
+    surl: String,
+    fs_id: Option<String>,
+    fsId: Option<String>,
+    share_id: Option<String>,
+    shareId: Option<String>,
+    uk: Option<String>,
+    sign: Option<String>,
+    timestamp: Option<i64>,
+    seckey: Option<String>,
+    randsk: Option<String>,
+    cookie: Option<String>,
+    manager: State<'_, SharedManager>,
+) -> Result<baidupan::BaiduDirectUrlResult, String> {
+    let effective_fs_id = fs_id.or(fsId).ok_or("缺少 fs_id")?;
+    let effective_share_id = share_id.or(shareId);
+    let mut effective_cookie = cookie;
+    if effective_cookie.as_deref().unwrap_or("").trim().is_empty() {
+        if let Ok(Some(cred)) = manager.store.media_credential_get_matching("pan.baidu.com").await {
+            if !cred.cookie.trim().is_empty() {
+                effective_cookie = Some(cred.cookie);
+            }
+        }
+    }
+    baidupan::resolve_baidu_file(
+        &surl,
+        &effective_fs_id,
+        effective_share_id.as_deref(),
+        uk.as_deref(),
+        sign.as_deref(),
+        timestamp,
+        seckey.as_deref(),
+        randsk.as_deref(),
+        effective_cookie.as_deref(),
+    )
+    .await
+}
+
+#[tauri::command]
+async fn lanzou_inspect_share(
+    url: String,
+    pass_code: Option<String>,
+    passCode: Option<String>,
+) -> Result<lanzou::LanzouShareInfo, String> {
+    let effective_pass_code = pass_code.or(passCode);
+    lanzou::inspect_lanzou_share(&url, effective_pass_code.as_deref()).await
+}
+
+#[tauri::command]
+async fn lanzou_resolve_file(
+    share_url: Option<String>,
+    shareUrl: Option<String>,
+    file_id: Option<String>,
+    fileId: Option<String>,
+    pass_code: Option<String>,
+    passCode: Option<String>,
+) -> Result<lanzou::LanzouDirectUrlResult, String> {
+    let effective_url = share_url.or(shareUrl).unwrap_or_default();
+    let effective_fid = file_id.or(fileId).unwrap_or_default();
+    let effective_pass_code = pass_code.or(passCode);
+    lanzou::resolve_lanzou_file(&effective_url, &effective_fid, effective_pass_code.as_deref()).await
+}
+
+#[tauri::command]
+async fn pan123_inspect_share(
+    url: String,
+    pass_code: Option<String>,
+    passCode: Option<String>,
+) -> Result<pan123::Pan123ShareInfo, String> {
+    let effective_pass_code = pass_code.or(passCode);
+    pan123::inspect_pan123_share(&url, effective_pass_code.as_deref()).await
+}
+
+#[tauri::command]
+async fn pan123_resolve_file(
+    share_key: Option<String>,
+    shareKey: Option<String>,
+    file_id: Option<i64>,
+    fileId: Option<i64>,
+    s3_key_flag: Option<String>,
+    s3KeyFlag: Option<String>,
+    size: u64,
+    etag: String,
+    pass_code: Option<String>,
+    passCode: Option<String>,
+    manager: State<'_, SharedManager>,
+) -> Result<pan123::Pan123DirectUrlResult, String> {
+    let effective_key = share_key.or(shareKey).unwrap_or_default();
+    let effective_fid = file_id.or(fileId).unwrap_or(0);
+    let effective_s3 = s3_key_flag.or(s3KeyFlag).unwrap_or_default();
+    let effective_pass_code = pass_code.or(passCode);
+
+    let stored_cred = match manager.store.media_credential_get(".123pan.com").await {
+        Ok(Some(c)) => Some(c),
+        _ => manager.store.media_credential_get("123pan.com").await.ok().flatten(),
+    };
+
+    let token_str = stored_cred.as_ref().map(|c| c.cookie.as_str());
+
+    pan123::resolve_pan123_file(
+        &effective_key,
+        effective_fid,
+        &effective_s3,
+        size,
+        &etag,
+        effective_pass_code.as_deref(),
+        token_str,
+    )
+    .await
+}
+
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
@@ -3071,7 +3258,15 @@ pub fn run() {
             saved_view_delete,
             saved_view_replace_all,
             pikpak_inspect_share,
-            pikpak_resolve_file
+            pikpak_resolve_file,
+            quark_inspect_share,
+            quark_resolve_file,
+            baidupan_inspect_share,
+            baidupan_resolve_file,
+            lanzou_inspect_share,
+            lanzou_resolve_file,
+            pan123_inspect_share,
+            pan123_resolve_file
         ])
         .build(tauri::generate_context!())
         .expect("error while building Maobu Fetch")

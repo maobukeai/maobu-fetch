@@ -2520,6 +2520,18 @@ export function SettingsPage({
                               return "哔哩哔哩";
                             case "weibo":
                               return "微博";
+                            case "pikpak":
+                              return "PikPak";
+                            case "quark":
+                              return "夸克网盘";
+                            case "baidupan":
+                            case "baidu":
+                              return "百度网盘";
+                            case "lanzou":
+                              return "蓝奏云";
+                            case "pan123":
+                            case "123pan":
+                              return "123云盘";
                             default:
                               return item.platform;
                           }

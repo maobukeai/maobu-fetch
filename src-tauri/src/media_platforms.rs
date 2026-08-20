@@ -50,6 +50,10 @@ pub enum MediaPlatform {
     Bilibili,
     Weibo,
     PikPak,
+    Quark,
+    BaiduPan,
+    Lanzou,
+    Pan123,
 }
 
 impl MediaPlatform {
@@ -63,6 +67,10 @@ impl MediaPlatform {
             Self::Bilibili => "哔哩哔哩",
             Self::Weibo => "微博",
             Self::PikPak => "PikPak 网盘",
+            Self::Quark => "夸克网盘",
+            Self::BaiduPan => "百度网盘",
+            Self::Lanzou => "蓝奏云",
+            Self::Pan123 => "123云盘",
             Self::Unknown => "未知平台",
         }
     }
@@ -78,6 +86,10 @@ impl MediaPlatform {
             Self::Bilibili => "bilibili",
             Self::Weibo => "weibo",
             Self::PikPak => "pikpak",
+            Self::Quark => "quark",
+            Self::BaiduPan => "baidupan",
+            Self::Lanzou => "lanzou",
+            Self::Pan123 => "pan123",
         }
     }
 
@@ -93,6 +105,10 @@ impl MediaPlatform {
             Self::Bilibili => &["bilibili.com", "b23.tv", "m.bilibili.com", "t.bilibili.com"],
             Self::Weibo => &["weibo.com", "weibo.cn", "m.weibo.cn", "t.cn"],
             Self::PikPak => &["mypikpak.com", "mypikpak.net"],
+            Self::Quark => &["pan.quark.cn", "drive.quark.cn", "quark.cn"],
+            Self::BaiduPan => &["pan.baidu.com", "yun.baidu.com", "baidu.com"],
+            Self::Lanzou => &["lanzoux.com", "lanzoui.com", "lanzouy.com", "lanzouv.com", "lanzoup.com", "lanzou.com"],
+            Self::Pan123 => &["123pan.com", "123pan.cn", "123684.com"],
             Self::Unknown => &[],
         }
     }
@@ -191,6 +207,27 @@ pub fn detect_platform(url: &str) -> MediaPlatform {
         && url.contains("/s/")
     {
         return MediaPlatform::PikPak;
+    }
+    if (host == "pan.quark.cn"
+        || host == "drive.quark.cn"
+        || host == "quark.cn"
+        || host.ends_with(".quark.cn"))
+        && url.contains("/s/")
+    {
+        return MediaPlatform::Quark;
+    }
+    if host == "pan.baidu.com"
+        || host == "yun.baidu.com"
+        || host == "baidu.com"
+        || host.ends_with(".baidu.com")
+    {
+        return MediaPlatform::BaiduPan;
+    }
+    if host.contains("lanzou") || host.contains("lanzo") || host.contains("baidupan.com.lanzou") {
+        return MediaPlatform::Lanzou;
+    }
+    if host.contains("123pan") || host.contains("123684") || host.contains("123952") {
+        return MediaPlatform::Pan123;
     }
     MediaPlatform::Unknown
 }
@@ -2247,7 +2284,130 @@ pub async fn check_media_credential(
         MediaPlatform::Douyin => check_douyin_credential(domain, cookie_clean, referer_clean, effective_ua, now).await,
         MediaPlatform::Twitter => check_twitter_credential(domain, cookie_clean, referer_clean, effective_ua, now).await,
         MediaPlatform::YouTube => check_youtube_credential(domain, cookie_clean, referer_clean, effective_ua, now).await,
+        MediaPlatform::BaiduPan => check_baidupan_credential(domain, cookie_clean, referer_clean, effective_ua, now).await,
         _ => check_generic_credential(domain, cookie_clean, referer_clean, effective_ua, now).await,
+    }
+}
+
+async fn check_baidupan_credential(
+    domain: &str,
+    cookie: &str,
+    _referer: &str,
+    ua: &str,
+    now: String,
+) -> Result<MediaCredentialCheckResult, String> {
+    if !cookie.contains("BDUSS") {
+        return Ok(MediaCredentialCheckResult {
+            domain: domain.to_string(),
+            valid: false,
+            message: "Cookie 缺少 BDUSS 核心登录凭证".to_string(),
+            tested_at: now,
+        });
+    }
+
+    let url = "https://pan.baidu.com/api/quota?checkfree=1&checkexpire=1";
+    let client = match reqwest::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            return Ok(MediaCredentialCheckResult {
+                domain: domain.to_string(),
+                valid: false,
+                message: format!("构建客户端失败：{e}"),
+                tested_at: now,
+            })
+        }
+    };
+
+    let res = match client
+        .get(url)
+        .header(reqwest::header::USER_AGENT, ua)
+        .header(reqwest::header::REFERER, "https://pan.baidu.com/")
+        .header(reqwest::header::COOKIE, cookie)
+        .send()
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            return Ok(MediaCredentialCheckResult {
+                domain: domain.to_string(),
+                valid: false,
+                message: format!("连接百度网盘接口失败：{e}"),
+                tested_at: now,
+            })
+        }
+    };
+
+    if !res.status().is_success() {
+        return Ok(MediaCredentialCheckResult {
+            domain: domain.to_string(),
+            valid: false,
+            message: format!("百度网盘响应异常：HTTP {}", res.status()),
+            tested_at: now,
+        });
+    }
+
+    let bytes = match res.bytes().await {
+        Ok(b) => b,
+        Err(_) => {
+            return Ok(MediaCredentialCheckResult {
+                domain: domain.to_string(),
+                valid: false,
+                message: "读取百度网盘响应内容失败".to_string(),
+                tested_at: now,
+            })
+        }
+    };
+
+    let json: Value = match serde_json::from_slice(&bytes) {
+        Ok(j) => j,
+        Err(_) => {
+            return Ok(MediaCredentialCheckResult {
+                domain: domain.to_string(),
+                valid: false,
+                message: "百度网盘响应非 JSON 格式".to_string(),
+                tested_at: now,
+            })
+        }
+    };
+
+    let errno = json.get("errno").and_then(|v| v.as_i64()).unwrap_or(-1);
+    if errno == 0 {
+        let total = json.get("total").and_then(|v| v.as_i64()).unwrap_or(0);
+        let used = json.get("used").and_then(|v| v.as_i64()).unwrap_or(0);
+        let is_vip = json.get("vip_type").and_then(|v| v.as_i64()).unwrap_or(0) > 0
+            || json.get("is_vip").and_then(|v| v.as_i64()).unwrap_or(0) > 0;
+
+        let total_gb = total as f64 / 1024.0 / 1024.0 / 1024.0;
+        let used_gb = used as f64 / 1024.0 / 1024.0 / 1024.0;
+
+        let vip_label = if is_vip { " (VIP/SVIP 用户)" } else { " (普通用户)" };
+
+        Ok(MediaCredentialCheckResult {
+            domain: domain.to_string(),
+            valid: true,
+            message: format!(
+                "凭证有效{} · 空间 {:.1}GB / {:.1}GB",
+                vip_label, used_gb, total_gb
+            ),
+            tested_at: now,
+        })
+    } else if errno == -6 {
+        Ok(MediaCredentialCheckResult {
+            domain: domain.to_string(),
+            valid: false,
+            message: "百度网盘凭证已过期，请重新登录并同步 Cookie".to_string(),
+            tested_at: now,
+        })
+    } else {
+        Ok(MediaCredentialCheckResult {
+            domain: domain.to_string(),
+            valid: false,
+            message: format!("百度网盘返回错误码：errno={errno}"),
+            tested_at: now,
+        })
     }
 }
 

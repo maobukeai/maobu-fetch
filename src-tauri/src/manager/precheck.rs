@@ -818,9 +818,9 @@ pub(crate) fn suggest_connections(file_size: Option<u64>, accepts_ranges: bool) 
         1
     } else if size < 15 * PRECHECK_ONE_MB {
         4
-    } else if size < 500 * PRECHECK_ONE_MB {
+    } else if size < 200 * PRECHECK_ONE_MB {
         8
-    } else if size < 5 * PRECHECK_ONE_GB {
+    } else if size < 1 * PRECHECK_ONE_GB {
         16
     } else {
         32
@@ -845,6 +845,8 @@ pub(crate) fn cdn_connection_cap(url: &str) -> u8 {
         ("aka.ms", 2),
         ("blob.core.windows.net", 2),
         ("onedrive.live.com", 2),
+        ("baidupcs.com", 16),
+        ("pan.baidu.com", 16),
     ];
 
     let host = match Url::parse(url)
@@ -1090,26 +1092,26 @@ mod tests {
     }
 
     #[test]
-    fn suggest_connections_under_500mb_returns_eight() {
+    fn suggest_connections_under_200mb_returns_eight() {
         assert_eq!(suggest_connections(Some(100 * PRECHECK_ONE_MB), true), 8);
     }
 
     #[test]
-    fn suggest_connections_just_over_500mb_returns_sixteen() {
-        assert_eq!(suggest_connections(Some(600 * PRECHECK_ONE_MB), true), 16);
+    fn suggest_connections_just_over_200mb_returns_sixteen() {
+        assert_eq!(suggest_connections(Some(300 * PRECHECK_ONE_MB), true), 16);
     }
 
     #[test]
-    fn suggest_connections_just_under_5gb_returns_sixteen() {
+    fn suggest_connections_just_under_1gb_returns_sixteen() {
         assert_eq!(
-            suggest_connections(Some(5 * PRECHECK_ONE_GB - 1), true),
+            suggest_connections(Some(1 * PRECHECK_ONE_GB - 1), true),
             16
         );
     }
 
     #[test]
-    fn suggest_connections_over_5gb_returns_thirty_two() {
-        assert_eq!(suggest_connections(Some(10 * PRECHECK_ONE_GB), true), 32);
+    fn suggest_connections_over_1gb_returns_thirty_two() {
+        assert_eq!(suggest_connections(Some(2 * PRECHECK_ONE_GB), true), 32);
     }
 
     // ---- Accept-Ranges 解析 ----

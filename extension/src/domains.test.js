@@ -25,9 +25,22 @@ test("matchMediaDomain: 非媒体平台与相似域名不命中", () => {
 
 test("MEDIA_SYNC_DOMAINS: 覆盖已知平台且无重复", () => {
   assert.equal(new Set(MEDIA_SYNC_DOMAINS).size, MEDIA_SYNC_DOMAINS.length);
-  for (const domain of ["douyin.com", "tiktok.com", "bilibili.com", "youtube.com", "twitter.com", "weibo.com"]) {
+  for (const domain of [
+    "douyin.com",
+    "tiktok.com",
+    "bilibili.com",
+    "youtube.com",
+    "twitter.com",
+    "weibo.com",
+    "123pan.com",
+    "123pan.cn",
+    "lanzoux.com",
+    "lanzoui.com",
+  ]) {
     assert.ok(MEDIA_SYNC_DOMAINS.includes(domain), `缺少 ${domain}`);
   }
+  assert.equal(matchMediaDomain("1683912.share.123pan.cn"), "123pan.com");
+  assert.equal(matchMediaDomain("www.lanzoui.com"), "lanzoux.com");
 });
 
 // ---- 用户自定义同步域名（P3）----

@@ -114,6 +114,10 @@ pub fn classify_platform_error(platform: MediaPlatform, stderr: &str) -> MediaPl
         MediaPlatform::Bilibili => classify_bilibili_error(&lower),
         MediaPlatform::Weibo => classify_weibo_error(&lower),
         MediaPlatform::PikPak => MediaPlatformError::Unknown,
+        MediaPlatform::Quark => MediaPlatformError::Unknown,
+        MediaPlatform::BaiduPan => MediaPlatformError::Unknown,
+        MediaPlatform::Lanzou => MediaPlatformError::Unknown,
+        MediaPlatform::Pan123 => MediaPlatformError::Unknown,
         MediaPlatform::Unknown => MediaPlatformError::Unknown,
     };
     if platform_result != MediaPlatformError::Unknown {

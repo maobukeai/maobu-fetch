@@ -517,6 +517,9 @@ export function isDownloadableUrl(url: string): boolean {
       "weibo.com",
       "mypikpak.com",
       "mypikpak.net",
+      "quark.cn",
+      "pan.quark.cn",
+      "drive.quark.cn",
     ];
     const hostname = parsed.hostname.toLowerCase();
     if (

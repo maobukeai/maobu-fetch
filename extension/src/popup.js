@@ -243,7 +243,26 @@ if (isHttpTab) {
       // 显式传入 tab.cookieStoreId 以支持无痕窗口（无痕 Cookie 在独立 store 中）
       const getAllParams = { url: currentTabUrl };
       if (tab?.cookieStoreId) getAllParams.storeId = tab.cookieStoreId;
-      const cookies = await chrome.cookies.getAll(getAllParams).catch(() => []);
+      let cookies = await chrome.cookies.getAll(getAllParams).catch(() => []);
+
+      if (baseDomain) {
+        const extraDomains = [baseDomain, baseDomain.replace(/^(?:pan|drive|www)\./i, "")];
+        for (const d of extraDomains) {
+          if (!d) continue;
+          const subCookies = await chrome.cookies.getAll({
+            domain: d.startsWith(".") ? d : `.${d}`,
+            ...(tab?.cookieStoreId ? { storeId: tab.cookieStoreId } : {})
+          }).catch(() => []);
+          const map = new Map(cookies.map(c => [c.name, c]));
+          for (const sc of subCookies) {
+            if (sc?.name && !map.has(sc.name)) {
+              map.set(sc.name, sc);
+            }
+          }
+          cookies = Array.from(map.values());
+        }
+      }
+
       const cookieHeader = buildCookieHeader(cookies);
       if (cookieHeader) {
         await call({ type: "sync-cookies", domain: baseDomain, cookie: cookieHeader }).catch(() => {});
