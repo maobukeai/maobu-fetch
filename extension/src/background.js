@@ -1,6 +1,6 @@
 import { signedFetch, signedGet, compatFetch, focusDesktop, PROBE_TIMEOUT_MS } from "./protocol.js";
 import { interceptBrowserDownload, evaluateDownload, skipUnpairedDownload, notifyThrottled, recoverStuckTakeovers } from "./interceptor.js";
-import { bridgeMediaTask } from "./media-selection.js";
+import { bridgeMediaTask, selectBridgeMediaFormat } from "./media-selection.js";
 import { requestPageWithTrackingFallback } from "./rules.js";
 import { buildCookieHeader } from "./auth-download.js";
 import { matchMediaDomain } from "./domains.js";
@@ -67,6 +67,7 @@ async function sendTask(url, fileName, extra = {}) {
   const response = await signedFetch("/v1/tasks", {
     url, file_name: fileName || undefined, headers: extra.headers || {}, priority: 0,
     per_task_speed_limit: 0, collision_policy: "rename", source: "browser", media: extra.media,
+    connection_count: extra.connection_count || extra.connectionCount || undefined,
   });
   if (!response.ok) throw new Error(await response.text() || `HTTP ${response.status}`);
   return response.json();
@@ -104,7 +105,7 @@ async function openResourceGrabberForTab(tab) {
   } catch {
     try {
       if (chrome.scripting?.executeScript) {
-        await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["src/content-ui.js", "src/content.js"] });
+        await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["src/content-ui.js", "src/pikpak-adapter.js", "src/content.js"] });
         const res = await chrome.tabs.sendMessage(tab.id, { type: "grab-page-resources" });
         if (res?.items) items = res.items;
       }
@@ -165,9 +166,27 @@ async function sendPageMedia(url, title, cookieStoreId) {
     url,
   ));
   if (!response.ok) throw new Error(await response.text());
+  const probeData = await response.json();
   const { mediaQuality, subtitlePref } = await chrome.storage.local.get(["mediaQuality", "subtitlePref"]);
-  const task = bridgeMediaTask(await response.json(), title, mediaQuality || "best", subtitlePref || "all");
+  const format = selectBridgeMediaFormat(probeData, mediaQuality || "best");
+  const task = bridgeMediaTask(probeData, title, mediaQuality || "best", subtitlePref || "all");
+
+  if (format?.url && probeData?.extractor === "pikpak") {
+    const fileName = task.fileName || "PikPak_Video.mp4";
+    await sendTask(format.url, fileName, {
+      headers: {
+        "Referer": "https://mypikpak.com/",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+      },
+      connection_count: 16,
+    });
+    notify("已添加到猫步下载器", `已开启 16 线程极速下载：${fileName}`);
+    void focusDesktop();
+    return;
+  }
+
   await sendTask(url, task.fileName, { media: task.media });
+  void focusDesktop();
 }
 
 chrome.contextMenus.onClicked.addListener(async (info, tab) => {
@@ -315,7 +334,7 @@ export async function confirmTakeoverWithOverlay(item, settings, deps = {}) {
   } catch {
     try {
       if (chrome.scripting?.executeScript) {
-        await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["src/content-ui.js", "src/content.js"] });
+        await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["src/content-ui.js", "src/pikpak-adapter.js", "src/content.js"] });
         response = await askOverlay();
       }
     } catch {}
@@ -431,6 +450,27 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
       return { ok: true, paired: hasToken, version: desktopVersion };
     }
     if (message.type === "send") return { ok: true, item: await sendTask(message.url, message.fileName, message.extra) };
+    if (message.type === "send-pikpak-task") {
+      try {
+        const connectionCount = Number(message.connectionCount) || 16;
+        const pikpakHeaders = {
+          "Referer": "https://mypikpak.com/",
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+          ...(message.headers || {}),
+        };
+        const task = await sendTask(message.url, message.fileName, {
+          headers: pikpakHeaders,
+          connection_count: connectionCount,
+        });
+        notify("猫步下载器", `已添加 PikPak 任务 (${connectionCount} 线程)：${message.fileName || "文件"}`);
+        void focusDesktop();
+        return { ok: true, item: task };
+      } catch (error) {
+        const friendly = friendlyBridgeError(error);
+        notify("猫步下载器发送失败", friendly);
+        return { ok: false, error: friendly };
+      }
+    }
     // 页内悬浮按钮（page 模式）：MSE 站点（B 站/YouTube 等）拿不到 http(s) 直链，
     // 发送页面 URL，与右键菜单"使用猫步下载器下载媒体"走相同的探测与任务构造流程。
     if (message.type === "download-page-media") {

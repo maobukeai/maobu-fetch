@@ -49,6 +49,7 @@ pub enum MediaPlatform {
     YouTube,
     Bilibili,
     Weibo,
+    PikPak,
 }
 
 impl MediaPlatform {
@@ -61,6 +62,7 @@ impl MediaPlatform {
             Self::YouTube => "YouTube",
             Self::Bilibili => "哔哩哔哩",
             Self::Weibo => "微博",
+            Self::PikPak => "PikPak 网盘",
             Self::Unknown => "未知平台",
         }
     }
@@ -75,6 +77,7 @@ impl MediaPlatform {
             Self::YouTube => "youtube",
             Self::Bilibili => "bilibili",
             Self::Weibo => "weibo",
+            Self::PikPak => "pikpak",
         }
     }
 
@@ -89,6 +92,7 @@ impl MediaPlatform {
             Self::YouTube => &["youtube.com", "youtu.be", "m.youtube.com", "music.youtube.com"],
             Self::Bilibili => &["bilibili.com", "b23.tv", "m.bilibili.com", "t.bilibili.com"],
             Self::Weibo => &["weibo.com", "weibo.cn", "m.weibo.cn", "t.cn"],
+            Self::PikPak => &["mypikpak.com", "mypikpak.net"],
             Self::Unknown => &[],
         }
     }
@@ -97,7 +101,7 @@ impl MediaPlatform {
 /// 从 URL 中提取小写 host（去除 `www.` 前缀，保留子域）。
 ///
 /// 解析失败时返回空字符串。`v.douyin.com` 等短链 host 会被保留。
-fn extract_host(url: &str) -> String {
+pub fn extract_host(url: &str) -> String {
     let parsed = match url::Url::parse(url.trim()) {
         Ok(u) => u,
         Err(_) => return String::new(),
@@ -178,6 +182,15 @@ pub fn detect_platform(url: &str) -> MediaPlatform {
         || host.ends_with(".weibo.cn")
     {
         return MediaPlatform::Weibo;
+    }
+    if (host == "mypikpak.com"
+        || host == "mypikpak.net"
+        || host.ends_with(".mypikpak.com")
+        || host.ends_with(".mypikpak.net"))
+        && !host.starts_with("dl-")
+        && url.contains("/s/")
+    {
+        return MediaPlatform::PikPak;
     }
     MediaPlatform::Unknown
 }

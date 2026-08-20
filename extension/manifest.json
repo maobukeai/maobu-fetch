@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "猫步下载器 · Maobu Fetch",
   "short_name": "Maobu Fetch",
-  "version": "0.8.5",
+  "version": "0.8.6",
   "description": "安全地接管下载并将页面媒体发送到猫步下载器。",
   "permissions": [
     "contextMenus",
@@ -62,8 +62,22 @@
       ],
       "js": [
         "src/content-ui.js",
+        "src/pikpak-adapter.js",
         "src/content.js"
       ],
+      "run_at": "document_start"
+    },
+    {
+      "matches": [
+        "*://mypikpak.com/*",
+        "*://*.mypikpak.com/*",
+        "*://mypikpak.net/*",
+        "*://*.mypikpak.net/*"
+      ],
+      "js": [
+        "src/pikpak-injected.js"
+      ],
+      "world": "MAIN",
       "run_at": "document_start"
     }
   ]

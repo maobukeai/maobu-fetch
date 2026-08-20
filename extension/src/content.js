@@ -133,22 +133,154 @@
     return fabHiddenHosts.some((host) => hostname === host || hostname.endsWith(`.${host}`));
   };
 
+  function getDefaultFabBottom() {
+    const hostname = location.hostname.toLowerCase();
+    const isVideoSite = hostname.includes("douyin.com") || hostname.includes("bilibili.com") || hostname.includes("youtube.com") || hostname.includes("tiktok.com") || hostname.includes("mypikpak.com");
+    return isVideoSite ? 84 : 28;
+  }
+
+  function extractDouyinActiveMedia() {
+    if (!location.hostname.includes("douyin.com")) return null;
+
+    // 1. 优先检查当前浏览器 URL 是否已包含具体 ID
+    const currentUrl = location.href;
+    const urlMatch = currentUrl.match(/(?:douyin\.com\/(?:video|note)\/(\d{10,}))|[?&](?:modal_id|aweme_id|vid)=(\d{10,})/i);
+    const urlAwemeId = urlMatch ? (urlMatch[1] || urlMatch[2]) : "";
+
+    // 2. 找到当前正在播放或视口中央最活跃的 video
+    const videos = Array.from(document.querySelectorAll("video"));
+    let activeVideo = videos.find((v) => !v.paused && v.currentTime > 0) || videos[0];
+    if (videos.length > 1) {
+      let maxArea = 0;
+      const vh = window.innerHeight;
+      const vw = window.innerWidth;
+      for (const v of videos) {
+        const r = v.getBoundingClientRect();
+        const w = Math.max(0, Math.min(r.right, vw) - Math.max(r.left, 0));
+        const h = Math.max(0, Math.min(r.bottom, vh) - Math.max(r.top, 0));
+        const area = w * h;
+        if (area > maxArea) {
+          maxArea = area;
+          activeVideo = v;
+        }
+      }
+    }
+
+    // 3. 从 activeVideo 或当前活跃卡片中寻找真实的 video/note 链接
+    let activeCard = activeVideo ? (
+      activeVideo.closest('[data-e2e="feed-active-video"]') ||
+      activeVideo.closest('.swiper-slide-active') ||
+      activeVideo.closest('[data-e2e="video-player"]') ||
+      activeVideo.closest('[data-e2e="feed-video"]') ||
+      activeVideo.parentElement?.parentElement
+    ) : null;
+
+    if (!activeCard) {
+      activeCard = document.querySelector('[data-e2e="feed-active-video"], .swiper-slide-active, [data-e2e="video-player"]');
+    }
+
+    let cardAwemeId = "";
+    let cardTitle = "";
+    if (activeCard) {
+      const descEl = activeCard.querySelector('[data-e2e="video-desc"], [data-e2e="video-title"], .title, h1');
+      if (descEl) cardTitle = descEl.textContent?.trim() || "";
+
+      // 检查属性与链接
+      const idAttr = activeCard.getAttribute("data-aweme-id") || activeCard.getAttribute("data-id");
+      if (idAttr && /^\d{10,}$/.test(idAttr)) {
+        cardAwemeId = idAttr;
+      } else {
+        const links = Array.from(activeCard.querySelectorAll('a[href*="/video/"], a[href*="/note/"], a[href*="modal_id="]'));
+        for (const a of links) {
+          const m = a.href.match(/(?:\/(?:video|note)\/(\d{10,}))|[?&]modal_id=(\d{10,})/i);
+          if (m) {
+            cardAwemeId = m[1] || m[2];
+            break;
+          }
+        }
+      }
+    }
+
+    // 如果还没找到 ID，全局扫描最近的激活 slide
+    if (!cardAwemeId && !urlAwemeId) {
+      const allLinks = Array.from(document.querySelectorAll('a[href*="/video/"], a[href*="/note/"]'));
+      for (const a of allLinks) {
+        const rect = a.getBoundingClientRect();
+        if (rect.top >= 0 && rect.bottom <= window.innerHeight + 200) {
+          const m = a.href.match(/(?:\/(?:video|note)\/(\d{10,}))/i);
+          if (m) {
+            cardAwemeId = m[1];
+            break;
+          }
+        }
+      }
+    }
+
+    const effectiveId = cardAwemeId || urlAwemeId;
+    const finalTitle = cardTitle || document.title.replace(/\s*-\s*抖音.*$/i, "").trim() || "抖音视频";
+
+    if (effectiveId) {
+      const isNote = Boolean(activeCard?.querySelector('a[href*="/note/"]') || currentUrl.includes("/note/"));
+      const path = isNote ? "note" : "video";
+      return {
+        url: `https://www.douyin.com/${path}/${effectiveId}`,
+        title: finalTitle,
+        type: isNote ? "gallery" : "video",
+      };
+    }
+
+    // 4. 兜底检查 activeVideo 的直链（如果非 blob）
+    const rawSrc = activeVideo?.currentSrc || activeVideo?.src || "";
+    if (rawSrc && /^https?:\/\//i.test(rawSrc) && !rawSrc.startsWith("blob:")) {
+      return {
+        url: rawSrc,
+        title: finalTitle,
+        type: "video",
+        isDirect: true,
+      };
+    }
+
+    return null;
+  }
+
   function syncFab() {
     let hasMediaElement = false;
     try {
       hasMediaElement = Boolean(document.querySelector("video, audio"));
     } catch {}
     const sniffed = latestSniffedTarget();
-    const direct = sniffed
-      || (hasMediaElement ? [...found.values()].reverse().find((item) => item.type === "video" || item.type === "audio") : null);
-    if (direct) {
-      fabUrl = direct;
-      fabMode = "direct";
-    } else if (hasMediaElement) {
+    const pikpakCaptured = window.MaobuPikPak?.getCapturedMedia?.()?.pop();
+    const isPikPakShare = window.MaobuPikPak?.isPikPakSharePage?.() ||
+      ((location.hostname.includes("mypikpak.com") || location.hostname.includes("mypikpak.net")) &&
+       (location.pathname.includes("/s/") || location.hash.includes("/s/")));
+    const isDouyin = location.hostname.includes("douyin.com");
+    const douyinActive = extractDouyinActiveMedia();
+
+    if (pikpakCaptured?.url) {
+      fabUrl = pikpakCaptured.url;
+      fabMode = "pikpak";
+    } else if (isPikPakShare) {
       fabUrl = location.href;
-      fabMode = "page";
+      fabMode = "pikpak-share";
+    } else if (isDouyin) {
+      if (douyinActive?.url) {
+        fabUrl = douyinActive.url;
+        fabMode = douyinActive.isDirect ? "direct" : "page";
+      } else {
+        fabUrl = ""; // 抖音页面未识别到具体视频前不显示或不绑定裸主页
+      }
     } else {
-      fabUrl = "";
+      const direct = sniffed
+        || (hasMediaElement ? [...found.values()].reverse().find((item) => item.type === "video" || item.type === "audio") : null);
+      if (direct) {
+        fabUrl = direct;
+        fabMode = "direct";
+      } else if (hasMediaElement) {
+        fabUrl = location.href;
+        fabMode = "page";
+      } else {
+        fabUrl = "";
+      }
     }
     if (!fabUrl || !isContextValid() || isFabHiddenHere()) {
       if (fabElement) { fabElement.remove(); fabElement = null; }
@@ -158,18 +290,22 @@
       fabElement = createFab();
       (document.body || document.documentElement).appendChild(fabElement);
     }
+    if (fabLabel) {
+      fabLabel.textContent = FAB_LABEL;
+    }
   }
 
   function applyFabPosition(fab) {
     const pos = fabPos;
-    if (!pos) return; // 默认位置（右下 18px）由初始 style 提供
+    const defaultBottom = getDefaultFabBottom();
+    const bottom = pos ? Number(pos.bottom || defaultBottom) : defaultBottom;
     const maxBottom = Math.max(8, window.innerHeight - 60);
-    fab.style.bottom = `${Math.min(Number(pos.bottom || 18), maxBottom)}px`;
-    if (pos.side === "left") {
-      fab.style.left = `${Number(pos.offset || 18)}px`;
+    fab.style.bottom = `${Math.min(bottom, maxBottom)}px`;
+    if (pos?.side === "left") {
+      fab.style.left = `${Number(pos.offset || 24)}px`;
       fab.style.right = "auto";
     } else {
-      fab.style.right = `${Number(pos.offset || 18)}px`;
+      fab.style.right = `${Number(pos?.offset || 24)}px`;
       fab.style.left = "auto";
     }
   }
@@ -182,15 +318,16 @@
     fab.setAttribute("aria-label", "使用猫步下载器下载本页媒体");
     fab.title = "发送本页视频到猫步下载器（右键：菜单；可拖动；双击复位）";
     Object.assign(fab.style, {
-      position: "fixed", bottom: "18px", right: "18px", zIndex: "2147483646",
+      position: "fixed", bottom: `${getDefaultFabBottom()}px`, right: "24px", zIndex: "2147483647",
       display: "inline-flex", alignItems: "center", gap: "6px",
       height: "34px", padding: "0 14px", borderRadius: "999px",
-      background: "rgba(29, 29, 31, 0.92)", color: "#f5f5f7",
+      background: "rgba(29, 29, 31, 0.88)", color: "#f5f5f7",
+      backdropFilter: "blur(16px)", WebkitBackdropFilter: "blur(16px)",
       fontSize: "12px", fontFamily: FONT_STACK,
       cursor: "pointer", userSelect: "none", WebkitUserSelect: "none", touchAction: "none",
-      boxShadow: "0 6px 20px rgba(0, 0, 0, 0.25)",
-      border: "1px solid rgba(255, 255, 255, 0.18)",
-      transition: "transform 0.15s ease, opacity 0.15s ease",
+      boxShadow: "0 8px 24px rgba(0, 0, 0, 0.3)",
+      border: "1px solid rgba(255, 255, 255, 0.2)",
+      transition: "transform 0.15s ease, opacity 0.15s ease, background 0.2s ease",
       opacity: "0", transform: "translateY(6px)",
     });
     const label = document.createElement("span");
@@ -276,19 +413,97 @@
       void openFabMenu();
     });
 
-    const sendToDesktop = () => {
+    const sendToDesktop = (connectionCount = 16) => {
       if (!fabUrl || !isContextValid()) return;
-      // page 模式走桌面端 yt-dlp 分析（耗时较长），direct 模式直接下载直链。
-      // 直链附带当前页 Referer：多数视频 CDN 校验 Referer，裸请求容易 403。
-      label.textContent = fabMode === "page" ? "分析中…" : "发送中…";
-      const payload = fabMode === "page"
-        ? { type: "download-page-media", url: fabUrl, title: document.title }
-        : { type: "send", url: fabUrl, extra: { headers: { Referer: location.href } } };
-      void sendMessageSafe(payload).then((response) => {
+
+      // 针对 PikPak：在点击的瞬间实时检测是否有捕获到的直链或正在播放的 video
+      const isPikPak = location.hostname.includes("mypikpak.com") || location.hostname.includes("mypikpak.net");
+      let activePikpakUrl = "";
+      let activePikpakName = "";
+
+      if (isPikPak) {
+        const latestCaptured = window.MaobuPikPak?.getCapturedMedia?.()?.pop();
+        if (latestCaptured?.url) {
+          activePikpakUrl = latestCaptured.url;
+          activePikpakName = latestCaptured.name;
+        } else {
+          // 从 DOM 中的 <video> 标签实时提取
+          const videos = Array.from(document.querySelectorAll("video"));
+          for (const v of videos) {
+            const src = v.currentSrc || v.src;
+            if (src && (src.startsWith("http://") || src.startsWith("https://"))) {
+              activePikpakUrl = src;
+              break;
+            }
+          }
+        }
+      }
+
+      const handleResponse = (response, successText, taskFileName = "") => {
         const ok = Boolean(response?.ok);
         const errorText = String(response?.error || "发送失败");
-        showFabStatus(ok ? "✓ 已发送" : `✕ ${truncate(errorText, 40)}`);
-      });
+        if (!ok) {
+          console.error("[Maobu Fetch 发送失败详情]", errorText, response);
+          showBadge("error", `猫步下载失败：${errorText}`);
+          showFabStatus(`✕ ${truncate(errorText, 32)}`, "error", errorText);
+        } else {
+          const displayFile = taskFileName || document.title.replace(/\s*-\s*PikPak.*$/i, "").trim();
+          showBadge("added", `已推送到猫步下载器 (${connectionCount}线程)${displayFile ? `：${truncate(displayFile, 40)}` : ""}`);
+          showFabStatus(successText, "success");
+        }
+      };
+
+      if (activePikpakUrl) {
+        label.textContent = `${connectionCount}线程发送…`;
+        const fileName = activePikpakName || document.title.replace(/\s*-\s*PikPak.*$/i, "").trim() || "PikPak_Video.mp4";
+        const payload = {
+          type: "send-pikpak-task",
+          url: activePikpakUrl,
+          fileName,
+          connectionCount,
+        };
+        void sendMessageSafe(payload).then((response) => handleResponse(response, `✓ 已推送 (${connectionCount}线程)`, fileName));
+        return;
+      }
+
+      // 针对抖音：在点击瞬间实时提取当前视口正播放的具体视频
+      const isDouyin = location.hostname.includes("douyin.com");
+      if (isDouyin) {
+        const douyinActive = extractDouyinActiveMedia();
+        if (douyinActive?.url) {
+          if (douyinActive.isDirect) {
+            label.textContent = "发送中…";
+            const payload = { type: "send", url: douyinActive.url, extra: { headers: { Referer: "https://www.douyin.com/" } } };
+            void sendMessageSafe(payload).then((response) => handleResponse(response, "✓ 已推送到桌面端", douyinActive.title));
+            return;
+          }
+          label.textContent = "分析中…";
+          const payload = { type: "download-page-media", url: douyinActive.url, title: douyinActive.title };
+          void sendMessageSafe(payload).then((response) => handleResponse(response, "✓ 已推送到桌面端", douyinActive.title));
+          return;
+        }
+      }
+
+      if (fabMode === "pikpak") {
+        label.textContent = `${connectionCount}线程发送…`;
+        const fileName = document.title.replace(/\s*-\s*PikPak.*$/i, "").trim() || "PikPak_Video.mp4";
+        const payload = {
+          type: "send-pikpak-task",
+          url: fabUrl,
+          fileName,
+          connectionCount,
+        };
+        void sendMessageSafe(payload).then((response) => handleResponse(response, `✓ 已推送 (${connectionCount}线程)`, fileName));
+        return;
+      }
+
+      // page 模式 / 分享模式走桌面端分析，direct 模式直接下载直链。
+      // 直链附带当前页 Referer：多数视频 CDN 校验 Referer，裸请求容易 403。
+      label.textContent = (fabMode === "page" || fabMode === "pikpak-share") ? "分析中…" : "发送中…";
+      const payload = (fabMode === "page" || fabMode === "pikpak-share")
+        ? { type: "download-page-media", url: fabUrl, title: document.title }
+        : { type: "send", url: fabUrl, extra: { headers: { Referer: location.href } } };
+      void sendMessageSafe(payload).then((response) => handleResponse(response, "✓ 已推送到桌面端"));
     };
     fab.onkeydown = (event) => {
       if (event.key === "Enter" || event.key === " ") {
@@ -304,9 +519,17 @@
   async function openFabMenu() {
     const items = [
       { label: "⬇ 下载当前媒体", value: "send-current" },
+    ];
+    if (fabMode === "pikpak") {
+      items.push(
+        { label: "⚡ 16 线程极速并发下载", value: "send-pikpak-16" },
+        { label: "⚡ 32 线程极限加速下载", value: "send-pikpak-32" }
+      );
+    }
+    items.push(
       { label: "📋 复制下载链接", value: "copy" },
       { label: "📦 抓取本页全部资源与链接", value: "grab-resources" },
-    ];
+    );
     if (fabMode === "page") {
       let mediaQuality = "best";
       try {
@@ -320,7 +543,11 @@
     try {
       Ui?.showFabMenu?.(fabElement, items, (value) => {
         if (value === "send-current") {
-          sendToDesktop();
+          sendToDesktop(16);
+        } else if (value === "send-pikpak-16") {
+          sendToDesktop(16);
+        } else if (value === "send-pikpak-32") {
+          sendToDesktop(32);
         } else if (value === "copy") {
           void (navigator.clipboard?.writeText?.(fabUrl) || Promise.reject())
             .then(() => showBadge("info", "已复制链接"))
@@ -349,11 +576,40 @@
     syncFab();
   }
 
-  function showFabStatus(text) {
+  function showFabStatus(text, status = "normal", detail = "") {
     if (!fabLabel) return;
     fabLabel.textContent = text;
+    if (fabElement) {
+      if (status === "success") {
+        fabElement.title = "已成功推送到猫步下载器";
+        fabElement.style.background = "linear-gradient(135deg, #059669 0%, #10b981 100%)";
+        fabElement.style.color = "#ffffff";
+        fabElement.style.boxShadow = "0 6px 18px rgba(16, 185, 129, 0.45)";
+        try {
+          fabElement.animate([
+            { transform: "scale(0.96)" },
+            { transform: "scale(1.05)" },
+            { transform: "scale(1)" },
+          ], { duration: 280, easing: "cubic-bezier(0.34, 1.56, 0.64, 1)" });
+        } catch {}
+      } else if (status === "error") {
+        fabElement.title = detail ? `猫步下载器报错 (点击可重试):\n${detail}` : text;
+        fabElement.style.background = "#e53e3e";
+        fabElement.style.color = "#ffffff";
+        fabElement.style.boxShadow = "0 6px 18px rgba(229, 62, 62, 0.45)";
+      }
+    }
     clearTimeout(fabStatusTimer);
-    fabStatusTimer = setTimeout(() => { if (fabLabel) fabLabel.textContent = FAB_LABEL; }, 2500);
+    const duration = status === "error" ? 10000 : status === "success" ? 3500 : 3000;
+    fabStatusTimer = setTimeout(() => {
+      if (fabLabel) fabLabel.textContent = FAB_LABEL;
+      if (fabElement) {
+        fabElement.title = "猫步下载器：点击推送到桌面端下载";
+        fabElement.style.background = "";
+        fabElement.style.color = "";
+        fabElement.style.boxShadow = "";
+      }
+    }, duration);
   }
 
   // 窗口缩放时重新收拢位置，避免悬浮按钮跑出可视区域。
@@ -523,5 +779,30 @@
     document.addEventListener("visibilitychange", () => {
       if (!document.hidden && isContextValid()) collectMedia(true);
     });
+
+    // SPA 视频刷流与页面路由感知（抖音/快手/B站单页连续切视频）
+    let scrollDebounceTimer = 0;
+    window.addEventListener("wheel", () => {
+      clearTimeout(scrollDebounceTimer);
+      scrollDebounceTimer = setTimeout(() => {
+        if (isContextValid()) collectMedia(true);
+      }, 300);
+    }, { passive: true });
+
+    window.addEventListener("keydown", (e) => {
+      if (e.key === "ArrowDown" || e.key === "ArrowUp" || e.key === "PageDown" || e.key === "PageUp" || e.key === "Space") {
+        setTimeout(() => {
+          if (isContextValid()) collectMedia(true);
+        }, 350);
+      }
+    });
+
+    window.addEventListener("popstate", () => setTimeout(() => { if (isContextValid()) collectMedia(true); }, 200));
+    window.addEventListener("hashchange", () => setTimeout(() => { if (isContextValid()) collectMedia(true); }, 200));
+    document.addEventListener("play", (e) => {
+      if (e.target?.tagName === "VIDEO" && isContextValid()) {
+        setTimeout(() => collectMedia(true), 200);
+      }
+    }, true);
   }
 })();

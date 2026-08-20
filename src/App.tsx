@@ -82,6 +82,7 @@ import { YouTubeCredentialsModal } from "./components/YouTubeCredentialsModal";
 import {
   CatDownloadMark,
   EmptyState,
+  inferCategory,
 } from "./components/common/EmptyState";
 import { Modal } from "./components/common/Modal";
 import { TaskRow } from "./components/common/TaskRow";
@@ -1020,7 +1021,7 @@ export default function App() {
         const category = getCategories().some(([key]) => key === filter)
           ? filter === "bt"
             ? task.task_kind === "bt" || task.category === "bt"
-            : task.category === filter
+            : inferCategory(task.file_name, task.category) === filter
           : true;
         const status = getNav().some(
           ([key]) => key === filter && key !== "all"
@@ -1782,7 +1783,7 @@ export default function App() {
                       {partitioned.mainTasks.filter((task) =>
                         key === "bt"
                           ? task.task_kind === "bt" || task.category === "bt"
-                          : task.category === key
+                          : inferCategory(task.file_name, task.category) === key
                       ).length || ""}
                     </small>
                   </button>

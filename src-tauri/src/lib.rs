@@ -5,6 +5,7 @@ mod cache;
 pub mod cli;
 mod deep_link;
 mod logging;
+pub mod m3u8;
 mod manager;
 mod media;
 mod media_cookies;
@@ -20,6 +21,7 @@ mod media_platforms;
 mod media_tools;
 mod models;
 mod network_awareness;
+mod pikpak;
 // Task 31：代理配置精细化（resolve_proxy / test_proxy）与 DPAPI 安全存储。
 mod proxy;
 // Task 34：便携版模式。检测 EXE 同目录 maobu.portable 标记文件，
@@ -2716,6 +2718,43 @@ async fn run_forwarded_command(manager: &SharedManager, command: CliCommand) -> 
     }
 }
 
+#[tauri::command]
+async fn pikpak_inspect_share(
+    url: String,
+    pass_code: Option<String>,
+    passCode: Option<String>,
+    device_id: Option<String>,
+    deviceId: Option<String>,
+) -> Result<pikpak::PikPakShareInfo, String> {
+    let effective_pass_code = pass_code.or(passCode);
+    let effective_device_id = device_id.or(deviceId).unwrap_or_default();
+    pikpak::inspect_pikpak_share(&url, effective_pass_code, &effective_device_id).await
+}
+
+#[tauri::command]
+async fn pikpak_resolve_file(
+    share_id: Option<String>,
+    shareId: Option<String>,
+    file_id: Option<String>,
+    fileId: Option<String>,
+    pass_code_token: Option<String>,
+    passCodeToken: Option<String>,
+    device_id: Option<String>,
+    deviceId: Option<String>,
+) -> Result<pikpak::PikPakDirectUrlResult, String> {
+    let effective_share_id = share_id.or(shareId).ok_or("缺少 share_id")?;
+    let effective_file_id = file_id.or(fileId).ok_or("缺少 file_id")?;
+    let effective_pass_code_token = pass_code_token.or(passCodeToken);
+    let effective_device_id = device_id.or(deviceId).unwrap_or_default();
+    pikpak::resolve_pikpak_file(
+        &effective_share_id,
+        &effective_file_id,
+        effective_pass_code_token.as_deref(),
+        &effective_device_id,
+    )
+    .await
+}
+
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
@@ -3030,7 +3069,9 @@ pub fn run() {
             saved_view_list,
             saved_view_upsert,
             saved_view_delete,
-            saved_view_replace_all
+            saved_view_replace_all,
+            pikpak_inspect_share,
+            pikpak_resolve_file
         ])
         .build(tauri::generate_context!())
         .expect("error while building Maobu Fetch")

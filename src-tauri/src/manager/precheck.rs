@@ -205,7 +205,23 @@ impl DownloadManager {
             }
         }
 
-        let suggested = if probe.file_size.is_none() && is_media_url {
+        let is_hls_m3u8 = request.url.contains(".m3u8")
+            || request.url.contains("pull-hls-")
+            || probe.content_type.as_deref().map(|ct| ct.contains("mpegurl") || ct.contains("m3u8")).unwrap_or(false);
+
+        if is_hls_m3u8 && (file_name.ends_with(".m3u8") || file_name == "download" || file_name.is_empty()) {
+            let stem = file_name.strip_suffix(".m3u8").unwrap_or(&file_name);
+            let stem_clean = if stem == "download" || stem == "index" || stem == "playlist" || stem.is_empty() {
+                "video"
+            } else {
+                stem
+            };
+            file_name = format!("{}.mp4", stem_clean);
+        }
+
+        let suggested = if is_hls_m3u8 {
+            settings.connections_per_download
+        } else if probe.file_size.is_none() && is_media_url {
             settings.connections_per_download
         } else {
             suggest_connections(probe.file_size, probe.accepts_ranges)

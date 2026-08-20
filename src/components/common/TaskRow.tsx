@@ -4,7 +4,7 @@ import { api } from "../../api";
 import { t, useLocale } from "../../i18n";
 import type { DownloadTask, Tag } from "../../types";
 import { formatBytes, formatDate, formatDuration, getStatusText, hostOf } from "../../formatters";
-import { FileIcon, TaskTagChips } from "./EmptyState";
+import { FileIcon, inferCategory, TaskTagChips } from "./EmptyState";
 
 export function isMediaTask(task: DownloadTask): boolean {
   if (task.media) return true;
@@ -141,7 +141,7 @@ export function TaskRow({
         />
       </label>
       <div className="name-cell" onClick={onSelect}>
-        <FileIcon category={task.category} />
+        <FileIcon category={task.category} fileName={task.file_name} />
         <div style={{ minWidth: 0, flex: 1 }}>
           <div className="name-title-row">
             <strong title={task.file_name}>
@@ -306,8 +306,7 @@ export function TaskRow({
       </span>
       <div style={{ display: "inline-flex", alignItems: "center", gap: "2px" }}>
         {(task.task_kind === "bt" ||
-          task.category === "video" ||
-          task.category === "audio") &&
+          ["video", "audio"].includes(inferCategory(task.file_name, task.category))) &&
           (task.status === "completed" ||
             (task.status === "downloading" && task.downloaded_bytes > 0)) && (
             <button

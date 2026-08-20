@@ -62,6 +62,7 @@ export function bridgeMediaTask(result, pageTitle = "媒体下载", preference =
     .slice(0, 150) || "媒体下载";
   return {
     fileName: `${baseName}.${extension}`,
+    format,
     media: {
       extractor: result.extractor,
       format_id: format.id,

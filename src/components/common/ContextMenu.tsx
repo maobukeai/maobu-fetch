@@ -27,6 +27,7 @@ import {
   MAX_PRIORITY,
   PRIORITY_STEP,
 } from "../../formatters";
+import { inferCategory } from "./EmptyState";
 
 export function ContextMenu({
   x,
@@ -178,11 +179,10 @@ export function ContextMenu({
           {t("contextMenu.pause")}
         </button>
       );
-      if (
+      const isAudioVisual =
         task.task_kind === "bt" ||
-        task.category === "video" ||
-        task.category === "audio"
-      ) {
+        ["video", "audio"].includes(inferCategory(task.file_name, task.category));
+      if (isAudioVisual) {
         sections.push(
           <button
             key="stream-play"

@@ -2687,3 +2687,64 @@
         assert!(trackers_set.contains("https://tracker.tamersunion.org:443/announce"));
         assert!(!trackers_set.contains("invalid_tracker_line"));
     }
+
+    #[test]
+    fn test_layout_from_existing_starts_reconstructs_layout() {
+        let start = 0u64;
+        let end = 100_000_000u64;
+        let starts = vec![0, 30_000_000, 70_000_000];
+
+        let layout = layout_from_existing_starts(start, end, &starts).unwrap();
+        assert_eq!(layout.len(), 3);
+        assert_eq!(layout[0], (0, 0, 29_999_999));
+        assert_eq!(layout[1], (1, 30_000_000, 69_999_999));
+        assert_eq!(layout[2], (2, 70_000_000, 100_000_000));
+
+        // 校验非法 starts 序列：首项不匹配 start
+        assert!(layout_from_existing_starts(10, end, &starts).is_none());
+        // 非法 starts 序列：非严格递增
+        assert!(layout_from_existing_starts(start, end, &[0, 50, 40]).is_none());
+        // 非法 starts 序列：超出 end
+        assert!(layout_from_existing_starts(start, end, &[0, 100_000_001]).is_none());
+    }
+
+    #[tokio::test]
+    async fn test_work_stealing_coordinator_segment_aggregation() {
+        let temp = Path::new("aggregate_test.tmp");
+        let initial = vec![
+            RangeWindow {
+                id: 1,
+                segment_index: 0,
+                ordinal: 0,
+                start_byte: 0,
+                end_byte: 20_000_000,
+                existing_bytes: 0,
+                path: window_part_path(temp, 0, 0),
+                status: WindowStatus::Pending,
+            },
+            RangeWindow {
+                id: 2,
+                segment_index: 0,
+                ordinal: 1,
+                start_byte: 20_000_001,
+                end_byte: 50_000_000,
+                existing_bytes: 0,
+                path: window_part_path(temp, 0, 20_000_001),
+                status: WindowStatus::Pending,
+            },
+        ];
+
+        let coordinator = WorkStealingCoordinator::new(temp, initial);
+        let (w1, _) = coordinator.claim_or_steal_work().await.unwrap();
+        let (w2, _) = coordinator.claim_or_steal_work().await.unwrap();
+
+        coordinator.finish_window(w1.id, true).await;
+        coordinator.finish_window(w2.id, true).await;
+
+        let ordered = coordinator.get_ordered_windows_for_segment(0).await;
+        assert_eq!(ordered.len(), 2);
+        assert_eq!(ordered[0].start_byte, 0);
+        assert_eq!(ordered[0].end_byte, 20_000_000);
+        assert_eq!(ordered[1].start_byte, 20_000_001);
+        assert_eq!(ordered[1].end_byte, 50_000_000);
+    }

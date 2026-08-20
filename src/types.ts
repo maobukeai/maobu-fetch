@@ -1031,6 +1031,7 @@ export type MediaPlatform =
   | "youtube"
   | "bilibili"
   | "weibo"
+  | "pikpak"
   | "unknown";
 
 /**
@@ -1069,6 +1070,7 @@ export function mediaPlatformDisplayName(platform: MediaPlatform): string {
     case "youtube": return "YouTube";
     case "bilibili": return "哔哩哔哩";
     case "weibo": return "微博";
+    case "pikpak": return "PikPak 网盘";
     case "unknown": return "";
   }
 }

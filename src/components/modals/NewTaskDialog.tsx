@@ -68,6 +68,14 @@ import { Modal, ConfirmDialog } from "../common/Modal";
 import { Field } from "../common/FormComponents";
 import { MediaToolsCard } from "../settings/MediaSettingsGroup";
 import { GalleryPicker } from "./GalleryPicker";
+import {
+  inspectPikPakShare,
+  isPikPakShareUrl,
+  parsePikPakShareUrl,
+  resolvePikPakDirectUrl,
+  type PikPakShareInfo,
+} from "../../services/pikpak";
+import { PikPakPicker } from "./PikPakPicker";
 
 export function NewTaskDialog({
   settings,
@@ -156,6 +164,14 @@ export function NewTaskDialog({
   const [platformCompat, setPlatformCompat] = useState<PlatformCompatibility | null>(null);
   const [matchedCredentialDomain, setMatchedCredentialDomain] = useState<string | null>(null);
   const [normalizedUrlPreview, setNormalizedUrlPreview] = useState<string | null>(null);
+
+  // PikPak 分享解析状态
+  const [pikpakShareInfo, setPikpakShareInfo] = useState<PikPakShareInfo | null>(null);
+  const [pikpakInspecting, setPikpakInspecting] = useState(false);
+  const [pikpakSelectedIds, setPikpakSelectedIds] = useState<Set<string>>(new Set());
+  const [pikpakOpen, setPikpakOpen] = useState(false);
+  const [pikpakPassCodeVerifying, setPikpakPassCodeVerifying] = useState(false);
+  const [pikpakPassCodeError, setPikpakPassCodeError] = useState<string>();
 
   const fileNameInputRef = useRef<HTMLInputElement | null>(null);
   const userEditedFileName = useRef(false);
@@ -253,6 +269,41 @@ export function NewTaskDialog({
       }
     },
     [lines, torrentData, notify]
+  );
+
+  const inspectPikPakContent = useCallback(
+    async (targetUrl?: string, passCode?: string) => {
+      const single = targetUrl || (lines.length === 1 ? lines[0].trim() : "");
+      if (!isPikPakShareUrl(single)) return;
+      setPikpakInspecting(true);
+      setPikpakPassCodeError(undefined);
+      try {
+        const info = await inspectPikPakShare(single, passCode);
+        setPikpakShareInfo(info);
+        setPikpakOpen(true);
+        if (info.passCodeRequired) {
+          setPikpakSelectedIds(new Set());
+        } else {
+          const onlyFiles = info.files.filter((f) => f.kind === "drive#file");
+          setPikpakSelectedIds(new Set(onlyFiles.map((f) => f.id)));
+          if (info.title && !userEditedFileName.current) {
+            setFileName(info.title);
+          }
+          // PikPak 建议默认 16 或 32 连接并发分片下载以克服海外 CDN 延迟
+          if (!userEditedConnections.current && connections < 16) {
+            setConnections(16);
+          }
+        }
+      } catch (err: any) {
+        console.warn("解析 PikPak 分享失败:", err);
+        const errMsg = err?.message || String(err);
+        setPikpakPassCodeError(errMsg);
+        notify?.(errMsg, "error");
+      } finally {
+        setPikpakInspecting(false);
+      }
+    },
+    [lines, connections, notify]
   );
 
   useEffect(() => {
@@ -589,8 +640,12 @@ export function NewTaskDialog({
     });
   }, [precheck?.conflicts, ignoreUrlConflict, destination, fileName, allTasks]);
 
-  const hasConflicts = activeConflicts.length > 0;
-  const hasDuplicates = Boolean(duplicateResult?.matches?.length);
+  const isPikPak = isPikPakShareUrl(lines.length === 1 ? lines[0].trim() : "");
+  const isPikPakActive = Boolean(isPikPak && pikpakShareInfo && pikpakSelectedIds.size > 0);
+  const isPikPakWithoutSelection = Boolean(isPikPak && pikpakShareInfo && pikpakSelectedIds.size === 0);
+
+  const hasConflicts = !isPikPakActive && activeConflicts.length > 0;
+  const hasDuplicates = !isPikPakActive && Boolean(duplicateResult?.matches?.length);
   const isGalleryWithoutSelection =
     (media?.media_type === "gallery" && selectedImageIds.size === 0) ||
     (media?.media_type === "collection" && selectedEpisodeIndices.size === 0);
@@ -921,6 +976,99 @@ export function NewTaskDialog({
       setBusy(false);
       return;
     }
+
+    // 处理 PikPak 分享文件批量/单文件直链下载
+    if (pikpakShareInfo && pikpakSelectedIds.size > 0) {
+      const selectedFiles = pikpakShareInfo.files.filter(
+        (f) => f.kind === "drive#file" && pikpakSelectedIds.has(f.id)
+      );
+      if (selectedFiles.length === 0) {
+        setError("请至少勾选一个需要下载的 PikPak 文件");
+        setBusy(false);
+        return;
+      }
+
+      const pikpakHeaders = {
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        Referer: "https://mypikpak.com/",
+        ...headers,
+      };
+
+      const baseTemplate: Omit<NewTaskRequest, "url" | "file_name"> = {
+        destination,
+        headers: pikpakHeaders,
+        scheduled_at: schedule ? new Date(schedule).getTime() : undefined,
+        priority,
+        expected_checksum: checksum || undefined,
+        source: "desktop",
+        per_task_speed_limit: limit * 1024,
+        collision_policy: policy,
+        completion_action:
+          selectedFiles.length > 1 ? "none" : completionAction,
+        connection_count: connections || 16,
+        media: undefined,
+        user_edited_file_name:
+          userEditedFileName.current || overrideFileName !== undefined,
+      };
+
+      try {
+        const currentShareId =
+          pikpakShareInfo.shareId ||
+          (pikpakShareInfo as any).share_id ||
+          parsePikPakShareUrl(lines[0])?.shareId ||
+          "";
+        const currentPassCodeToken =
+          pikpakShareInfo.passCodeToken ||
+          (pikpakShareInfo as any).pass_code_token;
+
+        const results = await Promise.allSettled(
+          selectedFiles.map(async (fileItem) => {
+            const { url: directUrl } = await resolvePikPakDirectUrl(
+              currentShareId,
+              fileItem.id,
+              currentPassCodeToken
+            );
+            const itemFileName =
+              selectedFiles.length === 1 && activeFileName
+                ? activeFileName
+                : fileItem.path || fileItem.name;
+            return api.add({
+              url: directUrl,
+              file_name: itemFileName,
+              ...baseTemplate,
+            });
+          })
+        );
+
+        const fulfilled: DownloadTask[] = [];
+        let firstError: string | undefined;
+        for (const r of results) {
+          if (r.status === "fulfilled") fulfilled.push(r.value);
+          else if (!firstError) firstError = String(r.reason);
+        }
+        if (lines[0]) {
+          void api.urlHistoryAdd(lines[0]).then(reloadHistory).catch(() => {});
+        }
+        if (fulfilled.length > 0) {
+          onCreated(fulfilled.length === 1 ? fulfilled[0] : fulfilled);
+        }
+        if (firstError) {
+          if (fulfilled.length === 0) {
+            setError(firstError);
+          } else {
+            notify?.(
+              `部分 PikPak 文件创建失败：${firstError}（成功 ${fulfilled.length}/${selectedFiles.length}）`,
+              "error"
+            );
+          }
+        }
+      } catch (reason) {
+        setError(String(reason));
+      }
+      setBusy(false);
+      return;
+    }
     const template: Omit<NewTaskRequest, "url"> = {
       file_name: activeFileName || undefined,
       destination,
@@ -1196,12 +1344,23 @@ export function NewTaskDialog({
                     );
                     const parsed = parseMultilineUrls(val);
                     if (parsed.lines.length === 1) {
-                      const name = extractFileNameFromUrl(parsed.lines[0]);
+                      const singleUrl = parsed.lines[0];
+                      if (isPikPakShareUrl(singleUrl)) {
+                        void inspectPikPakContent(singleUrl);
+                      } else {
+                        setPikpakShareInfo(null);
+                        setPikpakSelectedIds(new Set());
+                      }
+                      const name = extractFileNameFromUrl(singleUrl);
                       if (name) {
                         setFileName(name);
                       }
-                    } else if (parsed.lines.length === 0) {
-                      setFileName("");
+                    } else {
+                      setPikpakShareInfo(null);
+                      setPikpakSelectedIds(new Set());
+                      if (parsed.lines.length === 0) {
+                        setFileName("");
+                      }
                     }
                   }}
                   placeholder={t("newTask.urlPlaceholder")}
@@ -1263,8 +1422,60 @@ export function NewTaskDialog({
                       </>
                     );
                   })()}
+                  {(() => {
+                    const single = lines.length === 1 ? lines[0].trim() : "";
+                    if (!isPikPakShareUrl(single)) return null;
+                    return (
+                      <span
+                        className="bt-input-badge"
+                        style={{
+                          background: "rgba(0, 120, 212, 0.12)",
+                          color: "var(--accent, #0078d4)",
+                          borderColor: "rgba(0, 120, 212, 0.3)",
+                        }}
+                        title="已识别为 PikPak 分享链接，支持免登录解析文件树并开启多连接 Range 加速下载"
+                      >
+                        <Globe2 size={10} strokeWidth={2.5} /> PikPak 分享
+                      </span>
+                    );
+                  })()}
                 </div>
                 <div className="url-input-tools-right">
+                  {(() => {
+                    const single = lines.length === 1 ? lines[0].trim() : "";
+                    if (!isPikPakShareUrl(single)) return null;
+                    return (
+                      <button
+                        type="button"
+                        className="torrent-pick-button"
+                        style={{
+                          color: "var(--accent, #0078d4)",
+                          borderColor: "rgba(0, 120, 212, 0.3)",
+                        }}
+                        disabled={pikpakInspecting}
+                        onClick={() => {
+                          if (pikpakShareInfo) {
+                            setPikpakOpen((prev) => !prev);
+                          } else {
+                            void inspectPikPakContent();
+                          }
+                        }}
+                        title="免登录解析 PikPak 分享文件树，支持勾选特定文件下载"
+                      >
+                        <Search
+                          size={11}
+                          className={pikpakInspecting ? "spin" : undefined}
+                        />
+                        {pikpakInspecting
+                          ? "解析分享中..."
+                          : pikpakShareInfo
+                          ? pikpakOpen
+                            ? "收起 PikPak 文件"
+                            : "展开 PikPak 文件"
+                          : "解析 PikPak 分享"}
+                      </button>
+                    );
+                  })()}
                   {(() => {
                     const single = lines.length === 1 ? lines[0].trim() : "";
                     const magnet = single
@@ -1344,6 +1555,24 @@ export function NewTaskDialog({
                   </button>
                 </div>
               </div>
+              {(() => {
+                const single = lines.length === 1 ? lines[0].trim() : "";
+                if (!isPikPakShareUrl(single) || !pikpakShareInfo || !pikpakOpen) return null;
+                return (
+                  <PikPakPicker
+                    shareInfo={pikpakShareInfo}
+                    selectedIds={pikpakSelectedIds}
+                    onChange={setPikpakSelectedIds}
+                    verifyingPassCode={pikpakPassCodeVerifying}
+                    passCodeError={pikpakPassCodeError}
+                    onVerifyPassCode={async (pwd) => {
+                      setPikpakPassCodeVerifying(true);
+                      await inspectPikPakContent(undefined, pwd);
+                      setPikpakPassCodeVerifying(false);
+                    }}
+                  />
+                );
+              })()}
               {btInspectResult && btInspectOpen && (
                 <div className="bt-preview-box">
                   <div className="bt-preview-header">
@@ -2216,11 +2445,14 @@ export function NewTaskDialog({
                 hasConflicts ||
                 hasDuplicates ||
                 isGalleryWithoutSelection ||
+                isPikPakWithoutSelection ||
                 platformCompat?.level === "unsupported"
               }
               title={
                 platformCompat?.level === "unsupported"
                   ? "该平台暂不支持下载，请使用浏览器原生下载"
+                  : isPikPakWithoutSelection
+                  ? "请至少勾选一个需要下载的 PikPak 文件"
                   : hasConflicts || hasDuplicates
                   ? "存在冲突或重复，请先选择处理方式"
                   : isGalleryWithoutSelection
@@ -2229,7 +2461,7 @@ export function NewTaskDialog({
               }
               onClick={() => void submit()}
             >
-              {busy ? "正在提交任务..." : "开始下载"}
+              {busy ? "正在创建任务..." : "开始下载"}
             </button>
           </div>
         </div>

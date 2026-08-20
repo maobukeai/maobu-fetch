@@ -7,6 +7,7 @@
 const MEDIA_DOMAIN_ALIASES = new Map([
   ["weibo.cn", "weibo.com"],
   ["x.com", "twitter.com"],
+  ["mypikpak.net", "mypikpak.com"],
 ]);
 
 export const MEDIA_SYNC_DOMAINS = [
@@ -18,6 +19,8 @@ export const MEDIA_SYNC_DOMAINS = [
   "youtube.com",
   "twitter.com",
   "x.com",
+  "mypikpak.com",
+  "mypikpak.net",
 ];
 
 /// 判断 hostname 是否属于已知媒体平台；命中返回归一化基域，否则返回 null。

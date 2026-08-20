@@ -38,21 +38,45 @@ export function CatDownloadMark() {
   );
 }
 
-export function FileIcon({ category }: { category: string }) {
+export function inferCategory(fileName?: string, explicitCategory?: string): string {
+  const ext = String(fileName || "").split(".").pop()?.toLowerCase() || "";
+  if (["mp4", "mkv", "mov", "webm", "m3u8", "flv", "avi", "wmv", "ts", "rmvb"].includes(ext)) {
+    return "video";
+  }
+  if (["mp3", "wav", "flac", "aac", "m4a", "ogg", "wma", "opus"].includes(ext)) {
+    return "audio";
+  }
+  if (["jpg", "jpeg", "png", "gif", "webp", "svg", "bmp", "ico", "avif"].includes(ext)) {
+    return "images";
+  }
+  if (["zip", "rar", "7z", "tar", "gz", "bz2", "xz", "iso"].includes(ext)) {
+    return "archives";
+  }
+  if (["exe", "msi", "dmg", "pkg", "appimage", "apk", "deb", "rpm"].includes(ext)) {
+    return "apps";
+  }
+  if (["pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "txt", "md", "csv"].includes(ext)) {
+    return "documents";
+  }
+  return explicitCategory || "other";
+}
+
+export function FileIcon({ category, fileName }: { category?: string; fileName?: string }) {
+  const cat = inferCategory(fileName, category);
   const Icon =
-    category === "video"
+    cat === "video"
       ? Film
-      : category === "audio"
+      : cat === "audio"
       ? FileAudio
-      : category === "images"
+      : cat === "images"
       ? FileImage
-      : category === "archives"
+      : cat === "archives"
       ? Archive
-      : category === "apps"
+      : cat === "apps"
       ? File
       : FileText;
   return (
-    <span className={`file-type ${category}`}>
+    <span className={`file-type ${cat}`}>
       <Icon size={16} />
     </span>
   );

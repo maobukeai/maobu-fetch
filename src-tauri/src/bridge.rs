@@ -483,6 +483,8 @@ async fn sync_media_credentials(
         "youtube.com",
         "twitter.com",
         "x.com",
+        "mypikpak.com",
+        "mypikpak.net",
     ];
     let is_supported = supported
         .iter()

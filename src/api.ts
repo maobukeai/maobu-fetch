@@ -290,11 +290,31 @@ export const api = {
   networkCheckMetered: () => call<boolean>("network_check_metered"),
   /** Task 32：监听计量网络自动暂停事件。后端在暂停 ≥1 个任务时 emit，前端展示 toast。 */
   subscribeMeteredNetwork: async (handler: (payload: MeteredNetworkDetectedPayload) => void): Promise<UnlistenFn | undefined> => isDesktop() ? listen<MeteredNetworkDetectedPayload>("metered-network-detected", event => handler(event.payload)) : undefined,
-  /**
-   * Task 34.3：获取应用信息（版本、便携模式、数据目录）。
+  /** Task 34.3：获取应用信息（版本、便携模式、数据目录）。
    * 前端在设置页"关于"分组调用此命令，便携模式启用时显示醒目提示。
    */
   appGetInfo: () => isDesktop() ? call<AppInfo>("app_get_info") : Promise.resolve({ version: "0.0.0", portable_mode: false, data_dir: "" } as AppInfo),
+  /** PikPak 网盘免登录分享解析（Rust 后端发起，彻底规避 Webview CORS）。 */
+  pikpakInspectShare: (params: { url: string; passCode?: string; deviceId: string }) =>
+    call<any>("pikpak_inspect_share", {
+      url: params.url,
+      pass_code: params.passCode || null,
+      passCode: params.passCode || null,
+      device_id: params.deviceId,
+      deviceId: params.deviceId,
+    }),
+  /** PikPak 单文件直链获取（Rust 后端发起）。 */
+  pikpakResolveFile: (params: { shareId: string; fileId: string; passCodeToken?: string; deviceId: string }) =>
+    call<any>("pikpak_resolve_file", {
+      share_id: params.shareId,
+      shareId: params.shareId,
+      file_id: params.fileId,
+      fileId: params.fileId,
+      pass_code_token: params.passCodeToken || null,
+      passCodeToken: params.passCodeToken || null,
+      device_id: params.deviceId,
+      deviceId: params.deviceId,
+    }),
   subscribe: async (handler: (event: TaskEvent | { removed: string }) => void): Promise<UnlistenFn[]> => {
     if (!isDesktop()) return [];
     return Promise.all([

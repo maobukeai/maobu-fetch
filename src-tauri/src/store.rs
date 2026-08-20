@@ -1842,12 +1842,24 @@ fn task_from_row(row: &Row<'_>) -> rusqlite::Result<DownloadTask> {
     let proxy_override: Option<String> = row.get("proxy_override")?;
     let proxy_auth_json: Option<String> = row.get("proxy_auth_json")?;
     // BT/磁力：task_kind 列 NOT NULL DEFAULT 'http'；bt_meta_json 旧库为 NULL。
+    let file_name: String = row.get("file_name")?;
     let task_kind: String = row.get("task_kind")?;
     let bt_meta_json: Option<String> = row.get("bt_meta_json")?;
+    let stored_category: String = row.get("category")?;
+    let task_category = if stored_category == "other" || stored_category.is_empty() {
+        let derived = crate::manager::category(&file_name);
+        if derived != "other" {
+            derived
+        } else {
+            stored_category
+        }
+    } else {
+        stored_category
+    };
     Ok(DownloadTask {
         id: row.get("id")?,
         url: row.get("url")?,
-        file_name: row.get("file_name")?,
+        file_name,
         destination: row.get("destination")?,
         total_bytes: row.get::<_, i64>("total_bytes")? as u64,
         downloaded_bytes: row.get::<_, i64>("downloaded_bytes")? as u64,
@@ -1858,7 +1870,7 @@ fn task_from_row(row: &Row<'_>) -> rusqlite::Result<DownloadTask> {
         created_at: row.get::<_, i64>("created_at")? as u64,
         completed_at: row.get::<_, Option<i64>>("completed_at")?.map(|v| v as u64),
         scheduled_at: row.get::<_, Option<i64>>("scheduled_at")?.map(|v| v as u64),
-        category: row.get("category")?,
+        category: task_category,
         queue_position: row.get("queue_position")?,
         priority: row.get("priority")?,
         retry_count: row.get::<_, i64>("retry_count")? as u32,

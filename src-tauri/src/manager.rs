@@ -47,6 +47,7 @@ pub mod filename_cleanup;
 pub mod naming_template;
 mod precheck;
 pub mod task_template;
+pub mod work_stealing;
 
 use bandwidth::BandwidthScheduler;
 pub use category_rules::{apply_category_rules, normalize_directory, test_category_rule};
@@ -54,6 +55,7 @@ pub use diagnose::{classify_error, redact_sensitive, ErrorContext};
 pub use filename_cleanup::apply_filename_cleanup;
 pub use naming_template::{apply_naming_template, find_template_for_platform, NamingVars};
 pub use task_template::{apply_template_to_request, match_template, test_task_template};
+pub use work_stealing::{RangeWindow, WindowStatus, WorkStealingCoordinator};
 
 pub type SharedManager = Arc<DownloadManager>;
 
@@ -71,9 +73,9 @@ struct TaskNotificationPayload {
     body: String,
 }
 
-struct RuntimeTaskOptions {
-    speed_limit: AtomicU64,
-    priority: AtomicI32,
+pub(crate) struct RuntimeTaskOptions {
+    pub(crate) speed_limit: AtomicU64,
+    pub(crate) priority: AtomicI32,
     completion_action: RwLock<CompletionAction>,
 }
 
@@ -87,7 +89,7 @@ struct PowerActionRuntime {
 }
 
 impl RuntimeTaskOptions {
-    fn new(task: &DownloadTask) -> Self {
+    pub(crate) fn new(task: &DownloadTask) -> Self {
         Self {
             speed_limit: AtomicU64::new(task.per_task_speed_limit),
             priority: AtomicI32::new(task.priority),
@@ -95,7 +97,7 @@ impl RuntimeTaskOptions {
         }
     }
 
-    async fn apply(&self, task: &mut DownloadTask) {
+    pub(crate) async fn apply(&self, task: &mut DownloadTask) {
         task.per_task_speed_limit = self.speed_limit.load(Ordering::Relaxed);
         task.priority = self.priority.load(Ordering::Relaxed);
         task.completion_action = self.completion_action.read().await.clone();
@@ -107,12 +109,12 @@ pub struct DownloadManager {
     settings: RwLock<AppSettings>,
     client: RwLock<reqwest::Client>,
     controls: Mutex<HashMap<String, CancellationToken>>,
-    task_runtime: RwLock<HashMap<String, Arc<RuntimeTaskOptions>>>,
+    pub(crate) task_runtime: RwLock<HashMap<String, Arc<RuntimeTaskOptions>>>,
     path_reservation: Mutex<()>,
     power_action: Mutex<PowerActionRuntime>,
     dispatcher: Notify,
     pub(crate) app: AppHandle,
-    bandwidth_scheduler: BandwidthScheduler,
+    pub(crate) bandwidth_scheduler: BandwidthScheduler,
     /// BT/磁力引擎（aria2 子进程 + gid 绑定）。2026-08-16 批准纳入。
     pub bt: crate::bt::BtEngine,
 }
@@ -1018,6 +1020,7 @@ impl DownloadManager {
         }
 
         task.file_name = trimmed.to_string();
+        task.category = category(&task.file_name);
         self.store.upsert_task(&task).await?;
         self.emit_task("updated", &task);
         self.dispatcher.notify_waiters();
@@ -1763,6 +1766,7 @@ impl DownloadManager {
                         };
                         task.url = first_image_url;
                         task.file_name = format!("{}_1.{}", stem, first_ext);
+                        task.category = category(&task.file_name);
                         task.media = None; // 走 HTTP Range 路径，不调用 yt-dlp
                         task.total_bytes = 0;
                         self.store.upsert_task(&task).await?;
@@ -1847,6 +1851,7 @@ impl DownloadManager {
                             }
                             let name = safe_name(&name_stem);
                             task.file_name = format!("{}.{}", name, ext);
+                            task.category = category(&task.file_name);
                         }
 
                         // probe 完成后即将进入 media::download，确保 active_connections >= 1，
@@ -1899,6 +1904,7 @@ impl DownloadManager {
                             .unwrap_or_else(|_| raw_title.clone()));
                         if !cleaned.trim().is_empty() {
                             task.file_name = format!("{}.mp4", cleaned.trim());
+                            task.category = category(&task.file_name);
                         }
                     }
                     if let Some(fmt_id) = &media_sel.format_id {
@@ -2056,6 +2062,7 @@ impl DownloadManager {
                     if current_disk_path.exists() && !new_disk_path.exists() {
                         if let Ok(_) = fs::rename(&current_disk_path, &new_disk_path).await {
                             task.file_name = new_file_name;
+                            task.category = category(&task.file_name);
                         }
                     }
                 }
@@ -2155,6 +2162,7 @@ impl DownloadManager {
                             };
                             if let Some(final_name) = final_path.file_name().and_then(|s| s.to_str()) {
                                 saved_task.file_name = final_name.to_string();
+                                saved_task.category = category(&saved_task.file_name);
                             }
                             saved_task.downloaded_bytes = final_size;
                             saved_task.total_bytes = final_size;
@@ -2222,6 +2230,58 @@ impl DownloadManager {
         if !probe.status().is_success() {
             return Err(format!("服务器返回 HTTP {}", probe.status()));
         }
+
+        let is_m3u8_stream = task.url.contains(".m3u8")
+            || task.url.contains("pull-hls-")
+            || task.content_type.as_deref().map(|ct| ct.contains("mpegurl") || ct.contains("m3u8")).unwrap_or(false);
+
+        if is_m3u8_stream {
+            if task.file_name.ends_with(".m3u8") || task.file_name == "download" || task.file_name.is_empty() {
+                let stem = Path::new(&task.file_name).file_stem().and_then(|s| s.to_str()).unwrap_or("video");
+                let stem_clean = if stem == "download" || stem == "index" || stem == "playlist" { "video" } else { stem };
+                task.file_name = format!("{}.mp4", stem_clean);
+                task.category = category(&task.file_name);
+            }
+
+            inject_media_credentials(&mut task, &self.store).await;
+            let output = self.reserve_output_path(&mut task).await?;
+            let _ = ensure_task_temp_dir(&task.destination, &task.id).await;
+            let temp = task_temp_path(&task.destination, &task.id, &task.file_name);
+            let task_limiter = Arc::new(crate::manager::RateLimiter::new());
+
+            let download_res = crate::m3u8::downloader::download_m3u8_task(
+                self,
+                task.clone(),
+                &client,
+                &temp,
+                token.clone(),
+                task_limiter,
+            )
+            .await;
+
+            match download_res {
+                Ok(mut completed_task) => {
+                    if temp.exists() {
+                        if let Err(_) = fs::rename(&temp, &output).await {
+                            let _ = fs::copy(&temp, &output).await;
+                            let _ = fs::remove_file(&temp).await;
+                        }
+                    }
+                    completed_task.status = TaskStatus::Completed;
+                    completed_task.completed_at = Some(now());
+                    completed_task.speed = 0;
+                    completed_task.eta_seconds = None;
+                    completed_task.active_connections = 0;
+                    self.store.upsert_task(&completed_task).await?;
+                    self.emit_task("updated", &completed_task);
+                    return Ok(completed_task);
+                }
+                Err(err) => {
+                    return Err(err);
+                }
+            }
+        }
+
         let total = probe_total_bytes(&probe);
         let etag = header_string(&probe, ETAG);
         let last_modified = header_string(&probe, LAST_MODIFIED);
@@ -2456,6 +2516,7 @@ impl DownloadManager {
                 if current_disk_path.exists() && !new_disk_path.exists() {
                     if let Ok(_) = fs::rename(&current_disk_path, &new_disk_path).await {
                         task.file_name = new_file_name;
+                        task.category = category(&task.file_name);
                     }
                 }
             }
@@ -2628,8 +2689,8 @@ impl DownloadManager {
         let connections = connections.clamp(1, 32);
         let ranges = planned_segment_ranges(&task, total, connections);
         let mut initial = 0u64;
-        let mut jobs = Vec::new();
-        let mut window_layouts = HashMap::new();
+        let mut initial_windows = Vec::new();
+        let mut window_id_counter = 1u64;
         let mut runtimes = Vec::with_capacity(ranges.len());
 
         for &(index, start, end) in &ranges {
@@ -2664,18 +2725,23 @@ impl DownloadManager {
                         existing_bytes = 0;
                     }
                     downloaded = downloaded.saturating_add(existing_bytes);
-                    if existing_bytes < expected_window {
-                        jobs.push(RangeWindowJob {
-                            segment_index: index,
-                            ordinal,
-                            start_byte: window_start,
-                            end_byte: window_end,
-                            existing_bytes,
-                            path,
-                        });
-                    }
+                    let is_completed = existing_bytes >= expected_window;
+                    initial_windows.push(RangeWindow {
+                        id: window_id_counter,
+                        segment_index: index,
+                        ordinal,
+                        start_byte: window_start,
+                        end_byte: window_end,
+                        existing_bytes,
+                        path,
+                        status: if is_completed {
+                            WindowStatus::Completed
+                        } else {
+                            WindowStatus::Pending
+                        },
+                    });
+                    window_id_counter += 1;
                 }
-                window_layouts.insert(index, layout);
             }
             initial = initial.saturating_add(downloaded);
             let status = if downloaded == expected {
@@ -2685,7 +2751,8 @@ impl DownloadManager {
             };
             runtimes.push(SegmentRuntime::new(index, start, end, downloaded, status));
         }
-        jobs.sort_by_key(|job| (job.ordinal, job.segment_index));
+        initial_windows.sort_by_key(|w| (w.ordinal, w.segment_index));
+        let coordinator = Arc::new(WorkStealingCoordinator::new(temp, initial_windows));
 
         let runtimes = Arc::new(runtimes);
         let progress = Arc::new(AtomicU64::new(initial));
@@ -2859,269 +2926,327 @@ impl DownloadManager {
         } else {
             None
         };
-        // Keep _outer handles for use after job_stream completes.
         let token_outer = token.clone();
         let progress_outer = progress.clone();
         let runtimes_outer = runtimes.clone();
-        // These are the copies that will be moved into the closure.
-        let token_for_stream = token_outer.clone();
-        let progress_for_stream = progress_outer.clone();
-        let runtimes_for_stream = runtimes_outer.clone();
-        let runtime_options_for_stream = runtime_options.clone();
-        let adaptive_for_stream = adaptive.clone();
-        let bandwidth_for_stream = self.bandwidth_scheduler.clone();
-        let task_id_for_stream = task.id.clone();
-        let job_stream = futures_util::stream::iter(jobs.into_iter().map(move |job| {
-            let index = job.segment_index;
-            let request_start = job.start_byte.saturating_add(job.existing_bytes);
-            let end = job.end_byte;
-            let part = job.path;
+        let token_for_workers = token_outer.clone();
+        let progress_for_workers = progress_outer.clone();
+        let runtimes_for_workers = runtimes_outer.clone();
+        let runtime_options_for_workers = runtime_options.clone();
+        let adaptive_for_workers = adaptive.clone();
+        let bandwidth_for_workers = self.bandwidth_scheduler.clone();
+        let task_id_for_workers = task.id.clone();
+
+        let mut worker_handles = Vec::with_capacity(connections as usize);
+        for _worker_idx in 0..connections {
+            let coordinator = coordinator.clone();
             let client = client.clone();
             let headers = task_headers.clone();
             let url = task_url.clone();
             let if_range = task_if_range.clone();
-            let token = token_for_stream.clone();
-            let progress = progress_for_stream.clone();
-            let runtimes = runtimes_for_stream.clone();
+            let token = token_for_workers.clone();
+            let progress = progress_for_workers.clone();
+            let runtimes = runtimes_for_workers.clone();
             let limiter = task_limiter.clone();
-            let runtime_options = runtime_options_for_stream.clone();
-            let adaptive = adaptive_for_stream.clone();
-            let bandwidth = bandwidth_for_stream.clone();
-            let task_id = task_id_for_stream.clone();
+            let runtime_options = runtime_options_for_workers.clone();
+            let adaptive = adaptive_for_workers.clone();
+            let bandwidth = bandwidth_for_workers.clone();
+            let task_id = task_id_for_workers.clone();
             let write_buffer_size = write_buffer_size;
             let segment_max_retries = segment_max_retries;
             let segment_retry_policy = segment_retry_policy.clone();
-            async move {
-                let runtime = runtimes
-                    .iter()
-                    .find(|segment| segment.index == index)
-                    .ok_or_else(|| format!("找不到分片 #{}", index + 1))?;
-                    let file = OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(&part)
-                    .await
-                        .map_err(|error| error.to_string())?;
-                    let mut file = BufWriter::with_capacity(write_buffer_size, file);
-                    let result = async {
-                    let mut next_start = request_start;
-                    let mut retry_count = 0u32;
-                    loop {
-                        if token.is_cancelled() {
-                            let _ = file.flush().await;
-                            break Err("任务已暂停".into());
+
+            worker_handles.push(tokio::spawn(async move {
+                loop {
+                    if token.is_cancelled() {
+                        return Err("任务已暂停".to_string());
+                    }
+
+                    let (window, handle) = match coordinator.claim_or_steal_work().await {
+                        Some(work) => work,
+                        None => {
+                            if coordinator.is_all_finished().await {
+                                return Ok(());
+                            }
+                            tokio::select! {
+                                _ = token.cancelled() => return Err("任务已暂停".to_string()),
+                                _ = tokio::time::sleep(Duration::from_millis(50)) => {}
+                            }
+                            if coordinator.is_all_finished().await {
+                                return Ok(());
+                            }
+                            continue;
                         }
-                        let permit = tokio::select! {
-                            _ = token.cancelled() => break Err("任务已暂停".into()),
-                            permit = adaptive.clone().acquire() => permit,
-                        };
-                        runtime.active_windows.fetch_add(1, Ordering::Relaxed);
-                        runtime.status.store(SEGMENT_DOWNLOADING, Ordering::Relaxed);
-                        let current_start = next_start;
-                        let request_end = end;
-                        let transfer = async {
-                            let mut request = client.get(&url);
-                            for (name, value) in &headers {
-                                request = request.header(name, value);
+                    };
+
+                    let index = window.segment_index;
+                    let part = window.path.clone();
+                    let start_byte = window.start_byte;
+                    let existing_bytes = window.existing_bytes;
+                    let runtime = match runtimes.iter().find(|segment| segment.index == index) {
+                        Some(r) => r,
+                        None => {
+                            coordinator.finish_window(window.id, false).await;
+                            return Err(format!("找不到分片 #{}", index + 1));
+                        }
+                    };
+
+                    let file = match OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(&part)
+                        .await
+                    {
+                        Ok(f) => f,
+                        Err(err) => {
+                            coordinator.finish_window(window.id, false).await;
+                            return Err(err.to_string());
+                        }
+                    };
+                    let mut file = BufWriter::with_capacity(write_buffer_size, file);
+
+                    let transfer_result = async {
+                        let mut next_start = start_byte.saturating_add(existing_bytes);
+                        let mut retry_count = 0u32;
+                        loop {
+                            if token.is_cancelled() {
+                                let _ = file.flush().await;
+                                return Err("任务已暂停".to_string());
                             }
-                            request = request
-                                .header(ACCEPT_ENCODING, "identity")
-                                .header(RANGE, format!("bytes={current_start}-{request_end}"));
-                            if let Some(value) = &if_range {
-                                request = request.header(IF_RANGE, value);
+                            let current_end = handle.current_end();
+                            if next_start > current_end {
+                                let _ = file.flush().await;
+                                return Ok(());
                             }
-                            let response = request.send().await.map_err(friendly_reqwest)?;
-                            if response.status() != reqwest::StatusCode::PARTIAL_CONTENT {
-                                return Err(format!(
-                                    "服务器返回 HTTP {}，无法安全续传分片 #{}",
-                                    response.status(),
-                                    index + 1
-                                ));
-                            }
-                            match parse_content_range(&response) {
-                                Some((actual_start, actual_end, actual_total))
-                                    if actual_start == current_start
-                                        && actual_end == request_end
-                                        && actual_total == total => {}
-                                _ => return Err("服务器返回了不匹配的 Content-Range".into()),
-                            }
-                            let mut stream = response.bytes_stream();
-                            let mut idle_seconds = 0u8;
-                            loop {
-                                let next = tokio::select! {
-                                    _ = token.cancelled() => return Err("任务已暂停".into()),
-                                    result = tokio::time::timeout(Duration::from_secs(1), stream.next()) => result,
-                                };
-                                let chunk = match next {
-                                    Ok(Some(chunk)) => {
-                                        idle_seconds = 0;
-                                        chunk
+
+                            let permit = tokio::select! {
+                                _ = token.cancelled() => return Err("任务已暂停".to_string()),
+                                permit = adaptive.clone().acquire() => permit,
+                            };
+                            runtime.active_windows.fetch_add(1, Ordering::Relaxed);
+                            runtime.status.store(SEGMENT_DOWNLOADING, Ordering::Relaxed);
+
+                            let current_start = next_start;
+                            let request_end = handle.current_end();
+
+                            let step_result = async {
+                                let mut request = client.get(&url);
+                                for (name, value) in &headers {
+                                    request = request.header(name, value);
+                                }
+                                request = request
+                                    .header(ACCEPT_ENCODING, "identity")
+                                    .header(RANGE, format!("bytes={current_start}-{request_end}"));
+                                if let Some(value) = &if_range {
+                                    request = request.header(IF_RANGE, value);
+                                }
+                                let response = request.send().await.map_err(friendly_reqwest)?;
+                                if response.status() != reqwest::StatusCode::PARTIAL_CONTENT {
+                                    return Err(format!(
+                                        "服务器返回 HTTP {}，无法安全续传分片 #{}",
+                                        response.status(),
+                                        index + 1
+                                    ));
+                                }
+                                match parse_content_range(&response) {
+                                    Some((actual_start, actual_end, actual_total))
+                                        if actual_start == current_start
+                                            && actual_end == request_end
+                                            && actual_total == total => {}
+                                    _ => return Err("服务器返回了不匹配的 Content-Range".into()),
+                                }
+                                let mut stream = response.bytes_stream();
+                                let mut idle_seconds = 0u8;
+                                loop {
+                                    let next = tokio::select! {
+                                        _ = token.cancelled() => return Err("任务已暂停".into()),
+                                        result = tokio::time::timeout(Duration::from_secs(1), stream.next()) => result,
+                                    };
+                                    let chunk = match next {
+                                        Ok(Some(chunk)) => {
+                                            idle_seconds = 0;
+                                            chunk
+                                        }
+                                        Ok(None) => break,
+                                        Err(_) if adaptive.should_yield(&permit) => {
+                                            return Err(ADAPTIVE_YIELD.into())
+                                        }
+                                        Err(_) if idle_seconds >= 14 => {
+                                            return Err(format!(
+                                                "分片 #{} 连续 15 秒没有收到数据",
+                                                index + 1
+                                            ))
+                                        }
+                                        Err(_) => {
+                                            idle_seconds = idle_seconds.saturating_add(1);
+                                            continue;
+                                        }
+                                    };
+                                    if adaptive.should_yield(&permit) {
+                                        return Err(ADAPTIVE_YIELD.into());
                                     }
-                                    Ok(None) => break,
-                                    Err(_) if adaptive.should_yield(&permit) => {
-                                        return Err(ADAPTIVE_YIELD.into())
+                                    let chunk = chunk.map_err(friendly_body_error)?;
+                                    let mut chunk_slice = &chunk[..];
+                                    let effective_end = handle.current_end();
+                                    let current_cursor = next_start;
+
+                                    if current_cursor > effective_end {
+                                        break;
                                     }
-                                    Err(_) if idle_seconds >= 14 => {
-                                        return Err(format!(
-                                            "分片 #{} 连续 15 秒没有收到数据",
-                                            index + 1
-                                        ))
+                                    let remaining_in_window = effective_end.saturating_sub(current_cursor).saturating_add(1);
+                                    if (chunk_slice.len() as u64) > remaining_in_window {
+                                        chunk_slice = &chunk_slice[..remaining_in_window as usize];
                                     }
-                                    Err(_) => {
-                                        idle_seconds = idle_seconds.saturating_add(1);
+                                    let chunk_len = chunk_slice.len() as u64;
+                                    if chunk_len == 0 {
+                                        break;
+                                    }
+
+                                    bandwidth
+                                        .acquire(
+                                            &task_id,
+                                            chunk_len,
+                                            runtime_options.priority.load(Ordering::Relaxed),
+                                            &token,
+                                        )
+                                        .await;
+                                    if token.is_cancelled() {
+                                        return Err("任务已暂停".into());
+                                    }
+                                    limiter
+                                        .acquire_with_cancel(
+                                            chunk_len,
+                                            runtime_options.speed_limit.load(Ordering::Relaxed),
+                                            &token,
+                                        )
+                                        .await;
+                                    if token.is_cancelled() {
+                                        return Err("任务已暂停".into());
+                                    }
+                                    file.write_all(chunk_slice)
+                                        .await
+                                        .map_err(|error| error.to_string())?;
+                                    next_start += chunk_len;
+                                    handle.downloaded_bytes.fetch_add(chunk_len, Ordering::Relaxed);
+                                    runtime
+                                        .downloaded_bytes
+                                        .fetch_add(chunk_len, Ordering::Relaxed);
+                                    progress.fetch_add(chunk_len, Ordering::Relaxed);
+
+                                    if next_start > handle.current_end() {
+                                        break;
+                                    }
+                                }
+                                Ok::<(), String>(())
+                            }.await;
+
+                            drop(permit);
+                            let remaining_active = runtime
+                                .active_windows
+                                .fetch_sub(1, Ordering::Relaxed)
+                                .saturating_sub(1);
+                            if remaining_active == 0
+                                && runtime.status.load(Ordering::Relaxed) != SEGMENT_FAILED
+                            {
+                                runtime.status.store(SEGMENT_PENDING, Ordering::Relaxed);
+                            }
+
+                            match step_result {
+                                Ok(()) => {
+                                    file.flush().await.map_err(|error| error.to_string())?;
+                                    retry_count = 0;
+                                    let effective_end = handle.current_end();
+                                    if next_start <= effective_end {
+                                        let reconnect_delay = Duration::from_millis(
+                                            8 + (index as u64 % 8).saturating_mul(7),
+                                        );
+                                        tokio::select! {
+                                            _ = token.cancelled() => return Err("任务已暂停".into()),
+                                            _ = tokio::time::sleep(reconnect_delay) => {}
+                                        }
                                         continue;
                                     }
-                                };
-                                if adaptive.should_yield(&permit) {
-                                    return Err(ADAPTIVE_YIELD.into());
+                                    break Ok(());
                                 }
-                                let chunk = chunk.map_err(friendly_body_error)?;
-                                let chunk_len = chunk.len() as u64;
-                                if next_start.saturating_add(chunk_len)
-                                    > request_end.saturating_add(1)
-                                {
-                                    return Err(format!("分片 #{} 返回了过多数据", index + 1));
-                                }
-                                bandwidth
-                                    .acquire(
-                                        &task_id,
-                                        chunk_len,
-                                        runtime_options.priority.load(Ordering::Relaxed),
-                                        &token,
-                                    )
-                                    .await;
-                                if token.is_cancelled() {
-                                    return Err("任务已暂停".into());
-                                }
-                                limiter
-                                    .acquire_with_cancel(
-                                        chunk_len,
-                                        runtime_options.speed_limit.load(Ordering::Relaxed),
-                                        &token,
-                                    )
-                                    .await;
-                                if token.is_cancelled() {
-                                    return Err("任务已暂停".into());
-                                }
-                                file.write_all(&chunk)
-                                    .await
-                                    .map_err(|error| error.to_string())?;
-                                next_start += chunk_len;
-                                runtime
-                                    .downloaded_bytes
-                                    .fetch_add(chunk_len, Ordering::Relaxed);
-                                progress.fetch_add(chunk_len, Ordering::Relaxed);
-                            }
-                            if next_start != request_end.saturating_add(1) {
-                                return Err(format!(
-                                    "分片 #{} 提前结束，剩余 {} 字节",
-                                    index + 1,
-                                    request_end.saturating_add(1).saturating_sub(next_start)
-                                ));
-                            }
-                            Ok::<(), String>(())
-                        }
-                        .await;
-                        drop(permit);
-                        let remaining_active = runtime
-                            .active_windows
-                            .fetch_sub(1, Ordering::Relaxed)
-                            .saturating_sub(1);
-                        if remaining_active == 0
-                            && runtime.status.load(Ordering::Relaxed) != SEGMENT_FAILED
-                        {
-                            runtime.status.store(SEGMENT_PENDING, Ordering::Relaxed);
-                        }
-                        match transfer {
-                            Ok(()) => {
-                                file.flush().await.map_err(|error| error.to_string())?;
-                                retry_count = 0;
-                                if next_start <= end {
-                                    let reconnect_delay = Duration::from_millis(
-                                        8 + (index as u64 % 8).saturating_mul(7),
-                                    );
-                                    tokio::select! {
-                                        _ = token.cancelled() => break Err("任务已暂停".into()),
-                                        _ = tokio::time::sleep(reconnect_delay) => {}
-                                    }
+                                Err(error) if error == ADAPTIVE_YIELD => {
+                                    file.flush().await.map_err(|flush| flush.to_string())?;
                                     continue;
                                 }
-                                break Ok(());
-                            }
-                            Err(error) if error == ADAPTIVE_YIELD => {
-                                file.flush().await.map_err(|flush| flush.to_string())?;
-                                continue;
-                            }
-                            Err(error) if token.is_cancelled() => {
-                                let _ = file.flush().await;
-                                break Err(error);
-                            }
-                            Err(error) if retry_count < segment_max_retries => {
-                                file.flush().await.map_err(|flush| flush.to_string())?;
-                                // Task 14: 使用 effective_retry_policy 的退避策略。
-                                // 退避期间连接停止活动（不占用 server 资源）。
-                                // 保留少量交错偏移避免所有连接同时重连。
-                                retry_count += 1;
-                                // Task 18: 同步连接级重试状态到 SegmentRuntime，
-                                // 供 task-connections 事件读取（真实状态非模拟）。
-                                runtime
-                                    .retry_count
-                                    .store(retry_count, Ordering::Relaxed);
-                                runtime.set_last_error(&error);
-                                runtime.retrying.store(true, Ordering::Relaxed);
-                                let policy_delay_ms = compute_backoff(&segment_retry_policy, retry_count);
-                                let jitter_ms = (index as u64).saturating_mul(11);
-                                let delay_ms = policy_delay_ms.saturating_add(jitter_ms);
-                                tokio::select! {
-                                    _ = token.cancelled() => {
-                                        runtime.retrying.store(false, Ordering::Relaxed);
-                                        break Err("任务已暂停".into());
-                                    },
-                                    _ = tokio::time::sleep(Duration::from_millis(delay_ms)) => {}
+                                Err(error) if token.is_cancelled() => {
+                                    let _ = file.flush().await;
+                                    return Err(error);
                                 }
-                                runtime.retrying.store(false, Ordering::Relaxed);
-                                let _ = error;
-                            }
-                            Err(error) => {
-                                // Task 18: 记录最后一次错误（脱敏后），便于前端展示。
-                                runtime.set_last_error(&error);
-                                break Err(format!(
-                                    "分片 #{} 连续重试 {} 次后仍失败：{}",
-                                    index + 1,
-                                    retry_count,
-                                    error
-                                ))
+                                Err(error) if retry_count < segment_max_retries => {
+                                    file.flush().await.map_err(|flush| flush.to_string())?;
+                                    retry_count += 1;
+                                    runtime.retry_count.store(retry_count, Ordering::Relaxed);
+                                    runtime.set_last_error(&error);
+                                    runtime.retrying.store(true, Ordering::Relaxed);
+                                    let policy_delay_ms = compute_backoff(&segment_retry_policy, retry_count);
+                                    let jitter_ms = (index as u64).saturating_mul(11);
+                                    let delay_ms = policy_delay_ms.saturating_add(jitter_ms);
+                                    tokio::select! {
+                                        _ = token.cancelled() => {
+                                            runtime.retrying.store(false, Ordering::Relaxed);
+                                            return Err("任务已暂停".into());
+                                        },
+                                        _ = tokio::time::sleep(Duration::from_millis(delay_ms)) => {}
+                                    }
+                                    runtime.retrying.store(false, Ordering::Relaxed);
+                                }
+                                Err(error) => {
+                                    runtime.set_last_error(&error);
+                                    return Err(format!(
+                                        "分片 #{} 连续重试 {} 次后仍失败：{}",
+                                        index + 1,
+                                        retry_count,
+                                        error
+                                    ));
+                                }
                             }
                         }
-                    }
-                }
-                .await;
-                    runtime.active_windows.fetch_sub(1, Ordering::Relaxed);
-                    let expected = runtime.end_byte - runtime.start_byte + 1;
-                    let status = if result.is_err() {
+                    }.await;
+
+                    let success = transfer_result.is_ok();
+                    coordinator.finish_window(window.id, success).await;
+
+                    let expected_segment_len = runtime.end_byte - runtime.start_byte + 1;
+                    let status = if !success {
                         SEGMENT_FAILED
-                    } else if runtime.downloaded_bytes.load(Ordering::Relaxed) == expected {
+                    } else if runtime.downloaded_bytes.load(Ordering::Relaxed) == expected_segment_len {
                         SEGMENT_COMPLETED
                     } else if runtime.active_windows.load(Ordering::Relaxed) > 0 {
                         SEGMENT_DOWNLOADING
-                } else {
-                    SEGMENT_PENDING
-                };
-                runtime.status.store(status, Ordering::Relaxed);
-                result
-            }
-        }))
-        .buffer_unordered(connections as usize);
-        tokio::pin!(job_stream);
+                    } else {
+                        SEGMENT_PENDING
+                    };
+                    runtime.status.store(status, Ordering::Relaxed);
+
+                    if let Err(e) = transfer_result {
+                        return Err(e);
+                    }
+                }
+            }));
+        }
 
         let mut worker_error = None;
-        while let Some(result) = job_stream.next().await {
-            if let Err(error) = result {
-                worker_error = Some(error);
-                break;
+        for handle in worker_handles {
+            match handle.await {
+                Ok(Err(error)) => {
+                    if worker_error.is_none() {
+                        worker_error = Some(error);
+                        token.cancel();
+                    }
+                }
+                Err(join_err) => {
+                    if worker_error.is_none() {
+                        worker_error = Some(format!("Worker 异常终止: {join_err}"));
+                        token.cancel();
+                    }
+                }
+                Ok(Ok(())) => {}
             }
         }
-        drop(job_stream);
         reporter_stop.cancel();
         let _ = reporter.await;
         let _ = disk_checker.await;
@@ -3257,21 +3382,32 @@ impl DownloadManager {
                 parts_to_cleanup.push(legacy_part);
             }
             if prefix_bytes < expected {
-                let layout = window_layouts
-                    .get(&index)
-                    .cloned()
-                    .unwrap_or_else(|| balanced_window_ranges(start + prefix_bytes, end, index));
-                for (_, window_start, window_end) in layout {
-                    let path = window_part_path(temp, index, window_start);
-                    let window_bytes = window_end - window_start + 1;
+                let ordered = coordinator.get_ordered_windows_for_segment(index).await;
+                if ordered.is_empty() {
+                    let _ = fs::remove_file(&merge).await;
+                    return Err(format!("分片 #{} 缺少切片数据", index + 1));
+                }
+                let mut cursor = start + prefix_bytes;
+                for window in ordered {
+                    if window.start_byte != cursor {
+                        let _ = fs::remove_file(&merge).await;
+                        return Err(format!(
+                            "分片 #{} 存在切片间隙：期望偏移 {}，实际窗口偏移 {}",
+                            index + 1,
+                            cursor,
+                            window.start_byte
+                        ));
+                    }
+                    let window_bytes = window.end_byte - window.start_byte + 1;
                     if let Err(err) =
-                        append_part(&mut output, &path, window_bytes, &mut buffer).await
+                        append_part(&mut output, &window.path, window_bytes, &mut buffer).await
                     {
                         let _ = fs::remove_file(&merge).await;
                         return Err(err);
                     }
                     merged_bytes = merged_bytes.saturating_add(window_bytes);
-                    parts_to_cleanup.push(path);
+                    cursor = window.end_byte + 1;
+                    parts_to_cleanup.push(window.path);
                 }
             }
             if merged_bytes != expected {
@@ -4739,6 +4875,30 @@ impl Drop for AdaptiveConnectionPermit {
 const RANGE_WINDOW_BASE_BYTES: u64 = 8 * 1024 * 1024;
 const RANGE_WINDOW_STEP_BYTES: u64 = 256 * 1024;
 
+fn layout_from_existing_starts(start: u64, end: u64, starts: &[u64]) -> Option<Vec<(u32, u64, u64)>> {
+    if starts.is_empty() || starts.first() != Some(&start) {
+        return None;
+    }
+    for window in starts.windows(2) {
+        if window[0] >= window[1] || window[1] > end {
+            return None;
+        }
+    }
+    if *starts.last().unwrap() > end {
+        return None;
+    }
+    let mut result = Vec::with_capacity(starts.len());
+    for (i, &w_start) in starts.iter().enumerate() {
+        let w_end = if i + 1 < starts.len() {
+            starts[i + 1] - 1
+        } else {
+            end
+        };
+        result.push((i as u32, w_start, w_end));
+    }
+    Some(result)
+}
+
 async fn select_window_layout(
     temp: &Path,
     segment_index: u8,
@@ -4757,6 +4917,8 @@ async fn select_window_layout(
             .all(|value| balanced.iter().any(|(_, start, _)| start == value))
     {
         balanced
+    } else if let Some(layout) = layout_from_existing_starts(start, end, &existing) {
+        layout
     } else {
         segment_window_ranges(start, end, segment_index)
     }
@@ -5334,7 +5496,7 @@ fn disposition_name(response: &reqwest::Response) -> Option<String> {
         .find_map(|p| p.trim().strip_prefix("filename="))
         .map(|v| safe_name(v.trim_matches(['\"', '\''])))
 }
-fn friendly_reqwest(error: reqwest::Error) -> String {
+pub(crate) fn friendly_reqwest(error: reqwest::Error) -> String {
     if error.is_timeout() {
         "NETWORK: 连接超时".into()
     } else if error.is_connect() {
@@ -5345,7 +5507,7 @@ fn friendly_reqwest(error: reqwest::Error) -> String {
         error.to_string()
     }
 }
-fn friendly_body_error(error: reqwest::Error) -> String {
+pub(crate) fn friendly_body_error(error: reqwest::Error) -> String {
     if error.is_decode() {
         "NETWORK: 响应流因网络或服务器中断而提前结束".into()
     } else {

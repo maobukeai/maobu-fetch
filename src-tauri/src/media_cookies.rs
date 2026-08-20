@@ -235,6 +235,7 @@ fn normalize_cookie_domain(domain: &str) -> String {
                 ".weibo.com".to_string()
             }
         }
+        crate::media_platforms::MediaPlatform::PikPak => ".mypikpak.com".to_string(),
         crate::media_platforms::MediaPlatform::Unknown => {
             let platforms = [
                 ("douyin.com", ".douyin.com"),

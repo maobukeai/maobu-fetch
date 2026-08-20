@@ -113,6 +113,7 @@ pub fn classify_platform_error(platform: MediaPlatform, stderr: &str) -> MediaPl
         MediaPlatform::YouTube => classify_youtube_error(&lower),
         MediaPlatform::Bilibili => classify_bilibili_error(&lower),
         MediaPlatform::Weibo => classify_weibo_error(&lower),
+        MediaPlatform::PikPak => MediaPlatformError::Unknown,
         MediaPlatform::Unknown => MediaPlatformError::Unknown,
     };
     if platform_result != MediaPlatformError::Unknown {
@@ -207,7 +208,7 @@ pub fn platform_error_to_chinese(error: MediaPlatformError, platform: MediaPlatf
         (MediaPlatformError::LoginExpired, MediaPlatform::Weibo) => {
             "微博登录已失效，请重新获取 Cookie".into()
         }
-        (MediaPlatformError::LoginExpired, MediaPlatform::Unknown) => {
+        (MediaPlatformError::LoginExpired, _) => {
             "登录已失效，请重新获取认证信息".into()
         }
         (MediaPlatformError::RegionBlocked, _) => "该内容在你的地区不可用".into(),

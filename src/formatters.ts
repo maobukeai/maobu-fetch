@@ -515,6 +515,8 @@ export function isDownloadableUrl(url: string): boolean {
       "twitter.com",
       "x.com",
       "weibo.com",
+      "mypikpak.com",
+      "mypikpak.net",
     ];
     const hostname = parsed.hostname.toLowerCase();
     if (
@@ -548,5 +550,12 @@ export function isDownloadableUrl(url: string): boolean {
   } catch {
     return false;
   }
+}
+
+export function isPikPakShareUrl(url: string): boolean {
+  if (!url || typeof url !== "string") return false;
+  return /https?:\/\/(?:[a-zA-Z0-9-]+\.)?mypikpak\.(?:com|net)\/s\/([a-zA-Z0-9_-]+)/i.test(
+    url.trim()
+  );
 }
 

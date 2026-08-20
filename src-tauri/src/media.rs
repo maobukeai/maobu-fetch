@@ -268,6 +268,10 @@ pub async fn probe(
                 }
             }
         } else {
+            let host = crate::media_platforms::extract_host(&effective_url);
+            if host == "douyin.com" || host == "www.douyin.com" {
+                return Err("未识别到具体的抖音视频 ID，请打开具体的视频页面后再下载".into());
+            }
             probe_via_yt_dlp(
                 app,
                 settings,
@@ -320,6 +324,81 @@ pub async fn probe(
                 user_agent,
             )
             .await?
+        }
+    } else if platform == MediaPlatform::PikPak {
+        if let Some(parsed_pikpak) = crate::pikpak::parse_pikpak_url(&effective_url) {
+            let device_id = hex::encode(rand::random::<[u8; 16]>());
+            let share_info = crate::pikpak::inspect_pikpak_share(&effective_url, parsed_pikpak.pass_code.clone(), &device_id)
+                .await
+                .map_err(|e| format!("PikPak 解析失败: {e}"))?;
+
+            if let Some(first_file) = share_info.files.iter().find(|f| f.kind == "drive#file" || !f.id.is_empty()).cloned() {
+                let direct = match crate::pikpak::resolve_pikpak_file(
+                    &parsed_pikpak.share_id,
+                    &first_file.id,
+                    share_info.pass_code_token.as_deref(),
+                    &device_id,
+                ).await {
+                    Ok(res) => res.url,
+                    Err(_) => first_file.web_content_link.unwrap_or_default(),
+                };
+
+                let mut formats_list = Vec::new();
+                if !direct.is_empty() {
+                    let size_mb = first_file.size as f64 / (1024.0 * 1024.0);
+                    formats_list.push(MediaFormat {
+                        id: "original".into(),
+                        label: format!("原画 1080P/4K ({:.1} MB)", size_mb),
+                        extension: first_file.file_extension.clone().or_else(|| Some("mp4".into())),
+                        width: Some(1920),
+                        height: Some(1080),
+                        file_size: Some(first_file.size),
+                        has_video: true,
+                        has_audio: true,
+                        requires_ffmpeg: false,
+                        image_url: None,
+                        url: Some(direct),
+                    });
+                }
+
+                return Ok(MediaProbeResult {
+                    title: if first_file.name.is_empty() { share_info.title } else { first_file.name },
+                    thumbnail: first_file.thumbnail_url,
+                    extractor: Some("pikpak".into()),
+                    duration: None,
+                    formats: formats_list,
+                    subtitles: Vec::new(),
+                    drm: false,
+                    media_type: MediaType::Video,
+                    episodes: Vec::new(),
+                });
+            } else {
+                return Err("该 PikPak 分享暂无可用文件".into());
+            }
+        } else {
+            return Ok(MediaProbeResult {
+                title: "PikPak 文件".into(),
+                thumbnail: None,
+                extractor: Some("pikpak".into()),
+                duration: None,
+                formats: vec![MediaFormat {
+                    id: "original".into(),
+                    label: "原画".into(),
+                    extension: Some("mp4".into()),
+                    width: Some(1920),
+                    height: Some(1080),
+                    file_size: None,
+                    has_video: true,
+                    has_audio: true,
+                    requires_ffmpeg: false,
+                    image_url: None,
+                    url: Some(effective_url.clone()),
+                }],
+                subtitles: Vec::new(),
+                drm: false,
+                media_type: MediaType::Video,
+                episodes: Vec::new(),
+            });
         }
     } else {
         probe_via_yt_dlp(
