@@ -42,6 +42,7 @@
         task_kind: Default::default(),
         bt_meta: None,
         bt_runtime: None,
+        cloud_refresh: None,
         }
     }
     #[test]
@@ -600,6 +601,7 @@
         task_kind: Default::default(),
         bt_meta: None,
         bt_runtime: None,
+        cloud_refresh: None,
         }
     }
 
@@ -998,6 +1000,70 @@
         // remote resource changed. The prefix must stay stable.
         assert!(format!("{REMOTE_CHANGED_PREFIX}远端资源已变化").starts_with(REMOTE_CHANGED_PREFIX));
         assert_eq!(REMOTE_CHANGED_PREFIX, "REMOTE_CHANGED:");
+    }
+
+    #[test]
+    fn cloud_link_dead_error_carries_sentinel_prefix_for_spawn_worker() {
+        // spawn_worker 与 download_segments 的错误汇聚逻辑都按此前缀识别
+        // "云盘直链失效"哨兵：前缀必须保持稳定，且分段传输与 worker 上抛
+        // 两条路径生成的错误都必须命中。
+        assert_eq!(CLOUD_LINK_DEAD_PREFIX, "CLOUD_LINK_DEAD:");
+        let empty_sig =
+            format!("{CLOUD_LINK_DEAD_PREFIX}分片 #3 连续 3 次收到 0 字节响应，直链疑似已失效");
+        let stall_sig = format!(
+            "{CLOUD_LINK_DEAD_PREFIX}分片 #5 超过 45 秒下载不足 1048576 字节，直链疑似已失效"
+        );
+        assert!(empty_sig.starts_with(CLOUD_LINK_DEAD_PREFIX));
+        assert!(stall_sig.starts_with(CLOUD_LINK_DEAD_PREFIX));
+        // 普通错误不得被误判为直链失效
+        assert!(!"分片 #3 连续重试 5 次后仍失败：连接超时".starts_with(CLOUD_LINK_DEAD_PREFIX));
+        assert!(!"任务已暂停".starts_with(CLOUD_LINK_DEAD_PREFIX));
+    }
+
+    #[test]
+    fn cloud_refresh_meta_round_trips_and_defaults_to_none() {
+        // 旧 JSON（无 cloud_refresh 字段）必须能安全反序列化为 None。
+        #[derive(serde::Deserialize)]
+        struct LegacyTask {
+            cloud_refresh: Option<crate::models::CloudRefreshMeta>,
+        }
+        let legacy: LegacyTask = serde_json::from_str(r#"{"cloud_refresh":null}"#).unwrap();
+        assert!(legacy.cloud_refresh.is_none());
+
+        // 完整元数据往返：platform/share_id/file_id/device_id 必须无损保留，
+        // 刷新直链依赖这些字段重新解析同一文件。
+        let meta = crate::models::CloudRefreshMeta {
+            platform: "pikpak".into(),
+            share_id: "share123".into(),
+            file_id: "file456".into(),
+            pass_code_token: Some("token789".into()),
+            device_id: Some("mb_abc".into()),
+        };
+        let json = serde_json::to_string(&meta).unwrap();
+        let restored: crate::models::CloudRefreshMeta = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.platform, "pikpak");
+        assert_eq!(restored.share_id, "share123");
+        assert_eq!(restored.file_id, "file456");
+        assert_eq!(restored.pass_code_token.as_deref(), Some("token789"));
+        assert_eq!(restored.device_id.as_deref(), Some("mb_abc"));
+
+        // 缺省字段（密码分享令牌、设备指纹）必须可省略
+        let minimal: crate::models::CloudRefreshMeta = serde_json::from_str(
+            r#"{"platform":"pikpak","share_id":"s","file_id":"f"}"#,
+        )
+        .unwrap();
+        assert!(minimal.pass_code_token.is_none());
+        assert!(minimal.device_id.is_none());
+    }
+
+    #[test]
+    fn cloud_refresh_meta_default_is_none_for_plain_tasks() {
+        // 普通直链任务（无云盘元数据）不得自动刷新直链：
+        // refresh_cloud_direct_link 对 None 返回 Ok(false) 的语义依赖此默认值。
+        let mut task = test_task(std::path::Path::new("."), "plain.bin", CollisionPolicy::Rename);
+        assert!(task.cloud_refresh.is_none());
+        task.cloud_refresh = None;
+        assert!(task.cloud_refresh.is_none());
     }
 
     #[test]
@@ -2738,8 +2804,8 @@
         let (w1, _) = coordinator.claim_or_steal_work().await.unwrap();
         let (w2, _) = coordinator.claim_or_steal_work().await.unwrap();
 
-        coordinator.finish_window(w1.id, true).await;
-        coordinator.finish_window(w2.id, true).await;
+        coordinator.finish_window(w1.id, true, 20_000_001).await;
+        coordinator.finish_window(w2.id, true, 30_000_000).await;
 
         let ordered = coordinator.get_ordered_windows_for_segment(0).await;
         assert_eq!(ordered.len(), 2);

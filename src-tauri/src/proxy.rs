@@ -341,6 +341,7 @@ mod tests {
             task_kind: Default::default(),
             bt_meta: None,
             bt_runtime: None,
+            cloud_refresh: None,
             final_url: None,
             response_status: None,
             content_type: None,

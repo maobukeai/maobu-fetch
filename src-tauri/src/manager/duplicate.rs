@@ -261,7 +261,7 @@ impl DownloadManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::{CollisionPolicy, CompletionAction, MediaSelection};
+    use crate::models::{CollisionPolicy, CompletionAction};
     use std::collections::HashMap;
 
     // ---- strip_tracking_params：白名单内剥离 ----
@@ -509,6 +509,7 @@ mod tests {
         task_kind: Default::default(),
         bt_meta: None,
         bt_runtime: None,
+        cloud_refresh: None,
         }
     }
 

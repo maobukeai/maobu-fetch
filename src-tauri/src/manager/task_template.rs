@@ -205,6 +205,7 @@ mod tests {
             connection_count: None,
             start_paused: false,
             user_edited_file_name: false,
+            cloud_refresh: None,
         }
     }
 

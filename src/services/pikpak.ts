@@ -200,7 +200,12 @@ export interface PikPakShareInfo {
 }
 
 // ==================== 设备指纹管理 ====================
-function getOrCreateDeviceId(): string {
+/**
+ * 获取（或创建并固化）PikPak 设备指纹。
+ * 创建任务时随 cloud_refresh 元数据一并提交给后端，
+ * 直链过期自动刷新时复用同一指纹，降低风控概率。
+ */
+export function getOrCreateDeviceId(): string {
   const STORAGE_KEY = "maobu_pikpak_device_id";
   try {
     let id = localStorage.getItem(STORAGE_KEY);
@@ -315,48 +320,18 @@ async function getCaptchaToken(): Promise<string> {
   return token;
 }
 
-// ==================== 提取码验证 ====================
-export async function verifyPikPakPassCode(
-  shareId: string,
-  passCode: string
-): Promise<string> {
-  const captchaToken = await getCaptchaToken();
-  const deviceId = getOrCreateDeviceId();
-
-  const resp = await fetch(`${PIKPAK_API_HOST}/drive/v1/share/pass_code`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "X-Client-Id": PIKPAK_CLIENT_ID,
-      "X-Client-Version": PIKPAK_CLIENT_VERSION,
-      "X-Device-Id": deviceId,
-      "X-Captcha-Token": captchaToken,
-      "Referer": "https://mypikpak.com/",
-    },
-    body: JSON.stringify({
-      share_id: shareId,
-      pass_code: passCode,
-    }),
-  });
-
-  if (!resp.ok) {
-    if (resp.status === 400 || resp.status === 401) {
-      throw new Error("提取码错误，请重新输入");
-    }
-    throw new Error(`验证提取码失败 (${resp.status})`);
-  }
-
-  const data = await resp.json();
-  return data.pass_code_token || "";
-}
-
 // ==================== 递归拉取目录树 ====================
 async function fetchShareDirectoryLevel(
   shareId: string,
   parentId: string = "",
+  passCode: string = "",
   passCodeToken: string = "",
-  currentPath: string = ""
+  currentPath: string = "",
+  visitedFolders: Set<string> = new Set()
 ): Promise<PikPakFileItem[]> {
+  if (parentId && visitedFolders.has(parentId)) return [];
+  if (parentId) visitedFolders.add(parentId);
+
   const captchaToken = await getCaptchaToken();
   const deviceId = getOrCreateDeviceId();
   let pageToken: string | undefined = undefined;
@@ -369,10 +344,15 @@ async function fetchShareDirectoryLevel(
     });
     if (parentId) params.set("parent_id", parentId);
     if (pageToken) params.set("page_token", pageToken);
-    if (passCodeToken) params.set("pass_code_token", passCodeToken);
+    if (passCodeToken) {
+      params.set("pass_code_token", passCodeToken);
+    } else if (passCode) {
+      params.set("pass_code", passCode);
+    }
 
+    const endpoint = parentId ? `${PIKPAK_API_HOST}/drive/v1/share/detail` : `${PIKPAK_API_HOST}/drive/v1/share`;
     const resp = await fetch(
-      `${PIKPAK_API_HOST}/drive/v1/share/detail?${params.toString()}`,
+      `${endpoint}?${params.toString()}`,
       {
         headers: {
           "X-Client-Id": PIKPAK_CLIENT_ID,
@@ -386,8 +366,11 @@ async function fetchShareDirectoryLevel(
 
     if (!resp.ok) {
       const errJson = await resp.json().catch(() => ({}));
-      if (errJson.error === "need_pass_code" || resp.status === 403) {
+      if (errJson.share_status === "PASS_CODE_EMPTY" || errJson.error === "need_pass_code" || resp.status === 403) {
         throw new Error("NEED_PASS_CODE");
+      }
+      if (errJson.share_status === "PASS_CODE_ERROR" || errJson.error === "invalid_pass_code") {
+        throw new Error("提取码错误，请重新输入");
       }
       if (errJson.error_description) {
         throw new Error(errJson.error_description);
@@ -396,7 +379,15 @@ async function fetchShareDirectoryLevel(
     }
 
     const data = await resp.json();
+    if (data.share_status === "PASS_CODE_EMPTY") {
+      throw new Error("NEED_PASS_CODE");
+    }
+    if (data.share_status === "PASS_CODE_ERROR") {
+      throw new Error("提取码错误，请重新输入");
+    }
+
     const files = data.files || [];
+    const nextToken = data.pass_code_token || passCodeToken;
 
     for (const item of files) {
       const itemPath = currentPath ? `${currentPath}/${item.name}` : item.name;
@@ -416,18 +407,26 @@ async function fetchShareDirectoryLevel(
         medias: item.medias,
       };
 
-      result.push(fileItem);
+      if (!result.some((r) => r.id === fileItem.id)) {
+        result.push(fileItem);
+      }
 
       // 如果是子文件夹且未超出真实文件数量上限，递归拉取子项
       const currentFilesCount = result.filter((i) => i.kind === "drive#file").length;
-      if (isFolder && currentFilesCount < 200) {
+      if (isFolder && !visitedFolders.has(item.id) && item.id !== parentId && currentFilesCount < 200) {
         const subItems = await fetchShareDirectoryLevel(
           shareId,
           item.id,
-          passCodeToken,
-          itemPath
+          passCode,
+          nextToken,
+          itemPath,
+          visitedFolders
         );
-        result.push(...subItems);
+        for (const sub of subItems) {
+          if (!result.some((r) => r.id === sub.id)) {
+            result.push(sub);
+          }
+        }
       }
       if (result.filter((i) => i.kind === "drive#file").length >= 200) break;
     }
@@ -478,18 +477,7 @@ export async function inspectPikPakShare(
     };
   }
 
-  let passCodeToken = "";
-  const effectivePassCode = providedPassCode || parsed.passCode;
-
-  if (effectivePassCode) {
-    try {
-      passCodeToken = await verifyPikPakPassCode(parsed.shareId, effectivePassCode);
-    } catch (e: any) {
-      if (e.message.includes("提取码错误")) {
-        throw e;
-      }
-    }
-  }
+  const effectivePassCode = providedPassCode || parsed.passCode || "";
 
   try {
     let allItems: PikPakFileItem[] = [];
@@ -497,7 +485,8 @@ export async function inspectPikPakShare(
       allItems = await fetchShareDirectoryLevel(
         parsed.shareId,
         parsed.parentId || "",
-        passCodeToken,
+        effectivePassCode,
+        "",
         ""
       );
     } catch (fetchErr: any) {
@@ -506,7 +495,8 @@ export async function inspectPikPakShare(
         allItems = await fetchShareDirectoryLevel(
           parsed.shareId,
           "",
-          passCodeToken,
+          effectivePassCode,
+          "",
           ""
         );
       } else {
@@ -518,7 +508,8 @@ export async function inspectPikPakShare(
       allItems = await fetchShareDirectoryLevel(
         parsed.shareId,
         "",
-        passCodeToken,
+        effectivePassCode,
+        "",
         ""
       );
     }
@@ -542,7 +533,7 @@ export async function inspectPikPakShare(
       folderCount,
       totalSize,
       passCodeRequired: false,
-      passCodeToken,
+      passCodeToken: effectivePassCode,
     };
   } catch (err: any) {
     if (err.message === "NEED_PASS_CODE") {

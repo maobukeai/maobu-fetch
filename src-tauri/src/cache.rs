@@ -188,6 +188,7 @@ mod tests {
             task_kind: Default::default(),
             bt_meta: None,
             bt_runtime: None,
+            cloud_refresh: None,
         }
     }
 

@@ -882,6 +882,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore]
     async fn test_resolve_real_baidu_file() {
         let url = "https://pan.baidu.com/s/1uqSBOwEkkw-NdAenNndoqA?pwd=fqq4#list/path=%2F";
         let real_cookie: Option<String> = tokio::task::spawn_blocking(move || {

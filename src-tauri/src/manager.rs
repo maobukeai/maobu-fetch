@@ -414,6 +414,7 @@ impl DownloadManager {
             task_kind: TaskKind::Http,
             bt_meta: None,
             bt_runtime: None,
+            cloud_refresh: request.cloud_refresh,
         };
         self.reserve_output_path(&mut task).await?;
         self.store.upsert_task(&task).await?;
@@ -449,6 +450,7 @@ impl DownloadManager {
                     connection_count: request.connection_count,
                     start_paused: false,
                     user_edited_file_name: false,
+                    cloud_refresh: None,
                 })
                 .await?;
             tasks.push(task);
@@ -751,6 +753,7 @@ impl DownloadManager {
             task_kind: TaskKind::Bt,
             bt_meta: Some(meta),
             bt_runtime: None,
+            cloud_refresh: None,
         };
         self.store.upsert_task(&task).await?;
         self.register_power_action_target(&task.id).await;
@@ -1071,6 +1074,58 @@ impl DownloadManager {
         self.emit_task("updated", &task);
         self.dispatcher.notify_waiters();
         Ok(task)
+    }
+
+    /// 云盘直链失效后的自动刷新（PikPak 等，2026-08-21）。
+    ///
+    /// 使用任务携带的 `cloud_refresh` 元数据重新解析直链并更新 URL/请求头。
+    /// 直链由同一 `file_id` 重新解析，指向同一文件内容（ETag 为内容 MD5，
+    /// 续传校验自然通过），已下载分片可安全续接。
+    ///
+    /// - `Ok(true)`：刷新成功，`task.url` 与请求头已更新。
+    /// - `Ok(false)`：任务无刷新元数据或平台暂不支持自动刷新。
+    /// - `Err(e)`：刷新尝试失败（分享失效、网络错误等）。
+    async fn refresh_cloud_direct_link(
+        &self,
+        task: &mut DownloadTask,
+    ) -> Result<bool, String> {
+        let Some(meta) = task.cloud_refresh.clone() else {
+            return Ok(false);
+        };
+        match meta.platform.as_str() {
+            "pikpak" => {
+                // 沿用首次解析的设备指纹；缺失时生成并固化，后续刷新保持一致
+                let device_id = meta
+                    .device_id
+                    .clone()
+                    .unwrap_or_else(|| hex::encode(rand::random::<[u8; 16]>()));
+                let direct = crate::pikpak::resolve_pikpak_file(
+                    &meta.share_id,
+                    &meta.file_id,
+                    meta.pass_code_token.as_deref(),
+                    &device_id,
+                )
+                .await
+                .map_err(|e| format!("PikPak 直链刷新失败：{e}"))?;
+                if direct.url.trim().is_empty() {
+                    return Err("PikPak 返回了空的下载直链".into());
+                }
+                task.url = direct.url;
+                for (name, value) in direct.headers {
+                    task.headers.insert(name, value);
+                }
+                task.cloud_refresh = Some(crate::models::CloudRefreshMeta {
+                    device_id: Some(device_id),
+                    ..meta
+                });
+                tracing::info!(
+                    task_id = %task.id,
+                    "云盘直链已自动刷新（pikpak），继续续传"
+                );
+                Ok(true)
+            }
+            other => Err(format!("平台 {other} 暂不支持直链自动刷新")),
+        }
     }
 
     /// 从订阅源拉取并更新 BT Trackers 列表。
@@ -1439,7 +1494,7 @@ impl DownloadManager {
         if controls.contains_key(&task.id) {
             return;
         }
-        let token = CancellationToken::new();
+        let mut token = CancellationToken::new();
         controls.insert(task.id.clone(), token.clone());
         drop(controls);
         self.task_runtime
@@ -1467,6 +1522,9 @@ impl DownloadManager {
         tauri::async_runtime::spawn(async move {
             let id = task.id.clone();
             let mut attempt = task.retry_count;
+            // 云盘直链自动刷新计数：链接失效哨兵触发时刷新直链并续传，
+            // 超过 MAX_LINK_REFRESHES 后进入终态失败（防止分享失效时无限刷新）。
+            let mut link_refreshes = 0u32;
             // Task 14: 任务总超时起点。任务总超时优先于连接重试，
             // 即使未达 max_retries，超过 task_timeout_secs 也强制失败。
             let worker_start = Instant::now();
@@ -1506,7 +1564,11 @@ impl DownloadManager {
                 } else {
                     manager.download_once(task.clone(), token.clone()).await
                 };
-                if token.is_cancelled() {
+                // 云盘直链失效优先于暂停判定：download_segments 收尾时为尽快
+                // 停止其他 worker 已取消 token，这里必须先识别哨兵再决定是否 break。
+                let cloud_link_dead =
+                    matches!(&result, Err(e) if e.starts_with(CLOUD_LINK_DEAD_PREFIX));
+                if token.is_cancelled() && !cloud_link_dead {
                     break;
                 }
                 match result {
@@ -1565,6 +1627,88 @@ impl DownloadManager {
                         manager.emit_task("updated", &task);
                         manager.notify_download_failed(&task).await;
                         break;
+                    }
+                    Err(error) if error.starts_with(CLOUD_LINK_DEAD_PREFIX) => {
+                        // 云盘直链失效（连续空响应/长时间停滞）：用任务携带的
+                        // cloud_refresh 元数据自动重新解析直链，刷新成功则
+                        // 重建取消令牌并无缝续传（分片保留、进度不回退）。
+                        if link_refreshes < MAX_LINK_REFRESHES {
+                            match manager.refresh_cloud_direct_link(&mut task).await {
+                                Ok(true) => {
+                                    link_refreshes += 1;
+                                    // 旧 token 已在 download_segments 收尾时取消，
+                                    // 必须重建，否则续传会立即以"任务已暂停"失败。
+                                    token = CancellationToken::new();
+                                    manager.controls.lock().await.insert(id.clone(), token.clone());
+                                    task.status = TaskStatus::Downloading;
+                                    task.error = Some(format!(
+                                        "下载直链已过期，已自动刷新（第 {} 次），正在续传",
+                                        link_refreshes
+                                    ));
+                                    task.speed = 0;
+                                    task.active_connections = 0;
+                                    let _ = manager.store.upsert_task(&task).await;
+                                    manager.emit_task("updated", &task);
+                                    // 不消耗 attempt：直链过期不是任务本身失败
+                                }
+                                Ok(false) => {
+                                    // 无刷新元数据或平台不支持：按普通错误进入
+                                    // 终态失败，给出可操作提示。PikPak 直链存在
+                                    // 单链接流量配额（实测约 330MB，超出后有效
+                                    // Range 也会返回 416），直接粘贴的直链无法
+                                    // 自动续期，必须通过分享链接重建任务。
+                                    if let Ok(Some(current)) = manager.store.get_task(&id).await {
+                                        task = current;
+                                    }
+                                    task.status = TaskStatus::Failed;
+                                    task.error = Some(format!(
+                                        "{}。该直链已达到单链接流量配额且缺少自动刷新信息，请通过 PikPak 分享链接重新创建任务（分享任务支持直链自动刷新续传）",
+                                        error.strip_prefix(CLOUD_LINK_DEAD_PREFIX).unwrap_or(&error)
+                                    ));
+                                    task.speed = 0;
+                                    task.eta_seconds = None;
+                                    task.active_connections = 0;
+                                    let _ = manager.store.upsert_task(&task).await;
+                                    manager.emit_task("updated", &task);
+                                    manager.notify_download_failed(&task).await;
+                                    break;
+                                }
+                                Err(refresh_error) => {
+                                    // 刷新尝试失败（分享失效/网络错误）：终态失败
+                                    if let Ok(Some(current)) = manager.store.get_task(&id).await {
+                                        task = current;
+                                    }
+                                    task.status = TaskStatus::Failed;
+                                    task.error = Some(format!(
+                                        "直链已失效，自动刷新失败：{refresh_error}"
+                                    ));
+                                    task.speed = 0;
+                                    task.eta_seconds = None;
+                                    task.active_connections = 0;
+                                    let _ = manager.store.upsert_task(&task).await;
+                                    manager.emit_task("updated", &task);
+                                    manager.notify_download_failed(&task).await;
+                                    break;
+                                }
+                            }
+                        } else {
+                            // 刷新次数耗尽：分享本身大概率已失效
+                            if let Ok(Some(current)) = manager.store.get_task(&id).await {
+                                task = current;
+                            }
+                            task.status = TaskStatus::Failed;
+                            task.error = Some(format!(
+                                "直链已失效且自动刷新已达上限（{} 次），请重新解析分享链接",
+                                MAX_LINK_REFRESHES
+                            ));
+                            task.speed = 0;
+                            task.eta_seconds = None;
+                            task.active_connections = 0;
+                            let _ = manager.store.upsert_task(&task).await;
+                            manager.emit_task("updated", &task);
+                            manager.notify_download_failed(&task).await;
+                            break;
+                        }
                     }
                     Err(error) if error.starts_with(REMOTE_CHANGED_PREFIX) => {
                         // download_once already marked the task RemoteChanged
@@ -1729,7 +1873,6 @@ impl DownloadManager {
                 let randsk = share_info.randsk.clone();
                 let c_opt = cookie.clone();
                 let sub_name = file.name.clone();
-                let sub_size = file.size;
                 let destination = task.destination.clone();
                 let collision_policy = task.collision_policy.clone();
                 let completion_action = task.completion_action.clone();
@@ -1768,6 +1911,7 @@ impl DownloadManager {
                             connection_count: Some(connection_count.clamp(1, 16)),
                             start_paused: false,
                             user_edited_file_name: true,
+                            cloud_refresh: None,
                         };
                         let _ = sub_manager.add(req).await;
                     }
@@ -1845,6 +1989,7 @@ impl DownloadManager {
                             connection_count: Some(connection_count.max(16)),
                             start_paused: false,
                             user_edited_file_name: true,
+                            cloud_refresh: None,
                         };
                         let _ = sub_manager.add(req).await;
                     }
@@ -1940,6 +2085,7 @@ impl DownloadManager {
                             connection_count: Some(connection_count.max(16)),
                             start_paused: false,
                             user_edited_file_name: true,
+                            cloud_refresh: None,
                         };
                         let _ = sub_manager.add(req).await;
                     }
@@ -2105,6 +2251,7 @@ impl DownloadManager {
                                 start_paused: false,
                                 // 跳过自动文件名清理规则（已显式指定）
                                 user_edited_file_name: true,
+                                cloud_refresh: None,
                             };
                             if let Err(e) = self.add(new_req).await {
                                 tracing::warn!(error = %e, "创建图集子任务失败");
@@ -2499,7 +2646,7 @@ impl DownloadManager {
             self.client.read().await.clone()
         };
         let is_baidu_link = task.url.contains("baidupcs.com") || task.url.contains("pan.baidu.com");
-        let mut probe = if is_baidu_link {
+        let probe = if is_baidu_link {
             // 百度 PCS 服务器对 HEAD 请求一律返回 403 Forbidden，直接使用 GET Range: bytes=0-0 探测
             let mut get = client
                 .get(&task.url)
@@ -3084,6 +3231,16 @@ impl DownloadManager {
         let runtimes = Arc::new(runtimes);
         let progress = Arc::new(AtomicU64::new(initial));
         let adaptive = Arc::new(AdaptiveConnectionGate::new(connections));
+        let is_cloud_or_high_conn = connections >= 16
+            || task.url.contains("mypikpak.com")
+            || task.url.contains("pikpak")
+            || task.url.contains("quark.cn")
+            || task.url.contains("baidupcs.com")
+            || task.url.contains("123pan")
+            || task.url.contains("lanzou");
+        if is_cloud_or_high_conn {
+            adaptive.user_disabled.store(1, Ordering::Relaxed);
+        }
         task.downloaded_bytes = initial;
         task.segments = snapshot_segments(&runtimes);
         task.active_connections = 0;
@@ -3135,7 +3292,8 @@ impl DownloadManager {
                     runtime_options.apply(&mut snapshot).await;
                     sample.apply(&mut snapshot);
                     adaptive.observe(snapshot.speed);
-                    snapshot.active_connections = adaptive.active();
+                    let active_conn_count: u32 = runtimes.iter().map(|r| r.active_windows.load(Ordering::Relaxed) as u32).sum();
+                    snapshot.active_connections = active_conn_count.min(connections as u32) as u8;
                     let statuses: Vec<u8> = runtimes
                         .iter()
                         .map(|r| r.status.load(Ordering::Relaxed))
@@ -3284,8 +3442,12 @@ impl DownloadManager {
             let segment_retry_policy = segment_retry_policy.clone();
 
             worker_handles.push(tokio::spawn(async move {
-                if _worker_idx > 0 && (url.contains("baidupcs.com") || url.contains("pan.baidu.com")) {
-                    tokio::time::sleep(Duration::from_millis(_worker_idx as u64 * 60)).await;
+                if _worker_idx > 0 {
+                    if url.contains("baidupcs.com") || url.contains("pan.baidu.com") {
+                        tokio::time::sleep(Duration::from_millis(_worker_idx as u64 * 60)).await;
+                    } else if url.contains("mypikpak.com") {
+                        tokio::time::sleep(Duration::from_millis(_worker_idx as u64 * 40)).await;
+                    }
                 }
                 loop {
                     if token.is_cancelled() {
@@ -3295,14 +3457,14 @@ impl DownloadManager {
                     let (window, handle) = match coordinator.claim_or_steal_work().await {
                         Some(work) => work,
                         None => {
-                            if coordinator.is_all_finished().await {
+                            if coordinator.is_all_completed().await {
                                 return Ok(());
                             }
                             tokio::select! {
                                 _ = token.cancelled() => return Err("任务已暂停".to_string()),
                                 _ = tokio::time::sleep(Duration::from_millis(50)) => {}
                             }
-                            if coordinator.is_all_finished().await {
+                            if coordinator.is_all_completed().await {
                                 return Ok(());
                             }
                             continue;
@@ -3316,8 +3478,9 @@ impl DownloadManager {
                     let runtime = match runtimes.iter().find(|segment| segment.index == index) {
                         Some(r) => r,
                         None => {
-                            coordinator.finish_window(window.id, false).await;
-                            return Err(format!("找不到分片 #{}", index + 1));
+                            coordinator.finish_window(window.id, false, existing_bytes).await;
+                            tokio::time::sleep(Duration::from_millis(100)).await;
+                            continue;
                         }
                     };
 
@@ -3328,9 +3491,10 @@ impl DownloadManager {
                         .await
                     {
                         Ok(f) => f,
-                        Err(err) => {
-                            coordinator.finish_window(window.id, false).await;
-                            return Err(err.to_string());
+                        Err(_err) => {
+                            coordinator.finish_window(window.id, false, existing_bytes).await;
+                            tokio::time::sleep(Duration::from_millis(100)).await;
+                            continue;
                         }
                     };
                     let mut file = BufWriter::with_capacity(write_buffer_size, file);
@@ -3338,6 +3502,13 @@ impl DownloadManager {
                     let transfer_result = async {
                         let mut next_start = start_byte.saturating_add(existing_bytes);
                         let mut retry_count = 0u32;
+                        // 云盘直链失效熔断状态：空响应计数 + 停滞检查点。
+                        // PikPak 等云盘直链过期后 CDN 常返回 206 空 body 或
+                        // 半途掐断（而非明确 403），若无熔断会陷入
+                        // "重连成功但 0 字节" 的无限循环（表现为 0 速度）。
+                        let mut empty_step_count = 0u32;
+                        let mut stall_check_at = Instant::now();
+                        let mut stall_progress_base = existing_bytes;
                         loop {
                             if token.is_cancelled() {
                                 let _ = file.flush().await;
@@ -3358,6 +3529,14 @@ impl DownloadManager {
 
                             let current_start = next_start;
                             let request_end = handle.current_end();
+                            if current_start > request_end {
+                                return Ok(());
+                            }
+                            let mut step_bytes_read = 0u64;
+                            // 本步骤是否构成"直链失效证据"：服务器返回过有效 206（空 body/
+                            // 中途掐断），或有效 Range 被伪 416 拒绝（PikPak 限速签名）。
+                            // 连接级错误（断网、DNS、拒绝连接、403）不构成证据，走既有重试路径。
+                            let mut server_responded_206 = false;
 
                             let step_result = async {
                                 let mut request = client.get(&url);
@@ -3371,6 +3550,20 @@ impl DownloadManager {
                                     request = request.header(IF_RANGE, value);
                                 }
                                 let response = request.send().await.map_err(friendly_reqwest)?;
+                                if response.status() == reqwest::StatusCode::RANGE_NOT_SATISFIABLE {
+                                    // 416 必须区分真伪：
+                                    // - 真 416（start 已越过文件末尾）：该 Range 确实无法满足，
+                                    //   视为分片已完整，正常收尾。
+                                    // - 伪 416（start 在文件范围内却被拒）：PikPak 等 CDN 限速签名
+                                    //   （实测响应头 Content-Range: bytes */total 正确、X-Xos-Err-Desc: 10）。
+                                    //   若误判为"已完成"会陷入 0 进度无限快速循环（20Hz 空转），
+                                    //   必须与空 206 一样计入直链失效熔断。
+                                    if current_start >= total {
+                                        return Ok(());
+                                    }
+                                    server_responded_206 = true;
+                                    return Ok(());
+                                }
                                 if response.status() != reqwest::StatusCode::PARTIAL_CONTENT {
                                     return Err(format!(
                                         "服务器返回 HTTP {}，无法安全续传分片 #{}",
@@ -3386,6 +3579,9 @@ impl DownloadManager {
                                             && (actual_total == total || total == 0) => {}
                                     _ => return Err("服务器返回了不匹配的 Content-Range".into()),
                                 }
+                                // 状态与 Content-Range 均校验通过：后续失败（空 body、
+                                // 中途掐断）才可能是直链失效的表现。
+                                server_responded_206 = true;
                                 let mut stream = response.bytes_stream();
                                 let mut idle_seconds = 0u8;
                                 loop {
@@ -3402,9 +3598,9 @@ impl DownloadManager {
                                         Err(_) if adaptive.should_yield(&permit) => {
                                             return Err(ADAPTIVE_YIELD.into())
                                         }
-                                        Err(_) if idle_seconds >= 14 => {
+                                        Err(_) if idle_seconds >= 6 => {
                                             return Err(format!(
-                                                "分片 #{} 连续 15 秒没有收到数据",
+                                                "分片 #{} 连续 6 秒未收到数据，自动断点续连",
                                                 index + 1
                                             ))
                                         }
@@ -3458,6 +3654,7 @@ impl DownloadManager {
                                         .await
                                         .map_err(|error| error.to_string())?;
                                     next_start += chunk_len;
+                                    step_bytes_read += chunk_len;
                                     handle.downloaded_bytes.fetch_add(chunk_len, Ordering::Relaxed);
                                     runtime
                                         .downloaded_bytes
@@ -3480,6 +3677,53 @@ impl DownloadManager {
                                 && runtime.status.load(Ordering::Relaxed) != SEGMENT_FAILED
                             {
                                 runtime.status.store(SEGMENT_PENDING, Ordering::Relaxed);
+                            }
+
+                            // —— 云盘直链失效熔断（AGENTS.md §3：真实状态、不得无限空转）——
+                            // 仅统计"服务器返回过有效 206 但 0 字节/近乎无进展"的步骤：
+                            // 这是 PikPak 直链过期（206 空 body / 半途掐断）的确切签名。
+                            // 连接级错误（断网、DNS、403）不构成直链失效证据，
+                            // 走既有重试路径，避免把可重试网络错误误判为终态。
+                            if server_responded_206 && !token.is_cancelled() {
+                                let downloaded_now = handle.current_downloaded();
+                                if step_bytes_read == 0 {
+                                    empty_step_count += 1;
+                                } else {
+                                    empty_step_count = 0;
+                                }
+                                if downloaded_now.saturating_sub(stall_progress_base)
+                                    >= STALL_RECOVERY_BYTES
+                                {
+                                    // 有实质进展：滚动重置停滞检查点
+                                    stall_check_at = Instant::now();
+                                    stall_progress_base = downloaded_now;
+                                }
+                                let window_remaining = handle
+                                    .current_end()
+                                    .saturating_sub(next_start)
+                                    .saturating_add(1);
+                                // 剩余不足 1MB 的收尾阶段不做停滞判定（无法再积累 1MB）
+                                let stalled = stall_check_at.elapsed() >= STALL_TIMEOUT
+                                    && window_remaining > STALL_RECOVERY_BYTES;
+                                if empty_step_count >= MAX_EMPTY_STEPS {
+                                    let _ = file.flush().await;
+                                    runtime.set_last_error("连续空响应，直链疑似已失效");
+                                    return Err(format!(
+                                        "{CLOUD_LINK_DEAD_PREFIX}分片 #{} 连续 {} 次收到 0 字节响应，直链疑似已失效",
+                                        index + 1,
+                                        empty_step_count
+                                    ));
+                                }
+                                if stalled {
+                                    let _ = file.flush().await;
+                                    runtime.set_last_error("长时间无实质进展，直链疑似已失效");
+                                    return Err(format!(
+                                        "{CLOUD_LINK_DEAD_PREFIX}分片 #{} 超过 {} 秒下载不足 {} 字节，直链疑似已失效",
+                                        index + 1,
+                                        STALL_TIMEOUT.as_secs(),
+                                        STALL_RECOVERY_BYTES
+                                    ));
+                                }
                             }
 
                             match step_result {
@@ -3507,9 +3751,27 @@ impl DownloadManager {
                                     let _ = file.flush().await;
                                     return Err(error);
                                 }
-                                Err(error) if retry_count < segment_max_retries => {
+                                Err(error) if error.contains("503") || error.contains("429") => {
                                     file.flush().await.map_err(|flush| flush.to_string())?;
-                                    retry_count += 1;
+                                    runtime.set_last_error(&error);
+                                    runtime.retrying.store(true, Ordering::Relaxed);
+                                    let backoff_ms = 400 + (index as u64 % 8).saturating_mul(120);
+                                    tokio::select! {
+                                        _ = token.cancelled() => {
+                                            runtime.retrying.store(false, Ordering::Relaxed);
+                                            return Err("任务已暂停".into());
+                                        },
+                                        _ = tokio::time::sleep(Duration::from_millis(backoff_ms)) => {}
+                                    }
+                                    runtime.retrying.store(false, Ordering::Relaxed);
+                                }
+                                Err(error) if retry_count < segment_max_retries || step_bytes_read > 0 => {
+                                    file.flush().await.map_err(|flush| flush.to_string())?;
+                                    if step_bytes_read > 0 {
+                                        retry_count = 0;
+                                    } else {
+                                        retry_count += 1;
+                                    }
                                     runtime.retry_count.store(retry_count, Ordering::Relaxed);
                                     runtime.set_last_error(&error);
                                     runtime.retrying.store(true, Ordering::Relaxed);
@@ -3538,13 +3800,12 @@ impl DownloadManager {
                         }
                     }.await;
 
+                    let actual_downloaded = handle.current_downloaded();
                     let success = transfer_result.is_ok();
-                    coordinator.finish_window(window.id, success).await;
+                    coordinator.finish_window(window.id, success, actual_downloaded).await;
 
                     let expected_segment_len = runtime.end_byte - runtime.start_byte + 1;
-                    let status = if !success {
-                        SEGMENT_FAILED
-                    } else if runtime.downloaded_bytes.load(Ordering::Relaxed) == expected_segment_len {
+                    let status = if runtime.downloaded_bytes.load(Ordering::Relaxed) >= expected_segment_len {
                         SEGMENT_COMPLETED
                     } else if runtime.active_windows.load(Ordering::Relaxed) > 0 {
                         SEGMENT_DOWNLOADING
@@ -3553,20 +3814,46 @@ impl DownloadManager {
                     };
                     runtime.status.store(status, Ordering::Relaxed);
 
-                    if let Err(e) = transfer_result {
-                        return Err(e);
+                    if let Err(err) = &transfer_result {
+                        // 云盘直链失效哨兵必须穿透窗口级重试循环上抛：
+                        // 否则停滞熔断触发后被此处吞掉，worker 会无限重新
+                        // 领取同一窗口并再次熔断（表现为永久 0 速度），
+                        // spawn_worker 的自动刷新直链逻辑永远无法触发。
+                        if err.starts_with(CLOUD_LINK_DEAD_PREFIX) {
+                            return Err(err.clone());
+                        }
+                        if token.is_cancelled() {
+                            return Err("任务已暂停".to_string());
+                        }
+                        tokio::select! {
+                            _ = token.cancelled() => return Err("任务已暂停".to_string()),
+                            _ = tokio::time::sleep(Duration::from_millis(100)) => {}
+                        }
                     }
                 }
             }));
         }
 
-        let mut worker_error = None;
+        let mut worker_error: Option<String> = None;
         for handle in worker_handles {
             match handle.await {
                 Ok(Err(error)) => {
-                    if worker_error.is_none() {
-                        worker_error = Some(error);
-                        token.cancel();
+                    // 云盘直链失效哨兵优先于其他错误：直链过期时部分
+                    // worker 可能先以"重试耗尽"失败，若不优先保留哨兵，
+                    // 会掩盖可自动刷新恢复的真实原因。
+                    let is_link_dead = error.starts_with(CLOUD_LINK_DEAD_PREFIX);
+                    match &worker_error {
+                        Some(prev) if !prev.starts_with(CLOUD_LINK_DEAD_PREFIX) && is_link_dead => {
+                            worker_error = Some(error);
+                            token.cancel();
+                        }
+                        None => {
+                            worker_error = Some(error);
+                            token.cancel();
+                        }
+                        _ => {
+                            token.cancel();
+                        }
                     }
                 }
                 Err(join_err) => {
@@ -3622,6 +3909,17 @@ impl DownloadManager {
             ));
         }
         if let Some(error) = worker_error {
+            if error.starts_with(CLOUD_LINK_DEAD_PREFIX) {
+                // 云盘直链失效：保持 Downloading 状态上抛哨兵错误，
+                // 由 spawn_worker 用 cloud_refresh 元数据自动刷新直链后
+                // 无缝续传（分片全部保留）。不置 Paused——这不是用户暂停，
+                // 也不是终态失败。
+                task.error = Some("下载直链已过期，正在尝试自动刷新".into());
+                self.store.upsert_task(&task).await?;
+                self.emit_task("updated", &task);
+                self.emit_task_connections_final(&task.id, &runtimes, true);
+                return Err(error);
+            }
             if token.is_cancelled() {
                 task.status = TaskStatus::Paused;
                 task.speed = 0;
@@ -4632,6 +4930,8 @@ async fn drop_segment_files(temp: &Path, index: u8) {
     }
 }
 
+
+
 /// 限速器（基于 GCRA / Virtual Scheduling 算法）。
 ///
 /// 同一任务的全部 Range 连接共享一个 `Arc<RateLimiter>`，因此任务级限速
@@ -4767,6 +5067,20 @@ const SEGMENT_COMPLETED: u8 = 2;
 const SEGMENT_FAILED: u8 = 3;
 const ADAPTIVE_YIELD: &str = "__maobu_adaptive_yield__";
 const REMOTE_CHANGED_PREFIX: &str = "REMOTE_CHANGED:";
+/// 云盘直链失效哨兵前缀。分段连接判定"链接已死"（连续空响应 / 长时间无
+/// 实质进展）时携带此前缀上抛；`spawn_worker` 据此触发自动刷新直链。
+const CLOUD_LINK_DEAD_PREFIX: &str = "CLOUD_LINK_DEAD:";
+/// 空响应熔断阈值：连接成功返回 206 但 body 为 0 字节，重连后依然为空，
+/// 连续达到该次数即判定直链失效（PikPak CDN 死链的典型表现）。
+const MAX_EMPTY_STEPS: u32 = 3;
+/// 停滞熔断窗口：该时长内窗口下载字节数不足 `STALL_RECOVERY_BYTES`
+/// 且剩余仍很多时，判定直链失效（覆盖"慢速滴流"型死链）。
+/// 正常慢速单连接（200KB/s）45 秒可下载约 9MB，远超 1MB，不会误熔断。
+const STALL_TIMEOUT: Duration = Duration::from_secs(45);
+/// 停滞恢复阈值：停滞判定窗口内至少要完成的字节数。
+const STALL_RECOVERY_BYTES: u64 = 1024 * 1024;
+/// 单任务直链自动刷新上限：防止分享本身失效时无限刷新。
+const MAX_LINK_REFRESHES: u32 = 5;
 /// 磁盘空间不足错误前缀。`spawn_worker` 据此识别"已由下载循环将任务置为
 /// `PausedByLowDisk` 并持久化"，从而不再重试、不进入 Failed。
 const LOW_DISK_PREFIX: &str = "LOW_DISK:";
@@ -5024,6 +5338,7 @@ struct AdaptiveConnectionGate {
     weak_samples: AtomicU8,
     probing: AtomicU8,
     disabled: AtomicU8,
+    user_disabled: AtomicU8,
     notify: Notify,
 }
 
@@ -5044,11 +5359,19 @@ impl AdaptiveConnectionGate {
             weak_samples: AtomicU8::new(0),
             probing: AtomicU8::new(0),
             disabled: AtomicU8::new(0),
+            user_disabled: AtomicU8::new(0),
             notify: Notify::new(),
         }
     }
 
     async fn acquire(self: Arc<Self>) -> AdaptiveConnectionPermit {
+        if self.user_disabled.load(Ordering::Relaxed) > 0 {
+            self.active.fetch_add(1, Ordering::Relaxed);
+            return AdaptiveConnectionPermit {
+                gate: self.clone(),
+                epoch: 0,
+            };
+        }
         loop {
             let notified = self.notify.notified();
             let active = self.active.load(Ordering::Relaxed);
@@ -5074,7 +5397,7 @@ impl AdaptiveConnectionGate {
     }
 
     fn observe(&self, speed: u64) {
-        if self.max <= 4 {
+        if self.user_disabled.load(Ordering::Relaxed) > 0 || self.max <= 4 {
             return;
         }
         let previous_peak = self.peak_speed.fetch_max(speed, Ordering::Relaxed);
@@ -5182,6 +5505,9 @@ impl AdaptiveConnectionGate {
     }
 
     fn should_yield(&self, permit: &AdaptiveConnectionPermit) -> bool {
+        if self.user_disabled.load(Ordering::Relaxed) > 0 {
+            return false;
+        }
         permit.epoch != self.epoch.load(Ordering::Relaxed)
             || self.active.load(Ordering::Relaxed) > self.target.load(Ordering::Relaxed)
     }
@@ -5720,12 +6046,12 @@ pub(crate) fn category(name: &str) -> String {
         .to_ascii_lowercase()
         .as_str()
     {
-        "mp4" | "mkv" | "mov" | "webm" | "m3u8" => "video",
-        "mp3" | "wav" | "flac" | "aac" | "m4a" => "audio",
-        "jpg" | "jpeg" | "png" | "gif" | "webp" | "svg" => "images",
-        "zip" | "rar" | "7z" | "tar" | "gz" => "archives",
-        "pdf" | "doc" | "docx" | "xls" | "xlsx" | "ppt" | "pptx" | "txt" => "documents",
-        "exe" | "msi" | "dmg" | "pkg" | "appimage" => "apps",
+        "mp4" | "mkv" | "mov" | "webm" | "m3u8" | "avi" | "flv" | "wmv" | "ts" | "rmvb" | "m4v" | "3gp" => "video",
+        "mp3" | "wav" | "flac" | "aac" | "m4a" | "ogg" | "wma" | "opus" | "ape" => "audio",
+        "jpg" | "jpeg" | "png" | "gif" | "webp" | "svg" | "bmp" | "ico" | "avif" => "images",
+        "zip" | "rar" | "7z" | "tar" | "gz" | "bz2" | "xz" | "iso" => "archives",
+        "pdf" | "doc" | "docx" | "xls" | "xlsx" | "ppt" | "pptx" | "txt" | "md" | "csv" => "documents",
+        "exe" | "msi" | "dmg" | "pkg" | "appimage" | "apk" | "deb" | "rpm" => "apps",
         _ => "other",
     }
     .into()

@@ -1,7 +1,7 @@
 {
   "name": "maobu-fetch-extension",
   "private": true,
-  "version": "0.8.8",
+  "version": "0.8.9",
   "type": "module",
   "scripts": { "build": "node build.mjs", "check": "node -e \"JSON.parse(require('fs').readFileSync('manifest.json','utf8'))\" && node --check src/auth-download.js && node --check src/background.js && node --check src/protocol.js && node --check src/interceptor.js && node --check src/media-selection.js && node --check src/popup.js && node --check src/options.js && node --check src/rules.js && node --check src/content.js && node --check src/content-ui.js && node --check src/pikpak-adapter.js && node --check src/pikpak-injected.js && node --check src/sniffer.js && node --check src/selection.js && node --check src/links.js && node --check src/domains.js && node --check src/reasons.js && node --check src/ignored-history.js && node --test src/*.test.js" }
 }

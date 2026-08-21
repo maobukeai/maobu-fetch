@@ -953,6 +953,7 @@ mod tests {
                 streaming_priority: false,
             }),
             bt_runtime: None,
+            cloud_refresh: None,
         }
     }
 }

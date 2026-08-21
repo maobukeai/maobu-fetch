@@ -15,9 +15,9 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::Mutex as TokioMutex;
 
-/// 触发工作窃取的最小剩余字节阈值（4MB）。
+/// 触发工作窃取的最小剩余字节阈值（8MB）。
 /// 低于此阈值时，新建 HTTP 连接和握手的开销大于并发收益，不再执行切分。
-pub const MIN_STEAL_REMAINING_BYTES: u64 = 4 * 1024 * 1024;
+pub const MIN_STEAL_REMAINING_BYTES: u64 = 8 * 1024 * 1024;
 
 /// 窗口状态
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -118,8 +118,15 @@ impl WorkStealingCoordinator {
     pub async fn claim_or_steal_work(&self) -> Option<(RangeWindow, Arc<WindowTransferHandle>)> {
         let mut state = self.state.lock().await;
 
-        // 1. 优先领取 Pending 窗口
-        if let Some(pos) = state.windows.iter().position(|w| w.status == WindowStatus::Pending) {
+        // 1. 优先领取 Pending 窗口（自动过滤并标记已写满的无效窗口）
+        while let Some(pos) = state.windows.iter().position(|w| w.status == WindowStatus::Pending) {
+            let window_len = state.windows[pos].end_byte.saturating_sub(state.windows[pos].start_byte).saturating_add(1);
+            if state.windows[pos].existing_bytes >= window_len
+                || state.windows[pos].start_byte.saturating_add(state.windows[pos].existing_bytes) > state.windows[pos].end_byte
+            {
+                state.windows[pos].status = WindowStatus::Completed;
+                continue;
+            }
             state.windows[pos].status = WindowStatus::Claimed;
             let window = state.windows[pos].clone();
             let handle = Arc::new(WindowTransferHandle::new(
@@ -148,6 +155,15 @@ impl WorkStealingCoordinator {
                 continue;
             }
             let downloaded = handle.current_downloaded();
+            // 防御性工程：仅当连接已处于实际传输中（已下载 >= 512KB）且该分片窗口数 < 4 时才允许窃取
+            if downloaded < 512 * 1024 {
+                continue;
+            }
+            let sub_count = state.windows.iter().filter(|w| w.segment_index == handle.segment_index).count();
+            if sub_count >= 4 {
+                continue;
+            }
+
             let start = handle.start_byte;
             let current_end = handle.current_end();
             let current_cursor = start.saturating_add(downloaded);
@@ -224,29 +240,36 @@ impl WorkStealingCoordinator {
         None
     }
 
-    /// 标记窗口已完成
-    pub async fn finish_window(&self, window_id: u64, success: bool) {
+    /// 标记窗口传输结束。只有实际下载字节数完整覆盖该窗口区间时才标记为 Completed，否则重置为 Pending 供续传
+    pub async fn finish_window(&self, window_id: u64, success: bool, downloaded_bytes: u64) {
         let mut state = self.state.lock().await;
         if let Some(handle) = state.active_transfers.remove(&window_id) {
             handle.mark_completed();
         }
         if let Some(window) = state.windows.iter_mut().find(|w| w.id == window_id) {
-            window.status = if success {
-                WindowStatus::Completed
+            window.existing_bytes = downloaded_bytes;
+            let window_len = window.end_byte.saturating_sub(window.start_byte).saturating_add(1);
+            if success && window.existing_bytes >= window_len {
+                window.status = WindowStatus::Completed;
             } else {
-                WindowStatus::Failed
-            };
+                // 未下载完整，重置为 Pending 允许 Worker 立即自动重试认领
+                window.status = WindowStatus::Pending;
+            }
         }
     }
 
-    /// 检查是否所有窗口均已处理完毕（没有 Pending 和活跃的 Claimed 窗口）
-    pub async fn is_all_finished(&self) -> bool {
+    /// 检查是否所有窗口均已 100% 成功完成（全部为 Completed，无任何活跃或待下载窗口）
+    pub async fn is_all_completed(&self) -> bool {
         let state = self.state.lock().await;
         state.active_transfers.is_empty()
-            && state
-                .windows
-                .iter()
-                .all(|w| w.status == WindowStatus::Completed || w.status == WindowStatus::Failed)
+            && !state.windows.is_empty()
+            && state.windows.iter().all(|w| w.status == WindowStatus::Completed)
+    }
+
+    /// 获取当前活跃传输的窗口数
+    pub async fn active_transfers_count(&self) -> usize {
+        let state = self.state.lock().await;
+        state.active_transfers.len()
     }
 
     /// 获取指定逻辑分片下所有已完成的切片窗口，并按 start_byte 严格升序排序
@@ -321,33 +344,34 @@ mod tests {
         assert_eq!(h2.start_byte, 10_000_001);
 
         // 窗口 2 完成
-        coordinator.finish_window(w2.id, true).await;
+        coordinator.finish_window(w2.id, true, 10_000_000).await;
 
-        // 此时窗口 1 正在下载，已下载 2MB，剩余 8MB (>= 4MB 阈值)
-        h1.downloaded_bytes.store(2_000_000, Ordering::Relaxed);
+        // 此时窗口 1 正在下载，已下载 1MB（>= 512KB 传输中阈值），
+        // 剩余 9MB >= 8MB 窃取阈值（MIN_STEAL_REMAINING_BYTES）
+        h1.downloaded_bytes.store(1_000_000, Ordering::Relaxed);
 
         // Worker 2 再次请求工作，应成功从窗口 1 窃取后半段！
         let (w3, h3) = coordinator.claim_or_steal_work().await.expect("should steal from w1");
         assert_eq!(w3.segment_index, 0);
-        // 原窗口 1 游标在 2_000_000，剩余 8_000_000，切分点在 2_000_000 + 4_000_000 = 6_000_000
-        assert_eq!(h1.current_end(), 6_000_000);
-        assert_eq!(w3.start_byte, 6_000_001);
+        // 原窗口 1 游标在 1_000_000，剩余 9_000_000，切分点在 1_000_000 + 4_500_000 = 5_500_000
+        assert_eq!(h1.current_end(), 5_500_000);
+        assert_eq!(w3.start_byte, 5_500_001);
         assert_eq!(w3.end_byte, 10_000_000);
         assert_eq!(h3.current_end(), 10_000_000);
 
-        // 原 Worker 1 完成其前半段
-        coordinator.finish_window(w1.id, true).await;
-        // Worker 2 完成被窃取的后半段
-        coordinator.finish_window(w3.id, true).await;
+        // 原 Worker 1 完成其前半段（实际覆盖 [0, 5_500_000] 共 5_500_001 字节）
+        coordinator.finish_window(w1.id, true, 5_500_001).await;
+        // Worker 2 完成被窃取的后半段（[5_500_001, 10_000_000] 共 4_500_000 字节）
+        coordinator.finish_window(w3.id, true, 4_500_000).await;
 
-        assert!(coordinator.is_all_finished().await);
+        assert!(coordinator.is_all_completed().await);
 
         // 检查 segment 0 的有序窗口：必须无缝覆盖 [0 .. 10_000_000]
         let ordered = coordinator.get_ordered_windows_for_segment(0).await;
         assert_eq!(ordered.len(), 2);
         assert_eq!(ordered[0].start_byte, 0);
-        assert_eq!(ordered[0].end_byte, 6_000_000);
-        assert_eq!(ordered[1].start_byte, 6_000_001);
+        assert_eq!(ordered[0].end_byte, 5_500_000);
+        assert_eq!(ordered[1].start_byte, 5_500_001);
         assert_eq!(ordered[1].end_byte, 10_000_000);
     }
 
@@ -372,8 +396,40 @@ mod tests {
         let steal_res = coordinator.claim_or_steal_work().await;
         assert!(steal_res.is_none());
 
-        coordinator.finish_window(w1.id, true).await;
-        assert!(coordinator.is_all_finished().await);
+        coordinator.finish_window(w1.id, true, 3_000_001).await;
+        assert!(coordinator.is_all_completed().await);
+    }
+
+    #[tokio::test]
+    async fn test_work_stealing_failed_window_resumes_as_pending() {
+        let temp = Path::new("test_resume.tmp");
+        let initial = vec![RangeWindow {
+            id: 1,
+            segment_index: 0,
+            ordinal: 0,
+            start_byte: 0,
+            end_byte: 10_000_000,
+            existing_bytes: 0,
+            path: window_part_path(temp, 0, 0),
+            status: WindowStatus::Pending,
+        }];
+
+        let coordinator = WorkStealingCoordinator::new(temp, initial);
+        let (w1, _) = coordinator.claim_or_steal_work().await.unwrap();
+
+        // 模拟下载了 3MB 后失败
+        coordinator.finish_window(w1.id, false, 3_000_000).await;
+        assert!(!coordinator.is_all_completed().await);
+
+        // 重新认领，必须拿到断点 3MB 续传
+        let (w1_retry, h1_retry) = coordinator.claim_or_steal_work().await.unwrap();
+        assert_eq!(w1_retry.id, 1);
+        assert_eq!(w1_retry.existing_bytes, 3_000_000);
+        assert_eq!(h1_retry.current_downloaded(), 3_000_000);
+
+        // 完成剩余 7MB
+        coordinator.finish_window(w1_retry.id, true, 10_000_001).await;
+        assert!(coordinator.is_all_completed().await);
     }
 
     #[tokio::test]
@@ -418,11 +474,11 @@ mod tests {
         assert_eq!(h2.current_end(), 99_999_999);
 
         // 模拟所有 worker 完成各自负责的区间
-        coordinator.finish_window(w1.id, true).await;
-        coordinator.finish_window(w2.id, true).await;
-        coordinator.finish_window(w3.id, true).await;
+        coordinator.finish_window(w1.id, true, 32_500_000).await;
+        coordinator.finish_window(w3.id, true, 22_500_000).await;
+        coordinator.finish_window(w2.id, true, 45_000_000).await;
 
-        assert!(coordinator.is_all_finished().await);
+        assert!(coordinator.is_all_completed().await);
 
         // 检查 segment 0 的最终有序切片
         let ordered = coordinator.get_ordered_windows_for_segment(0).await;

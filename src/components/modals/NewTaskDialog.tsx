@@ -69,6 +69,7 @@ import { Field } from "../common/FormComponents";
 import { MediaToolsCard } from "../settings/MediaSettingsGroup";
 import { GalleryPicker } from "./GalleryPicker";
 import {
+  getOrCreateDeviceId,
   inspectPikPakShare,
   isPikPakShareUrl,
   parsePikPakShareUrl,
@@ -357,7 +358,7 @@ export function NewTaskDialog({
           if (info.title && !userEditedFileName.current) {
             setFileName(info.title);
           }
-          // PikPak 建议默认 16 或 32 连接并发分片下载以克服海外 CDN 延迟
+          // PikPak 建议默认 16 连接并发分片下载（实测 16 为 CDN 单 IP 黄金并发上限，0 限流且满速）
           if (!userEditedConnections.current && connections < 16) {
             setConnections(16);
           }
@@ -1251,13 +1252,20 @@ export function NewTaskDialog({
               currentPassCodeToken
             );
             const itemFileName =
-              selectedFiles.length === 1 && activeFileName
+              selectedFiles.length === 1 && userEditedFileName.current && activeFileName
                 ? activeFileName
-                : fileItem.path || fileItem.name;
+                : fileItem.name;
             return api.add({
               url: directUrl,
               file_name: itemFileName,
               ...baseTemplate,
+              cloud_refresh: {
+                platform: "pikpak",
+                share_id: currentShareId,
+                file_id: fileItem.id,
+                pass_code_token: currentPassCodeToken ?? null,
+                device_id: getOrCreateDeviceId(),
+              },
             });
           })
         );

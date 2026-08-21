@@ -157,6 +157,33 @@ pub struct DownloadTask {
     /// BT 运行时状态（内存态、不持久化；仅随任务事件下发，`None` 不序列化）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bt_runtime: Option<BtRuntimeStatus>,
+    /// 云盘直链自动刷新元数据（PikPak 等）。
+    ///
+    /// 云盘直链有效期短（PikPak FETCH 链接约 5-10 分钟），过期后 CDN 常以
+    /// 206 空 body / 半途掐断的方式表现（而非明确 403）。携带此元数据的任务
+    /// 在链接失效时可自动重新解析直链并无缝续传。普通直链任务为 `None`。
+    /// 旧数据库/旧 JSON 缺失时安全默认 `None`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cloud_refresh: Option<CloudRefreshMeta>,
+}
+
+/// 云盘直链刷新元数据：由创建任务的前端随直链一并提交，
+/// `manager` 在检测到链接失效时用它重新解析同一直链。
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct CloudRefreshMeta {
+    /// 平台标识（稳定英文）：`pikpak`。
+    pub platform: String,
+    /// 分享 ID（如 PikPak 分享链接中的 share id）。
+    pub share_id: String,
+    /// 文件 ID（分享内单个文件；同一 file_id 唯一对应同一文件内容，
+    /// 因此刷新后的直链仍指向同一资源，分片续传安全）。
+    pub file_id: String,
+    /// 提取码令牌（加密分享）；公开分享为 `None`。
+    #[serde(default)]
+    pub pass_code_token: Option<String>,
+    /// 设备 ID：保持与首次解析一致的设备指纹，降低风控概率。
+    #[serde(default)]
+    pub device_id: Option<String>,
 }
 
 /// Task 31：代理认证信息。
@@ -664,6 +691,10 @@ pub struct NewTaskRequest {
     /// 即向后兼容地启用自动清理。
     #[serde(default)]
     pub user_edited_file_name: bool,
+    /// 云盘直链刷新元数据（PikPak 等）：链接失效时后端自动重新解析。
+    /// 旧版本 JSON/扩展请求未包含此字段时默认 `None`（不自动刷新）。
+    #[serde(default)]
+    pub cloud_refresh: Option<CloudRefreshMeta>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -2911,6 +2942,7 @@ mod tests {
             task_kind: Default::default(),
             bt_meta: None,
             bt_runtime: None,
+            cloud_refresh: None,
         };
         let json = serde_json::to_string(&task).unwrap();
         let restored: DownloadTask = serde_json::from_str(&json).unwrap();

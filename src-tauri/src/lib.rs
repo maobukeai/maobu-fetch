@@ -2319,6 +2319,7 @@ async fn cli_add(
         task_kind: crate::models::TaskKind::Http,
         bt_meta: None,
         bt_runtime: None,
+        cloud_refresh: None,
     };
 
     store.upsert_task(&task).await?;
@@ -2658,6 +2659,7 @@ async fn run_forwarded_command(manager: &SharedManager, command: CliCommand) -> 
                 connection_count: connections,
                 start_paused: false,
                 user_edited_file_name: false,
+                cloud_refresh: None,
             };
             let task = manager.add(request).await?;
             println!("Task created: {}", task.id);
@@ -2723,6 +2725,7 @@ async fn run_forwarded_command(manager: &SharedManager, command: CliCommand) -> 
 }
 
 #[tauri::command]
+#[allow(non_snake_case)]
 async fn pikpak_inspect_share(
     url: String,
     pass_code: Option<String>,
@@ -2736,6 +2739,7 @@ async fn pikpak_inspect_share(
 }
 
 #[tauri::command]
+#[allow(non_snake_case)]
 async fn pikpak_resolve_file(
     share_id: Option<String>,
     shareId: Option<String>,
@@ -2760,6 +2764,7 @@ async fn pikpak_resolve_file(
 }
 
 #[tauri::command]
+#[allow(non_snake_case)]
 async fn quark_inspect_share(
     url: String,
     pass_code: Option<String>,
@@ -2780,6 +2785,7 @@ async fn quark_inspect_share(
 }
 
 #[tauri::command]
+#[allow(non_snake_case)]
 async fn quark_resolve_file(
     pwd_id: Option<String>,
     pwdId: Option<String>,
@@ -2811,6 +2817,7 @@ async fn quark_resolve_file(
 }
 
 #[tauri::command]
+#[allow(non_snake_case)]
 async fn baidupan_inspect_share(
     url: String,
     pass_code: Option<String>,
@@ -2831,6 +2838,7 @@ async fn baidupan_inspect_share(
 }
 
 #[tauri::command]
+#[allow(non_snake_case)]
 async fn baidupan_resolve_file(
     surl: String,
     fs_id: Option<String>,
@@ -2870,6 +2878,7 @@ async fn baidupan_resolve_file(
 }
 
 #[tauri::command]
+#[allow(non_snake_case)]
 async fn lanzou_inspect_share(
     url: String,
     pass_code: Option<String>,
@@ -2880,6 +2889,7 @@ async fn lanzou_inspect_share(
 }
 
 #[tauri::command]
+#[allow(non_snake_case)]
 async fn lanzou_resolve_file(
     share_url: Option<String>,
     shareUrl: Option<String>,
@@ -2895,6 +2905,7 @@ async fn lanzou_resolve_file(
 }
 
 #[tauri::command]
+#[allow(non_snake_case)]
 async fn pan123_inspect_share(
     url: String,
     pass_code: Option<String>,
@@ -2905,6 +2916,7 @@ async fn pan123_inspect_share(
 }
 
 #[tauri::command]
+#[allow(non_snake_case)]
 async fn pan123_resolve_file(
     share_key: Option<String>,
     shareKey: Option<String>,

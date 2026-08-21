@@ -210,6 +210,11 @@ export interface DownloadTask {
   bt_meta?: BtTaskMeta | null;
   /** BT 运行时状态（peers/seeds/上传速度），仅随任务事件下发、不持久化。 */
   bt_runtime?: BtRuntimeStatus | null;
+  /**
+   * 云盘直链刷新元数据（PikPak 等）：直链失效时后端自动重新解析并无缝续传。
+   * 普通直链任务为空。旧数据缺失时后端默认空。
+   */
+  cloud_refresh?: CloudRefreshMeta | null;
 }
 
 /** 任务内核类型：HTTP Range 并发内核 或 aria2 BT/磁力内核。 */
@@ -244,6 +249,20 @@ export interface BtRuntimeStatus {
   uploaded_bytes?: number;
   /** aria2 报告本机正在做种上传。旧事件缺省 false。 */
   seeding?: boolean;
+}
+
+/** 云盘直链刷新元数据（后端 `CloudRefreshMeta` 镜像，PikPak 等）。 */
+export interface CloudRefreshMeta {
+  /** 云盘平台标识（"pikpak"）。 */
+  platform: string;
+  /** 分享 ID。 */
+  share_id: string;
+  /** 文件 ID。 */
+  file_id: string;
+  /** 密码分享令牌；无密码分享为空。 */
+  pass_code_token?: string | null;
+  /** 设备指纹：与首次解析保持一致，避免触发风控。 */
+  device_id?: string | null;
 }
 
 /** 种子内单个文件条目（`bt_task_files` 返回）。 */
@@ -363,6 +382,8 @@ export interface NewTaskRequest {
   start_paused?: boolean;
   /** 用户是否手动编辑过文件名（Task 20）。`true` 时跳过自动文件名清理规则。 */
   user_edited_file_name?: boolean;
+  /** 云盘直链刷新元数据（PikPak 等）：直链失效时后端自动重新解析。 */
+  cloud_refresh?: CloudRefreshMeta;
 }
 
 export interface AppSettings {

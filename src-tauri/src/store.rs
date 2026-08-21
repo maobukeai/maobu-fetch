@@ -56,6 +56,9 @@ impl Store {
         // BT 元数据 JSON（旧库迁移后为 NULL，反序列化为 None）。
         ensure_task_column(&connection, "task_kind", "TEXT NOT NULL DEFAULT 'http'")?;
         ensure_task_column(&connection, "bt_meta_json", "TEXT")?;
+        // 2026-08-21 云盘直链自动刷新元数据（PikPak 等）。旧库迁移后为 NULL，
+        // 反序列化为 None：普通直链任务不自动刷新，行为与旧版一致。
+        ensure_task_column(&connection, "cloud_refresh_json", "TEXT")?;
         seed_builtin_download_presets(&connection)?;
         // Task 20: 文件名清理规则。新表通过 SCHEMA 中 CREATE TABLE IF NOT EXISTS 创建；
         // 此处仅插入内置默认规则（INSERT OR IGNORE 不覆盖用户改动）。
@@ -158,6 +161,7 @@ impl Store {
                 task_kind: crate::models::TaskKind::Http,
                 bt_meta: None,
                 bt_runtime: None,
+                cloud_refresh: None,
             };
             Self::upsert_with(&connection, &task)?;
         }
@@ -240,6 +244,9 @@ impl Store {
                     }),
                     task.task_kind.as_str(),
                     task.bt_meta
+                        .as_ref()
+                        .and_then(|meta| serde_json::to_string(meta).ok()),
+                    task.cloud_refresh
                         .as_ref()
                         .and_then(|meta| serde_json::to_string(meta).ok())
                 ],
@@ -1850,6 +1857,8 @@ fn task_from_row(row: &Row<'_>) -> rusqlite::Result<DownloadTask> {
     let file_name: String = row.get("file_name")?;
     let task_kind: String = row.get("task_kind")?;
     let bt_meta_json: Option<String> = row.get("bt_meta_json")?;
+    // 云盘直链刷新元数据：旧库迁移后为 NULL，反序列化为 None。
+    let cloud_refresh_json: Option<String> = row.get("cloud_refresh_json")?;
     let stored_category: String = row.get("category")?;
     let task_category = if stored_category == "other" || stored_category.is_empty() {
         let derived = crate::manager::category(&file_name);
@@ -1912,6 +1921,9 @@ fn task_from_row(row: &Row<'_>) -> rusqlite::Result<DownloadTask> {
         bt_meta: bt_meta_json
             .as_deref()
             .and_then(|s| serde_json::from_str::<crate::models::BtTaskMeta>(s).ok()),
+        cloud_refresh: cloud_refresh_json
+            .as_deref()
+            .and_then(|s| serde_json::from_str::<crate::models::CloudRefreshMeta>(s).ok()),
         bt_runtime: None,
     })
 }
@@ -1928,7 +1940,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   media_json TEXT NOT NULL DEFAULT 'null', per_task_speed_limit INTEGER NOT NULL DEFAULT 0, collision_policy TEXT NOT NULL DEFAULT '"rename"',
   connection_count INTEGER NOT NULL DEFAULT 8, segments_json TEXT NOT NULL DEFAULT '[]',
   completion_action TEXT NOT NULL DEFAULT '"none"',
-  task_kind TEXT NOT NULL DEFAULT 'http', bt_meta_json TEXT
+  task_kind TEXT NOT NULL DEFAULT 'http', bt_meta_json TEXT, cloud_refresh_json TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_tasks_status_queue ON tasks(status, priority DESC, queue_position ASC);
 CREATE TABLE IF NOT EXISTS segments (
@@ -2049,9 +2061,9 @@ CREATE TABLE IF NOT EXISTS platform_compatibility (
 "#;
 
 const UPSERT_TASK: &str = r#"
-INSERT INTO tasks(id,url,file_name,destination,total_bytes,downloaded_bytes,speed,eta_seconds,status,error,created_at,completed_at,scheduled_at,category,queue_position,priority,retry_count,max_retries,checksum_sha256,expected_checksum,source,etag,last_modified,final_url,response_status,content_type,accepts_ranges,headers_json,media_json,per_task_speed_limit,collision_policy,connection_count,segments_json,completion_action,retry_policy_override,proxy_override,proxy_auth_json,task_kind,bt_meta_json)
-VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26,?27,?28,?29,?30,?31,?32,?33,?34,?35,?36,?37,?38,?39)
-ON CONFLICT(id) DO UPDATE SET url=excluded.url,file_name=excluded.file_name,destination=excluded.destination,total_bytes=excluded.total_bytes,downloaded_bytes=excluded.downloaded_bytes,speed=excluded.speed,eta_seconds=excluded.eta_seconds,status=excluded.status,error=excluded.error,completed_at=excluded.completed_at,scheduled_at=excluded.scheduled_at,category=excluded.category,queue_position=excluded.queue_position,priority=excluded.priority,retry_count=excluded.retry_count,max_retries=excluded.max_retries,checksum_sha256=excluded.checksum_sha256,expected_checksum=excluded.expected_checksum,source=excluded.source,etag=excluded.etag,last_modified=excluded.last_modified,final_url=excluded.final_url,response_status=excluded.response_status,content_type=excluded.content_type,accepts_ranges=excluded.accepts_ranges,headers_json=excluded.headers_json,media_json=excluded.media_json,per_task_speed_limit=excluded.per_task_speed_limit,collision_policy=excluded.collision_policy,connection_count=excluded.connection_count,segments_json=excluded.segments_json,completion_action=excluded.completion_action,retry_policy_override=excluded.retry_policy_override,proxy_override=excluded.proxy_override,proxy_auth_json=excluded.proxy_auth_json,task_kind=excluded.task_kind,bt_meta_json=excluded.bt_meta_json
+INSERT INTO tasks(id,url,file_name,destination,total_bytes,downloaded_bytes,speed,eta_seconds,status,error,created_at,completed_at,scheduled_at,category,queue_position,priority,retry_count,max_retries,checksum_sha256,expected_checksum,source,etag,last_modified,final_url,response_status,content_type,accepts_ranges,headers_json,media_json,per_task_speed_limit,collision_policy,connection_count,segments_json,completion_action,retry_policy_override,proxy_override,proxy_auth_json,task_kind,bt_meta_json,cloud_refresh_json)
+VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26,?27,?28,?29,?30,?31,?32,?33,?34,?35,?36,?37,?38,?39,?40)
+ON CONFLICT(id) DO UPDATE SET url=excluded.url,file_name=excluded.file_name,destination=excluded.destination,total_bytes=excluded.total_bytes,downloaded_bytes=excluded.downloaded_bytes,speed=excluded.speed,eta_seconds=excluded.eta_seconds,status=excluded.status,error=excluded.error,completed_at=excluded.completed_at,scheduled_at=excluded.scheduled_at,category=excluded.category,queue_position=excluded.queue_position,priority=excluded.priority,retry_count=excluded.retry_count,max_retries=excluded.max_retries,checksum_sha256=excluded.checksum_sha256,expected_checksum=excluded.expected_checksum,source=excluded.source,etag=excluded.etag,last_modified=excluded.last_modified,final_url=excluded.final_url,response_status=excluded.response_status,content_type=excluded.content_type,accepts_ranges=excluded.accepts_ranges,headers_json=excluded.headers_json,media_json=excluded.media_json,per_task_speed_limit=excluded.per_task_speed_limit,collision_policy=excluded.collision_policy,connection_count=excluded.connection_count,segments_json=excluded.segments_json,completion_action=excluded.completion_action,retry_policy_override=excluded.retry_policy_override,proxy_override=excluded.proxy_override,proxy_auth_json=excluded.proxy_auth_json,task_kind=excluded.task_kind,bt_meta_json=excluded.bt_meta_json,cloud_refresh_json=excluded.cloud_refresh_json
 "#;
 
 fn ensure_task_column(connection: &Connection, name: &str, definition: &str) -> Result<(), String> {
@@ -2118,6 +2130,7 @@ mod tests {
             task_kind: Default::default(),
             bt_meta: None,
             bt_runtime: None,
+            cloud_refresh: None,
         }
     }
 
