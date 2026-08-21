@@ -1274,3 +1274,42 @@ export interface Pan123DirectUrlResult {
   url: string;
   headers: Record<string, string>;
 }
+
+export interface FileAssocInfo {
+  extension: string;
+  is_associated: boolean;
+}
+
+export interface PlaylistItem {
+  path: string;
+  name: string;
+  size_bytes: number;
+}
+
+export interface SubtitleItem {
+  path: string;
+  name: string;
+  ext: string;
+}
+
+export interface SubtitleStyleConfig {
+  fontSize: number;       // 14 ~ 36 px (默认 20)
+  color: string;          // 颜色十六进制 (#ffffff, #fde047, #38bdf8, #4ade80 等)
+  bgOpacity: number;      // 0 (透明) ~ 0.8 (暗黑底衬)
+  bottomOffset: number;   // 3 ~ 30 % (默认 7)
+}
+
+export interface ImageItem {
+  path: string;
+  name: string;
+  size_bytes: number;
+  ext: string;
+}
+
+export interface ImageFileInfo {
+  path: string;
+  name: string;
+  size_bytes: number;
+  ext: string;
+  modified_ms: number;
+}

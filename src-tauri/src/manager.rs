@@ -416,6 +416,23 @@ impl DownloadManager {
             bt_runtime: None,
             cloud_refresh: request.cloud_refresh,
         };
+
+        // PikPak 裸直链自动注入 Referer 和元数据
+        if task.cloud_refresh.is_none() {
+            if let Some(meta) = crate::pikpak::parse_pikpak_direct_link_meta(&task.url) {
+                if !task.headers.contains_key("Referer") {
+                    task.headers.insert("Referer".to_string(), "https://mypikpak.com/".to_string());
+                }
+                task.cloud_refresh = Some(crate::models::CloudRefreshMeta {
+                    platform: "pikpak-direct".to_string(),
+                    share_id: String::new(), // 裸直链无分享 ID
+                    file_id: meta.file_id,
+                    pass_code_token: None,
+                    device_id: None,
+                });
+            }
+        }
+
         self.reserve_output_path(&mut task).await?;
         self.store.upsert_task(&task).await?;
         self.register_power_action_target(&task.id).await;
@@ -1123,6 +1140,22 @@ impl DownloadManager {
                     "云盘直链已自动刷新（pikpak），继续续传"
                 );
                 Ok(true)
+            }
+            "pikpak-direct" => {
+                // 裸直链无法通过 API 自动刷新——缺少 share_id。
+                // 检查直链过期时间戳给出精准诊断。
+                let expire = crate::pikpak::parse_pikpak_direct_link_meta(&task.url)
+                    .map(|m| m.expire)
+                    .unwrap_or(0);
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                if expire > 0 && now > expire {
+                    Err("PikPak 直链已过期（超过有效期）。请通过 PikPak 分享链接重新创建任务，分享任务支持直链自动刷新续传".into())
+                } else {
+                    Err("PikPak 裸直链已达到单链接流量配额限制（约 330MB）。请通过 PikPak 分享链接（mypikpak.com/s/xxx）重新创建任务，分享任务支持直链自动刷新续传".into())
+                }
             }
             other => Err(format!("平台 {other} 暂不支持直链自动刷新")),
         }

@@ -1,0 +1,1203 @@
+/* 猫步播放器（Maobu Player）极致通透影院质感样式表 */
+
+.maobu-player-root {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  background-color: #000000;
+  color: #ffffff;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  user-select: none;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+  z-index: 99999;
+}
+
+/* 播放且控制栏隐藏时光标完全隐形，提供沉浸式观影 */
+.maobu-player-root.hide-cursor,
+.maobu-player-root.hide-cursor * {
+  cursor: none !important;
+}
+
+/* 顶部无边框精致微晶标题栏 */
+.maobu-player-titlebar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 44px;
+  padding: 0 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  z-index: 60;
+  background: linear-gradient(180deg, rgba(0, 0, 0, 0.8) 0%, rgba(0, 0, 0, 0.35) 60%, transparent 100%);
+  transition: opacity 0.35s cubic-bezier(0.16, 1, 0.3, 1), transform 0.35s cubic-bezier(0.16, 1, 0.3, 1);
+  pointer-events: auto;
+}
+
+.maobu-player-titlebar.hidden {
+  opacity: 0;
+  transform: translateY(-8px);
+  pointer-events: none !important;
+}
+
+.maobu-player-title-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: calc(100vw - 180px);
+  pointer-events: auto;
+}
+
+.maobu-player-title-icon {
+  width: 16px;
+  height: 16px;
+  color: #38bdf8;
+  filter: drop-shadow(0 0 6px rgba(56, 189, 248, 0.5));
+  flex-shrink: 0;
+}
+
+.maobu-player-title-text {
+  font-size: 13px;
+  font-weight: 500;
+  color: #f1f5f9;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  letter-spacing: 0.2px;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8);
+}
+
+.maobu-player-window-controls {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  pointer-events: auto !important;
+  -webkit-app-region: no-drag !important;
+  z-index: 70;
+}
+
+.maobu-player-icon-btn {
+  background: transparent;
+  border: 1px solid transparent;
+  outline: none;
+  cursor: pointer;
+  padding: 6px;
+  border-radius: 7px;
+  color: #94a3b8;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.16s cubic-bezier(0.16, 1, 0.3, 1);
+  pointer-events: auto !important;
+  -webkit-app-region: no-drag !important;
+}
+
+.maobu-player-icon-btn:hover {
+  background: rgba(255, 255, 255, 0.12);
+  border-color: rgba(255, 255, 255, 0.08);
+  color: #ffffff;
+  transform: translateY(-0.5px);
+}
+
+.maobu-player-icon-btn:active {
+  transform: scale(0.94);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.maobu-player-icon-btn.active {
+  color: #38bdf8;
+  background: rgba(56, 189, 248, 0.14);
+  border-color: rgba(56, 189, 248, 0.3);
+}
+
+.maobu-player-icon-btn.close-btn:hover {
+  background: #ef4444;
+  border-color: #ef4444;
+  color: #ffffff;
+}
+
+/* 核心视频播放区域 */
+.maobu-player-stage {
+  flex: 1;
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  background-color: #000000;
+  cursor: pointer;
+}
+
+.maobu-player-video {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background-color: #000000;
+  outline: none;
+}
+
+.maobu-player-empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  color: #64748b;
+}
+
+.maobu-player-empty-icon {
+  width: 48px;
+  height: 48px;
+  color: #334155;
+}
+
+/* 屏幕中央 HUD 状态反馈（极简透明 Apple / QuickTime 质感） */
+.maobu-player-hud {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  background: rgba(15, 18, 24, 0.48);
+  backdrop-filter: blur(28px) saturate(190%);
+  -webkit-backdrop-filter: blur(28px) saturate(190%);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  padding: 12px 24px;
+  border-radius: 9999px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: #ffffff;
+  font-size: 14px;
+  font-weight: 500;
+  letter-spacing: 0.3px;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.25);
+  pointer-events: none;
+  z-index: 50;
+  animation: maobuHudPop 0.2s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+@keyframes maobuHudPop {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0.88);
+  }
+  100% {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1);
+  }
+}
+
+.maobu-player-hud-icon {
+  width: 20px;
+  height: 20px;
+  color: #ffffff;
+  filter: drop-shadow(0 1px 4px rgba(0, 0, 0, 0.5));
+  flex-shrink: 0;
+}
+
+/* 外挂字幕层 (高通透/纯净文字可切换) */
+.maobu-player-subtitles {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  max-width: 85%;
+  padding: 6px 16px;
+  text-align: center;
+  font-weight: 600;
+  text-shadow: 0 2px 6px rgba(0, 0, 0, 0.95), 0 0 2px #000, 0 0 1px #000;
+  pointer-events: none;
+  z-index: 45;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  transition: bottom 0.15s ease, font-size 0.15s ease;
+}
+
+.maobu-player-subtitles.has-backdrop {
+  backdrop-filter: blur(16px) saturate(180%);
+  -webkit-backdrop-filter: blur(16px) saturate(180%);
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+}
+
+/* 底部浮动控制栏面板 */
+.maobu-player-controls-panel {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  z-index: 60;
+  padding: 36px 20px 14px;
+  background: linear-gradient(0deg, rgba(0, 0, 0, 0.88) 0%, rgba(0, 0, 0, 0.45) 60%, transparent 100%);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  transition: opacity 0.35s cubic-bezier(0.16, 1, 0.3, 1), transform 0.35s cubic-bezier(0.16, 1, 0.3, 1);
+  pointer-events: auto !important;
+  -webkit-app-region: no-drag !important;
+}
+
+.maobu-player-controls-panel.hidden {
+  opacity: 0;
+  transform: translateY(8px);
+  pointer-events: none !important;
+}
+
+/* 进度条外层包装 */
+.maobu-player-progress-wrap {
+  width: 100%;
+  height: 16px;
+  display: flex;
+  align-items: center;
+  position: relative;
+  cursor: pointer;
+}
+
+.maobu-player-progress-rail {
+  width: 100%;
+  height: 3px;
+  background: rgba(255, 255, 255, 0.2);
+  border-radius: 9999px;
+  position: relative;
+  overflow: hidden;
+  transition: height 0.16s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.maobu-player-progress-wrap:hover .maobu-player-progress-rail {
+  height: 6px;
+}
+
+.maobu-player-progress-buffered {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  background: rgba(255, 255, 255, 0.32);
+  border-radius: 9999px;
+}
+
+.maobu-player-progress-played {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  background: linear-gradient(90deg, #0071e3, #38bdf8);
+  border-radius: 9999px;
+  box-shadow: 0 0 8px rgba(56, 189, 248, 0.6);
+}
+
+.maobu-player-progress-thumb {
+  position: absolute;
+  top: 50%;
+  width: 12px;
+  height: 12px;
+  background: #ffffff;
+  border-radius: 50%;
+  transform: translateY(-50%) scale(0);
+  box-shadow: 0 0 10px rgba(56, 189, 248, 0.9), 0 2px 6px rgba(0, 0, 0, 0.4);
+  transition: transform 0.16s cubic-bezier(0.16, 1, 0.3, 1);
+  pointer-events: none;
+}
+
+.maobu-player-progress-wrap:hover .maobu-player-progress-thumb {
+  transform: translateY(-50%) scale(1);
+}
+
+.maobu-player-progress-tooltip {
+  position: absolute;
+  bottom: 24px;
+  transform: translateX(-50%);
+  background: rgba(15, 18, 24, 0.75);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  padding: 3px 8px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  color: #f8fafc;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
+  pointer-events: none;
+  white-space: nowrap;
+}
+
+/* 底部按钮栏两端布局 */
+.maobu-player-buttons-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+}
+
+.maobu-player-left-group,
+.maobu-player-right-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* 播放/暂停主圆形悬浮质感按钮 */
+.maobu-player-main-play-btn {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.15);
+  backdrop-filter: blur(16px);
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  color: #ffffff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.3);
+}
+
+.maobu-player-main-play-btn:hover {
+  background: rgba(255, 255, 255, 0.28);
+  border-color: rgba(255, 255, 255, 0.4);
+  transform: scale(1.06);
+  box-shadow: 0 4px 16px rgba(56, 189, 248, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.4);
+}
+
+.maobu-player-main-play-btn:active {
+  transform: scale(0.95);
+  background: rgba(255, 255, 255, 0.18);
+}
+
+/* 时间戳 (高保真等宽时间码) */
+.maobu-player-time-display {
+  font-size: 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-variant-numeric: tabular-nums;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-left: 6px;
+  padding: 3px 8px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  letter-spacing: 0.4px;
+  user-select: none;
+}
+
+.maobu-player-time-current {
+  color: #f8fafc;
+  font-weight: 600;
+}
+
+.maobu-player-time-divider {
+  color: #64748b;
+  font-size: 11px;
+}
+
+.maobu-player-time-total {
+  color: #94a3b8;
+  font-weight: 500;
+}
+
+/* 音量控制组 */
+.maobu-player-volume-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-right: 4px;
+}
+
+.maobu-player-volume-slider {
+  width: 68px;
+  height: 3px;
+  background: rgba(255, 255, 255, 0.22);
+  border-radius: 9999px;
+  appearance: none;
+  outline: none;
+  cursor: pointer;
+  accent-color: #38bdf8;
+  transition: all 0.15s ease;
+}
+
+.maobu-player-volume-slider:hover {
+  height: 5px;
+  background: rgba(255, 255, 255, 0.32);
+}
+
+.maobu-player-volume-slider::-webkit-slider-thumb {
+  appearance: none;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #ffffff;
+  box-shadow: 0 0 6px rgba(0, 0, 0, 0.5);
+  cursor: pointer;
+  transition: transform 0.1s ease;
+}
+
+.maobu-player-volume-slider::-webkit-slider-thumb:hover {
+  transform: scale(1.2);
+}
+
+.maobu-player-volume-label {
+  font-size: 11px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  color: #94a3b8;
+  width: 32px;
+  text-align: right;
+}
+
+/* 浮动下拉菜单 (倍速 & 字幕 - Apple 极透超晶磨砂毛玻璃) */
+.maobu-player-popup-menu {
+  position: absolute;
+  bottom: 42px;
+  right: 0;
+  background: rgba(14, 18, 28, 0.50);
+  backdrop-filter: blur(40px) saturate(220%);
+  -webkit-backdrop-filter: blur(40px) saturate(220%);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 10px;
+  box-shadow: 0 20px 48px rgba(0, 0, 0, 0.55), inset 0 1px 0 rgba(255, 255, 255, 0.2);
+  padding: 5px;
+  z-index: 80;
+  display: flex;
+  flex-direction: column;
+  min-width: 110px;
+  animation: maobuMenuPop 0.16s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes maobuMenuPop {
+  0% {
+    opacity: 0;
+    transform: translateY(6px) scale(0.96);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.maobu-player-menu-item {
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: #e2e8f0;
+  padding: 6px 12px;
+  font-size: 12px;
+  text-align: left;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  cursor: pointer;
+  transition: all 0.14s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.maobu-player-menu-item:hover {
+  background: rgba(255, 255, 255, 0.12);
+  border-color: rgba(255, 255, 255, 0.1);
+  color: #ffffff;
+}
+
+.maobu-player-menu-item.active {
+  color: #38bdf8;
+  font-weight: 600;
+  background: linear-gradient(90deg, rgba(56, 189, 248, 0.22) 0%, rgba(0, 113, 227, 0.12) 100%);
+  border-color: rgba(56, 189, 248, 0.38);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2), inset 0 1px 0 rgba(255, 255, 255, 0.2);
+  text-shadow: 0 0 10px rgba(56, 189, 248, 0.35);
+}
+
+/* 字幕设置面板 (微晶极透磨砂) */
+.maobu-player-subtitle-panel {
+  min-width: 260px;
+  max-width: 320px;
+  max-height: 420px;
+  overflow-y: auto;
+  padding: 12px;
+  gap: 10px;
+}
+
+.maobu-player-subtitle-header {
+  font-size: 13px;
+  color: #f8fafc;
+  padding-bottom: 8px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.maobu-player-sub-badge {
+  font-size: 10px;
+  background: rgba(56, 189, 248, 0.18);
+  color: #38bdf8;
+  padding: 1px 6px;
+  border-radius: 9999px;
+  font-weight: 500;
+  border: 1px solid rgba(56, 189, 248, 0.28);
+}
+
+.maobu-player-sub-import-btn {
+  display: inline-flex;
+  align-items: center;
+  background: rgba(56, 189, 248, 0.16);
+  border: 1px solid rgba(56, 189, 248, 0.35);
+  color: #38bdf8;
+  font-size: 11px;
+  font-weight: 500;
+  padding: 2px 8px;
+  border-radius: 5px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.maobu-player-sub-import-btn:hover {
+  background: rgba(56, 189, 248, 0.28);
+  border-color: rgba(56, 189, 248, 0.55);
+  color: #ffffff;
+  transform: translateY(-1px);
+}
+
+.maobu-player-sub-remove-btn {
+  background: rgba(239, 68, 68, 0.15);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  color: #f87171;
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 5px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.maobu-player-sub-remove-btn:hover {
+  background: rgba(239, 68, 68, 0.28);
+  color: #ffffff;
+}
+
+.maobu-player-subtitle-empty-box {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 12px 8px;
+  border: 1px dashed rgba(255, 255, 255, 0.18);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.03);
+  cursor: pointer;
+  transition: all 0.18s ease;
+  text-align: center;
+  gap: 2px;
+}
+
+.maobu-player-subtitle-empty-box:hover {
+  border-color: rgba(56, 189, 248, 0.45);
+  background: rgba(56, 189, 248, 0.08);
+}
+
+.maobu-player-subtitle-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.maobu-player-subtitle-section-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: #cbd5e1;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.maobu-player-subtitle-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 120px;
+  overflow-y: auto;
+}
+
+.maobu-player-subtitle-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 6px;
+  color: #94a3b8;
+  font-size: 11px;
+  text-align: left;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.maobu-player-subtitle-item:hover {
+  background: rgba(255, 255, 255, 0.12);
+  color: #ffffff;
+}
+
+.maobu-player-subtitle-item.active {
+  background: rgba(56, 189, 248, 0.16);
+  border-color: rgba(56, 189, 248, 0.35);
+  color: #38bdf8;
+  font-weight: 600;
+}
+
+.maobu-player-subtitle-item-ext {
+  font-size: 9px;
+  font-weight: 700;
+  background: rgba(255, 255, 255, 0.1);
+  padding: 1px 4px;
+  border-radius: 3px;
+  color: #e2e8f0;
+  flex-shrink: 0;
+}
+
+.maobu-player-subtitle-item-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.maobu-player-sub-slider {
+  width: 100%;
+  height: 4px;
+  background: rgba(255, 255, 255, 0.18);
+  border-radius: 9999px;
+  appearance: none;
+  outline: none;
+  cursor: pointer;
+  accent-color: #38bdf8;
+}
+
+.maobu-player-color-palette {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.maobu-player-color-dot {
+  width: 22px;
+  height: 22px;
+  border-radius: 9999px;
+  border: 2px solid transparent;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: transform 0.15s ease, border-color 0.15s ease;
+}
+
+.maobu-player-color-dot:hover {
+  transform: scale(1.12);
+}
+
+.maobu-player-color-dot.active {
+  border-color: #ffffff;
+  box-shadow: 0 0 10px rgba(255, 255, 255, 0.5);
+}
+
+.maobu-player-color-check {
+  width: 6px;
+  height: 6px;
+  background: #000000;
+  border-radius: 9999px;
+}
+
+.maobu-player-chip-btn {
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: #94a3b8;
+  padding: 2px 8px;
+  border-radius: 5px;
+  font-size: 11px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.maobu-player-chip-btn.active {
+  background: rgba(56, 189, 248, 0.2);
+  border-color: rgba(56, 189, 248, 0.4);
+  color: #38bdf8;
+  font-weight: 600;
+}
+
+.maobu-player-offset-btn {
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  color: #ffffff;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.maobu-player-offset-btn:hover {
+  background: rgba(255, 255, 255, 0.22);
+}
+
+/* 顶部轻量 Toast 提示 (纯净毛玻璃胶囊) */
+.maobu-player-toast {
+  position: absolute;
+  top: 52px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(15, 18, 24, 0.65);
+  backdrop-filter: blur(24px) saturate(180%);
+  -webkit-backdrop-filter: blur(24px) saturate(180%);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  padding: 6px 18px;
+  border-radius: 9999px;
+  color: #f8fafc;
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.2px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.2);
+  pointer-events: none;
+  z-index: 70;
+  animation: maobuToastFade 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes maobuToastFade {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, -6px) scale(0.96);
+  }
+  100% {
+    opacity: 1;
+    transform: translate(-50%, 0) scale(1);
+  }
+}
+
+/* ================= 播放列表右侧极简超晶通透抽屉 ================= */
+.maobu-player-playlist-drawer {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 340px;
+  max-width: 88vw;
+  background: rgba(10, 14, 22, 0.52);
+  backdrop-filter: blur(48px) saturate(220%);
+  -webkit-backdrop-filter: blur(48px) saturate(220%);
+  border-left: 1px solid rgba(255, 255, 255, 0.14);
+  box-shadow: -24px 0 60px rgba(0, 0, 0, 0.75), inset 1px 0 0 rgba(255, 255, 255, 0.1);
+  z-index: 90;
+  display: flex;
+  flex-direction: column;
+  transform: translateX(100%);
+  transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+  pointer-events: auto !important;
+  -webkit-app-region: no-drag !important;
+}
+
+.maobu-player-playlist-drawer.open {
+  transform: translateX(0);
+}
+
+.maobu-player-playlist-header {
+  padding: 14px 16px 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.maobu-player-playlist-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: #f8fafc;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  letter-spacing: 0.2px;
+}
+
+.maobu-player-playlist-count {
+  font-size: 11px;
+  color: #38bdf8;
+  background: rgba(56, 189, 248, 0.16);
+  border: 1px solid rgba(56, 189, 248, 0.25);
+  padding: 1px 8px;
+  border-radius: 9999px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+/* 搜索与工具条 */
+.maobu-player-playlist-search-wrap {
+  padding: 10px 14px 6px;
+  display: flex;
+  align-items: center;
+  position: relative;
+}
+
+.maobu-player-playlist-search-input {
+  width: 100%;
+  height: 28px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 7px;
+  padding: 0 28px 0 28px;
+  color: #ffffff;
+  font-size: 12px;
+  outline: none;
+  transition: all 0.16s ease;
+}
+
+.maobu-player-playlist-search-input:focus {
+  background: rgba(255, 255, 255, 0.1);
+  border-color: rgba(56, 189, 248, 0.5);
+  box-shadow: 0 0 10px rgba(56, 189, 248, 0.2);
+}
+
+.maobu-player-playlist-search-icon {
+  position: absolute;
+  left: 22px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: #64748b;
+  pointer-events: none;
+}
+
+.maobu-player-playlist-search-clear {
+  position: absolute;
+  right: 20px;
+  top: 50%;
+  transform: translateY(-50%);
+  background: transparent;
+  border: none;
+  color: #94a3b8;
+  cursor: pointer;
+  padding: 2px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.maobu-player-playlist-toolbar {
+  padding: 6px 14px 10px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  gap: 8px;
+  position: relative;
+}
+
+.maobu-player-playlist-mode-btn {
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  color: #e2e8f0;
+  padding: 4px 10px;
+  border-radius: 6px;
+  font-size: 11px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  transition: all 0.15s ease;
+}
+
+.maobu-player-playlist-mode-btn:hover {
+  background: rgba(255, 255, 255, 0.16);
+  border-color: rgba(255, 255, 255, 0.14);
+  color: #ffffff;
+}
+
+/* 排序下拉菜单浮窗 (极透超晶磨砂) */
+.maobu-player-sort-menu {
+  position: absolute;
+  top: 38px;
+  right: 14px;
+  background: rgba(14, 18, 28, 0.52);
+  backdrop-filter: blur(40px) saturate(220%);
+  -webkit-backdrop-filter: blur(40px) saturate(220%);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 10px;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.55), inset 0 1px 0 rgba(255, 255, 255, 0.2);
+  padding: 5px;
+  z-index: 95;
+  display: flex;
+  flex-direction: column;
+  min-width: 155px;
+  animation: maobuMenuPop 0.16s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.maobu-player-playlist-items {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.maobu-player-playlist-items::-webkit-scrollbar {
+  width: 5px;
+}
+
+.maobu-player-playlist-items::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.16);
+  border-radius: 9999px;
+}
+
+.maobu-player-playlist-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: all 0.16s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.maobu-player-playlist-item:hover {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.08);
+  transform: translateX(-1px);
+}
+
+.maobu-player-playlist-item.active {
+  background: linear-gradient(90deg, rgba(56, 189, 248, 0.18) 0%, rgba(0, 113, 227, 0.08) 100%);
+  border-color: rgba(56, 189, 248, 0.4);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25), inset 0 1px 0 rgba(255, 255, 255, 0.18);
+}
+
+.maobu-player-item-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  flex: 1;
+}
+
+.maobu-player-item-index {
+  font-size: 11px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  color: #64748b;
+  width: 18px;
+  text-align: right;
+  flex-shrink: 0;
+}
+
+.maobu-player-playlist-item.active .maobu-player-item-index {
+  color: #38bdf8;
+  font-weight: bold;
+}
+
+.maobu-player-item-details {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  gap: 2px;
+}
+
+.maobu-player-item-name {
+  font-size: 12px;
+  color: #e2e8f0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 1.3;
+}
+
+.maobu-player-playlist-item.active .maobu-player-item-name {
+  color: #38bdf8;
+  font-weight: 600;
+  text-shadow: 0 0 10px rgba(56, 189, 248, 0.3);
+}
+
+.maobu-player-item-meta {
+  font-size: 10px;
+  color: #64748b;
+}
+
+.maobu-player-item-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.maobu-player-playlist-item:hover .maobu-player-item-actions {
+  opacity: 1;
+}
+
+/* 底部统计栏 */
+.maobu-player-playlist-footer {
+  padding: 8px 14px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  font-size: 11px;
+  color: #64748b;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: rgba(0, 0, 0, 0.2);
+}
+
+/* 按钮角标 */
+.maobu-player-btn-badge {
+  position: absolute;
+  top: 1px;
+  right: 1px;
+  background: #38bdf8;
+  color: #0b0f17;
+  font-size: 9px;
+  font-weight: bold;
+  height: 14px;
+  min-width: 14px;
+  padding: 0 3px;
+  border-radius: 9999px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+}
+
+/* 动态音频波形动画 */
+.maobu-wave-icon {
+  display: flex;
+  align-items: flex-end;
+  gap: 1.5px;
+  height: 12px;
+  width: 12px;
+  flex-shrink: 0;
+}
+
+.maobu-wave-bar {
+  width: 2px;
+  background: #38bdf8;
+  border-radius: 1px;
+  animation: maobuWaveJump 0.8s ease-in-out infinite alternate;
+}
+
+.maobu-wave-bar:nth-child(1) { height: 40%; animation-delay: 0.1s; }
+.maobu-wave-bar:nth-child(2) { height: 90%; animation-delay: 0.3s; }
+.maobu-wave-bar:nth-child(3) { height: 60%; animation-delay: 0.5s; }
+
+@keyframes maobuWaveJump {
+  0% { height: 25%; }
+  100% { height: 100%; }
+}
+
+/* ================= 原生桌面迷你画中画浮窗模式 (Mini PiP Mode) ================= */
+.maobu-player-root.mini-mode {
+  border-radius: 12px;
+  overflow: hidden;
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.85), inset 0 0 0 1px rgba(255, 255, 255, 0.16);
+}
+
+.maobu-player-root.mini-mode .maobu-player-titlebar {
+  padding: 6px 10px;
+  background: linear-gradient(180deg, rgba(0, 0, 0, 0.75) 0%, transparent 100%);
+}
+
+.maobu-player-root.mini-mode .maobu-player-controls-panel {
+  padding: 6px 10px 8px;
+}
+
+.maobu-player-root.mini-mode .maobu-player-time-display {
+  display: none;
+}
+
+.maobu-player-root.mini-mode .maobu-player-volume-slider {
+  width: 42px;
+}
+
+/* ================= 窄屏与小窗口自适应响应式断点优化 ================= */
+
+.maobu-player-left-group,
+.maobu-player-right-group {
+  flex-shrink: 0;
+}
+
+.maobu-player-icon-btn,
+.maobu-player-main-play-btn,
+.maobu-player-time-display {
+  flex-shrink: 0;
+}
+
+/* 1. 中窄屏 (< 740px)：隐藏音量百分比数字，收敛音量滑块 */
+@media (max-width: 740px) {
+  .maobu-player-volume-label {
+    display: none;
+  }
+  .maobu-player-volume-slider {
+    width: 50px;
+  }
+  .maobu-player-controls-panel {
+    padding: 24px 14px 10px;
+  }
+}
+
+/* 2. 窄屏 (< 620px)：隐藏外部默认打开按钮，缩减间距与时间码 */
+@media (max-width: 620px) {
+  .maobu-player-btn-external {
+    display: none !important;
+  }
+  .maobu-player-volume-slider {
+    width: 40px;
+  }
+  .maobu-player-left-group,
+  .maobu-player-right-group {
+    gap: 4px;
+  }
+  .maobu-player-time-display {
+    margin-left: 2px;
+    padding: 2px 6px;
+    font-size: 11px;
+  }
+}
+
+/* 3. 紧凑窗口 (< 520px)：收起音量滑块(保留图标)，隐藏截图按钮，总时间收敛 */
+@media (max-width: 520px) {
+  .maobu-player-volume-slider {
+    display: none;
+  }
+  .maobu-player-btn-screenshot {
+    display: none !important;
+  }
+  .maobu-player-main-play-btn {
+    width: 32px;
+    height: 32px;
+  }
+  .maobu-player-time-total,
+  .maobu-player-time-divider {
+    display: none;
+  }
+  .maobu-player-subtitles {
+    bottom: 60px;
+    font-size: 15px !important;
+    padding: 4px 10px;
+  }
+}
+
+/* 4. 极小/迷你窗口 (< 420px)：隐藏时间胶囊与画中画切换，确保核心按钮绝对不挤压 */
+@media (max-width: 420px) {
+  .maobu-player-time-display {
+    display: none;
+  }
+  .maobu-player-btn-pip {
+    display: none !important;
+  }
+  .maobu-player-controls-panel {
+    padding: 16px 8px 6px;
+  }
+  .maobu-player-left-group,
+  .maobu-player-right-group {
+    gap: 3px;
+  }
+}
+
+

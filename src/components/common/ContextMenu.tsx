@@ -11,6 +11,7 @@ import {
   Film,
   FolderOpen,
   Gauge,
+  Image as ImageIcon,
   Info,
   Pause,
   Play,
@@ -28,6 +29,7 @@ import {
   PRIORITY_STEP,
 } from "../../formatters";
 import { inferCategory } from "./EmptyState";
+import { isImageFile, isMediaTask, isVideoFile } from "./TaskRow";
 
 export function ContextMenu({
   x,
@@ -267,6 +269,40 @@ export function ContextMenu({
       break;
     case "completed":
       if (targetTaskIds.size <= 1) {
+        if (isVideoFile(task.file_name) || isMediaTask(task)) {
+          sections.push(
+            <button
+              key="open-media-player"
+              onClick={() => {
+                const fullPath = buildFilePath();
+                void api
+                  .openMediaPlayer(fullPath, task.file_name)
+                  .then(close)
+                  .catch((e) => notify(String(e), "error"));
+              }}
+            >
+              <Film size={13} className="text-sky-400" />
+              {t("contextMenu.playWithBuiltin") || "内置播放器播放"}
+            </button>
+          );
+        }
+        if (isImageFile(task.file_name)) {
+          sections.push(
+            <button
+              key="open-image-viewer"
+              onClick={() => {
+                const fullPath = buildFilePath();
+                void api
+                  .openImageViewer(fullPath, task.file_name)
+                  .then(close)
+                  .catch((e) => notify(String(e), "error"));
+              }}
+            >
+              <ImageIcon size={13} className="text-sky-400" />
+              {"内置看图器查看"}
+            </button>
+          );
+        }
         sections.push(
           <button
             key="open-file"

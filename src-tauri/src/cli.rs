@@ -19,6 +19,8 @@ use std::ffi::OsString;
 pub enum CliCommand {
     /// 正常启动 GUI（无子命令或空参数）。
     Run,
+    /// `play <path>` 或 `--play <path>`：唤起内置媒体播放器播放本地文件。
+    Play { path: String },
     /// `add <url> --out <path> --connections <n>`（Task 35.2）。
     Add {
         url: String,
@@ -37,6 +39,16 @@ pub enum CliCommand {
 
 /// 允许的连接数集合（AGENTS.md §3 强约束：只能为 1/2/4/8/16/32）。
 const ALLOWED_CONNECTIONS: [u8; 6] = [1, 2, 4, 8, 16, 32];
+
+/// 判定给定路径是否为支持的媒体文件扩展名。
+pub fn is_media_file_path(path: &str) -> bool {
+    let lower = path.to_ascii_lowercase();
+    const MEDIA_EXTS: &[&str] = &[
+        ".mp4", ".webm", ".mkv", ".mov", ".avi", ".flv", ".ts", ".wmv", ".m4v",
+        ".mp3", ".flac", ".wav", ".aac", ".m4a", ".ogg",
+    ];
+    MEDIA_EXTS.iter().any(|ext| lower.ends_with(ext))
+}
 
 /// 校验连接数为允许值之一。
 fn parse_connections(raw: &str) -> Result<u8, pico_args::Error> {
@@ -76,6 +88,23 @@ pub fn parse_args(args: Vec<String>) -> Result<CliCommand, String> {
         return Ok(CliCommand::Run);
     }
 
+    // Windows 资源管理器双击打开或 --play 唤起视频文件
+    if first == "--play" || first == "-p" {
+        if args.len() > 2 {
+            return Ok(CliCommand::Play {
+                path: args[2].clone(),
+            });
+        } else {
+            return Err("缺少必填参数：播放文件路径".into());
+        }
+    }
+
+    if is_media_file_path(first) {
+        return Ok(CliCommand::Play {
+            path: first.clone(),
+        });
+    }
+
     let mut pargs =
         pico_args::Arguments::from_vec(args.into_iter().skip(1).map(OsString::from).collect());
 
@@ -85,6 +114,16 @@ pub fn parse_args(args: Vec<String>) -> Result<CliCommand, String> {
 
     match subcommand.as_deref() {
         None | Some("") => Ok(CliCommand::Run),
+        Some("play") => {
+            let path = pargs
+                .subcommand()
+                .map_err(|e| format!("参数解析失败：{e}"))?
+                .ok_or_else(|| "缺少必填参数：播放文件路径".to_string())?;
+            if path.trim().is_empty() {
+                return Err("播放文件路径不能为空".into());
+            }
+            Ok(CliCommand::Play { path })
+        }
         Some("add") => {
             let url = pargs
                 .subcommand()
@@ -143,7 +182,11 @@ pub fn parse_args(args: Vec<String>) -> Result<CliCommand, String> {
             Ok(CliCommand::Remove { id, delete_file })
         }
         Some(other) => {
-            if other.starts_with("maobu://")
+            if is_media_file_path(other) {
+                Ok(CliCommand::Play {
+                    path: other.to_string(),
+                })
+            } else if other.starts_with("maobu://")
                 || other.ends_with(".maobu-task")
                 || other.ends_with(".maobu")
                 || other.starts_with('-')
@@ -384,5 +427,38 @@ mod tests {
                 }
             );
         }
+    }
+
+    #[test]
+    fn play_with_subcommand() {
+        let cmd = parse_args(args(&["play", "C:\\Videos\\sample.mp4"])).unwrap();
+        assert_eq!(
+            cmd,
+            CliCommand::Play {
+                path: "C:\\Videos\\sample.mp4".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn play_with_flag() {
+        let cmd = parse_args(args(&["--play", "D:\\movie.mkv"])).unwrap();
+        assert_eq!(
+            cmd,
+            CliCommand::Play {
+                path: "D:\\movie.mkv".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn play_with_direct_video_path() {
+        let cmd = parse_args(args(&["D:\\media\\test.webm"])).unwrap();
+        assert_eq!(
+            cmd,
+            CliCommand::Play {
+                path: "D:\\media\\test.webm".into(),
+            }
+        );
     }
 }

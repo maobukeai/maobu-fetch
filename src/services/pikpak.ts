@@ -613,3 +613,36 @@ export async function resolvePikPakDirectUrl(
     },
   };
 }
+
+/**
+ * 判断是否为 PikPak 裸直链（CDN 下载地址）。
+ * 格式：https://dl-*.mypikpak.com/download/?fid=...
+ */
+export function isPikPakDirectLink(url: string): boolean {
+  if (!url || typeof url !== "string") return false;
+  return /^https?:\/\/dl-[a-z0-9-]+\.mypikpak\.(?:com|net)\/download\//i.test(url.trim());
+}
+
+/**
+ * 从 PikPak 裸直链 URL 中提取元数据。
+ * 用于在停滞时给出精准诊断提示。
+ */
+export function parsePikPakDirectLinkMeta(url: string): {
+  fileid: string;
+  fileSize: number;
+  expire: number;
+  userid: string;
+} | null {
+  if (!isPikPakDirectLink(url)) return null;
+  try {
+    const u = new URL(url.trim());
+    const fileid = u.searchParams.get("fileid") || "";
+    const fileSize = Number(u.searchParams.get("f") || "0");
+    const expire = Number(u.searchParams.get("expire") || "0");
+    const userid = u.searchParams.get("userid") || "";
+    if (!fileid) return null;
+    return { fileid, fileSize, expire, userid };
+  } catch {
+    return null;
+  }
+}

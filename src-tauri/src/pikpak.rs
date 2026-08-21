@@ -115,6 +115,57 @@ pub fn parse_pikpak_url(raw: &str) -> Option<ParsedPikPakUrl> {
     })
 }
 
+/// PikPak 裸直链（`dl-*.mypikpak.com/download/...`）的元数据。
+#[derive(Debug, Clone)]
+pub struct PikPakDirectLinkMeta {
+    /// URL 中的 `fileid` 参数。
+    pub file_id: String,
+    /// URL 中的 `f` 参数（文件总字节数）。
+    pub file_size: u64,
+    /// URL 中的 `expire` 参数（Unix 时间戳）。
+    pub expire: u64,
+    /// URL 中的 `userid` 参数。
+    pub user_id: String,
+}
+
+/// 从 PikPak 裸直链 URL 中解析元数据。
+///
+/// 裸直链格式：`https://dl-a10b-0862.mypikpak.com/download/?fid=...&fileid=VP-VLwpxxMPiLrSBZWR0JpFUo2&...`
+/// 返回 `None` 表示该 URL 不是 PikPak 裸直链或缺少关键参数。
+pub fn parse_pikpak_direct_link_meta(raw_url: &str) -> Option<PikPakDirectLinkMeta> {
+    let url = url::Url::parse(raw_url.trim()).ok()?;
+    let host = url.host_str()?;
+    // 必须匹配 dl-*.mypikpak.com 或 dl-*.mypikpak.net
+    if !host.starts_with("dl-") || !(host.ends_with(".mypikpak.com") || host.ends_with(".mypikpak.net")) {
+        return None;
+    }
+    if !url.path().starts_with("/download") {
+        return None;
+    }
+    let file_id = url.query_pairs()
+        .find(|(k, _)| k == "fileid")
+        .map(|(_, v)| v.to_string())
+        .filter(|v| !v.is_empty())?;
+    let file_size = url.query_pairs()
+        .find(|(k, _)| k == "f")
+        .and_then(|(_, v)| v.parse::<u64>().ok())
+        .unwrap_or(0);
+    let expire = url.query_pairs()
+        .find(|(k, _)| k == "expire")
+        .and_then(|(_, v)| v.parse::<u64>().ok())
+        .unwrap_or(0);
+    let user_id = url.query_pairs()
+        .find(|(k, _)| k == "userid")
+        .map(|(_, v)| v.to_string())
+        .unwrap_or_default();
+    Some(PikPakDirectLinkMeta { file_id, file_size, expire, user_id })
+}
+
+/// 判断 URL 是否为 PikPak 裸直链。
+pub fn is_pikpak_direct_link(url: &str) -> bool {
+    parse_pikpak_direct_link_meta(url).is_some()
+}
+
 /// 获取/生成 Captcha Token 与 Device Sign
 pub async fn get_captcha_and_sign(device_id: &str) -> Result<(String, String), String> {
     let now = SystemTime::now()
@@ -554,6 +605,22 @@ pub async fn resolve_pikpak_file(
 mod tests {
     use super::*;
 
+    #[test]
+    fn test_parse_pikpak_direct_link_meta() {
+        let url = "https://dl-a10b-0862.mypikpak.com/download/?fid=zYHh&from=5&verno=3&prod=pikpak&expire=1787401193&f=619030226&fileid=VP-VLwpxxMPiLrSBZWR0JpFUo2&userid=888880000045788&sign=3B59";
+        let meta = parse_pikpak_direct_link_meta(url).unwrap();
+        assert_eq!(meta.file_id, "VP-VLwpxxMPiLrSBZWR0JpFUo2");
+        assert_eq!(meta.file_size, 619030226);
+        assert_eq!(meta.expire, 1787401193);
+        assert_eq!(meta.user_id, "888880000045788");
+
+        // 非 PikPak 链接返回 None
+        assert!(parse_pikpak_direct_link_meta("https://example.com/download").is_none());
+        assert!(parse_pikpak_direct_link_meta("https://mypikpak.com/s/abc123").is_none());
+        // 缺少 fileid
+        assert!(parse_pikpak_direct_link_meta("https://dl-a10b.mypikpak.com/download/?f=100").is_none());
+    }
+
     #[tokio::test]
     async fn test_inspect_real_pikpak_share() {
         let url = "https://mypikpak.com/s/VOveL7ZI01ViAz9VVKGgSWDlo2";
@@ -656,6 +723,7 @@ mod tests {
     /// 可能无法完整下载大文件，由 test_real_user_pikpak_link_live_download
     /// 验证其"有限时间内识别停滞"的半链路行为。
     #[tokio::test]
+    #[ignore = "在线 PikPak 实机多轮下载验证（需外网与大文件下载）"]
     async fn test_live_pikpak_stall_detect_refresh_and_resume() {
         const SHARE_ID: &str = "VOveL7ZI01ViAz9VVKGgSWDlo2";
         const FILE_ID: &str = "VOveL6e1SyYOOMvFhQYg9pJFo2";

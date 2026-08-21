@@ -562,3 +562,4 @@ export function isPikPakShareUrl(url: string): boolean {
   );
 }
 
+export { isPikPakDirectLink } from "./services/pikpak";

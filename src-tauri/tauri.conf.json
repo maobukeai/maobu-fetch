@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Maobu Fetch",
-  "version": "0.8.9",
+  "version": "0.8.10",
   "identifier": "app.lumaget.desktop",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -27,7 +27,11 @@
       }
     ],
     "security": {
-      "csp": null
+      "csp": null,
+      "assetProtocol": {
+        "enable": true,
+        "scope": ["**"]
+      }
     }
   },
   "bundle": {
@@ -47,6 +51,11 @@
         "ext": ["maobu-task"],
         "name": "MaobuFetch.Task",
         "description": "猫步下载器任务导出文件"
+      },
+      {
+        "ext": ["mp4", "webm", "mkv", "mov", "m4v", "flv", "avi", "ts"],
+        "name": "MaobuFetch.Video",
+        "description": "猫步下载器 媒体文件"
       }
     ],
     "windows": {

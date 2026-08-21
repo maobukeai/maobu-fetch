@@ -38,8 +38,8 @@ fn main() {
     };
 
     match command {
-        CliCommand::Run => {
-            // 正常启动 GUI。
+        CliCommand::Run | CliCommand::Play { .. } => {
+            // 正常启动 GUI 或唤起播放器窗口。
             maobu_fetch_lib::run();
         }
         other => {

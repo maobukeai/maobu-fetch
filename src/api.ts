@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { AppInfo, AppSettings, BtFileEntry, BtNewTaskRequest, BtTorrentInspectResult, CacheClearResult, CacheInspectResult, CategoryRule, CategoryRuleTestResult, CompletionAction, DeepLinkReceivedPayload, DetectedMediaTools, DownloadPreset, DownloadTask, DuplicateCheckResult, ErrorDiagnosis, ExtensionCompatibilityResult, ExtensionUpdateResult, FilenameCleanupRule, LanzouDirectUrlResult, LanzouShareInfo, MediaCredential, MediaCredentialCheckResult, MediaPlatform, MediaProbeResult, MeteredNetworkDetectedPayload, NewTaskRequest, PairingInfo, Pan123DirectUrlResult, Pan123ShareInfo, PlatformCompatibility, PlatformNamingTemplate, PowerAction, PowerActionState, PrecheckRequest, PrecheckResult, ProxyAuth, ProxyTestResult, QuickView, RestorePreview, RestoreStats, RetryPolicy, SelfcheckReport, Tag, TaskEvent, TaskNotificationPayload, TaskTagsMap, TaskTemplate, TaskTemplateTestResult, ToolComponent, ToolStatus, UpdateCheckResult, UpdateDownloadResult, UpdateProgressPayload, UrlHistoryEntry, WaitReason, YtDlpUpdateInfo } from "./types";
+import type { AppInfo, AppSettings, BtFileEntry, BtNewTaskRequest, BtTorrentInspectResult, CacheClearResult, CacheInspectResult, CategoryRule, CategoryRuleTestResult, CompletionAction, DeepLinkReceivedPayload, DetectedMediaTools, DownloadPreset, DownloadTask, DuplicateCheckResult, ErrorDiagnosis, ExtensionCompatibilityResult, ExtensionUpdateResult, FileAssocInfo, FilenameCleanupRule, ImageFileInfo, ImageItem, LanzouDirectUrlResult, LanzouShareInfo, MediaCredential, MediaCredentialCheckResult, MediaPlatform, MediaProbeResult, MeteredNetworkDetectedPayload, NewTaskRequest, PairingInfo, Pan123DirectUrlResult, Pan123ShareInfo, PlatformCompatibility, PlatformNamingTemplate, PlaylistItem, PowerAction, PowerActionState, PrecheckRequest, PrecheckResult, ProxyAuth, ProxyTestResult, QuickView, RestorePreview, RestoreStats, RetryPolicy, SelfcheckReport, SubtitleItem, Tag, TaskEvent, TaskNotificationPayload, TaskTagsMap, TaskTemplate, TaskTemplateTestResult, ToolComponent, ToolStatus, UpdateCheckResult, UpdateDownloadResult, UpdateProgressPayload, UrlHistoryEntry, WaitReason, YtDlpUpdateInfo } from "./types";
 
 export const isDesktop = () => "__TAURI_INTERNALS__" in window;
 const call = <T>(command: string, args?: Record<string, unknown>): Promise<T> => isDesktop() ? invoke<T>(command, args) : Promise.reject(new Error("请运行猫步下载器桌面应用"));
@@ -412,6 +412,120 @@ export const api = {
       pass_code: params.pass_code || null,
       passCode: params.pass_code || null,
     }),
+  /** 唤起内置媒体播放器独立窗口播放指定文件。 */
+  openMediaPlayer: (filePath: string, title?: string) =>
+    call<void>("open_media_player", { filePath, title }),
+  /** 获取 Windows 视频文件关联列表与当前状态。 */
+  getFileAssociations: () =>
+    isDesktop() ? call<FileAssocInfo[]>("file_associations_get") : Promise.resolve([]),
+  /** 设置/更新 Windows 视频文件关联。 */
+  setFileAssociations: (exts: string[], enable: boolean) =>
+    call<void>("file_associations_set", { exts, enable }),
+  /** 打开 Windows 默认应用设置面板。 */
+  openDefaultAppsSettings: () =>
+    call<void>("default_apps_settings_open"),
+  /** 获取当前待播放的文件信息。 */
+  playerGetCurrentFile: () =>
+    isDesktop() ? call<[string, string | null] | null>("player_get_current_file") : Promise.resolve(null),
+  /** 最小化播放器窗口。 */
+  playerWindowMinimize: () =>
+    isDesktop() ? call<void>("player_window_minimize") : Promise.resolve(),
+  /** 最大化/还原播放器窗口。 */
+  playerWindowToggleMaximize: () =>
+    isDesktop() ? call<boolean>("player_window_toggle_maximize") : Promise.resolve(false),
+  /** 全屏切换播放器窗口。 */
+  playerWindowToggleFullscreen: () =>
+    isDesktop() ? call<boolean>("player_window_toggle_fullscreen") : Promise.resolve(false),
+  /** 关闭播放器窗口。 */
+  playerWindowClose: () =>
+    isDesktop() ? call<void>("player_window_close") : Promise.resolve(),
+  /** 置顶/取消置顶播放器窗口。 */
+  playerWindowSetAlwaysOnTop: (alwaysOnTop: boolean) =>
+    isDesktop() ? call<void>("player_window_set_always_on_top", { alwaysOnTop }) : Promise.resolve(),
+  /** 切换迷你无边框画中画悬浮窗模式。 */
+  playerWindowToggleMiniMode: (mini: boolean) =>
+    isDesktop() ? call<boolean>("player_window_toggle_mini_mode", { mini }) : Promise.resolve(false),
+  /** 使用系统默认程序直接打开物理文件。 */
+  openPathDirect: (path: string) =>
+    isDesktop() ? call<void>("open_path_direct", { path }) : Promise.resolve(),
+  /** 保存视频截图到本地默认下载/视频所在目录。 */
+  playerSaveScreenshot: (dataBase64: string, videoTitle?: string, currentTimeSec?: number, videoFilePath?: string) =>
+    isDesktop()
+      ? call<string>("player_save_screenshot", {
+          data_base64: dataBase64,
+          dataBase64,
+          video_title: videoTitle || null,
+          videoTitle: videoTitle || null,
+          current_time_sec: currentTimeSec ?? null,
+          currentTimeSec: currentTimeSec ?? null,
+          video_file_path: videoFilePath || null,
+          videoFilePath: videoFilePath || null,
+        })
+      : Promise.resolve(""),
+  /** 扫描并获取指定视频所在目录的所有相关视频文件。 */
+  playerGetFolderVideos: (currentFilePath: string) =>
+    isDesktop()
+      ? call<PlaylistItem[]>("player_get_folder_videos", {
+          current_file_path: currentFilePath,
+          currentFilePath,
+        })
+      : Promise.resolve([]),
+  /** 智能扫描并获取指定视频所在目录的匹配外挂字幕文件。 */
+  playerGetMatchedSubtitles: (videoPath: string) =>
+    isDesktop()
+      ? call<SubtitleItem[]>("player_get_matched_subtitles", {
+          video_path: videoPath,
+          videoPath,
+        })
+      : Promise.resolve([]),
+  /** 读取指定本地字幕文件的文本内容。 */
+  playerReadSubtitleContent: (subtitlePath: string) =>
+    isDesktop()
+      ? call<string>("player_read_subtitle_content", {
+          subtitle_path: subtitlePath,
+          subtitlePath,
+        })
+      : Promise.resolve(""),
+  /** 唤起内置看图器独立窗口查看指定图片。 */
+  openImageViewer: (filePath: string, title?: string) =>
+    call<void>("open_image_viewer", { filePath, title }),
+  /** 获取看图器当前待打开的文件信息。 */
+  imageViewerGetCurrentFile: () =>
+    isDesktop() ? call<[string, string | null] | null>("image_viewer_get_current_file") : Promise.resolve(null),
+  /** 最小化看图器窗口。 */
+  imageViewerWindowMinimize: () =>
+    isDesktop() ? call<void>("image_viewer_window_minimize") : Promise.resolve(),
+  /** 最大化/还原看图器窗口。 */
+  imageViewerWindowToggleMaximize: () =>
+    isDesktop() ? call<boolean>("image_viewer_window_toggle_maximize") : Promise.resolve(false),
+  /** 全屏切换看图器窗口。 */
+  imageViewerWindowToggleFullscreen: () =>
+    isDesktop() ? call<boolean>("image_viewer_window_toggle_fullscreen") : Promise.resolve(false),
+  /** 关闭看图器窗口。 */
+  imageViewerWindowClose: () =>
+    isDesktop() ? call<void>("image_viewer_window_close") : Promise.resolve(),
+  /** 置顶/取消置顶看图器窗口。 */
+  imageViewerWindowToggleAlwaysOnTop: () =>
+    isDesktop() ? call<boolean>("image_viewer_window_toggle_always_on_top") : Promise.resolve(false),
+  /** 自适应根据图片真实尺寸重设看图器窗口大小。 */
+  imageViewerWindowSetSize: (width: number, height: number, center?: boolean) =>
+    isDesktop() ? call<void>("image_viewer_window_set_size", { width, height, center }) : Promise.resolve(),
+  /** 扫描并获取指定图片所在目录的所有图片文件列表。 */
+  imageViewerGetFolderImages: (currentFilePath: string) =>
+    isDesktop()
+      ? call<ImageItem[]>("image_viewer_get_folder_images", {
+          current_file_path: currentFilePath,
+          currentFilePath,
+        })
+      : Promise.resolve([]),
+  /** 获取图片的物理元数据信息。 */
+  imageViewerGetInfo: (filePath: string) =>
+    isDesktop()
+      ? call<ImageFileInfo>("image_viewer_get_info", {
+          file_path: filePath,
+          filePath,
+        })
+      : Promise.resolve({ path: filePath, name: "", size_bytes: 0, ext: "", modified_ms: 0 }),
   subscribe: async (handler: (event: TaskEvent | { removed: string }) => void): Promise<UnlistenFn[]> => {
     if (!isDesktop()) return [];
     return Promise.all([

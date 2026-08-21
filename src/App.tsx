@@ -85,7 +85,7 @@ import {
   inferCategory,
 } from "./components/common/EmptyState";
 import { Modal } from "./components/common/Modal";
-import { TaskRow } from "./components/common/TaskRow";
+import { TaskRow, isVideoFile, isImageFile } from "./components/common/TaskRow";
 import { BulkActionBar } from "./components/common/BulkActionBar";
 import {
   applyWindowAppearance,
@@ -2188,14 +2188,39 @@ export default function App() {
                             return next;
                           });
                         }}
-                        onOpen={() =>
-                          (task.status === "completed" ||
-                            (task.task_kind === "bt" &&
-                              task.downloaded_bytes > 0)) &&
-                          void api
-                            .openFile(task.id)
-                            .catch((error) => notify(String(error), "error"))
-                        }
+                        onOpen={() => {
+                          if (
+                            task.status === "completed" ||
+                            (task.task_kind === "bt" && task.downloaded_bytes > 0)
+                          ) {
+                            const sep =
+                              task.destination.endsWith("\\") || task.destination.endsWith("/")
+                                ? ""
+                                : "\\";
+                            const fullPath = `${task.destination}${sep}${task.file_name}`;
+                            if (isVideoFile(task.file_name)) {
+                              void api
+                                .openMediaPlayer(fullPath, task.file_name)
+                                .catch(() =>
+                                  api
+                                    .openFile(task.id)
+                                    .catch((error) => notify(String(error), "error"))
+                                );
+                            } else if (isImageFile(task.file_name)) {
+                              void api
+                                .openImageViewer(fullPath, task.file_name)
+                                .catch(() =>
+                                  api
+                                    .openFile(task.id)
+                                    .catch((error) => notify(String(error), "error"))
+                                );
+                            } else {
+                              void api
+                                .openFile(task.id)
+                                .catch((error) => notify(String(error), "error"));
+                            }
+                          }
+                        }}
                         onContext={(event) => {
                           event.preventDefault();
                           setPrimaryTaskId(task.id);

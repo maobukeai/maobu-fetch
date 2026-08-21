@@ -72,10 +72,12 @@ import {
   getOrCreateDeviceId,
   inspectPikPakShare,
   isPikPakShareUrl,
+  isPikPakDirectLink,
   parsePikPakShareUrl,
   resolvePikPakDirectUrl,
   type PikPakShareInfo,
 } from "../../services/pikpak";
+
 import { PikPakPicker } from "./PikPakPicker";
 import {
   inspectQuarkShare,
@@ -845,6 +847,7 @@ export function NewTaskDialog({
   }, [precheck?.conflicts, ignoreUrlConflict, destination, fileName, allTasks]);
 
   const isPikPak = isPikPakShareUrl(lines.length === 1 ? lines[0].trim() : "");
+  const isPikPakDirect = isPikPakDirectLink(lines.length === 1 ? lines[0].trim() : "");
   const isPikPakActive = Boolean(isPikPak && pikpakShareInfo && pikpakSelectedIds.size > 0);
   const isPikPakWithoutSelection = Boolean(isPikPak && pikpakShareInfo && pikpakSelectedIds.size === 0);
 
@@ -1654,6 +1657,12 @@ export function NewTaskDialog({
       setBusy(false);
       return;
     }
+    if (isPikPakDirect) {
+      headers["Referer"] = "https://mypikpak.com/";
+      if (!headers["User-Agent"] && !headers["user-agent"]) {
+        headers["User-Agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36";
+      }
+    }
 
     const template: Omit<NewTaskRequest, "url"> = {
       file_name: activeFileName || undefined,
@@ -1985,6 +1994,20 @@ export function NewTaskDialog({
                   aria-label={t("newTask.urlAriaLabel")}
                 />
               </div>
+              {isPikPakDirect && (
+                <div style={{
+                  padding: "8px 12px",
+                  background: "var(--warning-bg, #fff3cd)",
+                  border: "1px solid var(--warning-border, #ffc107)",
+                  borderRadius: 6,
+                  fontSize: 12,
+                  color: "var(--warning-text, #856404)",
+                  marginTop: 8
+                }}>
+                  ⚠️ PikPak 裸直链存在单链接流量配额限制（约 330MB），大文件可能无法一次下载完成。
+                  建议使用 PikPak 分享链接（mypikpak.com/s/xxx）以获得直链自动刷新续传能力。
+                </div>
+              )}
               <div className="url-input-tools-bar">
                 <div className="url-input-tools-left">
                   {(() => {

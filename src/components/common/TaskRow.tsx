@@ -1,13 +1,30 @@
 import { type CSSProperties, type MouseEvent } from "react";
-import { Film, MoreHorizontal, Pause, Play, RefreshCw, Zap } from "lucide-react";
+import { Film, Image as ImageIcon, MoreHorizontal, Pause, Play, RefreshCw, Zap } from "lucide-react";
 import { api } from "../../api";
 import { t, useLocale } from "../../i18n";
 import type { DownloadTask, Tag } from "../../types";
 import { formatBytes, formatDate, formatDuration, getStatusText, hostOf } from "../../formatters";
 import { FileIcon, inferCategory, TaskTagChips } from "./EmptyState";
 
+export function isImageFile(fileName: string): boolean {
+  const lower = fileName.toLowerCase();
+  const imageExts = [
+    ".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".svg", ".ico", ".avif", ".tiff", ".tif", ".jfif"
+  ];
+  return imageExts.some((ext) => lower.endsWith(ext));
+}
+
+export function isVideoFile(fileName: string): boolean {
+  const lower = fileName.toLowerCase();
+  const mediaExts = [
+    ".mp4", ".webm", ".mkv", ".mov", ".avi", ".flv", ".ts", ".wmv", ".m4v",
+    ".mp3", ".flac", ".wav", ".aac", ".m4a", ".ogg",
+  ];
+  return mediaExts.some((ext) => lower.endsWith(ext));
+}
+
 export function isMediaTask(task: DownloadTask): boolean {
-  if (task.media) return true;
+  if (task.media || isVideoFile(task.file_name)) return true;
   const mediaDomains = [
     "youtube.com",
     "youtu.be",
@@ -314,11 +331,22 @@ export function TaskRow({
               className="row-menu"
               onClick={(event) => {
                 event.stopPropagation();
-                void api.openFile(task.id).catch((e) => notify(String(e), "error"));
+                if (task.status === "completed") {
+                  const sep =
+                    task.destination.endsWith("\\") || task.destination.endsWith("/")
+                      ? ""
+                      : "\\";
+                  const fullPath = `${task.destination}${sep}${task.file_name}`;
+                  void api
+                    .openMediaPlayer(fullPath, task.file_name)
+                    .catch((e) => notify(String(e), "error"));
+                } else {
+                  void api.openFile(task.id).catch((e) => notify(String(e), "error"));
+                }
               }}
               title={
                 task.status === "completed"
-                  ? "播放文件"
+                  ? "使用猫步播放器播放"
                   : "🎬 边下边看 / 实时播放"
               }
               style={{ color: "var(--accent, #0078d4)" }}
@@ -326,6 +354,27 @@ export function TaskRow({
               <Film size={14} />
             </button>
           )}
+        {isImageFile(task.file_name) && task.status === "completed" && (
+          <button
+            type="button"
+            className="row-menu"
+            onClick={(event) => {
+              event.stopPropagation();
+              const sep =
+                task.destination.endsWith("\\") || task.destination.endsWith("/")
+                  ? ""
+                  : "\\";
+              const fullPath = `${task.destination}${sep}${task.file_name}`;
+              void api
+                .openImageViewer(fullPath, task.file_name)
+                .catch((e) => notify(String(e), "error"));
+            }}
+            title="使用猫步看图器查看"
+            style={{ color: "var(--accent, #0078d4)" }}
+          >
+            <ImageIcon size={14} />
+          </button>
+        )}
         {(task.status === "cancelled" || task.status === "completed") && (
           <button
             type="button"

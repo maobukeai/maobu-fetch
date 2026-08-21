@@ -46,6 +46,7 @@ import type {
   ColorScheme,
   ExtensionCompatibilityResult,
   ExtensionUpdateResult,
+  FileAssocInfo,
   PairingInfo,
   PlatformCompatibility,
   ToolStatus,
@@ -1062,31 +1063,35 @@ export function SettingsPage({
             </>
           )}
           {section === "media" && (
-            <SettingsGroup title="媒体组件">
-              <p className="settings-note">
-                按“自定义路径 → 应用安装 → Windows PATH”顺序查找组件。外部组件只会被引用，猫步下载器不会复制、更新或删除它们。
-              </p>
-              {tools ? (
-                <MediaToolsCard
-                  status={tools}
-                  onStatus={setTools}
-                  ytUpdate={ytUpdate}
+            <>
+              <SettingsGroup title="媒体组件">
+                <p className="settings-note">
+                  按“自定义路径 → 应用安装 → Windows PATH”顺序查找组件。外部组件只会被引用，猫步下载器不会复制、更新或删除它们。
+                </p>
+                {tools ? (
+                  <MediaToolsCard
+                    status={tools}
+                    onStatus={setTools}
+                    ytUpdate={ytUpdate}
+                  />
+                ) : (
+                  <LoaderCircle className="spin" />
+                )}
+                <MediaPathSettings
+                  value={draft}
+                  onChange={(patch) =>
+                    setDraft((current) => ({ ...current, ...patch }))
+                  }
                 />
-              ) : (
-                <LoaderCircle className="spin" />
-              )}
-              <MediaPathSettings
-                value={draft}
-                onChange={(patch) =>
-                  setDraft((current) => ({ ...current, ...patch }))
-                }
-              />
-              <MediaToolsUpdateRow
-                tools={tools}
-                onStatus={setTools}
-                onYtUpdate={setYtUpdate}
-              />
-            </SettingsGroup>
+                <MediaToolsUpdateRow
+                  tools={tools}
+                  onStatus={setTools}
+                  onYtUpdate={setYtUpdate}
+                />
+              </SettingsGroup>
+
+              <FileAssociationSection notify={notify} />
+            </>
           )}
           {section === "rules" && <CategoryRulesPanel notify={notify} />}
           {section === "filename-cleanup" && (
@@ -2631,5 +2636,103 @@ export function SettingsPage({
         </div>
       </main>
     </div>
+  );
+}
+
+function FileAssociationSection({ notify }: { notify: (text: string, kind?: "ok" | "error") => void }) {
+  const [assocs, setAssocs] = useState<FileAssocInfo[]>([]);
+  const [loading, setLoading] = useState(false);
+
+  const loadAssocs = useCallback(() => {
+    if (!isDesktop()) return;
+    setLoading(true);
+    api.getFileAssociations()
+      .then(setAssocs)
+      .catch((err) => notify(`读取文件关联失败: ${err}`, "error"))
+      .finally(() => setLoading(false));
+  }, [notify]);
+
+  useEffect(() => {
+    loadAssocs();
+  }, [loadAssocs]);
+
+  const handleRegisterAll = async () => {
+    try {
+      setLoading(true);
+      const exts = assocs.map((a) => a.extension);
+      await api.setFileAssociations(exts, true);
+      notify("已成功为选中的视频格式注册文件关联", "ok");
+      loadAssocs();
+    } catch (err) {
+      notify(`注册文件关联失败: ${err}`, "error");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleUnregisterAll = async () => {
+    try {
+      setLoading(true);
+      const exts = assocs.map((a) => a.extension);
+      await api.setFileAssociations(exts, false);
+      notify("已注销猫步下载器文件关联", "ok");
+      loadAssocs();
+    } catch (err) {
+      notify(`注销文件关联失败: ${err}`, "error");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleOpenDefaultSettings = () => {
+    api.openDefaultAppsSettings().catch((err) => notify(`无法打开系统设置: ${err}`, "error"));
+  };
+
+  return (
+    <SettingsGroup title="内置播放器与 Windows 文件关联">
+      <p className="settings-note">
+        猫步下载器内置轻量、硬件加速视频播放器，可直接关联 Windows 视频文件。双击视频文件即可毫秒级唤起极速播放。
+      </p>
+      <div className="flex flex-wrap gap-1.5 my-2">
+        {assocs.map((item) => (
+          <span
+            key={item.extension}
+            className={`px-2 py-0.5 rounded text-xs font-mono font-medium ${
+              item.is_associated
+                ? "bg-sky-500/20 text-sky-400 border border-sky-500/30"
+                : "bg-neutral-800 text-neutral-400 border border-neutral-700"
+            }`}
+          >
+            .{item.extension} {item.is_associated && "✓"}
+          </span>
+        ))}
+      </div>
+      <div className="flex items-center gap-2 mt-3">
+        <button
+          type="button"
+          disabled={loading}
+          onClick={handleRegisterAll}
+          className="btn btn-primary text-xs"
+        >
+          一键注册所有视频关联
+        </button>
+        <button
+          type="button"
+          disabled={loading}
+          onClick={handleOpenDefaultSettings}
+          className="btn btn-secondary text-xs"
+        >
+          打开 Windows 默认应用设置
+        </button>
+        <button
+          type="button"
+          disabled={loading}
+          onClick={handleUnregisterAll}
+          className="btn btn-ghost text-xs text-neutral-400 hover:text-red-400"
+        >
+          取消关联
+        </button>
+      </div>
+    </SettingsGroup>
   );
 }
