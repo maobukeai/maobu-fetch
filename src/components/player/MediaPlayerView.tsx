@@ -622,8 +622,33 @@ export function MediaPlayerView({ initialFile, initialTitle }: MediaPlayerProps)
     };
   }, [showPlaylist]);
 
+  // 监听点击外部自动关闭弹出的字幕菜单或倍速菜单
+  useEffect(() => {
+    if (!showSubtitleMenu && !showSpeedMenu) return;
+
+    const handlePointerDownOutsideMenu = (e: MouseEvent | TouchEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (!target) return;
+      if (target.closest(".maobu-player-popup-menu") || target.closest(".maobu-player-icon-btn")) {
+        return;
+      }
+      setShowSubtitleMenu(false);
+      setShowSpeedMenu(false);
+    };
+
+    document.addEventListener("mousedown", handlePointerDownOutsideMenu, true);
+    return () => {
+      document.removeEventListener("mousedown", handlePointerDownOutsideMenu, true);
+    };
+  }, [showSubtitleMenu, showSpeedMenu]);
+
   // 单击画面播放/暂停 (防抖区分单击与双击，若播放列表刚关闭或正打开则仅收起，坚决不暂停视频)
   const handleStageClick = useCallback(() => {
+    if (showSubtitleMenu || showSpeedMenu) {
+      setShowSubtitleMenu(false);
+      setShowSpeedMenu(false);
+      return;
+    }
     const isJustClosed = Date.now() - justClosedDrawerRef.current < 400;
     if (showPlaylist || isJustClosed) {
       setShowPlaylist(false);
@@ -638,7 +663,7 @@ export function MediaPlayerView({ initialFile, initialTitle }: MediaPlayerProps)
       togglePlay();
       clickTimeoutRef.current = null;
     }, 220);
-  }, [showPlaylist, togglePlay]);
+  }, [showPlaylist, showSubtitleMenu, showSpeedMenu, togglePlay]);
 
   // 双击画面全屏/最大化 (立即取消单击避免误触播放与HUD)
   const handleStageDoubleClick = useCallback(() => {
@@ -1268,6 +1293,7 @@ export function MediaPlayerView({ initialFile, initialTitle }: MediaPlayerProps)
                 onClick={() => {
                   setShowSpeedMenu((prev) => !prev);
                   setShowSubtitleMenu(false);
+                  setShowPlaylist(false);
                 }}
                 className="maobu-player-icon-btn"
                 style={{ fontSize: "12px", fontFamily: "monospace", padding: "4px 8px" }}
@@ -1299,6 +1325,7 @@ export function MediaPlayerView({ initialFile, initialTitle }: MediaPlayerProps)
                 onClick={() => {
                   setShowSubtitleMenu((prev) => !prev);
                   setShowSpeedMenu(false);
+                  setShowPlaylist(false);
                 }}
                 title="字幕设置"
                 className={`maobu-player-icon-btn ${subtitles.length > 0 ? "active" : ""}`}
@@ -1543,7 +1570,11 @@ export function MediaPlayerView({ initialFile, initialTitle }: MediaPlayerProps)
             <button
               ref={playlistBtnRef}
               type="button"
-              onClick={() => setShowPlaylist((prev) => !prev)}
+              onClick={() => {
+                setShowPlaylist((prev) => !prev);
+                setShowSubtitleMenu(false);
+                setShowSpeedMenu(false);
+              }}
               title="播放列表 (L)"
               className={`maobu-player-icon-btn ${showPlaylist ? "active" : ""}`}
               style={{ position: "relative" }}

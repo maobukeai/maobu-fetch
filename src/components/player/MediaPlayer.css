@@ -455,7 +455,7 @@
   position: absolute;
   bottom: 42px;
   right: 0;
-  background: rgba(14, 18, 28, 0.50);
+  background: rgba(14, 18, 28, 0.65);
   backdrop-filter: blur(40px) saturate(220%);
   -webkit-backdrop-filter: blur(40px) saturate(220%);
   border: 1px solid rgba(255, 255, 255, 0.16);
@@ -466,7 +466,19 @@
   display: flex;
   flex-direction: column;
   min-width: 110px;
+  max-height: calc(100vh - 64px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
   animation: maobuMenuPop 0.16s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.maobu-player-popup-menu::-webkit-scrollbar {
+  width: 4px;
+}
+
+.maobu-player-popup-menu::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.22);
+  border-radius: 9999px;
 }
 
 @keyframes maobuMenuPop {
@@ -513,11 +525,21 @@
 /* 字幕设置面板 (微晶极透磨砂) */
 .maobu-player-subtitle-panel {
   min-width: 260px;
-  max-width: 320px;
-  max-height: 420px;
+  max-width: min(320px, calc(100vw - 20px));
+  max-height: calc(100vh - 64px);
   overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 12px;
   gap: 10px;
+}
+
+.maobu-player-subtitle-panel::-webkit-scrollbar {
+  width: 5px;
+}
+
+.maobu-player-subtitle-panel::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.25);
+  border-radius: 9999px;
 }
 
 .maobu-player-subtitle-header {
@@ -1099,20 +1121,193 @@
 }
 
 .maobu-player-root.mini-mode .maobu-player-titlebar {
-  padding: 6px 10px;
+  height: 34px;
+  padding: 4px 10px;
   background: linear-gradient(180deg, rgba(0, 0, 0, 0.75) 0%, transparent 100%);
+}
+
+.maobu-player-root.mini-mode .maobu-player-title-text {
+  font-size: 11px;
 }
 
 .maobu-player-root.mini-mode .maobu-player-controls-panel {
   padding: 6px 10px 8px;
+  gap: 5px;
 }
 
-.maobu-player-root.mini-mode .maobu-player-time-display {
-  display: none;
-}
-
+.maobu-player-root.mini-mode .maobu-player-time-display,
+.maobu-player-root.mini-mode .maobu-player-btn-external,
+.maobu-player-root.mini-mode .maobu-player-btn-screenshot,
 .maobu-player-root.mini-mode .maobu-player-volume-slider {
-  width: 42px;
+  display: none !important;
+}
+
+.maobu-player-root.mini-mode .maobu-player-main-play-btn {
+  width: 30px;
+  height: 30px;
+}
+
+.maobu-player-root.mini-mode .maobu-player-icon-btn {
+  padding: 4px;
+}
+
+.maobu-player-root.mini-mode .maobu-player-left-group,
+.maobu-player-root.mini-mode .maobu-player-right-group {
+  gap: 4px;
+}
+
+.maobu-player-root.mini-mode .maobu-player-subtitles {
+  bottom: 44px;
+  font-size: 13px !important;
+  padding: 3px 8px;
+}
+
+.maobu-player-root.mini-mode .maobu-player-popup-menu {
+  bottom: 34px;
+  max-height: calc(100vh - 44px);
+}
+
+.maobu-player-root.mini-mode .maobu-player-subtitle-panel {
+  bottom: 34px;
+  right: -42px;
+  min-width: 230px;
+  max-width: min(290px, calc(100vw - 16px));
+  max-height: calc(100vh - 44px);
+  padding: 8px 10px;
+  gap: 5px;
+}
+
+.maobu-player-root.mini-mode .maobu-player-subtitle-header {
+  font-size: 12px;
+  padding-bottom: 5px;
+}
+
+.maobu-player-root.mini-mode .maobu-player-subtitle-section {
+  gap: 3px;
+  padding-bottom: 5px;
+}
+
+.maobu-player-root.mini-mode .maobu-player-subtitle-section-title {
+  font-size: 10px;
+}
+
+.maobu-player-root.mini-mode .maobu-player-subtitle-list {
+  max-height: 65px;
+}
+
+.maobu-player-root.mini-mode .maobu-player-subtitle-item {
+  padding: 3px 6px;
+  font-size: 10px;
+}
+
+.maobu-player-root.mini-mode .maobu-player-color-dot {
+  width: 17px;
+  height: 17px;
+}
+
+.maobu-player-root.mini-mode .maobu-player-subtitle-empty-box {
+  padding: 6px 4px;
+}
+
+.maobu-player-root.mini-mode .maobu-player-playlist-drawer {
+  width: min(250px, 80vw);
+}
+
+.maobu-player-root.mini-mode .maobu-player-playlist-header {
+  padding: 5px 8px 4px;
+}
+
+.maobu-player-root.mini-mode .maobu-player-playlist-title {
+  font-size: 11px;
+  gap: 4px;
+}
+
+.maobu-player-root.mini-mode .maobu-player-playlist-count {
+  font-size: 9px;
+  padding: 0 5px;
+}
+
+.maobu-player-root.mini-mode .maobu-player-playlist-header .maobu-player-icon-btn {
+  padding: 3px;
+}
+
+.maobu-player-root.mini-mode .maobu-player-playlist-search-wrap {
+  padding: 3px 8px;
+}
+
+.maobu-player-root.mini-mode .maobu-player-playlist-search-input {
+  height: 22px;
+  font-size: 11px;
+  padding: 0 22px;
+}
+
+.maobu-player-root.mini-mode .maobu-player-playlist-search-icon {
+  left: 14px;
+  width: 11px;
+  height: 11px;
+}
+
+.maobu-player-root.mini-mode .maobu-player-playlist-search-clear {
+  right: 12px;
+}
+
+.maobu-player-root.mini-mode .maobu-player-playlist-toolbar {
+  padding: 3px 8px;
+  gap: 4px;
+}
+
+.maobu-player-root.mini-mode .maobu-player-playlist-mode-btn {
+  padding: 2px 6px;
+  font-size: 10px;
+  border-radius: 4px;
+  gap: 3px;
+}
+
+.maobu-player-root.mini-mode .maobu-player-playlist-items {
+  padding: 3px 5px;
+  gap: 2px;
+}
+
+.maobu-player-root.mini-mode .maobu-player-playlist-item {
+  padding: 4px 6px;
+  border-radius: 5px;
+}
+
+.maobu-player-root.mini-mode .maobu-player-item-left {
+  gap: 5px;
+}
+
+.maobu-player-root.mini-mode .maobu-player-item-index {
+  font-size: 10px;
+  width: 14px;
+}
+
+.maobu-player-root.mini-mode .maobu-player-item-name {
+  font-size: 11px;
+  line-height: 1.25;
+}
+
+.maobu-player-root.mini-mode .maobu-player-item-meta {
+  font-size: 9px;
+}
+
+.maobu-player-root.mini-mode .maobu-player-playlist-footer {
+  padding: 3px 8px;
+  font-size: 9px;
+}
+
+.maobu-player-root.mini-mode .maobu-player-sort-menu {
+  top: 24px;
+  right: 5px;
+  min-width: 130px;
+  padding: 3px;
+  max-height: calc(100vh - 36px);
+  overflow-y: auto;
+}
+
+.maobu-player-root.mini-mode .maobu-player-sort-menu .maobu-player-menu-item {
+  padding: 3px 6px;
+  font-size: 10px;
 }
 
 /* ================= 窄屏与小窗口自适应响应式断点优化 ================= */
@@ -1141,7 +1336,7 @@
   }
 }
 
-/* 2. 窄屏 (< 620px)：隐藏外部默认打开按钮，缩减间距与时间码 */
+/* 2. 窄屏 (< 620px)：隐藏外部默认打开按钮，缩减间距与时间码，紧凑抽屉与浮窗 */
 @media (max-width: 620px) {
   .maobu-player-btn-external {
     display: none !important;
@@ -1157,6 +1352,14 @@
     margin-left: 2px;
     padding: 2px 6px;
     font-size: 11px;
+  }
+  .maobu-player-playlist-drawer {
+    width: min(270px, 84vw);
+  }
+  .maobu-player-subtitle-panel {
+    right: -42px;
+    min-width: 240px;
+    max-width: min(300px, calc(100vw - 16px));
   }
 }
 
@@ -1177,9 +1380,12 @@
     display: none;
   }
   .maobu-player-subtitles {
-    bottom: 60px;
-    font-size: 15px !important;
-    padding: 4px 10px;
+    bottom: 50px;
+    font-size: 14px !important;
+    padding: 3px 8px;
+  }
+  .maobu-player-playlist-drawer {
+    width: min(250px, 80vw);
   }
 }
 
@@ -1197,6 +1403,107 @@
   .maobu-player-left-group,
   .maobu-player-right-group {
     gap: 3px;
+  }
+  .maobu-player-subtitle-panel {
+    right: -24px;
+    min-width: 210px;
+    max-width: min(270px, calc(100vw - 12px));
+  }
+}
+
+/* 5. 矮窗口/低高度屏幕响应 (< 480px 高度)：垂直紧凑化弹窗与抽屉 */
+@media (max-height: 480px) {
+  .maobu-player-titlebar {
+    height: 34px;
+    padding: 3px 10px;
+  }
+  .maobu-player-controls-panel {
+    padding: 12px 10px 6px;
+    gap: 5px;
+  }
+  .maobu-player-popup-menu {
+    bottom: 34px;
+    max-height: calc(100vh - 44px);
+  }
+  .maobu-player-subtitle-panel {
+    bottom: 34px;
+    max-height: calc(100vh - 44px);
+    padding: 8px 10px;
+    gap: 5px;
+  }
+  .maobu-player-subtitle-header {
+    font-size: 12px;
+    padding-bottom: 5px;
+  }
+  .maobu-player-subtitle-section {
+    gap: 3px;
+    padding-bottom: 5px;
+  }
+  .maobu-player-subtitle-section-title {
+    font-size: 10px;
+  }
+  .maobu-player-subtitle-list {
+    max-height: 65px;
+  }
+  .maobu-player-subtitle-item {
+    padding: 3px 6px;
+    font-size: 10px;
+  }
+  .maobu-player-color-dot {
+    width: 17px;
+    height: 17px;
+  }
+  .maobu-player-subtitle-empty-box {
+    padding: 6px 4px;
+  }
+  .maobu-player-playlist-drawer {
+    width: min(260px, 82vw);
+  }
+  .maobu-player-playlist-header {
+    padding: 5px 8px 4px;
+  }
+  .maobu-player-playlist-title {
+    font-size: 11px;
+    gap: 4px;
+  }
+  .maobu-player-playlist-search-wrap {
+    padding: 3px 8px;
+  }
+  .maobu-player-playlist-search-input {
+    height: 22px;
+    font-size: 11px;
+    padding: 0 22px;
+  }
+  .maobu-player-playlist-toolbar {
+    padding: 3px 8px;
+    gap: 4px;
+  }
+  .maobu-player-playlist-mode-btn {
+    padding: 2px 6px;
+    font-size: 10px;
+  }
+  .maobu-player-playlist-items {
+    padding: 3px 5px;
+    gap: 2px;
+  }
+  .maobu-player-playlist-item {
+    padding: 4px 6px;
+  }
+  .maobu-player-playlist-footer {
+    padding: 3px 8px;
+    font-size: 9px;
+  }
+  .maobu-player-sort-menu {
+    top: 24px;
+    right: 5px;
+    min-width: 130px;
+    padding: 3px;
+    max-height: calc(100vh - 36px);
+    overflow-y: auto;
+  }
+  .maobu-player-sort-menu .maobu-player-menu-item {
+    padding: 3px 6px;
+    font-size: 10px;
   }
 }
 
