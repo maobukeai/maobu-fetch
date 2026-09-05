@@ -165,6 +165,9 @@ pub fn set_file_associations(exts: Vec<String>, enable: bool) -> Result<(), Stri
                 if let Ok((app_icon, _)) = app_key.create_subkey("DefaultIcon") {
                     let _ = app_icon.set_value("", &format!("\"{exe_path_str}\",0"));
                 }
+                if let Ok((shell_cmd, _)) = app_key.create_subkey("shell\\open\\command") {
+                    let _ = shell_cmd.set_value("", &format!("\"{exe_path_str}\" \"%1\""));
+                }
                 if let Ok((supp_types, _)) = app_key.create_subkey("SupportedTypes") {
                     for ext in &exts {
                         let clean_ext = ext.trim().trim_start_matches('.');
@@ -360,6 +363,9 @@ pub fn ensure_registered_applications() -> Result<(), String> {
             let _ = app_key.set_value("ApplicationCompany", &"Maobu Fetch");
             if let Ok((app_icon, _)) = app_key.create_subkey("DefaultIcon") {
                 let _ = app_icon.set_value("", &format!("\"{exe_path_str}\",0"));
+            }
+            if let Ok((shell_cmd, _)) = app_key.create_subkey("shell\\open\\command") {
+                let _ = shell_cmd.set_value("", &format!("\"{exe_path_str}\" \"%1\""));
             }
             if let Ok((supp_types, _)) = app_key.create_subkey("SupportedTypes") {
                 for ext in SUPPORTED_IMAGE_EXTS.iter().chain(SUPPORTED_VIDEO_EXTS.iter()) {
