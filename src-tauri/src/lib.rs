@@ -3595,6 +3595,124 @@ async fn image_viewer_get_info(file_path: String) -> Result<ImageFileInfo, Strin
     })
 }
 
+/// 轻量快速探测常见图片格式（PNG / GIF / BMP / WEBP / JPEG）的自然宽高，
+/// 仅读取前 2KB 头部字节，毫秒内完成，供看图器窗口创建时一步到位自适应尺寸，
+/// 杜绝窗口先以默认尺寸打开再瞬跳重绘的闪烁现象。
+pub fn probe_image_dimensions(path: &std::path::Path) -> Option<(u32, u32)> {
+    let mut file = std::fs::File::open(path).ok()?;
+    let mut buffer = [0u8; 2048];
+    use std::io::Read;
+    let n = file.read(&mut buffer).ok()?;
+    let data = &buffer[..n];
+
+    // 1. PNG: 8 字节魔数 + 4 字节 chunk 长度 + 4 字节 "IHDR" + 4 字节宽 + 4 字节高
+    if data.len() >= 24 && &data[..8] == [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A] && &data[12..16] == b"IHDR" {
+        let w = u32::from_be_bytes(data[16..20].try_into().ok()?);
+        let h = u32::from_be_bytes(data[20..24].try_into().ok()?);
+        return Some((w, h));
+    }
+
+    // 2. GIF: GIF87a 或 GIF89a
+    if data.len() >= 10 && (&data[..6] == b"GIF87a" || &data[..6] == b"GIF89a") {
+        let w = u16::from_le_bytes(data[6..8].try_into().ok()?) as u32;
+        let h = u16::from_le_bytes(data[8..10].try_into().ok()?) as u32;
+        return Some((w, h));
+    }
+
+    // 3. BMP: BM 开头，18..26 为宽高
+    if data.len() >= 26 && &data[..2] == b"BM" {
+        let w = i32::from_le_bytes(data[18..22].try_into().ok()?).unsigned_abs();
+        let h = i32::from_le_bytes(data[22..26].try_into().ok()?).unsigned_abs();
+        return Some((w, h));
+    }
+
+    // 4. WEBP: RIFF + WEBP
+    if data.len() >= 30 && &data[..4] == b"RIFF" && &data[8..12] == b"WEBP" {
+        let subtype = &data[12..16];
+        if subtype == b"VP8 " && data.len() >= 30 {
+            let w = (u16::from_le_bytes(data[26..28].try_into().ok()?) & 0x3fff) as u32;
+            let h = (u16::from_le_bytes(data[28..30].try_into().ok()?) & 0x3fff) as u32;
+            return Some((w, h));
+        }
+        if subtype == b"VP8L" && data.len() >= 25 && data[20] == 0x2f {
+            let b0 = data[21] as u32;
+            let b1 = data[22] as u32;
+            let b2 = data[23] as u32;
+            let b3 = data[24] as u32;
+            let w = 1 + (((b1 & 0x3f) << 8) | b0);
+            let h = 1 + (((b3 & 0xf) << 10) | (b2 << 2) | ((b1 & 0xc0) >> 6));
+            return Some((w, h));
+        }
+        if subtype == b"VP8X" && data.len() >= 30 {
+            let w = 1 + (data[24] as u32 | ((data[25] as u32) << 8) | ((data[26] as u32) << 16));
+            let h = 1 + (data[27] as u32 | ((data[28] as u32) << 8) | ((data[29] as u32) << 16));
+            return Some((w, h));
+        }
+    }
+
+    // 5. JPEG: 0xFF, 0xD8
+    if data.len() >= 4 && data[0] == 0xFF && data[1] == 0xD8 {
+        let mut idx = 2;
+        while idx + 8 < data.len() {
+            if data[idx] != 0xFF {
+                idx += 1;
+                continue;
+            }
+            while idx < data.len() && data[idx] == 0xFF {
+                idx += 1;
+            }
+            if idx >= data.len() {
+                break;
+            }
+            let marker = data[idx];
+            idx += 1;
+            if marker == 0xC0 || marker == 0xC1 || marker == 0xC2 {
+                if idx + 7 <= data.len() {
+                    let h = u16::from_be_bytes(data[idx + 3..idx + 5].try_into().ok()?) as u32;
+                    let w = u16::from_be_bytes(data[idx + 5..idx + 7].try_into().ok()?) as u32;
+                    return Some((w, h));
+                }
+                break;
+            }
+            if marker == 0xD9 || marker == 0xDA {
+                break;
+            }
+            if idx + 2 <= data.len() {
+                let len = u16::from_be_bytes(data[idx..idx + 2].try_into().ok()?) as usize;
+                idx += len;
+            } else {
+                break;
+            }
+        }
+    }
+
+    None
+}
+
+/// 计算看图器自适应尺寸（与前端 calculateOptimalViewerSize 严格一致）
+pub fn calculate_optimal_viewer_size(natural_w: u32, natural_h: u32) -> (f64, f64) {
+    if natural_w == 0 || natural_h == 0 {
+        return (600.0, 440.0);
+    }
+    let nw = natural_w as f64;
+    let nh = natural_h as f64;
+    let aspect = nw / nh;
+
+    let (target_w, target_h) = if aspect >= 1.0 {
+        let w = nw.min(600.0).max(420.0);
+        let h = (w / aspect).round();
+        (w, h)
+    } else {
+        let h = nh.min(560.0).max(360.0);
+        let w = (h * aspect).round().max(380.0);
+        (w, h)
+    };
+
+    let final_w = target_w.clamp(380.0, 800.0);
+    let final_h = target_h.clamp(280.0, 640.0);
+    (final_w, final_h)
+}
+
 pub fn open_or_focus_image_window(
     app: &tauri::AppHandle,
     file_path: &str,
@@ -3644,7 +3762,17 @@ pub fn open_or_focus_image_window(
         return Ok(());
     }
 
-    // 2. 为新打开的图片创建独立窗口（支持多图多窗口批量对比查看）
+    // 2. 检查当前活跃的看图窗口数量（用于多图打开时的轻量级层叠偏移）
+    let live_count = {
+        if let Some(state) = app.try_state::<ImageViewerState>() {
+            let mut guard = state.current_files.lock().unwrap();
+            guard.retain(|lbl, _| app.get_webview_window(lbl).is_some());
+            guard.len()
+        } else {
+            0
+        }
+    };
+
     static VIEWER_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
     let win_id = VIEWER_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let label = format!("image-viewer-{}", win_id);
@@ -3666,41 +3794,39 @@ pub fn open_or_focus_image_window(
 
     let window_title = title.unwrap_or("猫步看图器 · Maobu Image Viewer");
 
-    let mut builder = WebviewWindowBuilder::new(
+    // 3. 预先探测图片物理分辨率并一步到位计算自适应初始尺寸，杜绝窗口瞬跳闪烁
+    let (initial_w, initial_h) = probe_image_dimensions(std::path::Path::new(file_path))
+        .map(|(w, h)| calculate_optimal_viewer_size(w, h))
+        .unwrap_or((600.0, 440.0));
+
+    let builder = WebviewWindowBuilder::new(
         app,
         &label,
         WebviewUrl::App(query.into()),
     )
     .title(window_title)
-    .inner_size(600.0, 440.0)
+    .inner_size(initial_w, initial_h)
     .min_inner_size(360.0, 260.0)
+    .center()
     .decorations(false)
     .transparent(true)
     .resizable(true);
 
-    // 多窗口层叠偏移，防止完全重叠遮挡
-    if win_id > 1 {
-        if let Ok(Some(monitor)) = app.primary_monitor() {
-            let scale = monitor.scale_factor();
-            let mon_size = monitor.size();
-            let screen_w = mon_size.width as f64 / scale;
-            let screen_h = mon_size.height as f64 / scale;
-            let step = ((win_id - 1) % 8) as f64;
-            let offset_x = step * 32.0;
-            let offset_y = step * 32.0;
-            let base_x = ((screen_w - 600.0) / 2.0 + offset_x).clamp(40.0, screen_w - 620.0);
-            let base_y = ((screen_h - 440.0) / 2.0 + offset_y).clamp(40.0, screen_h - 460.0);
-            builder = builder.position(base_x, base_y);
-        } else {
-            builder = builder.center();
-        }
-    } else {
-        builder = builder.center();
-    }
-
     let win = builder
         .build()
         .map_err(|e| format!("创建看图器窗口失败: {e}"))?;
+
+    // 4. 确保在展示窗口前已居中并在多开时平滑层叠，彻底避免右下角闪跳
+    let _ = win.center();
+    if live_count > 0 {
+        if let Ok(pos) = win.outer_position() {
+            let step = (live_count % 8) as i32;
+            let _ = win.set_position(tauri::PhysicalPosition::new(
+                pos.x + step * 30,
+                pos.y + step * 30,
+            ));
+        }
+    }
 
     #[cfg(windows)]
     {
@@ -4152,3 +4278,84 @@ pub fn run() {
             }
         });
 }
+
+#[cfg(test)]
+mod image_viewer_tests {
+    use super::*;
+
+    #[test]
+    fn test_calculate_optimal_viewer_size() {
+        // 横屏 1920x1080 (16:9)
+        let (w, h) = calculate_optimal_viewer_size(1920, 1080);
+        assert_eq!(w, 600.0);
+        assert_eq!(h, 338.0);
+
+        // 竖屏 1080x1920 (9:16)
+        let (w, h) = calculate_optimal_viewer_size(1080, 1920);
+        assert_eq!(w, 380.0); // 最小宽度保底
+        assert_eq!(h, 560.0);
+
+        // 正方形 800x800
+        let (w, h) = calculate_optimal_viewer_size(800, 800);
+        assert_eq!(w, 600.0);
+        assert_eq!(h, 600.0);
+
+        // 零输入兜底
+        let (w, h) = calculate_optimal_viewer_size(0, 0);
+        assert_eq!(w, 600.0);
+        assert_eq!(h, 440.0);
+    }
+
+    #[test]
+    fn test_probe_image_dimensions_png() {
+        let mut data = vec![0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]; // PNG 签名
+        data.extend_from_slice(&13u32.to_be_bytes()); // IHDR chunk len
+        data.extend_from_slice(b"IHDR");
+        data.extend_from_slice(&800u32.to_be_bytes()); // width = 800
+        data.extend_from_slice(&600u32.to_be_bytes()); // height = 600
+
+        let temp_dir = std::env::temp_dir();
+        let path = temp_dir.join("test_probe.png");
+        std::fs::write(&path, &data).unwrap();
+
+        let dims = probe_image_dimensions(&path);
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!(dims, Some((800, 600)));
+    }
+
+    #[test]
+    fn test_probe_image_dimensions_gif() {
+        let mut data = Vec::from(&b"GIF89a"[..]);
+        data.extend_from_slice(&320u16.to_le_bytes()); // width = 320
+        data.extend_from_slice(&240u16.to_le_bytes()); // height = 240
+
+        let temp_dir = std::env::temp_dir();
+        let path = temp_dir.join("test_probe.gif");
+        std::fs::write(&path, &data).unwrap();
+
+        let dims = probe_image_dimensions(&path);
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!(dims, Some((320, 240)));
+    }
+
+    #[test]
+    fn test_probe_image_dimensions_bmp() {
+        let mut data = vec![0u8; 30];
+        data[0] = b'B';
+        data[1] = b'M';
+        data[18..22].copy_from_slice(&1024i32.to_le_bytes()); // width = 1024
+        data[22..26].copy_from_slice(&768i32.to_le_bytes());  // height = 768
+
+        let temp_dir = std::env::temp_dir();
+        let path = temp_dir.join("test_probe.bmp");
+        std::fs::write(&path, &data).unwrap();
+
+        let dims = probe_image_dimensions(&path);
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!(dims, Some((1024, 768)));
+    }
+}
+

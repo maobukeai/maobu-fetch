@@ -641,12 +641,16 @@ export function ImageViewerView({ initialFile, initialTitle }: ImageViewerProps)
                 const naturalH = img.naturalHeight;
                 setNaturalSize({ width: naturalW, height: naturalH });
 
-                // 首次打开看图器时居中；后续切图时绝对不强制居中，保持用户当前放置的窗口位置！
+                // 首次打开看图器时，后端已经在创建窗口时精准预探测图片分辨率并居中，
+                // 绝不在首次 onLoad 时再次调用 window.center() 导致窗口瞬跳闪烁！
                 if (isDesktop() && naturalW > 0 && naturalH > 0) {
-                  const optimal = calculateOptimalViewerSize(naturalW, naturalH);
-                  const shouldCenter = isInitialLoadRef.current;
-                  isInitialLoadRef.current = false;
-                  void api.imageViewerWindowSetSize(optimal.width, optimal.height, shouldCenter);
+                  if (isInitialLoadRef.current) {
+                    isInitialLoadRef.current = false;
+                  } else {
+                    // 后续在同窗口内切图 (Prev/Next) 时自适应新图尺寸，但严禁重新居中（保持用户摆放的位置）
+                    const optimal = calculateOptimalViewerSize(naturalW, naturalH);
+                    void api.imageViewerWindowSetSize(optimal.width, optimal.height, false);
+                  }
                 }
 
                 // 初始化居中
