@@ -2610,8 +2610,10 @@ fn handle_single_instance_forward(app: &tauri::AppHandle, argv: Vec<String>) {
         CliCommand::Play { path } => {
             let _ = open_or_focus_player_window(app, &path, None);
         }
-        CliCommand::ViewImage { path } => {
-            let _ = open_or_focus_image_window(app, &path, None);
+        CliCommand::ViewImage { paths } => {
+            for path in paths {
+                let _ = open_or_focus_image_window(app, &path, None);
+            }
         }
         other => {
             // CLI 子命令：在运行中的 manager 上执行。
@@ -3402,7 +3404,7 @@ async fn open_media_player(
 
 #[derive(Default)]
 pub struct ImageViewerState {
-    pub current_file: std::sync::Mutex<Option<(String, Option<String>)>>,
+    pub current_files: std::sync::Mutex<std::collections::HashMap<String, (String, Option<String>)>>,
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -3424,94 +3426,93 @@ pub struct ImageFileInfo {
 
 #[tauri::command]
 async fn image_viewer_get_current_file(
+    window: tauri::WebviewWindow,
     state: State<'_, ImageViewerState>,
 ) -> Result<Option<(String, Option<String>)>, String> {
-    Ok(state.current_file.lock().unwrap().clone())
+    Ok(state.current_files.lock().unwrap().get(window.label()).cloned())
 }
 
 #[tauri::command]
-async fn image_viewer_window_minimize(app: tauri::AppHandle) -> Result<(), String> {
-    if let Some(win) = app.get_webview_window("image-viewer") {
-        win.minimize().map_err(|e| e.to_string())?;
-    }
+async fn image_viewer_notify_file_changed(
+    window: tauri::WebviewWindow,
+    state: State<'_, ImageViewerState>,
+    file_path: String,
+    title: Option<String>,
+) -> Result<(), String> {
+    state.current_files.lock().unwrap().insert(
+        window.label().to_string(),
+        (file_path, title),
+    );
     Ok(())
 }
 
 #[tauri::command]
-async fn image_viewer_window_toggle_maximize(app: tauri::AppHandle) -> Result<bool, String> {
-    if let Some(win) = app.get_webview_window("image-viewer") {
-        let is_max = win.is_maximized().unwrap_or(false);
-        if is_max {
-            win.unmaximize().map_err(|e| e.to_string())?;
-            Ok(false)
-        } else {
-            win.maximize().map_err(|e| e.to_string())?;
-            Ok(true)
-        }
-    } else {
+async fn image_viewer_window_minimize(window: tauri::WebviewWindow) -> Result<(), String> {
+    window.minimize().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn image_viewer_window_toggle_maximize(window: tauri::WebviewWindow) -> Result<bool, String> {
+    let is_max = window.is_maximized().unwrap_or(false);
+    if is_max {
+        window.unmaximize().map_err(|e| e.to_string())?;
         Ok(false)
+    } else {
+        window.maximize().map_err(|e| e.to_string())?;
+        Ok(true)
     }
 }
 
 #[tauri::command]
-async fn image_viewer_window_close(app: tauri::AppHandle) -> Result<(), String> {
-    if let Some(win) = app.get_webview_window("image-viewer") {
-        win.close().map_err(|e| e.to_string())?;
-    }
-    Ok(())
+async fn image_viewer_window_close(
+    window: tauri::WebviewWindow,
+    state: State<'_, ImageViewerState>,
+) -> Result<(), String> {
+    state.current_files.lock().unwrap().remove(window.label());
+    window.close().map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-async fn image_viewer_window_toggle_fullscreen(app: tauri::AppHandle) -> Result<bool, String> {
-    if let Some(win) = app.get_webview_window("image-viewer") {
-        let is_fs = win.is_fullscreen().unwrap_or(false);
-        let next_fs = !is_fs;
-        win.set_fullscreen(next_fs).map_err(|e| e.to_string())?;
-        Ok(next_fs)
-    } else {
-        Ok(false)
-    }
+async fn image_viewer_window_toggle_fullscreen(window: tauri::WebviewWindow) -> Result<bool, String> {
+    let is_fs = window.is_fullscreen().unwrap_or(false);
+    let next_fs = !is_fs;
+    window.set_fullscreen(next_fs).map_err(|e| e.to_string())?;
+    Ok(next_fs)
 }
 
 #[tauri::command]
-async fn image_viewer_window_toggle_always_on_top(app: tauri::AppHandle) -> Result<bool, String> {
-    if let Some(win) = app.get_webview_window("image-viewer") {
-        let is_top = win.is_always_on_top().unwrap_or(false);
-        let next_top = !is_top;
-        win.set_always_on_top(next_top).map_err(|e| e.to_string())?;
-        Ok(next_top)
-    } else {
-        Ok(false)
-    }
+async fn image_viewer_window_toggle_always_on_top(window: tauri::WebviewWindow) -> Result<bool, String> {
+    let is_top = window.is_always_on_top().unwrap_or(false);
+    let next_top = !is_top;
+    window.set_always_on_top(next_top).map_err(|e| e.to_string())?;
+    Ok(next_top)
 }
 
 #[tauri::command]
 async fn image_viewer_window_set_size(
-    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
     width: f64,
     height: f64,
     center: Option<bool>,
 ) -> Result<(), String> {
-    if let Some(win) = app.get_webview_window("image-viewer") {
-        let is_max = win.is_maximized().unwrap_or(false);
-        let is_fs = win.is_fullscreen().unwrap_or(false);
-        if !is_max && !is_fs {
-            let monitor = win.current_monitor().ok().flatten();
-            let (max_w, max_h) = if let Some(m) = monitor {
-                let size = m.size();
-                let scale = m.scale_factor();
-                ((size.width as f64 / scale) * 0.75, (size.height as f64 / scale) * 0.75)
-            } else {
-                (1280.0, 800.0)
-            };
+    let is_max = window.is_maximized().unwrap_or(false);
+    let is_fs = window.is_fullscreen().unwrap_or(false);
+    if !is_max && !is_fs {
+        let monitor = window.current_monitor().ok().flatten();
+        let (max_w, max_h) = if let Some(m) = monitor {
+            let size = m.size();
+            let scale = m.scale_factor();
+            ((size.width as f64 / scale) * 0.75, (size.height as f64 / scale) * 0.75)
+        } else {
+            (1280.0, 800.0)
+        };
 
-            let target_w = width.clamp(360.0, max_w);
-            let target_h = height.clamp(260.0, max_h);
+        let target_w = width.clamp(360.0, max_w);
+        let target_h = height.clamp(260.0, max_h);
 
-            let _ = win.set_size(tauri::LogicalSize::new(target_w, target_h));
-            if center.unwrap_or(false) {
-                let _ = win.center();
-            }
+        let _ = window.set_size(tauri::LogicalSize::new(target_w, target_h));
+        if center.unwrap_or(false) {
+            let _ = window.center();
         }
     }
     Ok(())
@@ -3601,9 +3602,58 @@ pub fn open_or_focus_image_window(
 ) -> Result<(), String> {
     use tauri::{WebviewUrl, WebviewWindowBuilder};
 
+    // 1. 规范化路径，检查是否已有窗口正在展示该图片
+    let norm_path = std::path::Path::new(file_path)
+        .canonicalize()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|_| file_path.to_string());
+
+    let existing_window = {
+        if let Some(state) = app.try_state::<ImageViewerState>() {
+            let mut guard = state.current_files.lock().unwrap();
+            // 清理已被用户销毁的旧窗口记录
+            guard.retain(|lbl, _| app.get_webview_window(lbl).is_some());
+            guard
+                .iter()
+                .find(|(_, (p, _))| {
+                    let p_norm = std::path::Path::new(p)
+                        .canonicalize()
+                        .map(|c| c.to_string_lossy().to_string())
+                        .unwrap_or_else(|_| p.clone());
+                    p_norm == norm_path
+                })
+                .and_then(|(lbl, _)| app.get_webview_window(lbl))
+        } else {
+            None
+        }
+    };
+
+    if let Some(win) = existing_window {
+        let _ = win.show();
+        let _ = win.unminimize();
+        #[cfg(windows)]
+        {
+            let _ = win.set_always_on_top(true);
+            let _ = win.set_always_on_top(false);
+        }
+        let _ = win.set_focus();
+        let _ = win.emit("image-viewer-load-file", serde_json::json!({
+            "file": file_path,
+            "title": title
+        }));
+        return Ok(());
+    }
+
+    // 2. 为新打开的图片创建独立窗口（支持多图多窗口批量对比查看）
+    static VIEWER_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    let win_id = VIEWER_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let label = format!("image-viewer-{}", win_id);
+
     if let Some(state) = app.try_state::<ImageViewerState>() {
-        *state.current_file.lock().unwrap() =
-            Some((file_path.to_string(), title.map(|s| s.to_string())));
+        state.current_files.lock().unwrap().insert(
+            label.clone(),
+            (file_path.to_string(), title.map(|s| s.to_string())),
+        );
     }
 
     let encoded_path = urlencoding_encode(file_path);
@@ -3616,32 +3666,51 @@ pub fn open_or_focus_image_window(
 
     let window_title = title.unwrap_or("猫步看图器 · Maobu Image Viewer");
 
-    if let Some(win) = app.get_webview_window("image-viewer") {
+    let mut builder = WebviewWindowBuilder::new(
+        app,
+        &label,
+        WebviewUrl::App(query.into()),
+    )
+    .title(window_title)
+    .inner_size(600.0, 440.0)
+    .min_inner_size(360.0, 260.0)
+    .decorations(false)
+    .transparent(true)
+    .resizable(true);
+
+    // 多窗口层叠偏移，防止完全重叠遮挡
+    if win_id > 1 {
+        if let Ok(Some(monitor)) = app.primary_monitor() {
+            let scale = monitor.scale_factor();
+            let mon_size = monitor.size();
+            let screen_w = mon_size.width as f64 / scale;
+            let screen_h = mon_size.height as f64 / scale;
+            let step = ((win_id - 1) % 8) as f64;
+            let offset_x = step * 32.0;
+            let offset_y = step * 32.0;
+            let base_x = ((screen_w - 600.0) / 2.0 + offset_x).clamp(40.0, screen_w - 620.0);
+            let base_y = ((screen_h - 440.0) / 2.0 + offset_y).clamp(40.0, screen_h - 460.0);
+            builder = builder.position(base_x, base_y);
+        } else {
+            builder = builder.center();
+        }
+    } else {
+        builder = builder.center();
+    }
+
+    let win = builder
+        .build()
+        .map_err(|e| format!("创建看图器窗口失败: {e}"))?;
+
+    #[cfg(windows)]
+    {
         let _ = win.show();
         let _ = win.unminimize();
+        let _ = win.set_always_on_top(true);
+        let _ = win.set_always_on_top(false);
         let _ = win.set_focus();
-        let _ = win.emit("image-viewer-load-file", serde_json::json!({
-            "file": file_path,
-            "title": title
-        }));
-    } else {
-        let builder = WebviewWindowBuilder::new(
-            app,
-            "image-viewer",
-            WebviewUrl::App(query.into()),
-        )
-        .title(window_title)
-        .inner_size(600.0, 440.0)
-        .min_inner_size(360.0, 260.0)
-        .center()
-        .decorations(false)
-        .transparent(true)
-        .resizable(true);
-
-        builder
-            .build()
-            .map_err(|e| format!("创建看图器窗口失败: {e}"))?;
     }
+
     Ok(())
 }
 
@@ -3764,10 +3833,12 @@ pub fn run() {
                         let _ = open_or_focus_player_window(&startup_app, &path, None);
                     });
                 }
-                Ok(CliCommand::ViewImage { path }) => {
+                Ok(CliCommand::ViewImage { paths }) => {
                     let startup_app = app.handle().clone();
                     tauri::async_runtime::spawn(async move {
-                        let _ = open_or_focus_image_window(&startup_app, &path, None);
+                        for path in paths {
+                            let _ = open_or_focus_image_window(&startup_app, &path, None);
+                        }
                     });
                 }
                 _ => {}
@@ -4042,6 +4113,7 @@ pub fn run() {
             open_media_player,
             open_image_viewer,
             image_viewer_get_current_file,
+            image_viewer_notify_file_changed,
             image_viewer_window_minimize,
             image_viewer_window_toggle_maximize,
             image_viewer_window_close,

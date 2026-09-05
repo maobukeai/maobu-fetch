@@ -21,8 +21,8 @@ pub enum CliCommand {
     Run,
     /// `play <path>` 或 `--play <path>`：唤起内置媒体播放器播放本地文件。
     Play { path: String },
-    /// `image <path>` 或 `--view-image <path>`：唤起内置看图器查看本地图片。
-    ViewImage { path: String },
+    /// `image <path>` 或 `--view-image <path...>`：唤起内置看图器查看本地图片（支持单图与多图批量打开）。
+    ViewImage { paths: Vec<String> },
     /// `add <url> --out <path> --connections <n>`（Task 35.2）。
     Add {
         url: String,
@@ -110,15 +110,17 @@ pub fn parse_args(args: Vec<String>) -> Result<CliCommand, String> {
         }
     }
 
-    // Windows 资源管理器双击打开或 --view-image 唤起图片文件
+    // Windows 资源管理器双击打开或 --view-image 唤起图片文件（支持单张或批量传入）
     if first == "--view-image" || first == "--image" || first == "-i" {
-        if args.len() > 2 {
-            return Ok(CliCommand::ViewImage {
-                path: args[2].clone(),
-            });
-        } else {
+        let paths: Vec<String> = args
+            .into_iter()
+            .skip(2)
+            .filter(|s| !s.trim().is_empty())
+            .collect();
+        if paths.is_empty() {
             return Err("缺少必填参数：图片文件路径".into());
         }
+        return Ok(CliCommand::ViewImage { paths });
     }
 
     if is_media_file_path(first) {
@@ -127,10 +129,15 @@ pub fn parse_args(args: Vec<String>) -> Result<CliCommand, String> {
         });
     }
 
-    if is_image_file_path(first) {
-        return Ok(CliCommand::ViewImage {
-            path: first.clone(),
-        });
+    // Windows 资源管理器多选批量打开或关联直接打开图片
+    let image_paths: Vec<String> = args
+        .iter()
+        .skip(1)
+        .filter(|s| is_image_file_path(s))
+        .cloned()
+        .collect();
+    if !image_paths.is_empty() {
+        return Ok(CliCommand::ViewImage { paths: image_paths });
     }
 
     let mut pargs =
@@ -160,7 +167,7 @@ pub fn parse_args(args: Vec<String>) -> Result<CliCommand, String> {
             if path.trim().is_empty() {
                 return Err("图片文件路径不能为空".into());
             }
-            Ok(CliCommand::ViewImage { path })
+            Ok(CliCommand::ViewImage { paths: vec![path] })
         }
         Some("add") => {
             let url = pargs
@@ -506,7 +513,23 @@ mod tests {
         assert_eq!(
             cmd,
             CliCommand::ViewImage {
-                path: "D:\\photos\\cat.png".into(),
+                paths: vec!["D:\\photos\\cat.png".into()],
+            }
+        );
+    }
+
+    #[test]
+    fn view_image_with_multiple_paths() {
+        let cmd = parse_args(args(&[
+            "--view-image",
+            "D:\\photos\\cat.png",
+            "D:\\photos\\dog.jpg",
+        ]))
+        .unwrap();
+        assert_eq!(
+            cmd,
+            CliCommand::ViewImage {
+                paths: vec!["D:\\photos\\cat.png".into(), "D:\\photos\\dog.jpg".into()],
             }
         );
     }
@@ -517,7 +540,7 @@ mod tests {
         assert_eq!(
             cmd,
             CliCommand::ViewImage {
-                path: "D:\\photos\\cat.jpg".into(),
+                paths: vec!["D:\\photos\\cat.jpg".into()],
             }
         );
     }
@@ -528,7 +551,25 @@ mod tests {
         assert_eq!(
             cmd,
             CliCommand::ViewImage {
-                path: "D:\\photos\\sample.webp".into(),
+                paths: vec!["D:\\photos\\sample.webp".into()],
+            }
+        );
+    }
+
+    #[test]
+    fn view_image_with_multiple_direct_paths() {
+        let cmd = parse_args(args(&[
+            "D:\\photos\\sample1.png",
+            "D:\\photos\\sample2.jpg",
+        ]))
+        .unwrap();
+        assert_eq!(
+            cmd,
+            CliCommand::ViewImage {
+                paths: vec![
+                    "D:\\photos\\sample1.png".into(),
+                    "D:\\photos\\sample2.jpg".into(),
+                ],
             }
         );
     }

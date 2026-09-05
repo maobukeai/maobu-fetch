@@ -141,6 +141,10 @@ export function ImageViewerView({ initialFile, initialTitle }: ImageViewerProps)
       setPosition({ x: 0, y: 0 });
       setNaturalSize(null);
 
+      if (isDesktop()) {
+        void api.imageViewerNotifyFileChanged(filePath, title || name);
+      }
+
       // 加载物理元信息
       try {
         const info = await api.imageViewerGetInfo(filePath);
@@ -162,32 +166,41 @@ export function ImageViewerView({ initialFile, initialTitle }: ImageViewerProps)
     []
   );
 
+  const isLoadedRef = useRef(false);
   // 初始化加载
   useEffect(() => {
+    if (isLoadedRef.current) return;
     if (currentPath) {
+      isLoadedRef.current = true;
       void loadImage(currentPath, imageTitle);
     } else {
       void api.imageViewerGetCurrentFile().then((res) => {
         if (res && res[0]) {
+          isLoadedRef.current = true;
           void loadImage(res[0], res[1] || undefined);
         }
       });
     }
+  }, [currentPath, imageTitle, loadImage]);
 
-    // 监听切图事件
-    const unlisten = listen<{ file: string; title?: string }>(
+  // 监听切图事件
+  useEffect(() => {
+    let unlistenFn: (() => void) | undefined;
+    void listen<{ file: string; title?: string }>(
       "image-viewer-load-file",
       (event) => {
         if (event.payload?.file) {
           void loadImage(event.payload.file, event.payload.title);
         }
       }
-    );
+    ).then((fn) => {
+      unlistenFn = fn;
+    });
 
     return () => {
-      void unlisten.then((fn) => fn());
+      if (unlistenFn) unlistenFn();
     };
-  }, [currentPath, imageTitle, loadImage]);
+  }, [loadImage]);
 
   // 切上一张
   const handlePrev = useCallback(() => {

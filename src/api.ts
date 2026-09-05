@@ -492,6 +492,15 @@ export const api = {
   /** 获取看图器当前待打开的文件信息。 */
   imageViewerGetCurrentFile: () =>
     isDesktop() ? call<[string, string | null] | null>("image_viewer_get_current_file") : Promise.resolve(null),
+  /** 向主进程登记当前窗口正在浏览的图片路径。 */
+  imageViewerNotifyFileChanged: (filePath: string, title?: string) =>
+    isDesktop()
+      ? call<void>("image_viewer_notify_file_changed", {
+          file_path: filePath,
+          filePath,
+          title,
+        })
+      : Promise.resolve(),
   /** 最小化看图器窗口。 */
   imageViewerWindowMinimize: () =>
     isDesktop() ? call<void>("image_viewer_window_minimize") : Promise.resolve(),
