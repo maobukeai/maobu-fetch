@@ -883,6 +883,10 @@ pub struct AppSettings {
     /// 默认 `None` 安全回退，行为与旧版本完全一致。
     #[serde(default)]
     pub scheduled_limit: Option<ScheduledSpeedLimit>,
+    /// 双击已完成任务时的打开方式偏好："builtin"（使用猫步内置播放器/看图器）或 "system"（使用系统默认关联程序）。
+    /// 默认 "builtin"。旧 JSON 缺失此字段时通过 serde 默认值安全回填。
+    #[serde(default = "default_open_file_action")]
+    pub open_file_action: String,
 }
 
 /// 分时段限速规则（2026-08-17）。
@@ -1114,8 +1118,13 @@ impl Default for AppSettings {
             bt_extra_trackers: String::new(),
             bt_tracker_subscribe_url: default_bt_tracker_subscribe_url(),
             bt_tracker_auto_update: false,
+            open_file_action: default_open_file_action(),
         }
     }
+}
+
+fn default_open_file_action() -> String {
+    "builtin".into()
 }
 
 fn default_accent_color() -> String {

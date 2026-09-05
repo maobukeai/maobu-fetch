@@ -723,8 +723,13 @@
 
       for (const el of Array.from(document.images || [])) {
         const src = el.currentSrc || el.src;
-        const title = el.alt || el.title || "";
-        if (src && /^https?:\/\//i.test(src)) pushItem(src, title, "image");
+        let title = el.alt || el.title || "";
+        if (src && /^https?:\/\//i.test(src)) {
+          if ((src.includes("/backend-api/estuary/content") || src.includes("/estuary/content")) && !title) {
+            title = "ChatGPT 生成图片";
+          }
+          pushItem(src, title, "image");
+        }
       }
 
       for (const s of sniffedItems) {

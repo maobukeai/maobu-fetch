@@ -24,7 +24,14 @@ globalThis.chrome = {
   notifications: { create: () => {} },
 };
 
-const { isDesktopOfflineError, confirmTakeoverWithOverlay, findSourceTab } = await import("./background.js");
+const {
+  isDesktopOfflineError,
+  confirmTakeoverWithOverlay,
+  findSourceTab,
+  inferMediaFilename,
+  getTabDownloadHeaders,
+  handleContextMenuDownload,
+} = await import("./background.js");
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -971,4 +978,130 @@ test("send-magnet: 校验全部通过时创建 BT 任务", async () => {
       assert.equal(taskBodies[0].url, MAGNET_URI);
       assert.equal(taskBodies[0].source, "browser");
     });
+});
+
+test("inferMediaFilename: 准确解析 ChatGPT estuary 图片 id 与 query filename", () => {
+  const estuaryUrl = "https://chatgpt.com/backend-api/estuary/content?id=file_0000000025d481faab0df1f523c191c4&ts=496837&p=fsns";
+  assert.equal(
+    inferMediaFilename(estuaryUrl),
+    "file_0000000025d481faab0df1f523c191c4.png"
+  );
+
+  const estuaryWithExt = "https://chatgpt.com/backend-api/estuary/content?id=sample_cat.webp&ts=496837";
+  assert.equal(inferMediaFilename(estuaryWithExt), "sample_cat.webp");
+
+  const queryFilenameUrl = "https://example.com/api/v1/download?filename=holiday_photo.jpg&token=xyz";
+  assert.equal(inferMediaFilename(queryFilenameUrl), "holiday_photo.jpg");
+
+  const normalUrl = "https://example.com/files/archive.zip";
+  assert.equal(inferMediaFilename(normalUrl), undefined);
+});
+
+test("getTabDownloadHeaders: 自动附带当前页面的 Referer 与 Cookie", async () => {
+  const mockCookiesApi = {
+    getAll: async ({ url }) => {
+      if (url.includes("chatgpt.com")) {
+        return [
+          { name: "__Secure-session", value: "tok_123" },
+          { name: "cf_clearance", value: "cf_456" },
+        ];
+      }
+      return [];
+    },
+  };
+
+  const headers = await getTabDownloadHeaders(
+    { url: "https://chatgpt.com/c/123-456" },
+    "https://chatgpt.com/backend-api/estuary/content?id=file_test",
+    mockCookiesApi
+  );
+
+  assert.equal(headers["Referer"], "https://chatgpt.com/c/123-456");
+  assert.equal(headers["Cookie"], "__Secure-session=tok_123; cf_clearance=cf_456");
+  assert.ok(headers["User-Agent"]);
+});
+
+test("handleContextMenuDownload: 成功时携带推导文件名与认证头发送到桌面端", async () => {
+  let sentUrl = "";
+  let sentFileName = "";
+  let sentExtra = null;
+  const notifications = [];
+
+  const mockSendTask = async (url, fileName, extra) => {
+    sentUrl = url;
+    sentFileName = fileName;
+    sentExtra = extra;
+    return { id: "task-100" };
+  };
+
+  const mockNotify = (title, msg) => {
+    notifications.push({ title, msg });
+  };
+
+  const mockCookiesApi = {
+    getAll: async () => [{ name: "sid", value: "cookie_val" }],
+  };
+
+  const info = {
+    srcUrl: "https://chatgpt.com/backend-api/estuary/content?id=file_kitten_123",
+  };
+  const tab = {
+    url: "https://chatgpt.com/",
+    title: "ChatGPT",
+  };
+
+  const success = await handleContextMenuDownload(info, tab, {
+    sendTask: mockSendTask,
+    notify: mockNotify,
+    cookies: mockCookiesApi,
+  });
+
+  assert.equal(success, true);
+  assert.equal(sentUrl, "https://chatgpt.com/backend-api/estuary/content?id=file_kitten_123");
+  assert.equal(sentFileName, "file_kitten_123.png");
+  assert.equal(sentExtra?.headers?.["Referer"], "https://chatgpt.com/");
+  assert.equal(sentExtra?.headers?.["Cookie"], "sid=cookie_val");
+  assert.equal(notifications.length, 1);
+  assert.equal(notifications[0].title, "已发送到猫步下载器");
+});
+
+test("handleContextMenuDownload: 桌面端离线或鉴权失败时安全回退至浏览器原生下载", async () => {
+  const downloadCalls = [];
+  const notifications = [];
+
+  const mockSendTask = async () => {
+    throw new Error("HTTP 403 Forbidden: File stream access denied");
+  };
+
+  const mockDownloads = {
+    download: async (options) => {
+      downloadCalls.push(options);
+      return 12345;
+    },
+  };
+
+  const mockNotify = (title, msg) => {
+    notifications.push({ title, msg });
+  };
+
+  const info = {
+    srcUrl: "https://chatgpt.com/backend-api/estuary/content?id=file_kitten_403",
+  };
+  const tab = {
+    url: "https://chatgpt.com/",
+  };
+
+  const success = await handleContextMenuDownload(info, tab, {
+    sendTask: mockSendTask,
+    notify: mockNotify,
+    downloads: mockDownloads,
+    cookies: { getAll: async () => [] },
+  });
+
+  assert.equal(success, true);
+  assert.equal(downloadCalls.length, 1);
+  assert.equal(downloadCalls[0].url, "https://chatgpt.com/backend-api/estuary/content?id=file_kitten_403");
+  assert.equal(downloadCalls[0].filename, "file_kitten_403.png");
+  assert.equal(notifications.length, 1);
+  assert.equal(notifications[0].title, "已转由浏览器下载");
 });

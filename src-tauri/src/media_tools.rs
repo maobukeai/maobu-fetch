@@ -1072,14 +1072,21 @@ async fn replace_file(source: PathBuf, target: PathBuf) -> Result<(), String> {
 fn client(settings: &AppSettings) -> Result<reqwest::Client, String> {
     let mut builder = reqwest::Client::builder().user_agent(&settings.user_agent);
     if settings.proxy_mode == "manual" && !settings.proxy_url.is_empty() {
-        let mut proxy = reqwest::Proxy::all(&settings.proxy_url).map_err(|e| e.to_string())?;
+        let normalized = crate::proxy::normalize_proxy_scheme(&settings.proxy_url);
+        let mut proxy = reqwest::Proxy::all(&normalized).map_err(|e| e.to_string())?;
         if !settings.proxy_username.is_empty() {
             proxy = proxy.basic_auth(&settings.proxy_username, &settings.proxy_password);
         }
         builder = builder.proxy(proxy);
-    }
-    if settings.proxy_mode == "none" {
+    } else if settings.proxy_mode == "none" {
         builder = builder.no_proxy();
+    } else if settings.proxy_mode == "system" {
+        if let Some(sys_proxy) = crate::proxy::get_effective_system_proxy() {
+            let normalized = crate::proxy::normalize_proxy_scheme(&sys_proxy);
+            if let Ok(proxy) = reqwest::Proxy::all(&normalized) {
+                builder = builder.proxy(proxy);
+            }
+        }
     }
     builder.build().map_err(|error| error.to_string())
 }
@@ -1093,14 +1100,21 @@ fn api_client(settings: &AppSettings) -> Result<reqwest::Client, String> {
         .connect_timeout(Duration::from_secs(15))
         .timeout(Duration::from_secs(20));
     if settings.proxy_mode == "manual" && !settings.proxy_url.is_empty() {
-        let mut proxy = reqwest::Proxy::all(&settings.proxy_url).map_err(|e| e.to_string())?;
+        let normalized = crate::proxy::normalize_proxy_scheme(&settings.proxy_url);
+        let mut proxy = reqwest::Proxy::all(&normalized).map_err(|e| e.to_string())?;
         if !settings.proxy_username.is_empty() {
             proxy = proxy.basic_auth(&settings.proxy_username, &settings.proxy_password);
         }
         builder = builder.proxy(proxy);
-    }
-    if settings.proxy_mode == "none" {
+    } else if settings.proxy_mode == "none" {
         builder = builder.no_proxy();
+    } else if settings.proxy_mode == "system" {
+        if let Some(sys_proxy) = crate::proxy::get_effective_system_proxy() {
+            let normalized = crate::proxy::normalize_proxy_scheme(&sys_proxy);
+            if let Ok(proxy) = reqwest::Proxy::all(&normalized) {
+                builder = builder.proxy(proxy);
+            }
+        }
     }
     builder.build().map_err(|error| error.to_string())
 }

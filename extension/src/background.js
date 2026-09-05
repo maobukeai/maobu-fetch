@@ -189,6 +189,87 @@ async function sendPageMedia(url, title, cookieStoreId) {
   void focusDesktop();
 }
 
+/// 从媒体 URL 推导规范文件名（特别针对 ChatGPT 生成图片从 id 参数推导）。
+export function inferMediaFilename(url) {
+  if (!url || typeof url !== "string") return undefined;
+  try {
+    const parsed = new URL(url);
+    // 针对 ChatGPT estuary 内容接口：/backend-api/estuary/content?id=file_xxx...
+    if (parsed.hostname.includes("chatgpt.com") && parsed.pathname.includes("/estuary/content")) {
+      const id = parsed.searchParams.get("id");
+      if (id) {
+        return /\.(png|jpe?g|webp|gif)$/i.test(id) ? id : `${id}.png`;
+      }
+      return `ChatGPT_image_${Date.now()}.png`;
+    }
+    const queryFilename = parsed.searchParams.get("filename") || parsed.searchParams.get("file_name");
+    if (queryFilename && queryFilename.trim()) {
+      return queryFilename.trim();
+    }
+  } catch {}
+  return undefined;
+}
+
+/// 提取当前标签页的下载认证与防盗链请求头（Cookie、Referer、User-Agent）。
+export async function getTabDownloadHeaders(tab, targetUrl, cookiesApi = chrome?.cookies) {
+  const headers = {};
+  if (tab?.url && /^https?:/i.test(tab.url)) {
+    headers["Referer"] = tab.url;
+    if (cookiesApi?.getAll) {
+      try {
+        const params = { url: tab.url };
+        if (tab.cookieStoreId) params.storeId = tab.cookieStoreId;
+        const cookies = await cookiesApi.getAll(params);
+        const cookieHeader = buildCookieHeader(cookies || []);
+        if (cookieHeader) headers["Cookie"] = cookieHeader;
+      } catch {}
+    }
+  }
+  if (typeof navigator !== "undefined" && navigator.userAgent) {
+    headers["User-Agent"] = navigator.userAgent;
+  }
+  return headers;
+}
+
+/// 处理右键菜单的直接媒体/链接下载，附带登录凭证并在失败时自动回退到浏览器下载。
+export async function handleContextMenuDownload(info, tab, deps = {}) {
+  const sendTaskFn = deps.sendTask || sendTask;
+  const notifyFn = deps.notify || notify;
+  const downloadsApi = deps.downloads || (typeof chrome !== "undefined" ? chrome?.downloads : undefined);
+  const cookiesApi = deps.cookies || (typeof chrome !== "undefined" ? chrome?.cookies : undefined);
+  const focusDesktopFn = deps.focusDesktop || focusDesktop;
+
+  const url = info.linkUrl || info.srcUrl || info.pageUrl;
+  if (!url) return false;
+
+  const fileName = inferMediaFilename(url);
+  const headers = await getTabDownloadHeaders(tab, url, cookiesApi);
+
+  try {
+    await sendTaskFn(url, fileName, { headers });
+    notifyFn("已发送到猫步下载器", fileName || tab?.title || url);
+    void focusDesktopFn?.();
+    return true;
+  } catch (error) {
+    // 桌面端未开启、离线或受到网络/Cloudflare/403拦截时，自动安全回退至浏览器下载
+    if (downloadsApi?.download && /^https?:/i.test(url)) {
+      try {
+        await downloadsApi.download({
+          url,
+          filename: fileName || undefined,
+          saveAs: false,
+        });
+        notifyFn("已转由浏览器下载", `${fileName || "文件"}（桌面端未响应或受风控保护）`);
+        return true;
+      } catch (dlErr) {
+        // 浏览器下载也失败，通知错误
+      }
+    }
+    notifyFn("发送失败", String(error.message || error));
+    throw error;
+  }
+}
+
 chrome.contextMenus.onClicked.addListener(async (info, tab) => {
   if (info.menuItemId === "lumaget-page-grab") {
     await openResourceGrabberForTab(tab);
@@ -203,11 +284,22 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
       notify("未发现可下载链接", "选中文本中没有磁力或 HTTP(S) 链接");
       return;
     }
+    const headers = await getTabDownloadHeaders(tab);
     if (links.length === 1) {
       try {
-        await sendTask(links[0]);
+        const fileName = inferMediaFilename(links[0]);
+        await sendTask(links[0], fileName, { headers });
         notify("已发送到猫步下载器", tab?.title || links[0]);
-      } catch (error) { notify("发送失败", String(error.message || error)); }
+      } catch (error) {
+        if (chrome.downloads?.download && /^https?:/i.test(links[0])) {
+          try {
+            await chrome.downloads.download({ url: links[0], saveAs: false });
+            notify("已转由浏览器下载", tab?.title || links[0]);
+            return;
+          } catch {}
+        }
+        notify("发送失败", String(error.message || error));
+      }
       return;
     }
     let opened = null;
@@ -221,7 +313,11 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
     let added = 0;
     let failed = 0;
     for (const link of links) {
-      try { await sendTask(link); added += 1; } catch { failed += 1; }
+      try {
+        const fileName = inferMediaFilename(link);
+        await sendTask(link, fileName, { headers });
+        added += 1;
+      } catch { failed += 1; }
     }
     notify(added ? "已发送到猫步下载器" : "发送失败",
       `${added} 个任务已添加${failed ? `，${failed} 个失败` : ""}`);
@@ -233,13 +329,14 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
     if (info.menuItemId === "lumaget-page") {
       await sendPageMedia(url, tab?.title, tab?.cookieStoreId);
     } else {
-      // 右键"下载链接/下载媒体"：src 直链直接交给桌面端下载（对图片、直链
-      // 视频/音频最可靠）；MSE 站点走"分析当前页面"或页内悬浮按钮。
-      await sendTask(url);
+      // 右键"下载链接/下载媒体"：提取当前页面 Cookie 与 Referer，支持受保护与防盗链媒体，
+      // 若桌面端未响应或返回鉴权/风控拦截，自动回退到浏览器原生下载。
+      await handleContextMenuDownload(info, tab);
     }
-    notify("已发送到猫步下载器", tab?.title || url);
   }
-  catch (error) { notify("发送失败", String(error.message || error)); }
+  catch (error) {
+    // handleContextMenuDownload 内部已处理通知，此处捕获避免未捕获 Promise
+  }
 });
 
 chrome.downloads.onCreated.addListener(async (item) => {
@@ -449,7 +546,15 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
       const hasToken = Boolean((await chrome.storage.local.get("bridgeToken")).bridgeToken);
       return { ok: true, paired: hasToken, version: desktopVersion };
     }
-    if (message.type === "send") return { ok: true, item: await sendTask(message.url, message.fileName, message.extra) };
+    if (message.type === "send") {
+      const fileName = message.fileName || inferMediaFilename(message.url);
+      let headers = message.extra?.headers;
+      if (!headers && sender.tab) {
+        headers = await getTabDownloadHeaders(sender.tab, message.url);
+      }
+      const extra = { ...(message.extra || {}), ...(headers ? { headers } : {}) };
+      return { ok: true, item: await sendTask(message.url, fileName, extra) };
+    }
     if (message.type === "send-pikpak-task") {
       try {
         const connectionCount = Number(message.connectionCount) || 16;

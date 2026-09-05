@@ -49,6 +49,10 @@ test("categorizeLink: 准确识别各类媒体与资源", () => {
   assert.equal(categorizeLink("https://example.com/data.tar.gz").category, "archive");
   assert.equal(categorizeLink("https://example.com/setup.exe").category, "installer");
   assert.equal(categorizeLink("https://example.com/photo.webp").category, "image");
+  assert.equal(
+    categorizeLink("https://chatgpt.com/backend-api/estuary/content?id=file_123&ts=456").category,
+    "image"
+  );
   assert.equal(categorizeLink("https://example.com/book.epub").category, "doc");
   assert.equal(categorizeLink("magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567").category, "magnet");
   assert.equal(categorizeLink("https://example.com/page").category, "other");

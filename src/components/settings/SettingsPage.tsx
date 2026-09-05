@@ -142,6 +142,7 @@ export function SettingsPage({
   const [extUpdateBusy, setExtUpdateBusy] = useState(false);
   const [extUpdateProgress, setExtUpdateProgress] = useState<UpdateProgressPayload | null>(null);
   const [extUpdateResult, setExtUpdateResult] = useState<ExtensionUpdateResult | null>(null);
+  const [extUpdateError, setExtUpdateError] = useState<string | null>(null);
 
   useEffect(() => {
     let unlisten: (() => void) | undefined;
@@ -206,6 +207,12 @@ export function SettingsPage({
   const checkExtCompat = async () => {
     const trimmed = extVersion.trim();
     if (!trimmed) {
+      setExtResult({
+        compatible: false,
+        app_version: appInfo?.version || "0.9.0",
+        extension_version: "未输入",
+        message: "请先在左侧输入框填写扩展版本号（如 0.9.0，可在浏览器扩展管理页查看）",
+      });
       notify("请先填写扩展版本号", "error");
       return;
     }
@@ -256,13 +263,16 @@ export function SettingsPage({
   const runExtensionUpdate = async () => {
     setExtUpdateBusy(true);
     setExtUpdateResult(null);
+    setExtUpdateError(null);
     setExtUpdateProgress({ kind: "extension", downloaded: 0, total: 0 });
     try {
       const result = await api.extensionUpdateDownload();
       setExtUpdateResult(result);
       notify(`扩展 v${result.version} 已就绪`);
     } catch (error) {
-      notify(String(error), "error");
+      const msg = String(error);
+      setExtUpdateError(msg);
+      notify(msg, "error");
     } finally {
       setExtUpdateBusy(false);
       setExtUpdateProgress(null);
@@ -501,6 +511,15 @@ export function SettingsPage({
     }
   };
 
+  const handleReturnHome = async () => {
+    const isDirty = JSON.stringify(draft) !== JSON.stringify(value);
+    if (isDirty) {
+      await save();
+    } else {
+      onClose();
+    }
+  };
+
   const items: Array<[SettingsSection, string, typeof Settings]> = [
     ["general", t("settings.sectionGeneral"), Settings],
     ["download", t("settings.sectionDownload"), Download],
@@ -542,7 +561,7 @@ export function SettingsPage({
         <div className="nav-footer">
           <button
             className="nav-settings"
-            onClick={onClose}
+            onClick={() => void handleReturnHome()}
             title={t("settings.returnHome")}
           >
             <ArrowLeft size={15} />
@@ -1090,7 +1109,11 @@ export function SettingsPage({
                 />
               </SettingsGroup>
 
-              <FileAssociationSection notify={notify} />
+              <FileAssociationSection
+                draft={draft}
+                setDraft={setDraft}
+                notify={notify}
+              />
             </>
           )}
           {section === "rules" && <CategoryRulesPanel notify={notify} />}
@@ -1757,15 +1780,7 @@ export function SettingsPage({
                   </ul>
                 </div>
 
-                <div
-                  style={{
-                    borderTop: "1px solid var(--border)",
-                    paddingTop: "14px",
-                    display: "grid",
-                    gridTemplateColumns: "repeat(3, 1fr)",
-                    gap: "16px",
-                  }}
-                >
+                <div className="about-cards-grid">
                   <div
                     style={{
                       display: "flex",
@@ -1964,17 +1979,28 @@ export function SettingsPage({
                             style={{
                               display: "flex",
                               alignItems: "center",
-                              gap: "6px",
+                              justifyContent: "space-between",
+                              gap: "8px",
                               flexWrap: "wrap",
                             }}
                           >
-                            <Check size={12} color="#22c55e" />
-                            <span style={{ flex: 1, minWidth: 0 }}>
-                              已是最新版
-                              {updateResult.latest
-                                ? ` (v${updateResult.latest.version})`
-                                : ""}
-                            </span>
+                            <div
+                              style={{
+                                display: "inline-flex",
+                                alignItems: "center",
+                                gap: "6px",
+                                flexShrink: 0,
+                                whiteSpace: "nowrap",
+                              }}
+                            >
+                              <Check size={12} color="#22c55e" style={{ flexShrink: 0 }} />
+                              <span style={{ whiteSpace: "nowrap" }}>
+                                已是最新版
+                                {updateResult.latest
+                                  ? ` (v${updateResult.latest.version})`
+                                  : ""}
+                              </span>
+                            </div>
                             <button
                               className="input-button"
                               disabled={appUpdateBusy}
@@ -1994,6 +2020,7 @@ export function SettingsPage({
                                 background: "transparent",
                                 color: "var(--accent)",
                                 flexShrink: 0,
+                                whiteSpace: "nowrap",
                               }}
                             >
                               {appUpdateBusy ? (
@@ -2054,25 +2081,36 @@ export function SettingsPage({
                             style={{
                               display: "flex",
                               alignItems: "center",
-                              gap: "6px",
+                              justifyContent: "space-between",
+                              gap: "8px",
                               padding: "6px 8px",
                               borderRadius: "6px",
                               border: "1px solid rgba(34,197,94,0.3)",
                               background: "rgba(34,197,94,0.08)",
+                              flexWrap: "wrap",
                             }}
                           >
-                            <Check size={12} color="#22c55e" />
-                            <span
+                            <div
                               style={{
-                                fontSize: "11px",
-                                color: "var(--muted)",
-                                flex: 1,
-                                minWidth: 0,
+                                display: "inline-flex",
+                                alignItems: "center",
+                                gap: "6px",
+                                flexShrink: 0,
+                                whiteSpace: "nowrap",
                               }}
                             >
-                              v{appUpdateReady.version} 安装包已校验（
-                              {formatBytes(appUpdateReady.size)}）
-                            </span>
+                              <Check size={12} color="#22c55e" style={{ flexShrink: 0 }} />
+                              <span
+                                style={{
+                                  fontSize: "11px",
+                                  color: "var(--muted)",
+                                  whiteSpace: "nowrap",
+                                }}
+                              >
+                                v{appUpdateReady.version} 安装包已校验（
+                                {formatBytes(appUpdateReady.size)}）
+                              </span>
+                            </div>
                             <button
                               className="input-button"
                               onClick={() => void runAppUpdateInstaller()}
@@ -2090,6 +2128,7 @@ export function SettingsPage({
                                 background: "var(--accent)",
                                 color: "white",
                                 flexShrink: 0,
+                                whiteSpace: "nowrap",
                               }}
                             >
                               <Zap size={11} />
@@ -2111,11 +2150,49 @@ export function SettingsPage({
                           border: "1px solid rgba(239,68,68,0.2)",
                           display: "flex",
                           alignItems: "center",
-                          gap: "6px",
+                          justifyContent: "space-between",
+                          gap: "8px",
+                          flexWrap: "wrap",
                         }}
                       >
-                        <AlertCircle size={12} />
-                        <span>检查失败：{updateResult.error}</span>
+                        <div
+                          style={{
+                            display: "flex",
+                            alignItems: "center",
+                            gap: "6px",
+                            flex: 1,
+                            minWidth: "180px",
+                          }}
+                        >
+                          <AlertCircle size={12} style={{ flexShrink: 0 }} />
+                          <span>检查失败：{updateResult.error}</span>
+                        </div>
+                        <button
+                          className="input-button"
+                          onClick={() =>
+                            void openUrl(
+                              "https://github.com/maobukeai/maobu-fetch/releases"
+                            ).catch((err) => notify(String(err), "error"))
+                          }
+                          style={{
+                            display: "inline-flex",
+                            alignItems: "center",
+                            gap: "4px",
+                            height: "22px",
+                            padding: "0 8px",
+                            fontSize: "11px",
+                            fontWeight: 500,
+                            cursor: "pointer",
+                            borderRadius: "4px",
+                            border: "1px solid var(--border)",
+                            background: "var(--card-bg, #fff)",
+                            color: "var(--text)",
+                            flexShrink: 0,
+                          }}
+                        >
+                          <ExternalLink size={10} />
+                          前往 Releases 网页
+                        </button>
                       </div>
                     )}
                   </div>
@@ -2245,13 +2322,25 @@ export function SettingsPage({
                           style={{
                             display: "flex",
                             alignItems: "center",
-                            gap: "6px",
+                            justifyContent: "space-between",
+                            gap: "8px",
+                            flexWrap: "wrap",
                           }}
                         >
-                          <Check size={12} color="#22c55e" />
-                          <strong style={{ color: "var(--text)" }}>
-                            扩展 v{extUpdateResult.version} 已就绪
-                          </strong>
+                          <div
+                            style={{
+                              display: "inline-flex",
+                              alignItems: "center",
+                              gap: "6px",
+                              flexShrink: 0,
+                              whiteSpace: "nowrap",
+                            }}
+                          >
+                            <Check size={12} color="#22c55e" style={{ flexShrink: 0 }} />
+                            <strong style={{ color: "var(--text)", whiteSpace: "nowrap" }}>
+                              扩展 v{extUpdateResult.version} 已就绪
+                            </strong>
+                          </div>
                           <button
                             className="input-button"
                             onClick={() =>
@@ -2272,8 +2361,8 @@ export function SettingsPage({
                               border: "1px solid var(--accent)",
                               background: "transparent",
                               color: "var(--accent)",
-                              marginLeft: "auto",
                               flexShrink: 0,
+                              whiteSpace: "nowrap",
                             }}
                           >
                             <FolderOpen size={11} />
@@ -2292,6 +2381,62 @@ export function SettingsPage({
                         >
                           {extUpdateResult.folder}
                         </div>
+                      </div>
+                    )}
+                    {extUpdateError && (
+                      <div
+                        style={{
+                          fontSize: "11px",
+                          color: "var(--danger, #ef4444)",
+                          padding: "8px 10px",
+                          background: "rgba(239,68,68,0.08)",
+                          borderRadius: "6px",
+                          border: "1px solid rgba(239,68,68,0.2)",
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "space-between",
+                          gap: "8px",
+                          flexWrap: "wrap",
+                        }}
+                      >
+                        <div
+                          style={{
+                            display: "flex",
+                            alignItems: "center",
+                            gap: "6px",
+                            flex: 1,
+                            minWidth: "160px",
+                          }}
+                        >
+                          <AlertCircle size={12} style={{ flexShrink: 0 }} />
+                          <span>更新扩展失败：{extUpdateError}</span>
+                        </div>
+                        <button
+                          className="input-button"
+                          onClick={() =>
+                            void openUrl(
+                              "https://github.com/maobukeai/maobu-fetch/releases"
+                            ).catch((err) => notify(String(err), "error"))
+                          }
+                          style={{
+                            display: "inline-flex",
+                            alignItems: "center",
+                            gap: "4px",
+                            height: "22px",
+                            padding: "0 8px",
+                            fontSize: "11px",
+                            fontWeight: 500,
+                            cursor: "pointer",
+                            borderRadius: "4px",
+                            border: "1px solid var(--border)",
+                            background: "var(--card-bg, #fff)",
+                            color: "var(--text)",
+                            flexShrink: 0,
+                          }}
+                        >
+                          <ExternalLink size={10} />
+                          手动下载扩展
+                        </button>
                       </div>
                     )}
                     <div
@@ -2639,7 +2784,15 @@ export function SettingsPage({
   );
 }
 
-function FileAssociationSection({ notify }: { notify: (text: string, kind?: "ok" | "error") => void }) {
+function FileAssociationSection({
+  draft,
+  setDraft,
+  notify,
+}: {
+  draft: AppSettings;
+  setDraft: React.Dispatch<React.SetStateAction<AppSettings>>;
+  notify: (text: string, kind?: "ok" | "error") => void;
+}) {
   const [assocs, setAssocs] = useState<FileAssocInfo[]>([]);
   const [loading, setLoading] = useState(false);
 
@@ -2656,15 +2809,38 @@ function FileAssociationSection({ notify }: { notify: (text: string, kind?: "ok"
     loadAssocs();
   }, [loadAssocs]);
 
-  const handleRegisterAll = async () => {
+  const videoAssocs = useMemo(
+    () => assocs.filter((a) => a.category !== "image"),
+    [assocs]
+  );
+  const imageAssocs = useMemo(
+    () => assocs.filter((a) => a.category === "image"),
+    [assocs]
+  );
+
+  const handleRegisterVideos = async () => {
     try {
       setLoading(true);
-      const exts = assocs.map((a) => a.extension);
+      const exts = videoAssocs.map((a) => a.extension);
       await api.setFileAssociations(exts, true);
-      notify("已成功为选中的视频格式注册文件关联", "ok");
+      notify("已成功为视频格式注册文件关联", "ok");
       loadAssocs();
     } catch (err) {
-      notify(`注册文件关联失败: ${err}`, "error");
+      notify(`注册视频关联失败: ${err}`, "error");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleRegisterImages = async () => {
+    try {
+      setLoading(true);
+      const exts = imageAssocs.map((a) => a.extension);
+      await api.setFileAssociations(exts, true);
+      notify("已成功为图片格式注册文件关联", "ok");
+      loadAssocs();
+    } catch (err) {
+      notify(`注册图片关联失败: ${err}`, "error");
     } finally {
       setLoading(false);
     }
@@ -2689,38 +2865,103 @@ function FileAssociationSection({ notify }: { notify: (text: string, kind?: "ok"
   };
 
   return (
-    <SettingsGroup title="内置播放器与 Windows 文件关联">
-      <p className="settings-note">
-        猫步下载器内置轻量、硬件加速视频播放器，可直接关联 Windows 视频文件。双击视频文件即可毫秒级唤起极速播放。
-      </p>
-      <div className="flex flex-wrap gap-1.5 my-2">
-        {assocs.map((item) => (
-          <span
-            key={item.extension}
-            className={`px-2 py-0.5 rounded text-xs font-mono font-medium ${
-              item.is_associated
-                ? "bg-sky-500/20 text-sky-400 border border-sky-500/30"
-                : "bg-neutral-800 text-neutral-400 border border-neutral-700"
-            }`}
-          >
-            .{item.extension} {item.is_associated && "✓"}
-          </span>
-        ))}
-      </div>
-      <div className="flex items-center gap-2 mt-3">
-        <button
-          type="button"
-          disabled={loading}
-          onClick={handleRegisterAll}
-          className="btn btn-primary text-xs"
+    <SettingsGroup title="内置播放器/看图器与 Windows 文件关联">
+      <div className="settings-group-content mb-3">
+        <SettingRow
+          label="双击任务打开方式"
+          sub="设置在任务列表中双击已完成视频或图片时的默认动作。任务右键菜单依然支持随时切换。"
         >
-          一键注册所有视频关联
-        </button>
+          <Select
+            value={draft.open_file_action || "builtin"}
+            onChange={(nextVal) => {
+              setDraft((current) => ({
+                ...current,
+                open_file_action: nextVal as "builtin" | "system",
+              }));
+            }}
+            options={[
+              {
+                value: "builtin",
+                label: "内置轻量播放器与看图器（默认）",
+              },
+              {
+                value: "system",
+                label: "Windows 系统默认关联程序",
+              },
+            ]}
+            ariaLabel="双击任务打开方式"
+          />
+        </SettingRow>
+      </div>
+
+      <p className="settings-note">
+        猫步下载器内置轻量、硬件加速视频播放器与极速看图器。注册关联后，您可在 Windows 右键菜单「打开方式」或「默认应用」设置中将其设为默认打开程序。
+      </p>
+
+      {/* 视频关联 */}
+      <div className="mt-3">
+        <div className="text-xs font-semibold text-neutral-300 mb-1.5 flex items-center justify-between">
+          <span>视频格式关联 ({videoAssocs.filter((a) => a.is_associated).length}/{videoAssocs.length})</span>
+          <button
+            type="button"
+            disabled={loading}
+            onClick={handleRegisterVideos}
+            className="btn btn-secondary text-xs py-0.5 px-2"
+          >
+            一键注册所有视频关联
+          </button>
+        </div>
+        <div className="flex flex-wrap gap-1.5 my-1">
+          {videoAssocs.map((item) => (
+            <span
+              key={item.extension}
+              className={`px-2 py-0.5 rounded text-xs font-mono font-medium ${
+                item.is_associated
+                  ? "bg-sky-500/20 text-sky-400 border border-sky-500/30"
+                  : "bg-neutral-800 text-neutral-400 border border-neutral-700"
+              }`}
+            >
+              .{item.extension} {item.is_associated && "✓"}
+            </span>
+          ))}
+        </div>
+      </div>
+
+      {/* 图片关联 */}
+      <div className="mt-4">
+        <div className="text-xs font-semibold text-neutral-300 mb-1.5 flex items-center justify-between">
+          <span>图片格式关联 ({imageAssocs.filter((a) => a.is_associated).length}/{imageAssocs.length})</span>
+          <button
+            type="button"
+            disabled={loading}
+            onClick={handleRegisterImages}
+            className="btn btn-secondary text-xs py-0.5 px-2"
+          >
+            一键注册所有图片关联
+          </button>
+        </div>
+        <div className="flex flex-wrap gap-1.5 my-1">
+          {imageAssocs.map((item) => (
+            <span
+              key={item.extension}
+              className={`px-2 py-0.5 rounded text-xs font-mono font-medium ${
+                item.is_associated
+                  ? "bg-sky-500/20 text-sky-400 border border-sky-500/30"
+                  : "bg-neutral-800 text-neutral-400 border border-neutral-700"
+              }`}
+            >
+              .{item.extension} {item.is_associated && "✓"}
+            </span>
+          ))}
+        </div>
+      </div>
+
+      <div className="flex items-center gap-2 mt-4 pt-2 border-t border-neutral-800/80">
         <button
           type="button"
           disabled={loading}
           onClick={handleOpenDefaultSettings}
-          className="btn btn-secondary text-xs"
+          className="btn btn-primary text-xs"
         >
           打开 Windows 默认应用设置
         </button>
@@ -2730,7 +2971,7 @@ function FileAssociationSection({ notify }: { notify: (text: string, kind?: "ok"
           onClick={handleUnregisterAll}
           className="btn btn-ghost text-xs text-neutral-400 hover:text-red-400"
         >
-          取消关联
+          注销所有关联
         </button>
       </div>
     </SettingsGroup>

@@ -8,9 +8,10 @@ src-tauri/target/
 downloads.json
 src-tauri/resources/tools/*.exe
 
-# 扩展构建产物不入库（AGENTS.md §8）
+# 扩展与安装包构建产物不入库（AGENTS.md §8）
 extension/extension.zip
 extension/*.zip
+releases/
 
 # 临时元数据与工具缓存
 .mission_ledger.json

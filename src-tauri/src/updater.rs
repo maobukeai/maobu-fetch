@@ -26,6 +26,14 @@ const GITHUB_REPO: &str = "maobu-fetch";
 const RELEASES_LATEST_URL: &str =
     "https://api.github.com/repos/maobukeai/maobu-fetch/releases/latest";
 
+/// GitHub Releases Atom Feed 端点（用于 API 403 限流时的订阅源自动降级，不消耗 API 配额）。
+const RELEASES_ATOM_URL: &str =
+    "https://github.com/maobukeai/maobu-fetch/releases.atom";
+
+/// GitHub Releases 最新网页端点（用于 API 403 限流时的 302 重定向探针降级）。
+const RELEASES_LATEST_WEB_URL: &str =
+    "https://github.com/maobukeai/maobu-fetch/releases/latest";
+
 /// `html_url` 缺失时的回退页面。
 const RELEASES_PAGE: &str = "https://github.com/maobukeai/maobu-fetch/releases";
 
@@ -54,11 +62,10 @@ fn build_update_client() -> Result<Client, String> {
 
 /// 异步检查应用更新（Task 26.2）。
 ///
-/// 通过 GitHub Releases API 读取最新 release 的 `tag_name`、`published_at`、
-/// `html_url`、`body`。**不下载任何资产**，仅返回信息供前端展示（AGENTS.md §6）。
-///
-/// 失败时返回 `UpdateCheckResult`，`error` 字段为脱敏后的中文错误，
-/// `latest = None`、`has_update = false`。不会 panic，不会 unwrap 可恢复错误。
+/// 优先通过 GitHub Releases API 读取最新 release 的 `tag_name`、`published_at`、
+/// `html_url`、`body`。若触发 403 IP 限流或网络异常，**自动无缝降级**至 Atom 订阅源
+/// 与 Web 302 重定向探针，保障用户在代理共享节点下依然能够顺利检测新版本。
+/// **不自动下载任何资产**，仅返回信息供前端展示（AGENTS.md §6）。
 pub async fn check_app_update() -> UpdateCheckResult {
     let current = APP_VERSION;
 
@@ -72,19 +79,44 @@ pub async fn check_app_update() -> UpdateCheckResult {
     let response = match client.get(RELEASES_LATEST_URL).send().await {
         Ok(r) => r,
         Err(e) => {
+            // API 域名连接失败时，尝试 Web 降级通道
+            if let Some(fallback_info) = fetch_fallback_update_info(&client).await {
+                let has_update = version_compare(&fallback_info.version, current) == Ordering::Greater;
+                return UpdateCheckResult {
+                    latest: Some(fallback_info),
+                    has_update,
+                    current_version: current.into(),
+                    error: None,
+                };
+            }
             return error_result(current, &format!("无法连接更新服务器：{e}"));
         }
     };
 
     let status = response.status();
     if !status.is_success() {
+        let status_code = status.as_u16();
         let err_body = response.text().await.unwrap_or_default();
-        let display_err = if status.as_u16() == 403 && (err_body.contains("rate limit") || err_body.contains("Rate limit")) {
+
+        // 核心防限流容灾：触发 403 限流时，自动无缝切换至不受 API 限流影响的 Web/Atom 降级通道
+        if status_code == 403 && (err_body.contains("rate limit") || err_body.contains("Rate limit") || err_body.contains("API rate limit")) {
+            if let Some(fallback_info) = fetch_fallback_update_info(&client).await {
+                let has_update = version_compare(&fallback_info.version, current) == Ordering::Greater;
+                return UpdateCheckResult {
+                    latest: Some(fallback_info),
+                    has_update,
+                    current_version: current.into(),
+                    error: None,
+                };
+            }
+        }
+
+        let display_err = if status_code == 403 && (err_body.contains("rate limit") || err_body.contains("Rate limit") || err_body.contains("API rate limit")) {
             "当前网络 IP 请求 GitHub 接口太频繁，已触发限流 (403)，请稍后重试或更换代理节点".to_string()
-        } else if status.as_u16() == 404 {
+        } else if status_code == 404 {
             "未找到可用版本 (404)。请确认 GitHub 仓库已设置为公开 (Public) 且已发布至少一个 Release 包".to_string()
         } else {
-            format!("更新服务器返回 HTTP {}：{}", status.as_u16(), err_body)
+            format!("更新服务器返回 HTTP {}：{}", status_code, err_body)
         };
         return error_result(current, &display_err);
     }
@@ -238,19 +270,20 @@ pub fn select_installer_asset(assets: &[UpdateAssetInfo]) -> Option<&UpdateAsset
     best
 }
 
-/// 从资产列表中选择浏览器扩展 ZIP（`extension.zip` 或 `*-extension.zip`）。
+/// 从资产列表中选择浏览器扩展 ZIP（`extension.zip` 或 `*extension*.zip`）。
 pub fn select_extension_asset(assets: &[UpdateAssetInfo]) -> Option<&UpdateAssetInfo> {
     assets.iter().find(|asset| {
         let name = asset.name.to_ascii_lowercase();
         name == "extension.zip"
             || name.ends_with("-extension.zip")
             || name.ends_with("_extension.zip")
+            || (name.contains("extension") && name.ends_with(".zip"))
     })
 }
 
 /// 从 release notes 中尝试解析 `SHA-256: <hex>` 行（Task 26.1）。
 ///
-/// 支持中英文冒号、大小写不敏感。找不到或长度/字符不合法时返回 `None`。
+/// 支持中英文冒号、大小写不敏感、HTML 标签内嵌与纯文本。找不到或长度/字符不合法时返回 `None`。
 fn parse_sha256_from_body(body: &str) -> Option<String> {
     for line in body.lines() {
         let trimmed = line.trim();
@@ -263,12 +296,314 @@ fn parse_sha256_from_body(body: &str) -> Option<String> {
         else {
             continue;
         };
-        let hex = rest.trim();
-        if hex.len() == 64 && hex.chars().all(|c| c.is_ascii_hexdigit()) {
-            return Some(hex.to_ascii_lowercase());
+        if let Some(hex) = extract_first_64_hex(rest) {
+            return Some(hex);
+        }
+        let clean = rest.trim().trim_matches(|c: char| c == '`' || c == '"' || c == '\'');
+        if clean.len() == 64 && clean.chars().all(|c| c.is_ascii_hexdigit()) {
+            return Some(clean.to_ascii_lowercase());
+        }
+    }
+    // 若逐行前缀未匹配到，且正文包含 "sha-256"，尝试在窗口中提取
+    if let Some(pos) = body.to_ascii_lowercase().find("sha-256") {
+        let window = safe_subslice(body, pos, 250);
+        if let Some(hex) = extract_first_64_hex(window) {
+            return Some(hex);
         }
     }
     None
+}
+
+/// 安全截取以 byte `start` 开始、最多 `max_len` 字节的子字符串，
+/// 自动在最近的 UTF-8 字符边界对齐，杜绝因跨字符截断引发 panic。
+pub fn safe_subslice(s: &str, start: usize, max_len: usize) -> &str {
+    let sub = match s.get(start..) {
+        Some(slice) => slice,
+        None => return "",
+    };
+    let target = std::cmp::min(sub.len(), max_len);
+    let mut end = target;
+    while end > 0 && !sub.is_char_boundary(end) {
+        end -= 1;
+    }
+    &sub[..end]
+}
+
+
+/// 双通道降级探针：当 API 遇到 403 限流或网络异常时，尝试从 Web 订阅源或 302 重定向获取最新版本。
+///
+/// 1. 优先尝试 Releases Atom Feed (`releases.atom`)：包含完整的版本号、发布时间、更新说明和 SHA-256。
+/// 2. 备选尝试 Releases Latest Web 页面 302 重定向：直接从 `Location` 头提取最新版本 tag。
+pub async fn fetch_fallback_update_info(client: &Client) -> Option<UpdateInfo> {
+    // 降级策略 1：读取 releases.atom 订阅源（走普通 Web 静态路由，不受 GitHub REST API 60次/小时 限流）
+    if let Ok(resp) = client.get(RELEASES_ATOM_URL).send().await {
+        if resp.status().is_success() {
+            if let Ok(xml_text) = resp.text().await {
+                if let Some(info) = parse_atom_feed(&xml_text) {
+                    return Some(info);
+                }
+            }
+        }
+    }
+
+    // 降级策略 2：通过 302 重定向探针读取 Location 头
+    fetch_redirect_fallback_info().await
+}
+
+/// 降级策略 2：通过不跟随重定向的 HTTP 客户端请求 releases/latest 网页，读取 302 Location。
+pub async fn fetch_redirect_fallback_info() -> Option<UpdateInfo> {
+    let no_redirect_client = Client::builder()
+        .user_agent(USER_AGENT)
+        .redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(15))
+        .build()
+        .ok()?;
+
+    let resp = no_redirect_client.get(RELEASES_LATEST_WEB_URL).send().await.ok()?;
+    let status = resp.status();
+    if status.is_redirection() {
+        let location = resp.headers().get(reqwest::header::LOCATION)?.to_str().ok()?;
+        let version = extract_tag_from_location(location)?;
+        let download_url = if location.starts_with("http") {
+            location.to_string()
+        } else {
+            format!("https://github.com{}", location)
+        };
+        Some(UpdateInfo {
+            version,
+            release_date: String::new(),
+            download_url,
+            sha256: None,
+            release_notes: "💡 【提示】通过 GitHub Web 重定向通道成功获取到最新版本。因当前网络 IP 触发 GitHub API 限制，详细更新日志与一键更新安装包请前往下载页查看。".to_string(),
+            assets: Vec::new(),
+        })
+    } else {
+        None
+    }
+}
+
+/// 从重定向 Location 路径中提取版本 tag（如 `/releases/tag/v0.8.10` -> `0.8.10`）。
+pub fn extract_tag_from_location(location: &str) -> Option<String> {
+    let marker = "/releases/tag/";
+    let index = location.find(marker)?;
+    let tag = &location[index + marker.len()..];
+    let tag = tag.split(['/', '?', '#']).next()?.trim();
+    if tag.is_empty() {
+        None
+    } else {
+        Some(strip_leading_v(tag).to_string())
+    }
+}
+
+/// 解码 HTML 实体（用于 Atom feed content 解码）。
+pub fn decode_html_entities(input: &str) -> String {
+    input
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&apos;", "'")
+        .replace("&nbsp;", " ")
+        .replace("&amp;", "&")
+}
+
+/// 从文本中提取第一个合法的 64 位连续十六进制 SHA-256 哈希值。
+pub fn extract_first_64_hex(text: &str) -> Option<String> {
+    let bytes = text.as_bytes();
+    let mut i = 0;
+    while i + 64 <= bytes.len() {
+        if bytes[i].is_ascii_hexdigit() {
+            let mut j = i;
+            while j < bytes.len() && bytes[j].is_ascii_hexdigit() {
+                j += 1;
+            }
+            if j - i == 64 {
+                let prev_ok = i == 0 || !bytes[i - 1].is_ascii_hexdigit();
+                let next_ok = j == bytes.len() || !bytes[j].is_ascii_hexdigit();
+                if prev_ok && next_ok {
+                    return Some(text[i..j].to_ascii_lowercase());
+                }
+            }
+            i = j;
+        } else {
+            i += 1;
+        }
+    }
+    None
+}
+
+/// 从 Atom feed 解码后的 content 中提取指定后缀的文件名。
+pub fn extract_filename_by_extension(text: &str, ext: &str) -> Option<String> {
+    let lower = text.to_ascii_lowercase();
+    let mut search_from = 0;
+    while let Some(pos) = lower[search_from..].find(ext) {
+        let actual_pos = search_from + pos;
+        let prefix = &text[..actual_pos];
+        // 查找最右侧的分隔符及其字符长度，确保切片在 UTF-8 字符边界上
+        let start = prefix
+            .char_indices()
+            .filter(|(_, c)| *c == '>' || *c == '"' || *c == '\'' || *c == '`' || *c == '（' || *c == '(' || c.is_whitespace())
+            .last()
+            .map(|(i, c)| i + c.len_utf8())
+            .unwrap_or(0);
+        let after_ext = actual_pos + ext.len();
+        let name = text[start..after_ext].trim();
+        if !name.is_empty() && !name.contains('<') && !name.contains('/') && !name.contains('\\') {
+            return Some(name.to_string());
+        }
+        search_from = actual_pos + ext.len();
+    }
+    None
+}
+
+/// 在指定文件名附近窗口中查找 64 位 SHA-256 哈希。
+pub fn find_sha256_near_name(lower_content: &str, lower_name: &str) -> Option<String> {
+    let pos = lower_content.find(lower_name)?;
+    let window = safe_subslice(lower_content, pos, 500);
+    extract_first_64_hex(window)
+}
+
+/// 从 Atom feed 的 HTML 内容中解析下载资产（安装包与扩展 ZIP）。
+pub fn parse_assets_from_feed_content(
+    version: &str,
+    content: &str,
+    global_sha: Option<&str>,
+) -> Vec<UpdateAssetInfo> {
+    let mut assets = Vec::new();
+    let lower_content = content.to_ascii_lowercase();
+
+    // 优先尝试寻找 setup.exe
+    if let Some(exe_name) = extract_filename_by_extension(content, ".exe") {
+        let download_url = format!(
+            "https://github.com/{}/{}/releases/download/v{}/{}",
+            GITHUB_OWNER, GITHUB_REPO, version, exe_name
+        );
+        let sha256 = find_sha256_near_name(&lower_content, &exe_name.to_ascii_lowercase())
+            .or_else(|| global_sha.map(|s| s.to_string()));
+        assets.push(UpdateAssetInfo {
+            name: exe_name,
+            url: download_url,
+            size: 0,
+            sha256,
+        });
+    }
+
+    // 尝试寻找 extension zip
+    if let Some(zip_name) = extract_filename_by_extension(content, ".zip") {
+        let download_url = format!(
+            "https://github.com/{}/{}/releases/download/v{}/{}",
+            GITHUB_OWNER, GITHUB_REPO, version, zip_name
+        );
+        let sha256 = find_sha256_near_name(&lower_content, &zip_name.to_ascii_lowercase());
+        assets.push(UpdateAssetInfo {
+            name: zip_name,
+            url: download_url,
+            size: 0,
+            sha256,
+        });
+    }
+
+    // 如果未提取到具体文件名，但拥有全局 SHA，提供标准命名资产回退
+    if assets.is_empty() {
+        if let Some(sha) = global_sha {
+            let standard_name = format!("Maobu.Fetch_{}_x64-setup.exe", version);
+            let download_url = format!(
+                "https://github.com/{}/{}/releases/download/v{}/{}",
+                GITHUB_OWNER, GITHUB_REPO, version, standard_name
+            );
+            assets.push(UpdateAssetInfo {
+                name: standard_name,
+                url: download_url,
+                size: 0,
+                sha256: Some(sha.to_string()),
+            });
+        }
+    }
+
+    assets
+}
+
+/// 从 GitHub Releases Atom XML 中解析最新版本信息。
+pub fn parse_atom_feed(xml: &str) -> Option<UpdateInfo> {
+    let entry_start = xml.find("<entry>")?;
+    let entry_end = xml[entry_start..].find("</entry>")?;
+    let entry = &xml[entry_start..entry_start + entry_end];
+
+    let mut version = String::new();
+    let mut download_url = RELEASES_PAGE.to_string();
+
+    // 1. 从 <link rel="alternate" ... href="..."/> 提取
+    if let Some(link_idx) = entry.find("<link ") {
+        if let Some(href_idx) = entry[link_idx..].find("href=\"") {
+            let after_href = &entry[link_idx + href_idx + 6..];
+            if let Some(quote_end) = after_href.find('"') {
+                let href = &after_href[..quote_end];
+                if href.contains("/releases/tag/") {
+                    download_url = href.to_string();
+                    if let Some(tag) = extract_tag_from_location(href) {
+                        version = tag;
+                    }
+                }
+            }
+        }
+    }
+
+    // 2. 若 link 未提取到，从 <id> 提取
+    if version.is_empty() {
+        if let Some(id_start) = entry.find("<id>") {
+            if let Some(id_end) = entry[id_start..].find("</id>") {
+                let id_val = &entry[id_start + 4..id_start + id_end];
+                if let Some(last_slash) = id_val.rfind('/') {
+                    let tag = &id_val[last_slash + 1..];
+                    let v = strip_leading_v(tag.trim());
+                    if !v.is_empty() {
+                        version = v.to_string();
+                        download_url = format!("{}/tag/v{}", RELEASES_PAGE, version);
+                    }
+                }
+            }
+        }
+    }
+
+    if version.is_empty() {
+        return None;
+    }
+
+    // 3. 提取发布时间 <updated>
+    let mut release_date = String::new();
+    if let Some(up_start) = entry.find("<updated>") {
+        if let Some(up_end) = entry[up_start..].find("</updated>") {
+            release_date = entry[up_start + 9..up_start + up_end].trim().to_string();
+        }
+    }
+
+    // 4. 提取 <content ...>
+    let mut release_notes = String::new();
+    if let Some(c_start) = entry.find("<content") {
+        if let Some(tag_close) = entry[c_start..].find('>') {
+            let content_body_start = c_start + tag_close + 1;
+            if let Some(c_end) = entry[content_body_start..].find("</content>") {
+                let raw_content = &entry[content_body_start..content_body_start + c_end];
+                release_notes = decode_html_entities(raw_content);
+            }
+        }
+    }
+
+    // 5. 解析 SHA-256
+    let sha256 = parse_sha256_from_body(&release_notes);
+
+    // 6. 解析资产
+    let assets = parse_assets_from_feed_content(&version, &release_notes, sha256.as_deref());
+
+    Some(UpdateInfo {
+        version,
+        release_date,
+        download_url,
+        sha256,
+        release_notes,
+        assets,
+    })
 }
 
 /// 剥离版本号前导 `v`/`V`（如 `v0.5.7` → `0.5.7`）。
@@ -508,6 +843,51 @@ mod tests {
     use super::*;
     use std::cmp::Ordering;
     use std::io::Write;
+
+    #[tokio::test]
+    #[ignore = "需要外部网络连接"]
+    async fn test_live_check_app_update() {
+        let res = check_app_update().await;
+        println!("LIVE CHECK RESULT: {:?}", res);
+    }
+
+    #[test]
+    fn test_safe_subslice_handles_multibyte_utf8() {
+        let text = "你好，世界！这是一段用于测试 UTF-8 边界的文本。";
+        // "你好" 前两个字每个字 3 字节，共 6 字节
+        // 尝试从第 0 字节截取 4 字节（落在 '好' 字内部）
+        let slice = safe_subslice(text, 0, 4);
+        assert_eq!(slice, "你", "必须安全在最近的字符边界截断，不能截碎字符引发 panic");
+
+        // 尝试截取超长
+        let slice2 = safe_subslice(text, 0, 9999);
+        assert_eq!(slice2, text);
+
+        // 尝试越界
+        let slice3 = safe_subslice(text, 9999, 10);
+        assert_eq!(slice3, "");
+    }
+
+    #[test]
+    fn test_select_extension_asset_matches_versioned_names() {
+        let assets = vec![
+            UpdateAssetInfo {
+                name: "Maobu.Fetch_0.8.10_x64-setup.exe".into(),
+                url: "http://example.com/setup.exe".into(),
+                size: 1000,
+                sha256: None,
+            },
+            UpdateAssetInfo {
+                name: "maobu-fetch-extension-v0.8.10.zip".into(),
+                url: "http://example.com/ext.zip".into(),
+                size: 200,
+                sha256: None,
+            },
+        ];
+        let found = select_extension_asset(&assets);
+        assert!(found.is_some());
+        assert_eq!(found.unwrap().name, "maobu-fetch-extension-v0.8.10.zip");
+    }
 
     // ---- version_compare ----
 
@@ -961,5 +1341,83 @@ mod tests {
             !dir.path().join("evil.txt").exists(),
             "不得写出目标目录之外"
         );
+    }
+
+    // ---- 双通道防限流降级测试 ----
+
+    #[test]
+    fn extract_tag_from_location_extracts_tag() {
+        assert_eq!(
+            extract_tag_from_location("https://github.com/maobukeai/maobu-fetch/releases/tag/v0.8.10"),
+            Some("0.8.10".into())
+        );
+        assert_eq!(
+            extract_tag_from_location("/maobukeai/maobu-fetch/releases/tag/v1.2.3"),
+            Some("1.2.3".into())
+        );
+        assert_eq!(
+            extract_tag_from_location("https://github.com/test/repo/releases/tag/0.9.0?query=1"),
+            Some("0.9.0".into())
+        );
+        assert_eq!(
+            extract_tag_from_location("https://github.com/test/repo/releases"),
+            None
+        );
+    }
+
+    #[test]
+    fn decode_html_entities_works() {
+        let raw = "&lt;h1&gt;猫步 &amp; 狗步 &quot;下载&quot;&lt;/h1&gt;";
+        assert_eq!(decode_html_entities(raw), "<h1>猫步 & 狗步 \"下载\"</h1>");
+    }
+
+    #[test]
+    fn extract_first_64_hex_extracts_valid_sha256() {
+        let text = "SHA-256: 725b77877a571bf4e0a13b85767064ed3a30f33b92cf5030e70a32cb7b141c2c ok";
+        assert_eq!(
+            extract_first_64_hex(text),
+            Some("725b77877a571bf4e0a13b85767064ed3a30f33b92cf5030e70a32cb7b141c2c".into())
+        );
+        assert_eq!(extract_first_64_hex("12345"), None);
+    }
+
+    #[test]
+    fn parse_atom_feed_extracts_latest_entry() {
+        let sample_atom = r#"<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>Release notes</title>
+  <entry>
+    <id>tag:github.com,2008:Repository/123/v0.8.10</id>
+    <updated>2026-08-21T13:31:49Z</updated>
+    <link rel="alternate" type="text/html" href="https://github.com/maobukeai/maobu-fetch/releases/tag/v0.8.10"/>
+    <title>猫步下载器 v0.8.10</title>
+    <content type="html">&lt;p&gt;更新说明&lt;/p&gt;&lt;p&gt;安装包（Maobu.Fetch_0.8.10_x64-setup.exe）&lt;br&gt;SHA-256: &lt;code&gt;725B77877A571BF4E0A13B85767064ED3A30F33B92CF5030E70A32CB7B141C2C&lt;/code&gt;&lt;/p&gt;</content>
+  </entry>
+</feed>"#;
+        let info = parse_atom_feed(sample_atom).expect("Atom XML 应成功解析");
+        assert_eq!(info.version, "0.8.10");
+        assert_eq!(info.release_date, "2026-08-21T13:31:49Z");
+        assert_eq!(
+            info.download_url,
+            "https://github.com/maobukeai/maobu-fetch/releases/tag/v0.8.10"
+        );
+        assert_eq!(
+            info.sha256.as_deref(),
+            Some("725b77877a571bf4e0a13b85767064ed3a30f33b92cf5030e70a32cb7b141c2c")
+        );
+        assert!(!info.assets.is_empty());
+        assert_eq!(info.assets[0].name, "Maobu.Fetch_0.8.10_x64-setup.exe");
+        assert!(info.assets[0].url.contains("v0.8.10/Maobu.Fetch_0.8.10_x64-setup.exe"));
+    }
+
+    #[tokio::test]
+    #[ignore = "依赖外部实时网络连接，仅供本地联调验证"]
+    async fn test_live_check_app_update_fallback() {
+        let res = check_app_update().await;
+        println!("Live update check result: {:?}", res);
+        assert!(res.error.is_none(), "实时更新检查不应报错，error: {:?}", res.error);
+        let latest = res.latest.expect("应成功获取到最新版本");
+        assert_eq!(latest.version, "0.8.10");
+        assert!(res.has_update);
     }
 }

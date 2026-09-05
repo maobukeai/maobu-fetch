@@ -1,7 +1,7 @@
-//! Windows 视频文件关联管理模块（file_assoc）。
+//! Windows 媒体与图片文件关联管理模块（file_assoc）。
 //!
-//! 在 Windows 注册表中注册与查询 `MaobuFetch.Video` ProgID，
-//! 支持将 .mp4 / .webm / .mkv / .mov 等视频格式注册关联到猫步下载器内置播放器。
+//! 在 Windows 注册表中注册与查询 `MaobuFetch.Video` 与 `MaobuFetch.Image` ProgID，
+//! 支持将视频（.mp4 / .webm / .mkv 等）与图片（.png / .jpg / .webp 等）注册关联到猫步下载器内置播放器/看图器。
 //!
 //! 设计要点（AGENTS.md §7 & §8）：
 //! - 仅操作 `HKCU\Software\Classes`，无需管理员提权，安全无侵入。
@@ -15,19 +15,35 @@ pub const SUPPORTED_VIDEO_EXTS: &[&str] = &[
     "mp4", "webm", "mkv", "mov", "m4v", "flv", "avi", "ts", "wmv",
 ];
 
+/// 支持关联的常见图片扩展名列表
+pub const SUPPORTED_IMAGE_EXTS: &[&str] = &[
+    "png", "jpg", "jpeg", "webp", "gif", "bmp", "svg", "ico", "avif",
+];
+
+fn default_assoc_category() -> String {
+    "video".into()
+}
+
 /// 文件关联状态结构体
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FileAssocInfo {
     pub extension: String,
     pub is_associated: bool,
+    #[serde(default = "default_assoc_category")]
+    pub category: String,
 }
 
 #[cfg(windows)]
-const PROG_ID: &str = "MaobuFetch.Video";
+const VIDEO_PROG_ID: &str = "MaobuFetch.Video";
 #[cfg(windows)]
-const PROG_DESCRIPTION: &str = "猫步下载器 媒体文件";
+const VIDEO_PROG_DESCRIPTION: &str = "猫步下载器 媒体文件";
 
-/// 获取当前所有支持扩展名的关联状态
+#[cfg(windows)]
+const IMAGE_PROG_ID: &str = "MaobuFetch.Image";
+#[cfg(windows)]
+const IMAGE_PROG_DESCRIPTION: &str = "猫步下载器 图像文件";
+
+/// 获取当前所有支持扩展名（视频 + 图片）的关联状态
 pub fn get_file_associations() -> Result<Vec<FileAssocInfo>, String> {
     #[cfg(windows)]
     {
@@ -40,23 +56,24 @@ pub fn get_file_associations() -> Result<Vec<FileAssocInfo>, String> {
             Err(e) => return Err(format!("无法打开注册表 Classes 键: {e}")),
         };
 
-        let mut results = Vec::with_capacity(SUPPORTED_VIDEO_EXTS.len());
+        let total_len = SUPPORTED_VIDEO_EXTS.len() + SUPPORTED_IMAGE_EXTS.len();
+        let mut results = Vec::with_capacity(total_len);
 
+        // 1. 检查视频扩展名
         for ext in SUPPORTED_VIDEO_EXTS {
             let dot_ext = format!(".{ext}");
             let is_assoc = if let Ok(ext_key) = classes.open_subkey(&dot_ext) {
-                // 检查默认 ProgID 或者 OpenWithProgids 是否包含 MaobuFetch.Video
                 let default_val: Result<String, _> = ext_key.get_value("");
                 if let Ok(val) = default_val {
-                    if val == PROG_ID {
+                    if val == VIDEO_PROG_ID {
                         true
                     } else if let Ok(open_with) = ext_key.open_subkey("OpenWithProgids") {
-                        open_with.get_value::<String, _>(PROG_ID).is_ok()
+                        open_with.get_value::<String, _>(VIDEO_PROG_ID).is_ok()
                     } else {
                         false
                     }
                 } else if let Ok(open_with) = ext_key.open_subkey("OpenWithProgids") {
-                    open_with.get_value::<String, _>(PROG_ID).is_ok()
+                    open_with.get_value::<String, _>(VIDEO_PROG_ID).is_ok()
                 } else {
                     false
                 }
@@ -67,6 +84,36 @@ pub fn get_file_associations() -> Result<Vec<FileAssocInfo>, String> {
             results.push(FileAssocInfo {
                 extension: ext.to_string(),
                 is_associated: is_assoc,
+                category: "video".into(),
+            });
+        }
+
+        // 2. 检查图片扩展名
+        for ext in SUPPORTED_IMAGE_EXTS {
+            let dot_ext = format!(".{ext}");
+            let is_assoc = if let Ok(ext_key) = classes.open_subkey(&dot_ext) {
+                let default_val: Result<String, _> = ext_key.get_value("");
+                if let Ok(val) = default_val {
+                    if val == IMAGE_PROG_ID {
+                        true
+                    } else if let Ok(open_with) = ext_key.open_subkey("OpenWithProgids") {
+                        open_with.get_value::<String, _>(IMAGE_PROG_ID).is_ok()
+                    } else {
+                        false
+                    }
+                } else if let Ok(open_with) = ext_key.open_subkey("OpenWithProgids") {
+                    open_with.get_value::<String, _>(IMAGE_PROG_ID).is_ok()
+                } else {
+                    false
+                }
+            } else {
+                false
+            };
+
+            results.push(FileAssocInfo {
+                extension: ext.to_string(),
+                is_associated: is_assoc,
+                category: "image".into(),
             });
         }
 
@@ -75,13 +122,22 @@ pub fn get_file_associations() -> Result<Vec<FileAssocInfo>, String> {
 
     #[cfg(not(windows))]
     {
-        Ok(SUPPORTED_VIDEO_EXTS
-            .iter()
-            .map(|ext| FileAssocInfo {
+        let mut results = Vec::new();
+        for ext in SUPPORTED_VIDEO_EXTS {
+            results.push(FileAssocInfo {
                 extension: ext.to_string(),
                 is_associated: false,
-            })
-            .collect())
+                category: "video".into(),
+            });
+        }
+        for ext in SUPPORTED_IMAGE_EXTS {
+            results.push(FileAssocInfo {
+                extension: ext.to_string(),
+                is_associated: false,
+                category: "image".into(),
+            });
+        }
+        Ok(results)
     }
 }
 
@@ -102,28 +158,61 @@ pub fn set_file_associations(exts: Vec<String>, enable: bool) -> Result<(), Stri
             .map_err(|e| format!("无法打开注册表 Classes 键: {e}"))?;
 
         if enable {
-            // 1. 注册 ProgID 基础信息与 open 命令
-            let (prog_key, _) = classes
-                .create_subkey(PROG_ID)
-                .map_err(|e| format!("无法创建 ProgID 注册表项: {e}"))?;
-            let _ = prog_key.set_value("", &PROG_DESCRIPTION);
+            // 1. 注册 Video ProgID 基础信息与 open 命令
+            let has_video = exts.iter().any(|e| {
+                let c = e.trim().trim_start_matches('.');
+                SUPPORTED_VIDEO_EXTS.contains(&c)
+            });
+            if has_video {
+                let (prog_key, _) = classes
+                    .create_subkey(VIDEO_PROG_ID)
+                    .map_err(|e| format!("无法创建 Video ProgID 注册表项: {e}"))?;
+                let _ = prog_key.set_value("", &VIDEO_PROG_DESCRIPTION);
 
-            if let Ok((icon_key, _)) = prog_key.create_subkey("DefaultIcon") {
-                let _ = icon_key.set_value("", &format!("\"{exe_path_str}\",0"));
+                if let Ok((icon_key, _)) = prog_key.create_subkey("DefaultIcon") {
+                    let _ = icon_key.set_value("", &format!("\"{exe_path_str}\",0"));
+                }
+
+                if let Ok((cmd_key, _)) = prog_key.create_subkey("shell\\open\\command") {
+                    let command_str = format!("\"{exe_path_str}\" --play \"%1\"");
+                    let _ = cmd_key.set_value("", &command_str);
+                }
             }
 
-            if let Ok((cmd_key, _)) = prog_key.create_subkey("shell\\open\\command") {
-                let command_str = format!("\"{exe_path_str}\" --play \"%1\"");
-                let _ = cmd_key.set_value("", &command_str);
+            // 2. 注册 Image ProgID 基础信息与 open 命令
+            let has_image = exts.iter().any(|e| {
+                let c = e.trim().trim_start_matches('.');
+                SUPPORTED_IMAGE_EXTS.contains(&c)
+            });
+            if has_image {
+                let (prog_key, _) = classes
+                    .create_subkey(IMAGE_PROG_ID)
+                    .map_err(|e| format!("无法创建 Image ProgID 注册表项: {e}"))?;
+                let _ = prog_key.set_value("", &IMAGE_PROG_DESCRIPTION);
+
+                if let Ok((icon_key, _)) = prog_key.create_subkey("DefaultIcon") {
+                    let _ = icon_key.set_value("", &format!("\"{exe_path_str}\",0"));
+                }
+
+                if let Ok((cmd_key, _)) = prog_key.create_subkey("shell\\open\\command") {
+                    let command_str = format!("\"{exe_path_str}\" --view-image \"%1\"");
+                    let _ = cmd_key.set_value("", &command_str);
+                }
             }
 
-            // 2. 为每个选中的扩展名添加关联
+            // 3. 为每个选中的扩展名添加关联到对应 ProgID
             for ext in &exts {
                 let clean_ext = ext.trim().trim_start_matches('.');
                 let dot_ext = format!(".{clean_ext}");
+                let target_prog_id = if SUPPORTED_IMAGE_EXTS.contains(&clean_ext) {
+                    IMAGE_PROG_ID
+                } else {
+                    VIDEO_PROG_ID
+                };
+
                 if let Ok((ext_key, _)) = classes.create_subkey(&dot_ext) {
                     if let Ok((open_with, _)) = ext_key.create_subkey("OpenWithProgids") {
-                        let _ = open_with.set_value(PROG_ID, &"");
+                        let _ = open_with.set_value(target_prog_id, &"");
                     }
                 }
             }
@@ -132,9 +221,15 @@ pub fn set_file_associations(exts: Vec<String>, enable: bool) -> Result<(), Stri
             for ext in &exts {
                 let clean_ext = ext.trim().trim_start_matches('.');
                 let dot_ext = format!(".{clean_ext}");
+                let target_prog_id = if SUPPORTED_IMAGE_EXTS.contains(&clean_ext) {
+                    IMAGE_PROG_ID
+                } else {
+                    VIDEO_PROG_ID
+                };
+
                 if let Ok(ext_key) = classes.open_subkey_with_flags(&dot_ext, KEY_WRITE) {
                     if let Ok(open_with) = ext_key.open_subkey_with_flags("OpenWithProgids", KEY_WRITE) {
-                        let _ = open_with.delete_value(PROG_ID);
+                        let _ = open_with.delete_value(target_prog_id);
                     }
                 }
             }
@@ -185,14 +280,22 @@ mod tests {
         assert!(SUPPORTED_VIDEO_EXTS.contains(&"mp4"));
         assert!(SUPPORTED_VIDEO_EXTS.contains(&"webm"));
         assert!(SUPPORTED_VIDEO_EXTS.contains(&"mkv"));
+        assert!(SUPPORTED_IMAGE_EXTS.contains(&"png"));
+        assert!(SUPPORTED_IMAGE_EXTS.contains(&"jpg"));
+        assert!(SUPPORTED_IMAGE_EXTS.contains(&"webp"));
     }
 
     #[test]
     fn test_get_file_associations_returns_all_supported() {
         let assocs = get_file_associations().unwrap();
-        assert_eq!(assocs.len(), SUPPORTED_VIDEO_EXTS.len());
+        let expected_len = SUPPORTED_VIDEO_EXTS.len() + SUPPORTED_IMAGE_EXTS.len();
+        assert_eq!(assocs.len(), expected_len);
         for item in assocs {
-            assert!(SUPPORTED_VIDEO_EXTS.contains(&item.extension.as_str()));
+            if item.category == "image" {
+                assert!(SUPPORTED_IMAGE_EXTS.contains(&item.extension.as_str()));
+            } else {
+                assert!(SUPPORTED_VIDEO_EXTS.contains(&item.extension.as_str()));
+            }
         }
     }
 }

@@ -21,6 +21,9 @@ export function categorizeLink(link) {
   let ext = "";
   try {
     const parsed = new URL(link);
+    if (parsed.hostname.includes("chatgpt.com") && parsed.pathname.includes("/estuary/content")) {
+      return { category: "image", icon: "🖼️", label: "图片" };
+    }
     const pathname = parsed.pathname || "";
     const match = pathname.match(/\.([a-z0-9]{1,6})$/i);
     if (match) ext = match[1].toLowerCase();
@@ -62,9 +65,14 @@ function labelFor(link) {
   let name = "";
   try {
     const url = new URL(link);
-    try {
-      name = decodeURIComponent(url.pathname.split("/").pop() || "") || url.hostname;
-    } catch { name = url.pathname.split("/").pop() || url.hostname; }
+    if (url.hostname.includes("chatgpt.com") && url.pathname.includes("/estuary/content")) {
+      const id = url.searchParams.get("id");
+      name = id ? (/\.(png|jpe?g|webp|gif)$/i.test(id) ? id : `${id}.png`) : "ChatGPT_image.png";
+    } else {
+      try {
+        name = decodeURIComponent(url.pathname.split("/").pop() || "") || url.hostname;
+      } catch { name = url.pathname.split("/").pop() || url.hostname; }
+    }
   } catch { name = link; }
   return { icon: cat.icon, text: name || link, category: cat.category };
 }

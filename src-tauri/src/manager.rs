@@ -2674,8 +2674,11 @@ impl DownloadManager {
         // 避免无覆盖任务每次都付出 settings 读 + client 构造开销。
         let client = if task.proxy_override.is_some() {
             let settings = self.settings().await;
+            tracing::info!(task_id = %task.id, proxy_override = ?task.proxy_override, "download_once 使用任务级客户端");
             build_task_client(&settings, &task)?
         } else {
+            let mode = self.settings().await.proxy_mode;
+            tracing::info!(task_id = %task.id, proxy_mode = %mode, "download_once 使用全局共享客户端");
             self.client.read().await.clone()
         };
         let is_baidu_link = task.url.contains("baidupcs.com") || task.url.contains("pan.baidu.com");
@@ -2694,7 +2697,13 @@ impl DownloadManager {
             for (name, value) in &task.headers {
                 head = head.header(name, value);
             }
-            let initial_probe = head.send().await.map_err(friendly_reqwest)?;
+            let initial_probe = match head.send().await {
+                Ok(resp) => resp,
+                Err(err) => {
+                    tracing::error!(task_id = %task.id, error = ?err, "探测 HEAD 失败");
+                    return Err(friendly_reqwest(err));
+                }
+            };
             // 部分服务器/CDN 不支持 HEAD（403/405/501/400）：回退为 GET + bytes=0-0 探针，
             // 避免把可以正常 GET 下载的资源直接判为失败。回退响应可能为 206，
             // 总长度由 probe_total_bytes 从 Content-Range 提取。
@@ -4193,8 +4202,19 @@ impl DownloadManager {
                 _ = token.cancelled() => return false,
                 result = tokio::time::timeout(Duration::from_secs(10), request.send()) => result,
             };
-            if result.is_ok_and(|response| response.is_ok()) {
-                return true;
+            match &result {
+                Ok(Ok(response)) => {
+                    if response.status().is_success() || response.status().as_u16() < 500 {
+                        return true;
+                    }
+                    tracing::warn!(task_id = %task.id, status = %response.status(), "wait_for_network 探测返回非成功状态");
+                }
+                Ok(Err(e)) => {
+                    tracing::error!(task_id = %task.id, error = ?e, "wait_for_network 探测请求出错");
+                }
+                Err(elapsed) => {
+                    tracing::error!(task_id = %task.id, error = ?elapsed, "wait_for_network 探测超时");
+                }
             }
         }
     }
@@ -5964,13 +5984,31 @@ fn build_client(s: &AppSettings) -> Result<reqwest::Client, String> {
         .http2_adaptive_window(true)
         .timeout(Duration::from_secs(24 * 60 * 60));
     if s.proxy_mode == "manual" && !s.proxy_url.is_empty() {
-        let mut proxy = reqwest::Proxy::all(&s.proxy_url).map_err(|e| e.to_string())?;
+        let normalized = crate::proxy::normalize_proxy_scheme(&s.proxy_url);
+        let mut proxy = reqwest::Proxy::all(&normalized).map_err(|e| e.to_string())?;
         if !s.proxy_username.is_empty() {
             proxy = proxy.basic_auth(&s.proxy_username, &s.proxy_password)
         }
         builder = builder.proxy(proxy)
     } else if s.proxy_mode == "none" {
         builder = builder.no_proxy()
+    } else if s.proxy_mode == "system" {
+        let eff = crate::proxy::get_effective_system_proxy();
+        tracing::info!(effective_proxy = ?eff, "build_client 探测系统代理");
+        if let Some(sys_proxy) = eff {
+            let normalized = crate::proxy::normalize_proxy_scheme(&sys_proxy);
+            match reqwest::Proxy::all(&normalized) {
+                Ok(proxy) => {
+                    tracing::info!(proxy = %normalized, "build_client 成功附加系统代理");
+                    builder = builder.proxy(proxy);
+                }
+                Err(e) => {
+                    tracing::error!(error = ?e, "build_client 附加系统代理失败");
+                }
+            }
+        } else {
+            tracing::warn!("build_client 未探测到系统代理，无代理可用");
+        }
     }
     builder.build().map_err(|e| e.to_string())
 }
@@ -5998,7 +6036,8 @@ fn build_task_client(s: &AppSettings, task: &DownloadTask) -> Result<reqwest::Cl
         .timeout(Duration::from_secs(24 * 60 * 60));
     match task.proxy_override.as_deref() {
         Some(url) if !url.is_empty() => {
-            let mut proxy = reqwest::Proxy::all(url).map_err(|e| e.to_string())?;
+            let normalized = crate::proxy::normalize_proxy_scheme(url);
+            let mut proxy = reqwest::Proxy::all(&normalized).map_err(|e| e.to_string())?;
             if let Some(auth) = task.proxy_auth.as_ref() {
                 if let Some(decoded) = crate::proxy::decode_proxy_auth(auth) {
                     if !decoded.username.is_empty() {
@@ -6015,13 +6054,21 @@ fn build_task_client(s: &AppSettings, task: &DownloadTask) -> Result<reqwest::Cl
         None => {
             // 理论上不会进入此分支（调用方先检查 is_some）；安全回退到全局 manual。
             if s.proxy_mode == "manual" && !s.proxy_url.is_empty() {
-                let mut proxy = reqwest::Proxy::all(&s.proxy_url).map_err(|e| e.to_string())?;
+                let normalized = crate::proxy::normalize_proxy_scheme(&s.proxy_url);
+                let mut proxy = reqwest::Proxy::all(&normalized).map_err(|e| e.to_string())?;
                 if !s.proxy_username.is_empty() {
                     proxy = proxy.basic_auth(&s.proxy_username, &s.proxy_password);
                 }
                 builder = builder.proxy(proxy);
             } else if s.proxy_mode == "none" {
                 builder = builder.no_proxy();
+            } else if s.proxy_mode == "system" {
+                if let Some(sys_proxy) = crate::proxy::get_effective_system_proxy() {
+                    let normalized = crate::proxy::normalize_proxy_scheme(&sys_proxy);
+                    if let Ok(proxy) = reqwest::Proxy::all(&normalized) {
+                        builder = builder.proxy(proxy);
+                    }
+                }
             }
         }
     }

@@ -158,6 +158,26 @@ impl DownloadManager {
             &probe.final_url,
         );
 
+        if !file_name.contains('.') {
+            if let Some(ct) = probe.content_type.as_deref() {
+                let lower_ct = ct.to_ascii_lowercase();
+                let img_ext = if lower_ct.contains("image/png") {
+                    Some("png")
+                } else if lower_ct.contains("image/jpeg") {
+                    Some("jpg")
+                } else if lower_ct.contains("image/webp") {
+                    Some("webp")
+                } else if lower_ct.contains("image/gif") {
+                    Some("gif")
+                } else {
+                    None
+                };
+                if let Some(ext) = img_ext {
+                    file_name = format!("{file_name}.{ext}");
+                }
+            }
+        }
+
         if is_media_url && request.suggested_filename.is_none() {
             // 从 request.headers 取出前端/扩展可能传入的凭证，
             // 再用 media_credentials 表中按域名存储的凭证回填缺失项。
@@ -356,7 +376,8 @@ fn build_precheck_client(
     // 优先使用请求级代理，回退到全局代理设置
     match request.proxy_override.as_deref() {
         Some(url) if !url.is_empty() => {
-            let mut proxy = reqwest::Proxy::all(url).map_err(|e| e.to_string())?;
+            let normalized = crate::proxy::normalize_proxy_scheme(url);
+            let mut proxy = reqwest::Proxy::all(&normalized).map_err(|e| e.to_string())?;
             if let Some(auth) = request.proxy_auth.as_ref() {
                 if let Some(decoded) = crate::proxy::decode_proxy_auth(auth) {
                     if !decoded.username.is_empty() {
@@ -371,14 +392,22 @@ fn build_precheck_client(
         }
         None => {
             if settings.proxy_mode == "manual" && !settings.proxy_url.is_empty() {
+                let normalized = crate::proxy::normalize_proxy_scheme(&settings.proxy_url);
                 let mut proxy =
-                    reqwest::Proxy::all(&settings.proxy_url).map_err(|e| e.to_string())?;
+                    reqwest::Proxy::all(&normalized).map_err(|e| e.to_string())?;
                 if !settings.proxy_username.is_empty() {
                     proxy = proxy.basic_auth(&settings.proxy_username, &settings.proxy_password);
                 }
                 builder = builder.proxy(proxy);
             } else if settings.proxy_mode == "none" {
                 builder = builder.no_proxy();
+            } else if settings.proxy_mode == "system" {
+                if let Some(sys_proxy) = crate::proxy::get_effective_system_proxy() {
+                    let normalized = crate::proxy::normalize_proxy_scheme(&sys_proxy);
+                    if let Ok(proxy) = reqwest::Proxy::all(&normalized) {
+                        builder = builder.proxy(proxy);
+                    }
+                }
             }
         }
     }
@@ -689,9 +718,39 @@ fn determine_filename(
     name
 }
 
-/// 从 URL 路径提取文件名（percent-decode 后）。
+/// 从 URL 路径提取文件名（percent-decode 后，支持 query 参数与特定服务回退）。
 fn extract_filename_from_url(url: &str) -> Option<String> {
     let parsed = Url::parse(url).ok()?;
+
+    // 1. 优先检查 ChatGPT estuary 图片参数（/estuary/content?id=file_xxx）
+    if parsed.path().contains("/backend-api/estuary/content") || parsed.path().contains("/estuary/content") {
+        if let Some((_, id_val)) = parsed.query_pairs().find(|(k, _)| k == "id") {
+            let sanitized = sanitize_filename(&id_val);
+            if !sanitized.is_empty() {
+                let with_ext = if sanitized.ends_with(".png")
+                    || sanitized.ends_with(".webp")
+                    || sanitized.ends_with(".jpg")
+                    || sanitized.ends_with(".jpeg")
+                {
+                    sanitized
+                } else {
+                    format!("{sanitized}.png")
+                };
+                return Some(with_ext);
+            }
+        }
+    }
+
+    // 2. 检查常见下载链接中的 filename/file_name query 参数
+    if let Some((_, val)) = parsed.query_pairs().find(|(k, _)| k == "filename" || k == "file_name") {
+        let decoded = percent_decode_str(&val);
+        let sanitized = sanitize_filename(&decoded);
+        if !sanitized.is_empty() {
+            return Some(sanitized);
+        }
+    }
+
+    // 3. 从 URL 路径获取最后一段
     let segments = parsed.path_segments()?;
     let last = segments.last()?;
     if last.is_empty() {
@@ -1809,6 +1868,26 @@ mod tests {
         assert_eq!(
             cdn_connection_cap("https://myaccount.blob.core.windows.net/x"),
             2
+        );
+    }
+
+    #[test]
+    fn extract_filename_from_chatgpt_estuary_url() {
+        let url = "https://chatgpt.com/backend-api/estuary/content?id=file_0000000025d481faab0df1f523c191c4&ts=496837&p=fsns&cid=1";
+        assert_eq!(
+            extract_filename_from_url(url),
+            Some("file_0000000025d481faab0df1f523c191c4.png".to_string())
+        );
+        let name = determine_filename(None, None, url);
+        assert_eq!(name, "file_0000000025d481faab0df1f523c191c4.png");
+    }
+
+    #[test]
+    fn extract_filename_from_query_params() {
+        let url = "https://example.com/download/api?filename=vacation_photo.webp&token=123";
+        assert_eq!(
+            extract_filename_from_url(url),
+            Some("vacation_photo.webp".to_string())
         );
     }
 }

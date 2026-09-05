@@ -470,6 +470,8 @@ export interface AppSettings {
   bt_tracker_auto_update?: boolean;
   /** 分时段限速规则（2026-08-17）。`null`/缺省 = 未配置。 */
   scheduled_limit?: ScheduledSpeedLimit | null;
+  /** 双击已完成任务时的打开方式偏好："builtin" 内置轻量播放器/看图器；"system" 系统默认程序。默认 "builtin"。 */
+  open_file_action?: "builtin" | "system";
 }
 
 /**
@@ -1278,6 +1280,7 @@ export interface Pan123DirectUrlResult {
 export interface FileAssocInfo {
   extension: string;
   is_associated: boolean;
+  category?: "video" | "image";
 }
 
 export interface PlaylistItem {

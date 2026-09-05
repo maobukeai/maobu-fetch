@@ -148,6 +148,7 @@ const defaults: AppSettings = {
   window_width: 1024,
   window_height: 720,
   auto_scale_ui: false,
+  open_file_action: "builtin",
   default_retry_policy: {
     connection_timeout_secs: 60,
     task_timeout_secs: null,
@@ -2198,7 +2199,8 @@ export default function App() {
                                 ? ""
                                 : "\\";
                             const fullPath = `${task.destination}${sep}${task.file_name}`;
-                            if (isVideoFile(task.file_name)) {
+                            const useBuiltin = settings.open_file_action !== "system";
+                            if (useBuiltin && isVideoFile(task.file_name)) {
                               void api
                                 .openMediaPlayer(fullPath, task.file_name)
                                 .catch(() =>
@@ -2206,7 +2208,7 @@ export default function App() {
                                     .openFile(task.id)
                                     .catch((error) => notify(String(error), "error"))
                                 );
-                            } else if (isImageFile(task.file_name)) {
+                            } else if (useBuiltin && isImageFile(task.file_name)) {
                               void api
                                 .openImageViewer(fullPath, task.file_name)
                                 .catch(() =>

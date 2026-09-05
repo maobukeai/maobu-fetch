@@ -415,10 +415,10 @@ export const api = {
   /** 唤起内置媒体播放器独立窗口播放指定文件。 */
   openMediaPlayer: (filePath: string, title?: string) =>
     call<void>("open_media_player", { filePath, title }),
-  /** 获取 Windows 视频文件关联列表与当前状态。 */
+  /** 获取 Windows 视频与图片文件关联列表与当前状态。 */
   getFileAssociations: () =>
     isDesktop() ? call<FileAssocInfo[]>("file_associations_get") : Promise.resolve([]),
-  /** 设置/更新 Windows 视频文件关联。 */
+  /** 设置/更新 Windows 视频与图片文件关联。 */
   setFileAssociations: (exts: string[], enable: boolean) =>
     call<void>("file_associations_set", { exts, enable }),
   /** 打开 Windows 默认应用设置面板。 */

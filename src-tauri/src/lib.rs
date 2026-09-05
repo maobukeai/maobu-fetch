@@ -2539,7 +2539,7 @@ pub fn run_cli(command: CliCommand) -> i32 {
                 }
             }
         }
-        CliCommand::Play { .. } => {
+        CliCommand::Play { .. } | CliCommand::ViewImage { .. } => {
             run();
             0
         }
@@ -2609,6 +2609,9 @@ fn handle_single_instance_forward(app: &tauri::AppHandle, argv: Vec<String>) {
         }
         CliCommand::Play { path } => {
             let _ = open_or_focus_player_window(app, &path, None);
+        }
+        CliCommand::ViewImage { path } => {
+            let _ = open_or_focus_image_window(app, &path, None);
         }
         other => {
             // CLI 子命令：在运行中的 manager 上执行。
@@ -2729,7 +2732,7 @@ async fn run_forwarded_command(manager: &SharedManager, command: CliCommand) -> 
             println!("OK");
             Ok(())
         }
-        CliCommand::Run | CliCommand::Play { .. } => Ok(()),
+        CliCommand::Run | CliCommand::Play { .. } | CliCommand::ViewImage { .. } => Ok(()),
     }
 }
 
@@ -3747,13 +3750,22 @@ pub fn run() {
                 handle_maobu_task_file(&file_app, &file_manager).await;
             });
 
-            // 冷启动：检查是否通过命令行 --play 或直接媒体文件启动
+            // 冷启动：检查是否通过命令行 --play / --view-image 或直接媒体/图片文件启动
             let startup_args: Vec<String> = std::env::args().collect();
-            if let Ok(CliCommand::Play { path }) = cli::parse_args(startup_args) {
-                let startup_app = app.handle().clone();
-                tauri::async_runtime::spawn(async move {
-                    let _ = open_or_focus_player_window(&startup_app, &path, None);
-                });
+            match cli::parse_args(startup_args) {
+                Ok(CliCommand::Play { path }) => {
+                    let startup_app = app.handle().clone();
+                    tauri::async_runtime::spawn(async move {
+                        let _ = open_or_focus_player_window(&startup_app, &path, None);
+                    });
+                }
+                Ok(CliCommand::ViewImage { path }) => {
+                    let startup_app = app.handle().clone();
+                    tauri::async_runtime::spawn(async move {
+                        let _ = open_or_focus_image_window(&startup_app, &path, None);
+                    });
+                }
+                _ => {}
             }
 
             // Task 28：注册托盘进度更新事件监听。

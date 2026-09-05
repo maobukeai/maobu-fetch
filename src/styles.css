@@ -131,7 +131,7 @@ body.row-compact {
 
 * { box-sizing: border-box; }
 html, body, #root { width: 100%; height: 100%; }
-body { margin: 0; min-width: 1024px; overflow: hidden; background: var(--surface-alt); }
+body { margin: 0; min-width: 0; overflow: hidden; background: var(--surface-alt); }
 :root[data-window-style="frosted"] body { background: transparent; }
 :root[data-window-style="frosted"] .workspace,
 :root[data-window-style="frosted"] .titlebar,
@@ -227,6 +227,7 @@ svg { flex: 0 0 auto; }
   display: flex;
   flex-direction: column;
   gap: 4px;
+  flex-shrink: 0;
 }
 .nav-settings {
   margin-top: 0;
@@ -278,6 +279,7 @@ svg { flex: 0 0 auto; }
   border: none;
   background: transparent;
   color: var(--text);
+  flex-shrink: 0;
   transition: background-color 0.15s;
 }
 .action-group button:hover:not(:disabled) {
@@ -300,6 +302,7 @@ svg { flex: 0 0 auto; }
   border-radius: 6px;
   color: var(--text);
   background: var(--control);
+  flex-shrink: 0;
   transition: background-color 0.15s, border-color 0.15s;
 }
 .action-btn-standalone:hover:not(:disabled), .details-toggle:hover:not(:disabled) {
@@ -1036,12 +1039,12 @@ svg { flex: 0 0 auto; }
 .power-action-options small { color: var(--muted); font-size: 10px; line-height: 1.35; }
 .power-action-dialog > footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 14px; color: var(--muted); font-size: 10px; }
 .power-action-dialog .secondary-button { flex: none; min-height: 28px; padding: 0 10px; border: 1px solid var(--border-strong); border-radius: 5px; color: var(--text); background: var(--control); font-size: 11px; }
-.dialog { width: 480px; max-height: calc(100vh - 48px); overflow: auto; padding: 18px; border: 1px solid rgba(0, 0, 0, 0.10); border-radius: 12px; background: rgba(255, 255, 255, 0.82); -webkit-backdrop-filter: blur(24px) saturate(180%); backdrop-filter: blur(24px) saturate(180%); box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.8), 0 20px 48px rgba(0, 0, 0, 0.14), 0 4px 12px rgba(0, 0, 0, 0.04); }
+.dialog { width: 480px; max-width: 100%; box-sizing: border-box; max-height: calc(100vh - 48px); overflow: auto; padding: 18px; border: 1px solid rgba(0, 0, 0, 0.10); border-radius: 12px; background: rgba(255, 255, 255, 0.82); -webkit-backdrop-filter: blur(24px) saturate(180%); backdrop-filter: blur(24px) saturate(180%); box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.8), 0 20px 48px rgba(0, 0, 0, 0.14), 0 4px 12px rgba(0, 0, 0, 0.04); }
 :root[data-theme="dark"] .dialog { background: rgba(28, 30, 38, 0.82); -webkit-backdrop-filter: blur(24px) saturate(160%); backdrop-filter: blur(24px) saturate(160%); border-color: rgba(255, 255, 255, 0.10); box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12), 0 24px 56px rgba(0, 0, 0, 0.48); }
 /* 嵌套在 dialog-material 中时，内层 dialog 不提供自己的磨砂（由外层 dialog-material 统一提供） */
 .dialog-material .dialog,
 :root[data-theme="dark"] .dialog-material .dialog { background: transparent; box-shadow: none; border: 0; -webkit-backdrop-filter: none; backdrop-filter: none; }
-.dialog.wide { width: 660px; }
+.dialog.wide { width: 660px; max-width: 100%; }
 .dialog > h2 { margin: 0 0 18px; font-size: 18px; font-weight: 600; }
 .new-task-form { display: flex; flex-direction: column; gap: 11px; }
 .form-field { display: flex; flex-direction: column; gap: 6px; min-width: 0; color: var(--muted); font-size: 10px; font-weight: 600; }
@@ -1428,6 +1431,131 @@ svg { flex: 0 0 auto; }
   .titlebar .search-box { width: min(220px, 24vw); }
   .toolbar-actions { gap: 6px; }
   .table-header, .task-row { grid-template-columns: 28px minmax(190px,2fr) var(--col-size,70px) var(--col-status,82px) var(--col-connection,58px) var(--col-progress,112px) var(--col-speed,72px) var(--col-eta,76px) var(--col-created,92px) 38px; }
+}
+
+/* 关于页面三列功能卡片响应式网格 */
+.about-cards-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+  border-top: 1px solid var(--border);
+  padding-top: 14px;
+}
+
+@media (max-width: 1040px) {
+  .about-cards-grid {
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    gap: 12px;
+  }
+}
+
+@media (max-width: 960px) {
+  .titlebar {
+    gap: 6px;
+    padding-left: 10px;
+    padding-right: 158px;
+  }
+  .titlebar h1 {
+    min-width: 0;
+    font-size: 14px;
+    flex-shrink: 0;
+  }
+  .titlebar .search-box {
+    flex: 0 1 150px;
+    min-width: 80px;
+    max-width: 160px;
+    width: auto;
+  }
+  .toolbar-actions {
+    gap: 4px;
+    flex-shrink: 0;
+  }
+  .settings-body {
+    padding: 24px 20px 32px;
+  }
+  .settings-title {
+    margin-bottom: 14px;
+  }
+  .settings-content {
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
+  }
+  .settings-group {
+    margin-bottom: 18px;
+  }
+  .setting-row {
+    padding: 12px 14px;
+    gap: 12px;
+    min-height: 52px;
+    grid-template-columns: minmax(120px, 1fr) auto;
+  }
+  .setting-row input:not(.toggle),
+  .setting-row select,
+  .setting-row .custom-select-trigger {
+    max-width: 180px;
+  }
+  .window-size-setting-row {
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .retry-policy-grid .retry-policy-advanced-fields {
+    grid-template-columns: 1fr 1fr !important;
+  }
+  .retry-policy-grid .retry-policy-advanced-fields .setting-row:nth-child(1) {
+    grid-column: 1 !important;
+    grid-row: 1 !important;
+    border-right: 1px solid var(--border) !important;
+    border-bottom: 1px solid var(--border) !important;
+  }
+  .retry-policy-grid .retry-policy-advanced-fields .setting-row:nth-child(2) {
+    grid-column: 2 !important;
+    grid-row: 1 !important;
+    border-right: none !important;
+    border-bottom: 1px solid var(--border) !important;
+  }
+  .retry-policy-grid .retry-policy-advanced-fields .setting-row:nth-child(3) {
+    grid-column: 1 / span 2 !important;
+    grid-row: 2 !important;
+    border-bottom: 1px solid var(--border) !important;
+  }
+  .retry-policy-grid .retry-policy-advanced-fields .setting-row:nth-child(4) {
+    grid-column: 1 / span 2 !important;
+    grid-row: 3 !important;
+    border-bottom: 1px solid var(--border) !important;
+  }
+  .retry-policy-grid .retry-policy-advanced-fields .setting-row:nth-child(5) {
+    grid-column: 1 !important;
+    grid-row: 4 !important;
+    border-right: 1px solid var(--border) !important;
+    border-bottom: none !important;
+  }
+  .retry-policy-grid .retry-policy-advanced-fields .setting-row:nth-child(6) {
+    grid-column: 2 !important;
+    grid-row: 4 !important;
+    border-bottom: none !important;
+  }
+}
+
+@media (max-width: 860px) {
+  /* 窄屏下隐藏工具栏新建按钮，左侧边栏顶部已有显眼的大新建按钮 */
+  .toolbar-actions > .action-btn-standalone:first-child {
+    display: none;
+  }
+}
+
+@media (max-width: 800px) {
+  /* 极限小窗口（接近最小窗口 780px）：隐藏冗余的文件/目录按钮（右键菜单完整支持），确保与右上角 154px 窗口控制无重叠 */
+  .toolbar-actions > .action-group:nth-of-type(2) {
+    display: none;
+  }
+  .settings-body {
+    padding: 20px 16px 28px;
+  }
+  .setting-row {
+    padding: 10px 12px;
+    gap: 10px;
+  }
 }
 
 /* Custom Titlebar and Controls */
@@ -2287,12 +2415,19 @@ svg { flex: 0 0 auto; }
   min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
-  scrollbar-width: none;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
 }
 .settings-page .settings-nav-list::-webkit-scrollbar {
-  display: none;
-  width: 0;
-  height: 0;
+  display: block;
+  width: 4px;
+}
+.settings-page .settings-nav-list::-webkit-scrollbar-track {
+  background: transparent;
+}
+.settings-page .settings-nav-list::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: 2px;
 }
 .settings-page .brand {
   font-size: 14px;

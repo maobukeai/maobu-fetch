@@ -22,6 +22,179 @@ const PROXY_TEST_URL: &str = "https://api.ipify.org/format=json";
 /// 代理测试超时（毫秒）。10 秒是网络代理验证的常见阈值。
 const PROXY_TEST_TIMEOUT_SECS: u64 = 10;
 
+#[cfg(windows)]
+pub fn detect_windows_system_proxy() -> Option<String> {
+    use std::ffi::OsStr;
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::System::Registry::{
+        RegCloseKey, RegOpenKeyExW, RegQueryValueExW, HKEY_CURRENT_USER, KEY_READ, REG_DWORD, REG_SZ,
+    };
+
+    fn to_wide(s: &str) -> Vec<u16> {
+        OsStr::new(s).encode_wide().chain(std::iter::once(0)).collect()
+    }
+
+    unsafe {
+        let subkey = to_wide("Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings");
+        let mut hkey = std::ptr::null_mut();
+        if RegOpenKeyExW(HKEY_CURRENT_USER, subkey.as_ptr(), 0, KEY_READ, &mut hkey) != 0 {
+            return None;
+        }
+
+        // 1. Check ProxyEnable (DWORD)
+        let proxy_enable_val = to_wide("ProxyEnable");
+        let mut enabled: u32 = 0;
+        let mut enabled_size = std::mem::size_of::<u32>() as u32;
+        let mut val_type: u32 = 0;
+        let res = RegQueryValueExW(
+            hkey,
+            proxy_enable_val.as_ptr(),
+            std::ptr::null_mut(),
+            &mut val_type,
+            &mut enabled as *mut _ as *mut u8,
+            &mut enabled_size,
+        );
+        if res != 0 || val_type != REG_DWORD || enabled == 0 {
+            RegCloseKey(hkey);
+            return None;
+        }
+
+        // 2. Read ProxyServer (REG_SZ)
+        let proxy_server_val = to_wide("ProxyServer");
+        let mut buf_size: u32 = 0;
+        let res = RegQueryValueExW(
+            hkey,
+            proxy_server_val.as_ptr(),
+            std::ptr::null_mut(),
+            &mut val_type,
+            std::ptr::null_mut(),
+            &mut buf_size,
+        );
+        if res != 0 || val_type != REG_SZ || buf_size == 0 {
+            RegCloseKey(hkey);
+            return None;
+        }
+
+        let mut buffer: Vec<u16> = vec![0; (buf_size as usize / 2) + 1];
+        let res = RegQueryValueExW(
+            hkey,
+            proxy_server_val.as_ptr(),
+            std::ptr::null_mut(),
+            &mut val_type,
+            buffer.as_mut_ptr() as *mut u8,
+            &mut buf_size,
+        );
+        RegCloseKey(hkey);
+
+        if res != 0 {
+            return None;
+        }
+
+        let len = buffer.iter().position(|&c| c == 0).unwrap_or(buffer.len());
+        let server_str = String::from_utf16_lossy(&buffer[..len]);
+        let trimmed = server_str.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+
+        // Parse: e.g. "127.0.0.1:7890" or "http=127.0.0.1:7890;https=127.0.0.1:7890" or "socks=127.0.0.1:1080"
+        let (proxy_addr, default_scheme) = if trimmed.contains('=') {
+            let mut chosen = None;
+            for part in trimmed.split(';') {
+                let p = part.trim();
+                if let Some(rest) = p.strip_prefix("https=") {
+                    chosen = Some((rest, "http://"));
+                    break;
+                } else if let Some(rest) = p.strip_prefix("http=") {
+                    chosen = Some((rest, "http://"));
+                    break;
+                } else if let Some(rest) = p.strip_prefix("socks=") {
+                    chosen = Some((rest, "socks5h://"));
+                }
+            }
+            chosen.unwrap_or((trimmed, "http://"))
+        } else {
+            (trimmed, "http://")
+        };
+
+        if proxy_addr.starts_with("http://")
+            || proxy_addr.starts_with("https://")
+            || proxy_addr.starts_with("socks5://")
+            || proxy_addr.starts_with("socks5h://")
+        {
+            Some(normalize_proxy_scheme(proxy_addr))
+        } else {
+            Some(format!("{default_scheme}{proxy_addr}"))
+        }
+    }
+}
+
+#[cfg(not(windows))]
+pub fn detect_windows_system_proxy() -> Option<String> {
+    None
+}
+
+/// 规范化代理 scheme。
+/// 特别地，将 `socks5://` 自动升级为 `socks5h://`，强制让远程代理服务器执行 DNS 域名解析，
+/// 彻底避免客户端本地 DNS 污染导致访问境外/受限域名（如 chatgpt.com）时 TLS 握手异常重置。
+pub fn normalize_proxy_scheme(url: &str) -> String {
+    let trimmed = url.trim();
+    if let Some(rest) = trimmed.strip_prefix("socks5://") {
+        format!("socks5h://{rest}")
+    } else if let Some(rest) = trimmed.strip_prefix("SOCKS5://") {
+        format!("socks5h://{rest}")
+    } else {
+        trimmed.to_string()
+    }
+}
+
+/// 获取当前系统生效的代理配置。
+///
+/// 优先级设计（对 Windows 用户友好）：
+/// 1. 在 Windows 上：**优先**探测 Windows 注册表中的系统代理（`detect_windows_system_proxy`）。
+///    因为 Windows 用户在系统设置或代理客户端（如 Clash、v2rayN、Surge）中开启“系统代理”时，
+///    修改的是系统注册表 WinINet Internet Settings。
+///    若注册表 `ProxyEnable == 1`，说明系统代理处于开启状态，必须优先遵循此配置。
+/// 2. 若 Windows 系统代理未开启，或在非 Windows 系统上，回退探测环境变量：
+///    `HTTPS_PROXY` / `https_proxy` / `HTTP_PROXY` / `http_proxy` / `ALL_PROXY` / `all_proxy`。
+/// 3. 所有返回的代理 URL 均通过 [`normalize_proxy_scheme`] 规范化（包括将 `socks5://` 自动转为 `socks5h://`）。
+pub fn get_effective_system_proxy() -> Option<String> {
+    #[cfg(windows)]
+    {
+        if let Some(win_proxy) = detect_windows_system_proxy() {
+            let normalized = normalize_proxy_scheme(&win_proxy);
+            if !normalized.is_empty() {
+                return Some(normalized);
+            }
+        }
+    }
+
+    for var in [
+        "HTTPS_PROXY",
+        "https_proxy",
+        "HTTP_PROXY",
+        "http_proxy",
+        "ALL_PROXY",
+        "all_proxy",
+    ] {
+        if let Ok(val) = std::env::var(var) {
+            let trimmed = val.trim();
+            if !trimmed.is_empty() {
+                return Some(normalize_proxy_scheme(trimmed));
+            }
+        }
+    }
+
+    #[cfg(not(windows))]
+    {
+        detect_windows_system_proxy().map(|s| normalize_proxy_scheme(&s))
+    }
+    #[cfg(windows)]
+    {
+        None
+    }
+}
+
 /// 解析任务实际使用的代理 URL。
 ///
 /// 优先级（高 → 低）：
@@ -95,7 +268,8 @@ pub fn validate_proxy_url(url: &str) -> Result<(), String> {
 /// 返回 [`ProxyTestResult`]。失败时 `success = false` 且 `error` 为脱敏后的中文说明。
 /// 脱敏规则：代理 URL 中的 `userinfo` 段被替换为 `***`，不暴露用户名/密码。
 pub async fn test_proxy(proxy_url: &str, auth: Option<&ProxyAuth>) -> ProxyTestResult {
-    if let Err(reason) = validate_proxy_url(proxy_url) {
+    let normalized_url = normalize_proxy_scheme(proxy_url);
+    if let Err(reason) = validate_proxy_url(&normalized_url) {
         return ProxyTestResult {
             success: false,
             exit_ip: None,
@@ -104,7 +278,7 @@ pub async fn test_proxy(proxy_url: &str, auth: Option<&ProxyAuth>) -> ProxyTestR
         };
     }
 
-    let mut proxy = match reqwest::Proxy::all(proxy_url) {
+    let mut proxy = match reqwest::Proxy::all(&normalized_url) {
         Ok(p) => p,
         Err(error) => {
             return ProxyTestResult {
@@ -525,5 +699,43 @@ mod tests {
         assert_eq!(decoded.username, "alice");
         // 非法 base64 应触发回退到原值。
         assert_eq!(decoded.password, "plain-secret");
+    }
+
+    #[test]
+    fn effective_system_proxy_detection_runs() {
+        // 验证探测函数可正常调用且不发生 panic 或内存异常
+        let proxy = get_effective_system_proxy();
+        if let Some(p) = proxy {
+            assert!(
+                p.starts_with("http://")
+                    || p.starts_with("https://")
+                    || p.starts_with("socks5://")
+                    || p.starts_with("socks5h://")
+            );
+        }
+    }
+
+    #[test]
+    fn test_normalize_proxy_scheme() {
+        assert_eq!(
+            normalize_proxy_scheme("socks5://127.0.0.1:7890"),
+            "socks5h://127.0.0.1:7890"
+        );
+        assert_eq!(
+            normalize_proxy_scheme("SOCKS5://127.0.0.1:7890"),
+            "socks5h://127.0.0.1:7890"
+        );
+        assert_eq!(
+            normalize_proxy_scheme("http://127.0.0.1:7890"),
+            "http://127.0.0.1:7890"
+        );
+        assert_eq!(
+            normalize_proxy_scheme("https://127.0.0.1:7890"),
+            "https://127.0.0.1:7890"
+        );
+        assert_eq!(
+            normalize_proxy_scheme("socks5h://127.0.0.1:7890"),
+            "socks5h://127.0.0.1:7890"
+        );
     }
 }
