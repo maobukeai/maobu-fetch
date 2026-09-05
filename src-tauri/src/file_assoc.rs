@@ -36,12 +36,12 @@ pub struct FileAssocInfo {
 #[cfg(windows)]
 const VIDEO_PROG_ID: &str = "MaobuFetch.Video";
 #[cfg(windows)]
-const VIDEO_PROG_DESCRIPTION: &str = "猫步下载器 媒体文件";
+const VIDEO_PROG_DESCRIPTION: &str = "猫步播放器";
 
 #[cfg(windows)]
 const IMAGE_PROG_ID: &str = "MaobuFetch.Image";
 #[cfg(windows)]
-const IMAGE_PROG_DESCRIPTION: &str = "猫步下载器 图像文件";
+const IMAGE_PROG_DESCRIPTION: &str = "猫步看图器";
 
 /// 获取当前所有支持扩展名（视频 + 图片）的关联状态
 pub fn get_file_associations() -> Result<Vec<FileAssocInfo>, String> {
@@ -158,7 +158,23 @@ pub fn set_file_associations(exts: Vec<String>, enable: bool) -> Result<(), Stri
             .map_err(|e| format!("无法打开注册表 Classes 键: {e}"))?;
 
         if enable {
-            // 1. 注册 Video ProgID 基础信息与 open 命令
+            // 1. 注册 Applications\maobu-fetch.exe 及其支持格式（Windows "建议的应用" 关键识别来源）
+            if let Ok((app_key, _)) = classes.create_subkey("Applications\\maobu-fetch.exe") {
+                let _ = app_key.set_value("FriendlyAppName", &"猫步下载器");
+                let _ = app_key.set_value("ApplicationCompany", &"Maobu Fetch");
+                if let Ok((app_icon, _)) = app_key.create_subkey("DefaultIcon") {
+                    let _ = app_icon.set_value("", &format!("\"{exe_path_str}\",0"));
+                }
+                if let Ok((supp_types, _)) = app_key.create_subkey("SupportedTypes") {
+                    for ext in &exts {
+                        let clean_ext = ext.trim().trim_start_matches('.');
+                        let dot_ext = format!(".{clean_ext}");
+                        let _ = supp_types.set_value(&dot_ext, &"");
+                    }
+                }
+            }
+
+            // 2. 注册 Video ProgID 基础信息与 open 命令
             let has_video = exts.iter().any(|e| {
                 let c = e.trim().trim_start_matches('.');
                 SUPPORTED_VIDEO_EXTS.contains(&c)
@@ -168,6 +184,8 @@ pub fn set_file_associations(exts: Vec<String>, enable: bool) -> Result<(), Stri
                     .create_subkey(VIDEO_PROG_ID)
                     .map_err(|e| format!("无法创建 Video ProgID 注册表项: {e}"))?;
                 let _ = prog_key.set_value("", &VIDEO_PROG_DESCRIPTION);
+                let _ = prog_key.set_value("FriendlyTypeName", &"猫步播放器 媒体文件");
+                let _ = prog_key.set_value("AppUserModelId", &"app.lumaget.desktop");
 
                 if let Ok((icon_key, _)) = prog_key.create_subkey("DefaultIcon") {
                     let _ = icon_key.set_value("", &format!("\"{exe_path_str}\",0"));
@@ -179,7 +197,7 @@ pub fn set_file_associations(exts: Vec<String>, enable: bool) -> Result<(), Stri
                 }
             }
 
-            // 2. 注册 Image ProgID 基础信息与 open 命令
+            // 3. 注册 Image ProgID 基础信息与 open 命令
             let has_image = exts.iter().any(|e| {
                 let c = e.trim().trim_start_matches('.');
                 SUPPORTED_IMAGE_EXTS.contains(&c)
@@ -189,6 +207,8 @@ pub fn set_file_associations(exts: Vec<String>, enable: bool) -> Result<(), Stri
                     .create_subkey(IMAGE_PROG_ID)
                     .map_err(|e| format!("无法创建 Image ProgID 注册表项: {e}"))?;
                 let _ = prog_key.set_value("", &IMAGE_PROG_DESCRIPTION);
+                let _ = prog_key.set_value("FriendlyTypeName", &"猫步看图器 图像文件");
+                let _ = prog_key.set_value("AppUserModelId", &"app.lumaget.desktop");
 
                 if let Ok((icon_key, _)) = prog_key.create_subkey("DefaultIcon") {
                     let _ = icon_key.set_value("", &format!("\"{exe_path_str}\",0"));
@@ -200,7 +220,7 @@ pub fn set_file_associations(exts: Vec<String>, enable: bool) -> Result<(), Stri
                 }
             }
 
-            // 3. 为每个选中的扩展名添加关联到对应 ProgID
+            // 4. 为每个选中的扩展名添加关联到对应 ProgID 并加入 OpenWithProgids & OpenWithList
             for ext in &exts {
                 let clean_ext = ext.trim().trim_start_matches('.');
                 let dot_ext = format!(".{clean_ext}");
@@ -213,6 +233,38 @@ pub fn set_file_associations(exts: Vec<String>, enable: bool) -> Result<(), Stri
                 if let Ok((ext_key, _)) = classes.create_subkey(&dot_ext) {
                     if let Ok((open_with, _)) = ext_key.create_subkey("OpenWithProgids") {
                         let _ = open_with.set_value(target_prog_id, &"");
+                    }
+                    let _ = ext_key.create_subkey("OpenWithList\\maobu-fetch.exe");
+                }
+
+                // 同步写入 Explorer 缓存以加速 Windows 建议应用识别
+                if let Ok(explorer_exts) = hkcu.open_subkey("Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\FileExts") {
+                    if let Ok((fext_key, _)) = explorer_exts.create_subkey(&dot_ext) {
+                        if let Ok((f_ow, _)) = fext_key.create_subkey("OpenWithProgids") {
+                            let _ = f_ow.set_value(target_prog_id, &"");
+                        }
+                    }
+                }
+            }
+
+            // 5. 注册到 Windows 默认应用能力中心（RegisteredApplications & Capabilities）
+            if let Ok((reg_apps, _)) = hkcu.create_subkey("Software\\RegisteredApplications") {
+                let _ = reg_apps.set_value("MaobuFetch", &"Software\\MaobuFetch\\Capabilities");
+            }
+            if let Ok((caps, _)) = hkcu.create_subkey("Software\\MaobuFetch\\Capabilities") {
+                let _ = caps.set_value("ApplicationName", &"猫步下载器");
+                let _ = caps.set_value("ApplicationDescription", &"猫步下载器与极速媒体看图器");
+                let _ = caps.set_value("ApplicationIcon", &format!("\"{exe_path_str}\",0"));
+                if let Ok((assoc_key, _)) = caps.create_subkey("FileAssociations") {
+                    for ext in &exts {
+                        let clean_ext = ext.trim().trim_start_matches('.');
+                        let dot_ext = format!(".{clean_ext}");
+                        let target_prog_id = if SUPPORTED_IMAGE_EXTS.contains(&clean_ext) {
+                            IMAGE_PROG_ID
+                        } else {
+                            VIDEO_PROG_ID
+                        };
+                        let _ = assoc_key.set_value(&dot_ext, &target_prog_id);
                     }
                 }
             }
@@ -231,6 +283,22 @@ pub fn set_file_associations(exts: Vec<String>, enable: bool) -> Result<(), Stri
                     if let Ok(open_with) = ext_key.open_subkey_with_flags("OpenWithProgids", KEY_WRITE) {
                         let _ = open_with.delete_value(target_prog_id);
                     }
+                }
+
+                if let Ok(explorer_exts) = hkcu.open_subkey_with_flags("Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\FileExts", KEY_WRITE) {
+                    if let Ok(fext_key) = explorer_exts.open_subkey_with_flags(&dot_ext, KEY_WRITE) {
+                        if let Ok(f_ow) = fext_key.open_subkey_with_flags("OpenWithProgids", KEY_WRITE) {
+                            let _ = f_ow.delete_value(target_prog_id);
+                        }
+                    }
+                }
+
+                if let Ok(caps_assoc) = hkcu.open_subkey_with_flags("Software\\MaobuFetch\\Capabilities\\FileAssociations", KEY_WRITE) {
+                    let _ = caps_assoc.delete_value(&dot_ext);
+                }
+
+                if let Ok(supp_types) = classes.open_subkey_with_flags("Applications\\maobu-fetch.exe\\SupportedTypes", KEY_WRITE) {
+                    let _ = supp_types.delete_value(&dot_ext);
                 }
             }
         }
@@ -268,6 +336,52 @@ fn notify_shell_assoc_changed() {
     const SHCNF_IDLIST: u32 = 0x0000;
     unsafe {
         SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, std::ptr::null(), std::ptr::null());
+    }
+}
+
+/// 确保应用基础能力（Applications 与 RegisteredApplications）已在注册表登记
+pub fn ensure_registered_applications() -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        use winreg::enums::*;
+        use winreg::RegKey;
+
+        let current_exe = std::env::current_exe()
+            .map_err(|e| format!("无法获取当前程序路径: {e}"))?;
+        let exe_path_str = current_exe.to_string_lossy();
+
+        let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+        let (classes, _) = hkcu
+            .create_subkey("Software\\Classes")
+            .map_err(|e| format!("无法打开注册表 Classes 键: {e}"))?;
+
+        if let Ok((app_key, _)) = classes.create_subkey("Applications\\maobu-fetch.exe") {
+            let _ = app_key.set_value("FriendlyAppName", &"猫步下载器");
+            let _ = app_key.set_value("ApplicationCompany", &"Maobu Fetch");
+            if let Ok((app_icon, _)) = app_key.create_subkey("DefaultIcon") {
+                let _ = app_icon.set_value("", &format!("\"{exe_path_str}\",0"));
+            }
+            if let Ok((supp_types, _)) = app_key.create_subkey("SupportedTypes") {
+                for ext in SUPPORTED_IMAGE_EXTS.iter().chain(SUPPORTED_VIDEO_EXTS.iter()) {
+                    let _ = supp_types.set_value(&format!(".{ext}"), &"");
+                }
+            }
+        }
+
+        if let Ok((reg_apps, _)) = hkcu.create_subkey("Software\\RegisteredApplications") {
+            let _ = reg_apps.set_value("MaobuFetch", &"Software\\MaobuFetch\\Capabilities");
+        }
+        if let Ok((caps, _)) = hkcu.create_subkey("Software\\MaobuFetch\\Capabilities") {
+            let _ = caps.set_value("ApplicationName", &"猫步下载器");
+            let _ = caps.set_value("ApplicationDescription", &"猫步下载器与极速媒体看图器");
+            let _ = caps.set_value("ApplicationIcon", &format!("\"{exe_path_str}\",0"));
+        }
+
+        Ok(())
+    }
+    #[cfg(not(windows))]
+    {
+        Ok(())
     }
 }
 

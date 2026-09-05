@@ -3700,6 +3700,11 @@ pub fn run() {
             app.manage(PlayerState::default());
             app.manage(ImageViewerState::default());
 
+            #[cfg(windows)]
+            {
+                let _ = file_assoc::ensure_registered_applications();
+            }
+
             // Task 34：解析数据目录，优先级：环境变量 > 便携标记 > app_data_dir。
             // 便携模式下数据写入 EXE 同目录的 data/ 文件夹，与系统安装版隔离。
             let data_dir = portable::resolve_data_dir(app.handle());
