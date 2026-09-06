@@ -101,6 +101,7 @@ export function MediaPlayerView({ initialFile, initialTitle }: MediaPlayerProps)
   const [activeSubtitlePath, setActiveSubtitlePath] = useState<string>("");
   const [showSpeedMenu, setShowSpeedMenu] = useState<boolean>(false);
   const [showSubtitleMenu, setShowSubtitleMenu] = useState<boolean>(false);
+  const [showVolumeMenu, setShowVolumeMenu] = useState<boolean>(false);
 
   const [subStyle, setSubStyle] = useState<SubtitleStyleConfig>(() => {
     try {
@@ -413,6 +414,7 @@ export function MediaPlayerView({ initialFile, initialTitle }: MediaPlayerProps)
         setShowControls(false);
         setShowSpeedMenu(false);
         setShowSubtitleMenu(false);
+        setShowVolumeMenu(false);
       }
     }, 2500);
   }, [isPlaying, showPlaylist]);
@@ -622,31 +624,37 @@ export function MediaPlayerView({ initialFile, initialTitle }: MediaPlayerProps)
     };
   }, [showPlaylist]);
 
-  // 监听点击外部自动关闭弹出的字幕菜单或倍速菜单
+  // 监听点击外部自动关闭弹出的音量、字幕或倍速菜单
   useEffect(() => {
-    if (!showSubtitleMenu && !showSpeedMenu) return;
+    if (!showSubtitleMenu && !showSpeedMenu && !showVolumeMenu) return;
 
     const handlePointerDownOutsideMenu = (e: MouseEvent | TouchEvent) => {
       const target = e.target as HTMLElement | null;
       if (!target) return;
-      if (target.closest(".maobu-player-popup-menu") || target.closest(".maobu-player-icon-btn")) {
+      if (
+        target.closest(".maobu-player-popup-menu") ||
+        target.closest(".maobu-player-icon-btn") ||
+        target.closest(".maobu-player-volume-group")
+      ) {
         return;
       }
       setShowSubtitleMenu(false);
       setShowSpeedMenu(false);
+      setShowVolumeMenu(false);
     };
 
     document.addEventListener("mousedown", handlePointerDownOutsideMenu, true);
     return () => {
       document.removeEventListener("mousedown", handlePointerDownOutsideMenu, true);
     };
-  }, [showSubtitleMenu, showSpeedMenu]);
+  }, [showSubtitleMenu, showSpeedMenu, showVolumeMenu]);
 
   // 单击画面播放/暂停 (防抖区分单击与双击，若播放列表刚关闭或正打开则仅收起，坚决不暂停视频)
   const handleStageClick = useCallback(() => {
-    if (showSubtitleMenu || showSpeedMenu) {
+    if (showSubtitleMenu || showSpeedMenu || showVolumeMenu) {
       setShowSubtitleMenu(false);
       setShowSpeedMenu(false);
+      setShowVolumeMenu(false);
       return;
     }
     const isJustClosed = Date.now() - justClosedDrawerRef.current < 400;
@@ -663,7 +671,7 @@ export function MediaPlayerView({ initialFile, initialTitle }: MediaPlayerProps)
       togglePlay();
       clickTimeoutRef.current = null;
     }, 220);
-  }, [showPlaylist, showSubtitleMenu, showSpeedMenu, togglePlay]);
+  }, [showPlaylist, showSubtitleMenu, showSpeedMenu, showVolumeMenu, togglePlay]);
 
   // 双击画面全屏/最大化 (立即取消单击避免误触播放与HUD)
   const handleStageDoubleClick = useCallback(() => {
@@ -879,7 +887,14 @@ export function MediaPlayerView({ initialFile, initialTitle }: MediaPlayerProps)
         case "l":
         case "L":
           e.preventDefault();
-          setShowPlaylist((prev) => !prev);
+          setShowPlaylist((prev) => {
+            if (!prev) {
+              setShowSpeedMenu(false);
+              setShowSubtitleMenu(false);
+              setShowVolumeMenu(false);
+            }
+            return !prev;
+          });
           break;
         case "[":
           e.preventDefault();
@@ -894,10 +909,11 @@ export function MediaPlayerView({ initialFile, initialTitle }: MediaPlayerProps)
             e.preventDefault();
             setShowPlaylist(false);
             setShowSortMenu(false);
-          } else if (showSpeedMenu || showSubtitleMenu) {
+          } else if (showSpeedMenu || showSubtitleMenu || showVolumeMenu) {
             e.preventDefault();
             setShowSpeedMenu(false);
             setShowSubtitleMenu(false);
+            setShowVolumeMenu(false);
           } else if (isFullscreen) {
             e.preventDefault();
             toggleFullscreen();
@@ -1258,32 +1274,149 @@ export function MediaPlayerView({ initialFile, initialTitle }: MediaPlayerProps)
           {/* 右侧控制：音量、倍速、字幕、截图、画中画、播放列表、外部打开、全屏 */}
           <div className="maobu-player-right-group" style={{ position: "relative" }}>
             {/* 音量控制组 */}
-            <div className="maobu-player-volume-group">
+            <div className="maobu-player-volume-group" style={{ position: "relative" }}>
               <button
                 type="button"
-                onClick={() => setIsMuted((prev) => !prev)}
-                title={isMuted ? "恢复音量 (M)" : "静音 (M)"}
-                className="maobu-player-icon-btn"
-              >
-                {isMuted || volume === 0 ? <VolumeX size={16} style={{ color: "#ef4444" }} /> : <Volume2 size={16} />}
-              </button>
-              <input
-                type="range"
-                min="0"
-                max="2"
-                step="0.05"
-                value={isMuted ? 0 : volume}
-                onChange={(e) => {
-                  initAudioGain();
-                  setVolume(parseFloat(e.target.value));
-                  setIsMuted(false);
+                onClick={() => {
+                  setShowVolumeMenu((prev) => !prev);
+                  setShowSpeedMenu(false);
+                  setShowSubtitleMenu(false);
+                  setShowPlaylist(false);
                 }}
-                className="maobu-player-volume-slider"
-                title={`音量: ${Math.round((isMuted ? 0 : volume) * 100)}%`}
-              />
-              <span className="maobu-player-volume-label">
-                {Math.round((isMuted ? 0 : volume) * 100)}%
-              </span>
+                onDoubleClick={(e) => {
+                  e.stopPropagation();
+                  setIsMuted((prev) => !prev);
+                  triggerOverlay("mute", !isMuted ? "已静音" : "已恢复音量");
+                }}
+                onWheel={(e) => {
+                  e.stopPropagation();
+                  adjustVolume(e.deltaY < 0 ? 0.05 : -0.05);
+                }}
+                title={
+                  isMuted
+                    ? "音量调节 (当前已静音，点击展开滑块，双击切换静音)"
+                    : `音量调节: ${Math.round(volume * 100)}% (点击展开滑块，滚轮微调)`
+                }
+                className={`maobu-player-icon-btn ${showVolumeMenu ? "active" : ""}`}
+              >
+                {isMuted || volume === 0 ? (
+                  <VolumeX size={16} style={{ color: "#ef4444" }} />
+                ) : (
+                  <Volume2 size={16} />
+                )}
+              </button>
+
+              {showVolumeMenu && (
+                <div
+                  className="maobu-player-popup-menu maobu-player-volume-popover"
+                  onClick={(e) => e.stopPropagation()}
+                  onMouseDown={(e) => e.stopPropagation()}
+                  onWheel={(e) => {
+                    e.stopPropagation();
+                    adjustVolume(e.deltaY < 0 ? 0.05 : -0.05);
+                  }}
+                >
+                  {/* 顶部静音与百分比状态 */}
+                  <div className="maobu-player-volume-popover-header">
+                    <button
+                      type="button"
+                      className="maobu-player-volume-popover-mute-btn"
+                      onClick={() => {
+                        setIsMuted((prev) => !prev);
+                        triggerOverlay("mute", !isMuted ? "已静音" : "已恢复音量");
+                      }}
+                      title={isMuted ? "恢复音量 (M)" : "静音 (M)"}
+                    >
+                      {isMuted || volume === 0 ? (
+                        <VolumeX size={15} style={{ color: "#ef4444" }} />
+                      ) : (
+                        <Volume2 size={15} />
+                      )}
+                      <span>{isMuted ? "已静音" : "音量"}</span>
+                    </button>
+                    <span
+                      className={`maobu-player-volume-popover-badge ${volume > 1.0 && !isMuted ? "boosted" : ""}`}
+                    >
+                      {Math.round((isMuted ? 0 : volume) * 100)}%
+                      {volume > 1.0 && !isMuted && <span className="boost-tag">增益</span>}
+                    </span>
+                  </div>
+
+                  {/* 高精度音量滑动条 */}
+                  <div className="maobu-player-volume-slider-row">
+                    <input
+                      type="range"
+                      min="0"
+                      max="2"
+                      step="0.02"
+                      value={isMuted ? 0 : volume}
+                      onChange={(e) => {
+                        initAudioGain();
+                        const val = parseFloat(e.target.value);
+                        setVolume(val);
+                        if (isMuted && val > 0) {
+                          setIsMuted(false);
+                        }
+                      }}
+                      className="maobu-player-volume-slider-bar"
+                      style={{
+                        background: `linear-gradient(to right, #38bdf8 0%, #38bdf8 ${((isMuted ? 0 : volume) / 2) * 100}%, rgba(255, 255, 255, 0.18) ${((isMuted ? 0 : volume) / 2) * 100}%, rgba(255, 255, 255, 0.18) 100%)`,
+                      }}
+                      title={`音量: ${Math.round((isMuted ? 0 : volume) * 100)}%`}
+                    />
+                  </div>
+
+                  {/* 常用快捷档位 */}
+                  <div className="maobu-player-volume-presets">
+                    <button
+                      type="button"
+                      className={`maobu-player-volume-preset-btn ${isMuted || volume === 0 ? "active" : ""}`}
+                      onClick={() => {
+                        setIsMuted(true);
+                        triggerOverlay("mute", "已静音");
+                      }}
+                    >
+                      静音
+                    </button>
+                    <button
+                      type="button"
+                      className={`maobu-player-volume-preset-btn ${!isMuted && Math.abs(volume - 0.5) < 0.03 ? "active" : ""}`}
+                      onClick={() => {
+                        initAudioGain();
+                        setIsMuted(false);
+                        setVolume(0.5);
+                        triggerOverlay("volume", "音量 50%");
+                      }}
+                    >
+                      50%
+                    </button>
+                    <button
+                      type="button"
+                      className={`maobu-player-volume-preset-btn ${!isMuted && Math.abs(volume - 1.0) < 0.03 ? "active" : ""}`}
+                      onClick={() => {
+                        initAudioGain();
+                        setIsMuted(false);
+                        setVolume(1.0);
+                        triggerOverlay("volume", "音量 100%");
+                      }}
+                    >
+                      100%
+                    </button>
+                    <button
+                      type="button"
+                      className={`maobu-player-volume-preset-btn ${!isMuted && Math.abs(volume - 2.0) < 0.03 ? "active" : ""}`}
+                      onClick={() => {
+                        initAudioGain();
+                        setIsMuted(false);
+                        setVolume(2.0);
+                        triggerOverlay("volume", "音量 200% 增益");
+                      }}
+                    >
+                      200%
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
 
             {/* 倍速选择器 */}
@@ -1294,6 +1427,7 @@ export function MediaPlayerView({ initialFile, initialTitle }: MediaPlayerProps)
                   setShowSpeedMenu((prev) => !prev);
                   setShowSubtitleMenu(false);
                   setShowPlaylist(false);
+                  setShowVolumeMenu(false);
                 }}
                 className="maobu-player-icon-btn"
                 style={{ fontSize: "12px", fontFamily: "monospace", padding: "4px 8px" }}
@@ -1326,6 +1460,7 @@ export function MediaPlayerView({ initialFile, initialTitle }: MediaPlayerProps)
                   setShowSubtitleMenu((prev) => !prev);
                   setShowSpeedMenu(false);
                   setShowPlaylist(false);
+                  setShowVolumeMenu(false);
                 }}
                 title="字幕设置"
                 className={`maobu-player-icon-btn ${subtitles.length > 0 ? "active" : ""}`}
@@ -1574,6 +1709,7 @@ export function MediaPlayerView({ initialFile, initialTitle }: MediaPlayerProps)
                 setShowPlaylist((prev) => !prev);
                 setShowSubtitleMenu(false);
                 setShowSpeedMenu(false);
+                setShowVolumeMenu(false);
               }}
               title="播放列表 (L)"
               className={`maobu-player-icon-btn ${showPlaylist ? "active" : ""}`}

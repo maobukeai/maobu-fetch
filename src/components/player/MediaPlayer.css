@@ -404,50 +404,153 @@
 
 /* 音量控制组 */
 .maobu-player-volume-group {
+  position: relative;
   display: flex;
   align-items: center;
-  gap: 6px;
-  margin-right: 4px;
+  margin-right: 2px;
 }
 
-.maobu-player-volume-slider {
-  width: 68px;
-  height: 3px;
-  background: rgba(255, 255, 255, 0.22);
-  border-radius: 9999px;
-  appearance: none;
-  outline: none;
+/* 音量弹出调节面板 (Apple / Windows 11 极晶超透磨砂毛玻璃) */
+.maobu-player-volume-popover {
+  bottom: 42px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 196px;
+  max-width: calc(100vw - 20px);
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: rgba(14, 18, 28, 0.78);
+  backdrop-filter: blur(40px) saturate(220%);
+  -webkit-backdrop-filter: blur(40px) saturate(220%);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  box-shadow: 0 20px 48px rgba(0, 0, 0, 0.6), inset 0 1px 0 rgba(255, 255, 255, 0.2);
+  user-select: none;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  animation: maobuMenuPop 0.16s cubic-bezier(0.16, 1, 0.3, 1);
+  z-index: 85;
+  box-sizing: border-box;
+}
+
+.maobu-player-volume-popover-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.maobu-player-volume-popover-mute-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: transparent;
+  border: none;
+  color: #e2e8f0;
+  font-size: 12px;
+  font-weight: 500;
+  padding: 3px 6px;
+  border-radius: 6px;
   cursor: pointer;
-  accent-color: #38bdf8;
   transition: all 0.15s ease;
 }
 
-.maobu-player-volume-slider:hover {
-  height: 5px;
-  background: rgba(255, 255, 255, 0.32);
+.maobu-player-volume-popover-mute-btn:hover {
+  background: rgba(255, 255, 255, 0.12);
+  color: #ffffff;
 }
 
-.maobu-player-volume-slider::-webkit-slider-thumb {
+.maobu-player-volume-popover-badge {
+  font-size: 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-weight: 600;
+  color: #38bdf8;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.maobu-player-volume-popover-badge.boosted {
+  color: #fbbf24;
+}
+
+.maobu-player-volume-popover-badge .boost-tag {
+  font-size: 9px;
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: rgba(251, 191, 36, 0.2);
+  color: #fbbf24;
+  border: 1px solid rgba(251, 191, 36, 0.4);
+}
+
+.maobu-player-volume-slider-row {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  padding: 2px 0;
+}
+
+.maobu-player-volume-slider-bar {
+  width: 100%;
+  height: 6px;
+  border-radius: 9999px;
   appearance: none;
-  width: 10px;
-  height: 10px;
+  -webkit-appearance: none;
+  outline: none;
+  cursor: pointer;
+  transition: height 0.12s ease;
+}
+
+.maobu-player-volume-slider-bar:hover {
+  height: 8px;
+}
+
+.maobu-player-volume-slider-bar::-webkit-slider-thumb {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 14px;
+  height: 14px;
   border-radius: 50%;
   background: #ffffff;
-  box-shadow: 0 0 6px rgba(0, 0, 0, 0.5);
+  box-shadow: 0 1px 6px rgba(0, 0, 0, 0.6);
   cursor: pointer;
   transition: transform 0.1s ease;
 }
 
-.maobu-player-volume-slider::-webkit-slider-thumb:hover {
+.maobu-player-volume-slider-bar::-webkit-slider-thumb:hover {
   transform: scale(1.2);
 }
 
-.maobu-player-volume-label {
-  font-size: 11px;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+.maobu-player-volume-presets {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px;
+}
+
+.maobu-player-volume-preset-btn {
+  flex: 1;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.1);
   color: #94a3b8;
-  width: 32px;
-  text-align: right;
+  font-size: 11px;
+  padding: 4px 0;
+  border-radius: 5px;
+  cursor: pointer;
+  text-align: center;
+  transition: all 0.12s ease;
+  font-family: inherit;
+}
+
+.maobu-player-volume-preset-btn:hover {
+  background: rgba(255, 255, 255, 0.18);
+  color: #ffffff;
+}
+
+.maobu-player-volume-preset-btn.active {
+  background: rgba(56, 189, 248, 0.2);
+  border-color: rgba(56, 189, 248, 0.5);
+  color: #38bdf8;
+  font-weight: 600;
 }
 
 /* 浮动下拉菜单 (倍速 & 字幕 - Apple 极透超晶磨砂毛玻璃) */
@@ -1137,8 +1240,7 @@
 
 .maobu-player-root.mini-mode .maobu-player-time-display,
 .maobu-player-root.mini-mode .maobu-player-btn-external,
-.maobu-player-root.mini-mode .maobu-player-btn-screenshot,
-.maobu-player-root.mini-mode .maobu-player-volume-slider {
+.maobu-player-root.mini-mode .maobu-player-btn-screenshot {
   display: none !important;
 }
 
@@ -1323,14 +1425,8 @@
   flex-shrink: 0;
 }
 
-/* 1. 中窄屏 (< 740px)：隐藏音量百分比数字，收敛音量滑块 */
+/* 1. 中窄屏 (< 740px)：紧凑控制栏内边距 */
 @media (max-width: 740px) {
-  .maobu-player-volume-label {
-    display: none;
-  }
-  .maobu-player-volume-slider {
-    width: 50px;
-  }
   .maobu-player-controls-panel {
     padding: 24px 14px 10px;
   }
@@ -1340,9 +1436,6 @@
 @media (max-width: 620px) {
   .maobu-player-btn-external {
     display: none !important;
-  }
-  .maobu-player-volume-slider {
-    width: 40px;
   }
   .maobu-player-left-group,
   .maobu-player-right-group {
@@ -1363,11 +1456,8 @@
   }
 }
 
-/* 3. 紧凑窗口 (< 520px)：收起音量滑块(保留图标)，隐藏截图按钮，总时间收敛 */
+/* 3. 紧凑窗口 (< 520px)：隐藏截图按钮，总时间收敛 */
 @media (max-width: 520px) {
-  .maobu-player-volume-slider {
-    display: none;
-  }
   .maobu-player-btn-screenshot {
     display: none !important;
   }
