@@ -209,9 +209,9 @@ export function SettingsPage({
     if (!trimmed) {
       setExtResult({
         compatible: false,
-        app_version: appInfo?.version || "0.9.0",
+        app_version: appInfo?.version || "0.9.1",
         extension_version: "未输入",
-        message: "请先在左侧输入框填写扩展版本号（如 0.9.0，可在浏览器扩展管理页查看）",
+        message: "请先在左侧输入框填写扩展版本号（如 0.9.1，可在浏览器扩展管理页查看）",
       });
       notify("请先填写扩展版本号", "error");
       return;
