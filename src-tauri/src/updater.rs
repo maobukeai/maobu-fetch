@@ -433,28 +433,56 @@ pub fn extract_first_64_hex(text: &str) -> Option<String> {
     None
 }
 
-/// 从 Atom feed 解码后的 content 中提取指定后缀的文件名。
-pub fn extract_filename_by_extension(text: &str, ext: &str) -> Option<String> {
+/// 从 Atom feed 解码后的 content 中提取所有具有指定后缀的文件名。
+pub fn extract_all_filenames_by_extension(text: &str, ext: &str) -> Vec<String> {
     let lower = text.to_ascii_lowercase();
     let mut search_from = 0;
+    let mut results = Vec::new();
     while let Some(pos) = lower[search_from..].find(ext) {
         let actual_pos = search_from + pos;
         let prefix = &text[..actual_pos];
         // 查找最右侧的分隔符及其字符长度，确保切片在 UTF-8 字符边界上
         let start = prefix
             .char_indices()
-            .filter(|(_, c)| *c == '>' || *c == '"' || *c == '\'' || *c == '`' || *c == '（' || *c == '(' || c.is_whitespace())
+            .filter(|(_, c)| {
+                *c == '>'
+                    || *c == '<'
+                    || *c == '"'
+                    || *c == '\''
+                    || *c == '`'
+                    || *c == '|'
+                    || *c == '（'
+                    || *c == '('
+                    || *c == '['
+                    || *c == ']'
+                    || c.is_whitespace()
+            })
             .last()
             .map(|(i, c)| i + c.len_utf8())
             .unwrap_or(0);
         let after_ext = actual_pos + ext.len();
-        let name = text[start..after_ext].trim();
-        if !name.is_empty() && !name.contains('<') && !name.contains('/') && !name.contains('\\') {
-            return Some(name.to_string());
+        let raw = text[start..after_ext].trim();
+        let name = raw.trim_matches(|c: char| {
+            c == '`' || c == '"' || c == '\'' || c == '|' || c == ' ' || c == '(' || c == ')' || c == '（' || c == '）'
+        });
+        if !name.is_empty()
+            && !name.contains('<')
+            && !name.contains('>')
+            && !name.contains('/')
+            && !name.contains('\\')
+            && !results.iter().any(|existing: &String| existing.eq_ignore_ascii_case(name))
+        {
+            results.push(name.to_string());
         }
         search_from = actual_pos + ext.len();
     }
-    None
+    results
+}
+
+/// 保持向后兼容的单文件名提取接口。
+#[allow(dead_code)]
+pub fn extract_filename_by_extension(text: &str, ext: &str) -> Option<String> {
+    extract_all_filenames_by_extension(text, ext).into_iter().next()
 }
 
 /// 在指定文件名附近窗口中查找 64 位 SHA-256 哈希。
@@ -473,39 +501,102 @@ pub fn parse_assets_from_feed_content(
     let mut assets = Vec::new();
     let lower_content = content.to_ascii_lowercase();
 
-    // 优先尝试寻找 setup.exe
-    if let Some(exe_name) = extract_filename_by_extension(content, ".exe") {
+    // 1. 解析所有 .exe 文件并筛选安装包
+    let exe_candidates = extract_all_filenames_by_extension(content, ".exe");
+    let mut installer_candidates: Vec<String> = exe_candidates
+        .into_iter()
+        .filter(|name| {
+            let n = name.to_ascii_lowercase();
+            n.ends_with("-setup.exe")
+                || n.ends_with("_setup.exe")
+                || (n.contains("setup") && n.ends_with(".exe"))
+                || n.starts_with("maobu")
+        })
+        .collect();
+
+    // 排序：包含 setup 且包含 x64 的排在最前
+    installer_candidates.sort_by(|a, b| {
+        let a_lower = a.to_ascii_lowercase();
+        let b_lower = b.to_ascii_lowercase();
+        let score = |s: &str| -> i32 {
+            let mut sc = 0;
+            if s.contains("setup") {
+                sc += 10;
+            }
+            if s.contains("x64") {
+                sc += 5;
+            }
+            sc
+        };
+        score(&b_lower).cmp(&score(&a_lower))
+    });
+
+    for exe_name in installer_candidates {
         let download_url = format!(
             "https://github.com/{}/{}/releases/download/v{}/{}",
             GITHUB_OWNER, GITHUB_REPO, version, exe_name
         );
         let sha256 = find_sha256_near_name(&lower_content, &exe_name.to_ascii_lowercase())
             .or_else(|| global_sha.map(|s| s.to_string()));
+        let has_setup = exe_name.to_ascii_lowercase().contains("setup");
         assets.push(UpdateAssetInfo {
             name: exe_name,
             url: download_url,
             size: 0,
             sha256,
         });
+        if has_setup {
+            break;
+        }
     }
 
-    // 尝试寻找 extension zip
-    if let Some(zip_name) = extract_filename_by_extension(content, ".zip") {
-        let download_url = format!(
-            "https://github.com/{}/{}/releases/download/v{}/{}",
-            GITHUB_OWNER, GITHUB_REPO, version, zip_name
-        );
-        let sha256 = find_sha256_near_name(&lower_content, &zip_name.to_ascii_lowercase());
-        assets.push(UpdateAssetInfo {
-            name: zip_name,
-            url: download_url,
-            size: 0,
-            sha256,
-        });
+    // 2. 解析所有 .zip 文件并筛选扩展安装包
+    let zip_candidates = extract_all_filenames_by_extension(content, ".zip");
+    for zip_name in zip_candidates {
+        let n = zip_name.to_ascii_lowercase();
+        let is_ext = n == "extension.zip"
+            || n.ends_with("-extension.zip")
+            || n.ends_with("_extension.zip")
+            || (n.contains("extension") && n.ends_with(".zip"));
+        if is_ext {
+            let download_url = format!(
+                "https://github.com/{}/{}/releases/download/v{}/{}",
+                GITHUB_OWNER, GITHUB_REPO, version, zip_name
+            );
+            let sha256 = find_sha256_near_name(&lower_content, &n);
+            assets.push(UpdateAssetInfo {
+                name: zip_name,
+                url: download_url,
+                size: 0,
+                sha256,
+            });
+        }
     }
 
-    // 如果未提取到具体文件名，但拥有全局 SHA，提供标准命名资产回退
-    if assets.is_empty() {
+    // 3. 若未提取到扩展资产，但正文中提及“扩展”或“extension”并具有 SHA-256，自动补充标准命名扩展资产
+    if !assets.iter().any(|a| {
+        let n = a.name.to_ascii_lowercase();
+        n.contains("extension")
+    }) {
+        let ext_sha = find_sha256_near_name(&lower_content, "扩展")
+            .or_else(|| find_sha256_near_name(&lower_content, "extension"));
+        if let Some(sha) = ext_sha {
+            let standard_ext_name = format!("maobu-fetch-extension-v{}.zip", version);
+            let download_url = format!(
+                "https://github.com/{}/{}/releases/download/v{}/{}",
+                GITHUB_OWNER, GITHUB_REPO, version, standard_ext_name
+            );
+            assets.push(UpdateAssetInfo {
+                name: standard_ext_name,
+                url: download_url,
+                size: 0,
+                sha256: Some(sha),
+            });
+        }
+    }
+
+    // 4. 如果未提取到安装包，但拥有全局 SHA，提供标准命名安装包回退
+    if !assets.iter().any(|a| a.name.to_ascii_lowercase().ends_with(".exe")) {
         if let Some(sha) = global_sha {
             let standard_name = format!("Maobu.Fetch_{}_x64-setup.exe", version);
             let download_url = format!(
@@ -1410,6 +1501,56 @@ mod tests {
         assert!(info.assets[0].url.contains("v0.8.10/Maobu.Fetch_0.8.10_x64-setup.exe"));
     }
 
+    #[test]
+    fn parse_assets_from_feed_content_ignores_decoy_zips_and_selects_extension() {
+        let content = r#"
+            <h1>猫步下载器 v0.9.3 发布说明</h1>
+            <p>例如 987 KB 的 <code>M8.zip</code> 或 98 KB 的扩展安装包</p>
+            <p>其他附件包括 data_sample.zip 与 test.exe</p>
+            <table>
+                <tr>
+                    <td><code>Maobu.Fetch_0.9.3_x64-setup.exe</code></td>
+                    <td><code>B74035A6F99E1A6202CD956FE94E2C3C0A1504EBAEF2830B06E22CE8D8402135</code></td>
+                </tr>
+                <tr>
+                    <td><code>maobu-fetch-extension-v0.9.3.zip</code></td>
+                    <td><code>D05CE91BDDA878BFF6BFC7FF34234BE68F5492E7139042BA838602B7390790BD</code></td>
+                </tr>
+            </table>
+        "#;
+        let assets = parse_assets_from_feed_content("0.9.3", content, None);
+        let installer = select_installer_asset(&assets).expect("应识别到安装包");
+        assert_eq!(installer.name, "Maobu.Fetch_0.9.3_x64-setup.exe");
+        assert_eq!(
+            installer.sha256.as_deref(),
+            Some("b74035a6f99e1a6202cd956fe94e2c3c0a1504ebaef2830b06e22ce8d8402135")
+        );
+
+        let ext = select_extension_asset(&assets).expect("应正确跳过 M8.zip 并选中扩展包");
+        assert_eq!(ext.name, "maobu-fetch-extension-v0.9.3.zip");
+        assert_eq!(
+            ext.sha256.as_deref(),
+            Some("d05ce91bdda878bff6bfc7ff34234be68f5492e7139042ba838602b7390790bd")
+        );
+    }
+
+    #[test]
+    fn parse_assets_from_feed_content_synthesizes_extension_fallback_from_chinese_section() {
+        let content = r#"
+            <p>安装包（Maobu.Fetch_0.9.5_x64-setup.exe）<br>
+            SHA-256: <code>1111111111111111111111111111111111111111111111111111111111111111</code></p>
+            <p>浏览器扩展更新说明：已同步发布<br>
+            SHA-256: <code>2222222222222222222222222222222222222222222222222222222222222222</code></p>
+        "#;
+        let assets = parse_assets_from_feed_content("0.9.5", content, None);
+        let ext = select_extension_asset(&assets).expect("应根据扩展关键字提取兜底资产");
+        assert_eq!(ext.name, "maobu-fetch-extension-v0.9.5.zip");
+        assert_eq!(
+            ext.sha256.as_deref(),
+            Some("2222222222222222222222222222222222222222222222222222222222222222")
+        );
+    }
+
     #[tokio::test]
     #[ignore = "依赖外部实时网络连接，仅供本地联调验证"]
     async fn test_live_check_app_update_fallback() {
@@ -1417,7 +1558,7 @@ mod tests {
         println!("Live update check result: {:?}", res);
         assert!(res.error.is_none(), "实时更新检查不应报错，error: {:?}", res.error);
         let latest = res.latest.expect("应成功获取到最新版本");
-        assert_eq!(latest.version, "0.8.10");
-        assert!(res.has_update);
+        assert!(!latest.version.is_empty(), "最新版本号不应为空");
+        assert!(version_compare(&latest.version, "0.8.0") == Ordering::Greater);
     }
 }
