@@ -19,6 +19,12 @@ const extensionFrom = (item, urls) => {
   return "";
 };
 
+/// 明确的归档包与安装程序格式：属于用户明确下载意图，不受小文件体积阈值过滤
+export const ARCHIVE_AND_EXEC_EXTENSIONS = new Set([
+  "zip", "rar", "7z", "tar", "gz", "tgz", "bz2", "xz",
+  "exe", "msi", "apk", "dmg", "pkg", "iso", "torrent"
+]);
+
 /// 解析站点记忆选择（浮层"记住对此站点的选择"）。
 ///
 /// `settings.siteChoices` 形如 `{ "example.com": "take" | "bypass" }`，
@@ -87,7 +93,10 @@ export function evaluateDownload(item, settings, runtimeId, swStartTime = 0, opt
     return { eligible: false, reason: "extension" };
   }
   const minimum = Number(settings.minSizeMb || 0) * 1024 * 1024;
-  if (!forcedTake && item.totalBytes > 0 && item.totalBytes < minimum) return { eligible: false, reason: "size" };
+  const isArchiveOrInstaller = ARCHIVE_AND_EXEC_EXTENSIONS.has(extension);
+  if (!forcedTake && !isArchiveOrInstaller && minimum > 0 && item.totalBytes > 0 && item.totalBytes < minimum) {
+    return { eligible: false, reason: "size" };
+  }
 
   return {
     eligible: true,
@@ -185,7 +194,7 @@ export async function recoverStuckTakeovers(deps = {}) {
 ///
 /// 同时写两处：`lastIgnored`（最近一条，向后兼容）与 `ignoredList`
 /// （环形缓冲，默认 20 条，popup 诊断区展示并支持一键改用猫步下载）。
-async function recordIgnored(entry) {
+export async function recordIgnored(entry) {
   try {
     const { ignoredList = [] } = await chrome.storage.local.get("ignoredList");
     await chrome.storage.local.set({

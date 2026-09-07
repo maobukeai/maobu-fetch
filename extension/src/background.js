@@ -1,5 +1,5 @@
 import { signedFetch, signedGet, compatFetch, focusDesktop, PROBE_TIMEOUT_MS } from "./protocol.js";
-import { interceptBrowserDownload, evaluateDownload, skipUnpairedDownload, notifyThrottled, recoverStuckTakeovers } from "./interceptor.js";
+import { interceptBrowserDownload, evaluateDownload, skipUnpairedDownload, notifyThrottled, recoverStuckTakeovers, recordIgnored } from "./interceptor.js";
 import { bridgeMediaTask, selectBridgeMediaFormat } from "./media-selection.js";
 import { requestPageWithTrackingFallback } from "./rules.js";
 import { buildCookieHeader } from "./auth-download.js";
@@ -9,7 +9,7 @@ import { attachSniffer, toggleSniffHost } from "./sniffer.js";
 
 const swStartTime = Date.now();
 const defaults = {
-  intercept: true, minSizeMb: 1, allowHosts: [], blockHosts: [], extensions: [], bypassUntil: 0,
+  intercept: true, minSizeMb: 0, allowHosts: [], blockHosts: [], extensions: [], bypassUntil: 0,
   // 接管模式："auto"（默认，短暂浮层倒计时后自动接管）/ "ask"（每次询问，等用户选择）。
   takeoverMode: "auto",
   // auto 模式浮层倒计时（毫秒，0–5000；0 = 立即接管不弹浮层）。
@@ -23,7 +23,16 @@ const defaults = {
   // 流嗅探按站点开关（默认全关，AGENTS.md §5：仅记录用户显式开启站点的媒体直链）。
   snifferHosts: [],
 };
-const config = async () => ({ ...defaults, ...(await chrome.storage.local.get(Object.keys(defaults))) });
+const config = async () => {
+  const stored = await chrome.storage.local.get(Object.keys(defaults));
+  const cfg = { ...defaults, ...stored };
+  // 迁移旧版默认值：若 minSizeMb 为 1（旧版硬编码默认值导致 <1MB 正常下载如 zip/exe 被跳过），自动升级为 0（不限大小）
+  if (cfg.minSizeMb === 1) {
+    cfg.minSizeMb = 0;
+    try { await chrome.storage.local.set({ minSizeMb: 0 }); } catch {}
+  }
+  return cfg;
+};
 
 /// 长操作期间保活：MV3 SW 空闲约 30 秒即被回收；周期性自调用重置空闲计时器，
 /// 防止 60 秒的 /v1/media/probe 中途死亡导致页面 FAB 停留在"分析中…"。
@@ -49,7 +58,7 @@ async function fetchDesktopGate() {
     desktopGateCache = {
       at: current,
       enabled: data.takeover_enabled !== false,
-      minSizeMb: Number(data.min_file_size_mb || 0),
+      minSizeMb: data.min_file_size_mb === 1 ? 0 : Number(data.min_file_size_mb || 0),
       btMagnetEnabled: data.bt_magnet_enabled !== false,
     };
     return desktopGateCache;
@@ -346,12 +355,20 @@ chrome.downloads.onCreated.addListener(async (item) => {
   const desktopGate = await fetchDesktopGate();
   if (desktopGate) {
     settings.desktopTakeoverEnabled = desktopGate.enabled;
-    if (desktopGate.minSizeMb > 0) {
-      settings.minSizeMb = Math.max(Number(settings.minSizeMb || 0), desktopGate.minSizeMb);
+    const gateMinSize = desktopGate.minSizeMb === 1 ? 0 : Number(desktopGate.minSizeMb || 0);
+    if (gateMinSize > 0) {
+      settings.minSizeMb = Math.max(Number(settings.minSizeMb || 0), gateMinSize);
     }
   }
   const evalResult = evaluateDownload(item, settings, chrome.runtime.id, swStartTime);
   if (!evalResult.eligible) {
+    await recordIgnored({
+      url: item.url,
+      filename: item.filename ? item.filename.split(/[\\/]/).pop() : "未知文件",
+      size: item.totalBytes,
+      reason: evalResult.reason,
+      timestamp: Date.now(),
+    });
     try { await chrome.downloads.resume(item.id); } catch {}
     return;
   }

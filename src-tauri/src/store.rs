@@ -291,18 +291,26 @@ impl Store {
     }
 
     pub async fn get_settings(&self) -> Result<AppSettings, String> {
-        let connection = self.connection.lock().await;
-        let json: Option<String> = connection
-            .query_row(
-                "SELECT value FROM app_state WHERE key='settings'",
-                [],
-                |r| r.get(0),
-            )
-            .optional()
-            .map_err(|e| e.to_string())?;
+        let json: Option<String> = {
+            let connection = self.connection.lock().await;
+            connection
+                .query_row(
+                    "SELECT value FROM app_state WHERE key='settings'",
+                    [],
+                    |r| r.get(0),
+                )
+                .optional()
+                .map_err(|e| e.to_string())?
+        };
         let mut settings: AppSettings = json
             .and_then(|v| serde_json::from_str(&v).ok())
             .unwrap_or_default();
+        // 迁移旧版默认值：若 min_file_size_mb 为 1（旧版硬编码默认值导致低于 1MB 的正常下载如 zip/exe 无法被接管），
+        // 自动平滑迁移为 0（不限大小），保证小文件与安装包正常接管。
+        if settings.min_file_size_mb == 1 {
+            settings.min_file_size_mb = 0;
+            let _ = self.save_settings(&settings).await;
+        }
         // Task 31.3：全局代理密码以 DPAPI 密文形式落库。
         // 读取后尝试解密；解密失败说明是旧版本明文（或跨用户迁移），保留原值
         // 让下一次 save_settings 重新加密。空密码跳过。

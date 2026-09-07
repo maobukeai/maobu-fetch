@@ -103,7 +103,7 @@ async function runRuleTest() {
     resultEl.classList.add("bad");
     return;
   }
-  const { minSizeMb = 1, siteChoices = {} } = await chrome.storage.local
+  const { minSizeMb = 0, siteChoices = {} } = await chrome.storage.local
     .get(["minSizeMb", "siteChoices"]).catch(() => ({}));
   let filename = $("testFile").value.trim();
   if (!filename) {

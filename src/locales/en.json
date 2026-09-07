@@ -413,7 +413,7 @@
     "netMeteredCheck": "Check current network now",
     "netMeteredNote": "Network metering status is checked every 60 seconds. On metered connections, downloads pause automatically to save data; once resumed manually, they are not paused again.",
     "browserInterceptToggle": "Allow the browser extension to take over downloads",
-    "browserMinSize": "Minimum file size (MB)",
+    "browserMinSize": "Minimum file size (MB, 0 for unlimited)",
     "browserPairHint": "Enter the one-time pairing code in the extension (valid for 10 minutes)",
     "browserPairCopied": "Pairing code copied to clipboard",
     "browserCopy": "Copy",

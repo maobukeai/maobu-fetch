@@ -127,7 +127,7 @@ const defaults: AppSettings = {
   bt_extra_trackers: "",
   language: "zh-CN",
   intercept_browser_downloads: true,
-  min_file_size_mb: 1,
+  min_file_size_mb: 0,
   clipboard_monitor: false,
   proxy_mode: "system",
   proxy_url: "",

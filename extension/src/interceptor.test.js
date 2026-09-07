@@ -596,3 +596,60 @@ test("watchdog: storage.session 不可用时安全返回空结果", async () => 
   assert.deepEqual(result.remaining, {});
 });
 
+// ---- 最小文件大小与归档/安装包免除过滤测试 ----
+
+test("evaluateDownload: 默认 minSizeMb=0 时不限文件大小，小文件正常接管", () => {
+  const smallItem = {
+    id: 501,
+    url: "https://example.com/small.pdf",
+    finalUrl: "https://example.com/small.pdf",
+    filename: "small.pdf",
+    totalBytes: 50_000,
+    bytesReceived: 0,
+    state: "in_progress",
+  };
+  const res = evaluateDownload(smallItem, { ...settings, minSizeMb: 0 }, "extension-id");
+  assert.equal(res.eligible, true);
+  assert.equal(res.fileName, "small.pdf");
+});
+
+test("evaluateDownload: GitHub M8.zip (987 KB) 在各类阈值下均能被正确接管", () => {
+  const m8Item = {
+    id: 519,
+    url: "https://github.com/maobukeai/M8/releases/download/v3.7.8/M8.zip",
+    finalUrl: "https://release-assets.githubusercontent.com/github-production-release-asset/1184278929/fba40628.zip",
+    filename: "M8.zip",
+    totalBytes: 1010747,
+    bytesReceived: 0,
+    state: "in_progress",
+  };
+  // 1. 默认 0 MB（不限）：接管
+  const resDefault = evaluateDownload(m8Item, { ...settings, minSizeMb: 0 }, "extension-id");
+  assert.equal(resDefault.eligible, true);
+  assert.equal(resDefault.fileName, "M8.zip");
+
+  // 2. 即使设置了 5 MB 阈值，由于属于 zip 归档格式，免除体积拦截：接管
+  const resExempt = evaluateDownload(m8Item, { ...settings, minSizeMb: 5 }, "extension-id");
+  assert.equal(resExempt.eligible, true);
+  assert.equal(resExempt.fileName, "M8.zip");
+});
+
+test("evaluateDownload: 非归档/非安装包文件在设定 minSizeMb > 0 时正常受阈值限制", () => {
+  const pdfItem = {
+    id: 520,
+    url: "https://example.com/paper.pdf",
+    finalUrl: "https://example.com/paper.pdf",
+    filename: "paper.pdf",
+    totalBytes: 500_000, // 约 0.5 MB
+    bytesReceived: 0,
+    state: "in_progress",
+  };
+  // minSizeMb = 1 (1MB)，0.5 MB < 1 MB 拒绝
+  const resBlocked = evaluateDownload(pdfItem, { ...settings, minSizeMb: 1 }, "extension-id");
+  assert.equal(resBlocked.eligible, false);
+  assert.equal(resBlocked.reason, "size");
+
+  // minSizeMb = 0 (不限大小) 放行
+  const resAllowed = evaluateDownload(pdfItem, { ...settings, minSizeMb: 0 }, "extension-id");
+  assert.equal(resAllowed.eligible, true);
+});

@@ -51,7 +51,7 @@ async function run() {
         frosted_glass: true,
         language: "zh-CN",
         intercept_browser_downloads: true,
-        min_file_size_mb: 1,
+        min_file_size_mb: 0,
         clipboard_monitor: true,
         proxy_mode: "system",
         proxy_url: "",

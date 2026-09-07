@@ -209,9 +209,9 @@ export function SettingsPage({
     if (!trimmed) {
       setExtResult({
         compatible: false,
-        app_version: appInfo?.version || "0.9.2",
+        app_version: appInfo?.version || "0.9.3",
         extension_version: "未输入",
-        message: "请先在左侧输入框填写扩展版本号（如 0.9.2，可在浏览器扩展管理页查看）",
+        message: "请先在左侧输入框填写扩展版本号（如 0.9.3，可在浏览器扩展管理页查看）",
       });
       notify("请先填写扩展版本号", "error");
       return;
@@ -1023,6 +1023,7 @@ export function SettingsPage({
                     <input
                       type="number"
                       min="0"
+                      placeholder="0"
                       value={draft.min_file_size_mb}
                       onChange={(e) => set("min_file_size_mb", +e.target.value)}
                     />

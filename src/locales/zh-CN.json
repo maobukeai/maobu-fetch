@@ -413,7 +413,7 @@
     "netMeteredCheck": "立即检查当前网络",
     "netMeteredNote": "每 60 秒检测一次网络计费状态。检测到计量网络（按量计费）时将自动暂停下载以节省流量，用户手动恢复后不再自动暂停。",
     "browserInterceptToggle": "允许浏览器扩展接管下载",
-    "browserMinSize": "最小文件大小（MB）",
+    "browserMinSize": "最小接管文件大小（MB，0 为不限）",
     "browserPairHint": "在扩展中输入一次性配对码（10 分钟有效）",
     "browserPairCopied": "配对码已复制到剪贴板",
     "browserCopy": "复制",
