@@ -49,20 +49,23 @@ export function evaluateDownload(item, settings, runtimeId, swStartTime = 0, opt
   }
 
   // 校验浏览器重启/会话恢复载入的历史 DownloadItem：
-  // 1. 若 item.startTime 早于扩展 Service Worker 启动时间（容许 2 秒误差距），属于历史任务。
+  // 1. 若 item.startTime 早于扩展 Service Worker 启动时间（容许 30 秒误差以容纳 SW 唤醒冷启动延迟），属于历史任务。
   if (swStartTime && item.startTime) {
     const itemStartTime = new Date(item.startTime).getTime();
-    if (!isNaN(itemStartTime) && itemStartTime < swStartTime - 2000) {
+    if (!isNaN(itemStartTime) && itemStartTime < swStartTime - 30_000) {
       return { eligible: false, reason: "restored-history" };
     }
   }
 
-  // 2. 若 item 带有已有下载进度、被暂停、支持恢复或非 in_progress 状态，属于历史恢复任务，不予以拦截。
-  //    重评估（reevaluation，扩展自己 pause() 之后对最新快照的二次评估）必须跳过这组
-  //    检查：此时 paused/canResume/bytesReceived 是拦截流程自身造成的，并非历史任务信号；
-  //    若不跳过，二次评估必然误判 restored-history，导致接管完全失效。
+  // 2. 若 item 处于非 in_progress 状态（interrupted / complete / cancelled）或已被暂停，属于历史恢复任务，不予拦截。
+  //    注意：Chromium 在发起新下载时，网络流往往先于扩展事件到达，此时 bytesReceived > 0 且
+  //    支持 Range 时 canResume 均为正常现象，绝对不能作为历史任务拒绝拦截！
+  //    若文件已经 100% 下载完毕（bytesReceived >= totalBytes 且 totalBytes > 0），无需拦截。
+  if (item.totalBytes > 0 && item.bytesReceived >= item.totalBytes) {
+    return { eligible: false, reason: "restored-history" };
+  }
   if (!options.reevaluation
-    && (item.bytesReceived > 0 || item.paused || item.canResume || (item.state && item.state !== "in_progress"))) {
+    && (item.paused || (item.state && item.state !== "in_progress"))) {
     return { eligible: false, reason: "restored-history" };
   }
 
@@ -240,7 +243,7 @@ export function resetNotificationCooldownsForTest() {
 
 export async function interceptBrowserDownload(initial, options) {
   const { downloads, settings, runtimeId, sendTask, notify, wait, isDesktopOfflineError, swStartTime, onTakenOver } = options;
-  const preflight = evaluateDownload(initial, settings, runtimeId, swStartTime);
+  const preflight = evaluateDownload(initial, settings, runtimeId, swStartTime, { reevaluation: true });
   if (!preflight.eligible) {
     await recordIgnored({
       url: initial.url,

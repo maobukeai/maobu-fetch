@@ -361,6 +361,8 @@ chrome.downloads.onCreated.addListener(async (item) => {
     try { await chrome.downloads.resume(item.id); } catch {}
     return;
   }
+  // 满足接管条件且已配对：立即暂停原生下载，防止在浮层倒计时（1.5s）期间浏览器高速跑满带宽或提前下完
+  try { await chrome.downloads.pause(item.id); } catch {}
   const tab = await findSourceTab(item);
   const proceed = await confirmTakeoverWithOverlay(item, settings, { tab });
   if (!proceed) {
@@ -408,7 +410,7 @@ export async function confirmTakeoverWithOverlay(item, settings, deps = {}) {
   if (Date.now() < Number(settings.bypassUntil || 0)) return true;
   const runtimeId = deps.runtimeId || chrome.runtime?.id;
   const swTime = deps.swStartTime || swStartTime;
-  const evalResult = evaluateDownload(item, settings, runtimeId, swTime);
+  const evalResult = evaluateDownload(item, settings, runtimeId, swTime, { reevaluation: true });
   if (!evalResult.eligible) return false;
   const tab = deps.tab || await findSourceTab(item, deps);
   if (!tab) return true;

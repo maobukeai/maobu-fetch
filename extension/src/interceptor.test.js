@@ -157,36 +157,51 @@ test("throttles repeated failure notifications within cooldown period", async ()
   assert.equal(messages[0][2], "takeover-error");
 });
 
-test("ignores restored history download items with past startTime or existing progress", () => {
+test("ignores restored history download items with past startTime or completed progress", () => {
   const swStartTime = 1000000;
-  // 1. 过去的 startTime
+  // 1. 过去的 startTime（超过 30 秒）
   const oldItem = {
     id: 10,
     url: "https://example.com/old.zip",
     filename: "old.zip",
     totalBytes: 5_000_000,
-    startTime: new Date(swStartTime - 10000).toISOString(),
+    startTime: new Date(swStartTime - 35000).toISOString(),
   };
   const resultOld = evaluateDownload(oldItem, settings, "extension-id", swStartTime);
   assert.equal(resultOld.eligible, false);
   assert.equal(resultOld.reason, "restored-history");
 
-  // 2. 带已有进度的任务
-  const progressItem = {
+  // 2. 真实网络中刚开始传输已有字节与 canResume 的活跃任务：必须放行接管，绝不能误判为历史恢复
+  const activeItem = {
     id: 11,
-    url: "https://example.com/progress.zip",
-    filename: "progress.zip",
+    url: "https://example.com/active.zip",
+    filename: "active.zip",
     totalBytes: 5_000_000,
     bytesReceived: 1024,
+    canResume: true,
+    paused: false,
+    state: "in_progress",
     startTime: new Date(swStartTime + 100).toISOString(),
   };
-  const resultProgress = evaluateDownload(progressItem, settings, "extension-id", swStartTime);
-  assert.equal(resultProgress.eligible, false);
-  assert.equal(resultProgress.reason, "restored-history");
+  const resultActive = evaluateDownload(activeItem, settings, "extension-id", swStartTime);
+  assert.equal(resultActive.eligible, true, "active in-progress download with received bytes must be eligible");
 
-  // 3. 被暂停/可恢复的任务
-  const pausedItem = {
+  // 3. 已 100% 下载完毕的文件：无需拦截
+  const completedItem = {
     id: 12,
+    url: "https://example.com/completed.zip",
+    filename: "completed.zip",
+    totalBytes: 5_000_000,
+    bytesReceived: 5_000_000,
+    startTime: new Date(swStartTime + 100).toISOString(),
+  };
+  const resultCompleted = evaluateDownload(completedItem, settings, "extension-id", swStartTime);
+  assert.equal(resultCompleted.eligible, false);
+  assert.equal(resultCompleted.reason, "restored-history");
+
+  // 4. 被暂停的任务（未带 reevaluation）
+  const pausedItem = {
+    id: 13,
     url: "https://example.com/paused.zip",
     filename: "paused.zip",
     totalBytes: 5_000_000,
@@ -197,9 +212,9 @@ test("ignores restored history download items with past startTime or existing pr
   assert.equal(resultPaused.eligible, false);
   assert.equal(resultPaused.reason, "restored-history");
 
-  // 4. 真正的新新建任务
+  // 5. 真正的新新建任务
   const newItem = {
-    id: 13,
+    id: 14,
     url: "https://example.com/new.zip",
     filename: "new.zip",
     totalBytes: 5_000_000,
@@ -226,46 +241,45 @@ test("rejects downloads with interrupted/complete/cancelled state as restored-hi
   }
 });
 
-test("rejects downloads with canResume=true as restored-history", () => {
+test("allows in-progress downloads with canResume=true", () => {
   const swStartTime = Date.now();
   const item = {
     id: 21, url: "https://example.com/file.zip", filename: "file.zip",
-    totalBytes: 5_000_000, canResume: true,
+    totalBytes: 5_000_000, canResume: true, state: "in_progress",
     startTime: new Date(swStartTime + 100).toISOString(),
   };
   const result = evaluateDownload(item, settings, "extension-id", swStartTime);
-  assert.equal(result.eligible, false);
-  assert.equal(result.reason, "restored-history");
+  assert.equal(result.eligible, true, "in-progress download with canResume=true should pass");
 });
 
-test("timestamp check uses 2-second tolerance correctly", () => {
+test("timestamp check uses 30-second tolerance correctly", () => {
   const swStartTime = 1000000;
-  // 1.5 秒前：在 2 秒容差内，应该通过时间检查（不被 startTime 拦截）
+  // 10 秒前：在 30 秒容差内（覆盖 SW 唤醒延迟），应该通过时间检查
   const withinTolerance = {
     id: 22, url: "https://example.com/edge.zip", filename: "edge.zip",
     totalBytes: 5_000_000, bytesReceived: 0, paused: false, state: "in_progress",
-    startTime: new Date(swStartTime - 1500).toISOString(),
+    startTime: new Date(swStartTime - 10000).toISOString(),
   };
   const result1 = evaluateDownload(withinTolerance, settings, "extension-id", swStartTime);
-  assert.equal(result1.eligible, true, "item within 2s tolerance should pass");
+  assert.equal(result1.eligible, true, "item within 30s tolerance should pass");
 
-  // 恰好 2 秒前：边界值，不应被拦截（需要严格小于 swStartTime - 2000）
+  // 恰好 30 秒前：边界值，不应被拦截（需要严格小于 swStartTime - 30_000）
   const exactBoundary = {
     id: 23, url: "https://example.com/boundary.zip", filename: "boundary.zip",
     totalBytes: 5_000_000, bytesReceived: 0, paused: false, state: "in_progress",
-    startTime: new Date(swStartTime - 2000).toISOString(),
+    startTime: new Date(swStartTime - 30000).toISOString(),
   };
   const result2 = evaluateDownload(exactBoundary, settings, "extension-id", swStartTime);
-  assert.equal(result2.eligible, true, "item at exact 2s boundary should pass (not strictly less)");
+  assert.equal(result2.eligible, true, "item at exact 30s boundary should pass (not strictly less)");
 
-  // 2.1 秒前：超出容差，应被拦截
+  // 31 秒前：超出容差，应被拦截为历史任务
   const beyondTolerance = {
     id: 24, url: "https://example.com/old.zip", filename: "old.zip",
     totalBytes: 5_000_000,
-    startTime: new Date(swStartTime - 2100).toISOString(),
+    startTime: new Date(swStartTime - 31000).toISOString(),
   };
   const result3 = evaluateDownload(beyondTolerance, settings, "extension-id", swStartTime);
-  assert.equal(result3.eligible, false, "item beyond 2s tolerance should be rejected");
+  assert.equal(result3.eligible, false, "item beyond 30s tolerance should be rejected");
   assert.equal(result3.reason, "restored-history");
 });
 
@@ -364,6 +378,34 @@ test("interceptBrowserDownload completes takeover when search reflects the exten
   assert.equal(handled, true, "paused-by-extension download must still be taken over");
   assert.deepEqual(calls, ["pause", "send", "cancel", "erase"]);
   assert.equal(sent[0][0], pausedSnapshot.finalUrl);
+});
+
+test("interceptBrowserDownload intercepts downloads that already received bytes before onCreated", async () => {
+  resetNotificationCooldownsForTest();
+  const swStartTime = Date.now();
+  const calls = [];
+  const sent = [];
+  const activeItem = {
+    id: 52, url: "https://example.com/file.zip", finalUrl: "https://example.com/file.zip",
+    filename: "file.zip", totalBytes: 3_000_000,
+    paused: false, canResume: true, bytesReceived: 65536, state: "in_progress",
+    startTime: new Date(swStartTime + 100).toISOString(),
+  };
+  const downloads = {
+    pause: async () => calls.push("pause"),
+    search: async () => [{ ...activeItem, paused: true, bytesReceived: 131072 }],
+    cancel: async () => calls.push("cancel"),
+    erase: async () => calls.push("erase"),
+    resume: async () => calls.push("resume"),
+  };
+  const handled = await interceptBrowserDownload(activeItem, {
+    downloads, settings, runtimeId: "extension-id", wait: async () => {},
+    sendTask: async (...args) => { calls.push("send"); sent.push(args); },
+    swStartTime,
+  });
+  assert.equal(handled, true, "active download with initial bytesReceived > 0 must be taken over");
+  assert.deepEqual(calls, ["pause", "send", "cancel", "erase"]);
+  assert.equal(sent[0][0], activeItem.finalUrl);
 });
 
 test("skipUnpairedDownload falls back to browser and records reason when unpaired", async () => {
