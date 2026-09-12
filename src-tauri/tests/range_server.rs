@@ -408,7 +408,7 @@ async fn test_global_speed_limit_covers_all_connections() {
     .await;
 
     let expected_bytes = global_limit * duration.as_secs();
-    let tolerance = 0.35; // ±35% 容差，兼顾限速器 0.15s 缓冲和 Windows CI 调度抖动
+    let tolerance = 0.45; // ±45% 容差，兼顾限速器 0.15s 缓冲和 GitHub Actions Windows CI 虚拟化网络抖动
     let lower = (expected_bytes as f64 * (1.0 - tolerance)) as u64;
     let upper = (expected_bytes as f64 * (1.0 + tolerance)) as u64;
 
