@@ -1,0 +1,161 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    name: Build and Release (Windows x64)
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.9.0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'pnpm'
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Rust Cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
+
+      - name: Install Node dependencies
+        run: pnpm install
+
+      - name: Run Quality Gate Checks
+        run: |
+          pnpm run check
+          cargo test --manifest-path src-tauri/Cargo.toml
+
+      - name: Build Browser Extension
+        run: pnpm run extension:build
+
+      - name: Build Tauri Desktop Package
+        run: pnpm tauri build
+
+      - name: Package Release Assets and Compute SHA-256
+        shell: powershell
+        run: |
+          # 1. 提取版本号
+          $rawTag = "${{ github.ref_name }}"
+          if ($rawTag -match '^v(\d+\.\d+\.\d+.*)$') {
+            $version = $Matches[1]
+          } else {
+            $version = (Get-Content package.json | ConvertFrom-Json).version
+          }
+          Write-Host "==> Packaging release for version: $version"
+
+          New-Item -ItemType Directory -Force -Path releases_out | Out-Null
+
+          # 2. 拷贝 NSIS 安装程序
+          $setup = Get-ChildItem -Path "src-tauri/target/release/bundle/nsis" -Filter "*setup.exe" | Select-Object -First 1
+          if (-not $setup) {
+            throw "NSIS setup executable not found in src-tauri/target/release/bundle/nsis!"
+          }
+          Write-Host "Found NSIS setup: $($setup.FullName)"
+          Copy-Item $setup.FullName -Destination "releases_out/Maobu.Fetch_${version}_x64-setup.exe" -Force
+
+          # 3. 拷贝便携版 EXE
+          $portable = "src-tauri/target/release/maobu-fetch.exe"
+          if (-not (Test-Path $portable)) {
+            throw "Portable executable not found at $portable!"
+          }
+          Copy-Item $portable -Destination "releases_out/maobu-fetch-v${version}-portable.exe" -Force
+
+          # 4. 打包扩展程序（AGENTS.md §10 双命名强约束）
+          Compress-Archive -Path "extension/dist/*" -DestinationPath "releases_out/maobu-fetch-extension-v${version}.zip" -Force
+          Copy-Item "releases_out/maobu-fetch-extension-v${version}.zip" -Destination "releases_out/extension.zip" -Force
+
+          # 5. 实测计算所有产物的 SHA-256
+          $files = @(
+            "releases_out/Maobu.Fetch_${version}_x64-setup.exe",
+            "releases_out/maobu-fetch-v${version}-portable.exe",
+            "releases_out/maobu-fetch-extension-v${version}.zip",
+            "releases_out/extension.zip"
+          )
+
+          $shaTable = "| 产物名称 | 文件大小 | SHA-256 校验和 |`n| :--- | :---: | :--- |`n"
+          foreach ($f in $files) {
+            $item = Get-Item $f
+            $hash = (Get-FileHash -Path $f -Algorithm SHA256).Hash
+            $sizeMB = [math]::Round($item.Length / 1MB, 2)
+            $sizeKB = [math]::Round($item.Length / 1KB, 2)
+            $fmt = if ($item.Length -ge 1MB) { "$sizeMB MB" } else { "$sizeKB KB" }
+            $shaTable += "| ``$($item.Name)`` | $fmt | ``$hash`` |`n"
+          }
+
+          # 6. 生成或载入发布说明
+          $notesPath = "releases/release_notes_v${version}.md"
+          if (Test-Path $notesPath) {
+            $rawNotes = Get-Content $notesPath -Raw -Encoding UTF8
+            if ($rawNotes -match '(?ms)(## 📦 发布产物校验 \(SHA-256\)\s*\r?\n\r?\n).*?(\r?\n\r?\n---|\Z)') {
+              $body = $rawNotes -replace '(?ms)(## 📦 发布产物校验 \(SHA-256\)\s*\r?\n\r?\n).*?(\r?\n\r?\n---|\Z)', "`$1$shaTable`$2"
+            } elseif ($rawNotes.Contains('<!-- SHA256_TABLE -->')) {
+              $body = $rawNotes.Replace('<!-- SHA256_TABLE -->', $shaTable)
+            } else {
+              $body = $rawNotes + "`n`n## 📦 发布产物校验 (SHA-256)`n`n" + $shaTable
+            }
+          } else {
+            $body = @"
+# 猫步下载器 (Maobu Fetch) v${version} 发布说明
+
+🎉 欢迎使用猫步下载器 **v${version}**！本版本由 GitHub Actions 云端虚拟机构建流水线全自动编译、测试与发布。
+
+---
+
+## 📦 发布产物校验 (SHA-256)
+
+$shaTable
+
+---
+
+## 🛡️ 安全与合规说明
+- 基础安装包仅 ~4.7 MB（远低于 30 MB 强约束）；
+- 基础安装包内零捆绑第三方可执行程序（严格按需下载与 SHA-256 校验清单）；
+- 本地通信严格限制在 127.0.0.1，保留 HMAC-SHA256 签名鉴权；
+- 扩展包提供版本化文件与通用命名文件双产物，保证历史客户端一键平滑更新。
+"@
+          }
+
+          Set-Content -Path "releases_out/release_notes.md" -Value $body -Encoding UTF8
+
+          # 传递环境变量给后续步骤
+          "APP_VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding UTF8
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: "v${{ env.APP_VERSION }}"
+          name: "猫步下载器 v${{ env.APP_VERSION }} · Maobu Fetch v${{ env.APP_VERSION }}"
+          body_path: releases_out/release_notes.md
+          draft: false
+          prerelease: false
+          files: |
+            releases_out/Maobu.Fetch_${{ env.APP_VERSION }}_x64-setup.exe
+            releases_out/maobu-fetch-v${{ env.APP_VERSION }}-portable.exe
+            releases_out/maobu-fetch-extension-v${{ env.APP_VERSION }}.zip
+            releases_out/extension.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "猫步下载器 · Maobu Fetch",
   "short_name": "Maobu Fetch",
-  "version": "0.9.5",
+  "version": "0.9.6",
   "description": "安全地接管下载并将页面媒体发送到猫步下载器。",
   "permissions": [
     "contextMenus",
@@ -46,11 +46,15 @@
   },
   "commands": {
     "toggle-takeover": {
-      "suggested_key": { "default": "Alt+Shift+D" },
+      "suggested_key": {
+        "default": "Alt+Shift+D"
+      },
       "description": "临时暂停/恢复下载接管（10 分钟）"
     },
     "send-page-media": {
-      "suggested_key": { "default": "Alt+Shift+V" },
+      "suggested_key": {
+        "default": "Alt+Shift+V"
+      },
       "description": "把当前页面的媒体发送到猫步下载器"
     }
   },
