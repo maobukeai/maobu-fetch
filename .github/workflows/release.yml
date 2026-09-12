@@ -68,6 +68,7 @@ jobs:
           prerelease: false
           files: |
             releases_out/Maobu.Fetch_${{ env.APP_VERSION }}_x64-setup.exe
+            releases_out/Maobu.Fetch_${{ env.APP_VERSION }}_x64.msi
             releases_out/maobu-fetch-v${{ env.APP_VERSION }}-portable.exe
             releases_out/maobu-fetch-extension-v${{ env.APP_VERSION }}.zip
             releases_out/extension.zip
