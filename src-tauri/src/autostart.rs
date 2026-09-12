@@ -16,7 +16,7 @@ pub fn sync_autostart(enabled: bool) -> Result<(), String> {
 
     if enabled {
         if let Ok(exe_path) = std::env::current_exe() {
-            let exe_str = format!("\"{}\"", exe_path.to_string_lossy());
+            let exe_str = format!("\"{}\" --autostart", exe_path.to_string_lossy());
             key.set_value(app_name, &exe_str)
                 .map_err(|e| format!("写入注册表开机自启失败: {e}"))?;
         }

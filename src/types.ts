@@ -472,6 +472,8 @@ export interface AppSettings {
   scheduled_limit?: ScheduledSpeedLimit | null;
   /** 双击已完成任务时的打开方式偏好："builtin" 内置轻量播放器/看图器；"system" 系统默认程序。默认 "builtin"。 */
   open_file_action?: "builtin" | "system";
+  /** 启动时是否自动检查应用更新（只检查并提醒，不自动下载，符合 AGENTS.md §6）。默认 true。 */
+  auto_check_app_update?: boolean;
 }
 
 /**

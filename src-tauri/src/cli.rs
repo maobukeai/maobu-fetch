@@ -18,7 +18,8 @@ use std::ffi::OsString;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CliCommand {
     /// 正常启动 GUI（无子命令或空参数）。
-    Run,
+    /// `autostart: true` 表示开机自启或后台静默启动（不弹窗，驻留托盘）。
+    Run { autostart: bool },
     /// `play <path>` 或 `--play <path>`：唤起内置媒体播放器播放本地文件。
     Play { path: String },
     /// `image <path>` 或 `--view-image <path...>`：唤起内置看图器查看本地图片（支持单图与多图批量打开）。
@@ -41,6 +42,16 @@ pub enum CliCommand {
 
 /// 允许的连接数集合（AGENTS.md §3 强约束：只能为 1/2/4/8/16/32）。
 const ALLOWED_CONNECTIONS: [u8; 6] = [1, 2, 4, 8, 16, 32];
+
+/// 判定给定参数是否为开机自启或后台静默启动标志。
+pub fn is_autostart_flag(arg: &str) -> bool {
+    let lower = arg.to_ascii_lowercase();
+    lower == "--autostart"
+        || lower == "--minimized"
+        || lower == "--hidden"
+        || lower == "--background"
+        || lower == "-m"
+}
 
 /// 判定给定路径是否为支持的媒体文件扩展名。
 pub fn is_media_file_path(path: &str) -> bool {
@@ -90,13 +101,17 @@ fn parse_optional_string(raw: &str) -> Result<String, pico_args::Error> {
 pub fn parse_args(args: Vec<String>) -> Result<CliCommand, String> {
     // args[0] 是程序路径，跳过。无后续参数时正常启动 GUI。
     if args.len() <= 1 {
-        return Ok(CliCommand::Run);
+        return Ok(CliCommand::Run { autostart: false });
     }
 
     let first = &args[1];
+    if is_autostart_flag(first) {
+        return Ok(CliCommand::Run { autostart: true });
+    }
+
     if first.starts_with("maobu://") || first.ends_with(".maobu-task") || first.ends_with(".maobu")
     {
-        return Ok(CliCommand::Run);
+        return Ok(CliCommand::Run { autostart: false });
     }
 
     // Windows 资源管理器双击打开或 --play 唤起视频文件
@@ -148,7 +163,14 @@ pub fn parse_args(args: Vec<String>) -> Result<CliCommand, String> {
         .map_err(|e| format!("参数解析失败：{e}"))?;
 
     match subcommand.as_deref() {
-        None | Some("") => Ok(CliCommand::Run),
+        None | Some("") => {
+            let autostart = pargs.contains("--autostart")
+                || pargs.contains("--minimized")
+                || pargs.contains("--hidden")
+                || pargs.contains("--background")
+                || pargs.contains("-m");
+            Ok(CliCommand::Run { autostart })
+        }
         Some("play") => {
             let path = pargs
                 .subcommand()
@@ -227,7 +249,9 @@ pub fn parse_args(args: Vec<String>) -> Result<CliCommand, String> {
             Ok(CliCommand::Remove { id, delete_file })
         }
         Some(other) => {
-            if is_media_file_path(other) {
+            if is_autostart_flag(other) {
+                Ok(CliCommand::Run { autostart: true })
+            } else if is_media_file_path(other) {
                 Ok(CliCommand::Play {
                     path: other.to_string(),
                 })
@@ -236,7 +260,8 @@ pub fn parse_args(args: Vec<String>) -> Result<CliCommand, String> {
                 || other.ends_with(".maobu")
                 || other.starts_with('-')
             {
-                Ok(CliCommand::Run)
+                let autostart = is_autostart_flag(other);
+                Ok(CliCommand::Run { autostart })
             } else {
                 Err(format!("未知子命令：{other}"))
             }
@@ -258,13 +283,37 @@ mod tests {
     #[test]
     fn no_args_returns_run() {
         let cmd = parse_args(vec!["maobu".to_string()]).unwrap();
-        assert_eq!(cmd, CliCommand::Run);
+        assert_eq!(cmd, CliCommand::Run { autostart: false });
     }
 
     #[test]
     fn empty_subcommand_returns_run() {
         let cmd = parse_args(args(&[])).unwrap();
-        assert_eq!(cmd, CliCommand::Run);
+        assert_eq!(cmd, CliCommand::Run { autostart: false });
+    }
+
+    #[test]
+    fn autostart_flags_return_run_with_autostart_true() {
+        assert_eq!(
+            parse_args(args(&["--autostart"])).unwrap(),
+            CliCommand::Run { autostart: true }
+        );
+        assert_eq!(
+            parse_args(args(&["--minimized"])).unwrap(),
+            CliCommand::Run { autostart: true }
+        );
+        assert_eq!(
+            parse_args(args(&["--hidden"])).unwrap(),
+            CliCommand::Run { autostart: true }
+        );
+        assert_eq!(
+            parse_args(args(&["--background"])).unwrap(),
+            CliCommand::Run { autostart: true }
+        );
+        assert_eq!(
+            parse_args(args(&["-m"])).unwrap(),
+            CliCommand::Run { autostart: true }
+        );
     }
 
     #[test]

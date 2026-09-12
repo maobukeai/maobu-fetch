@@ -910,10 +910,17 @@ async fn app_update_download(app: tauri::AppHandle) -> Result<UpdateDownloadResu
 /// 一键更新（应用）：运行已下载并校验通过的安装包。
 ///
 /// 安全约束：只允许运行位于系统临时目录、由 `app_update_download` 命名的
-/// `maobu-fetch-*-setup.exe`，拒绝任意路径执行。安装程序启动后由用户按
-/// NSIS 向导完成安装（包含关闭本应用的确认步骤），本命令不做静默安装。
+/// `maobu-fetch-*-setup.exe`，拒绝任意路径执行。
+///
+/// - `silent = true`（默认）：传入 NSIS 参数 `/S`（静默覆盖安装）与 `/R`（安装完成后自动重新启动），
+///   并在启动安装程序后自动优雅退出当前程序释放 EXE 文件占用，实现零点击极速自动更新。
+/// - `silent = false`：以普通 GUI 向导模式启动，由用户按向导手动完成。
 #[tauri::command]
-fn app_update_run_installer(path: String) -> Result<(), String> {
+fn app_update_run_installer(
+    app: tauri::AppHandle,
+    path: String,
+    silent: Option<bool>,
+) -> Result<(), String> {
     let target = PathBuf::from(&path);
     let canonical = target
         .canonicalize()
@@ -931,9 +938,21 @@ fn app_update_run_installer(path: String) -> Result<(), String> {
     if !name.starts_with("maobu-fetch-") || !name.ends_with("-setup.exe") {
         return Err("仅允许运行一键更新下载的安装包".into());
     }
-    std::process::Command::new(&canonical)
-        .spawn()
+    let is_silent = silent.unwrap_or(true);
+    let mut cmd = std::process::Command::new(&canonical);
+    if is_silent {
+        cmd.args(["/S", "/R"]);
+    }
+    cmd.spawn()
         .map_err(|e| format!("无法启动安装程序：{e}"))?;
+
+    if is_silent {
+        // 静默安装时，自动退出当前应用以解除文件占用，安装器完成后会通过 /R 重新拉起新版
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(600));
+            app.exit(0);
+        });
+    }
     Ok(())
 }
 
@@ -2438,7 +2457,7 @@ async fn cli_remove(store: &Arc<Store>, id: &str, delete_file: bool) -> Result<(
 /// 其他变体打开 Store、执行操作、打印结果到 stdout/stderr，返回退出码。
 pub fn run_cli(command: CliCommand) -> i32 {
     match command {
-        CliCommand::Run => {
+        CliCommand::Run { .. } => {
             // 不应到达此处；main.rs 会直接调用 run()。
             run();
             0
@@ -2599,12 +2618,15 @@ fn handle_single_instance_forward(app: &tauri::AppHandle, argv: Vec<String>) {
     };
 
     match command {
-        CliCommand::Run => {
-            // 无子命令：用户再次启动了 GUI。聚焦主窗口。
-            if let Some(window) = app.get_webview_window("main") {
-                let _ = window.show();
-                let _ = window.unminimize();
-                let _ = window.set_focus();
+        CliCommand::Run { autostart } => {
+            // 无子命令：用户再次启动了 GUI。
+            // 若不是自启标志转发，则唤醒并聚焦主窗口。
+            if !autostart {
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.show();
+                    let _ = window.unminimize();
+                    let _ = window.set_focus();
+                }
             }
         }
         CliCommand::Play { path } => {
@@ -2734,7 +2756,7 @@ async fn run_forwarded_command(manager: &SharedManager, command: CliCommand) -> 
             println!("OK");
             Ok(())
         }
-        CliCommand::Run | CliCommand::Play { .. } | CliCommand::ViewImage { .. } => Ok(()),
+        CliCommand::Run { .. } | CliCommand::Play { .. } | CliCommand::ViewImage { .. } => Ok(()),
     }
 }
 
@@ -2978,6 +3000,16 @@ fn urlencoding_encode(input: &str) -> String {
         }
     }
     encoded
+}
+
+#[derive(Default, Clone, Copy, Debug)]
+pub struct StartupState {
+    pub is_silent: bool,
+}
+
+#[tauri::command]
+fn is_silent_startup(state: State<'_, StartupState>) -> bool {
+    state.is_silent
 }
 
 #[derive(Default)]
@@ -3952,15 +3984,18 @@ pub fn run() {
 
             // 冷启动：检查是否通过命令行 --play / --view-image 或直接媒体/图片文件启动
             let startup_args: Vec<String> = std::env::args().collect();
-            match cli::parse_args(startup_args) {
-                Ok(CliCommand::Play { path }) => {
+            let parsed_startup_cmd = cli::parse_args(startup_args).ok();
+            match &parsed_startup_cmd {
+                Some(CliCommand::Play { path }) => {
                     let startup_app = app.handle().clone();
+                    let path = path.clone();
                     tauri::async_runtime::spawn(async move {
                         let _ = open_or_focus_player_window(&startup_app, &path, None);
                     });
                 }
-                Ok(CliCommand::ViewImage { paths }) => {
+                Some(CliCommand::ViewImage { paths }) => {
                     let startup_app = app.handle().clone();
+                    let paths = paths.clone();
                     tauri::async_runtime::spawn(async move {
                         for path in paths {
                             let _ = open_or_focus_image_window(&startup_app, &path, None);
@@ -3969,6 +4004,11 @@ pub fn run() {
                 }
                 _ => {}
             }
+
+            let initial_settings = tauri::async_runtime::block_on(manager.settings());
+            let is_autostart = matches!(parsed_startup_cmd, Some(CliCommand::Run { autostart: true }));
+            let is_silent = is_autostart || initial_settings.start_minimized;
+            app.manage(StartupState { is_silent });
 
             // Task 28：注册托盘进度更新事件监听。
             // 监听 `task-updated` / `task-created` / `task-removed` 事件，节流触发
@@ -3982,7 +4022,6 @@ pub fn run() {
 
             if let Some(icon) = app.default_window_icon() {
                 let show_item = MenuItem::with_id(app, "show", "显示主窗口", true, None::<&str>)?;
-                let initial_settings = tauri::async_runtime::block_on(manager.settings());
                 let clip_item = CheckMenuItem::with_id(
                     app,
                     "clipboard",
@@ -4094,6 +4133,7 @@ pub fn run() {
                             let app = tray.app_handle();
                             if let Some(window) = app.get_webview_window("main") {
                                 let _ = window.show();
+                                let _ = window.unminimize();
                                 let _ = window.set_focus();
                             }
                         }
@@ -4101,17 +4141,18 @@ pub fn run() {
                     .build(app)?;
             }
 
-            if let Some(window) = app.get_webview_window("main") {
-                let _ = window.show();
-                let _ = window.unminimize();
-                let _ = window.set_focus();
+            if !is_silent {
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.show();
+                    let _ = window.unminimize();
+                    let _ = window.set_focus();
+                }
             }
-
-            app.manage(PlayerState::default());
 
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            is_silent_startup,
             tasks_list,
             task_add,
             tasks_add_batch,

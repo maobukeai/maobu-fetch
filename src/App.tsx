@@ -55,6 +55,7 @@ import type {
   TaskNotificationPayload,
   TaskStatus,
   TaskTagsMap,
+  UpdateInfo,
 } from "./types";
 import { EMPTY_ADVANCED_FILTER } from "./types";
 import {
@@ -101,6 +102,7 @@ import { NewTaskDialog } from "./components/modals/NewTaskDialog";
 import { RenameDialog } from "./components/modals/RenameDialog";
 import { RefreshUrlDialog } from "./components/modals/RefreshUrlDialog";
 import { SpeedLimitDialog } from "./components/modals/SpeedLimitDialog";
+import { UpdateModal } from "./components/UpdateModal";
 import { SettingsPage } from "./components/settings/SettingsPage";
 import {
   arrayBufferToBase64,
@@ -170,6 +172,7 @@ const defaults: AppSettings = {
   metered_auto_pause: true,
   user_resumed_after_metered: false,
   shortcut_keys: DEFAULT_SHORTCUTS,
+  auto_check_app_update: true,
 };
 
 const defaultPowerActionState: PowerActionState = {
@@ -303,6 +306,8 @@ export default function App() {
       }
     | undefined
   >();
+  const [detectedUpdate, setDetectedUpdate] = useState<UpdateInfo | null>(null);
+  const [updateModalOpen, setUpdateModalOpen] = useState(false);
 
   const dragRef = useRef<{
     taskId: string;
@@ -490,29 +495,26 @@ export default function App() {
     document.addEventListener("contextmenu", handleContextMenu);
 
     const startTime = Date.now();
-    void refresh().then(() => {
+    void refresh().then(async () => {
       void refreshTags();
+      const isSilent = isDesktop() ? await api.isSilentStartup().catch(() => false) : false;
       const elapsed = Date.now() - startTime;
       const delay = Math.max(0, 800 - elapsed);
       setTimeout(() => {
         const element = document.getElementById("splash-screen");
-        if (element) {
-          element.classList.add("fade-out");
-          setTimeout(() => {
-            setSplash(false);
-            if (isDesktop() && appWindow) {
-              void appWindow.show();
-              void appWindow.unminimize();
-              void appWindow.setFocus();
-            }
-          }, 300);
-        } else {
+        const showWindowIfAllowed = () => {
           setSplash(false);
-          if (isDesktop() && appWindow) {
+          if (isDesktop() && appWindow && !isSilent) {
             void appWindow.show();
             void appWindow.unminimize();
             void appWindow.setFocus();
           }
+        };
+        if (element) {
+          element.classList.add("fade-out");
+          setTimeout(showWindowIfAllowed, 300);
+        } else {
+          showWindowIfAllowed();
         }
       }, delay);
     });
@@ -657,6 +659,24 @@ export default function App() {
       unlisten.forEach((item) => item());
     };
   }, []);
+
+  // 启动后延迟 3 秒自动检查应用新版本（AGENTS.md §6: 只检查并提醒，不自动下载）
+  useEffect(() => {
+    if (!isDesktop() || settings.auto_check_app_update === false) return;
+    const timer = setTimeout(async () => {
+      try {
+        const res = await api.appCheckUpdate();
+        if (res.has_update && res.latest) {
+          const dismissed = sessionStorage.getItem("maobu_dismissed_update");
+          if (dismissed !== res.latest.version) {
+            setDetectedUpdate(res.latest);
+            setUpdateModalOpen(true);
+          }
+        }
+      } catch {}
+    }, 3000);
+    return () => clearTimeout(timer);
+  }, [settings.auto_check_app_update]);
 
   useEffect(() => {
     let unlisten: (() => void) | undefined;
@@ -2439,6 +2459,14 @@ export default function App() {
               notify(t("dialogs.urlRefreshed") || "下载链接已更新", "ok");
             }}
             notify={notify}
+          />
+        )}
+
+        {updateModalOpen && detectedUpdate && (
+          <UpdateModal
+            open={updateModalOpen}
+            updateInfo={detectedUpdate}
+            onClose={() => setUpdateModalOpen(false)}
           />
         )}
       </div>

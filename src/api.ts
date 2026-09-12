@@ -63,6 +63,9 @@ export const api = {
   reorder: (ids: string[]) => call<void>("queue_reorder", { ids }),
   settings: () => call<AppSettings>("settings_get"),
   saveSettings: (settings: AppSettings) => call<void>("settings_save", { settings }),
+  /** 检查是否为静默启动（开机自启或开启了启动时最小化） */
+  isSilentStartup: () =>
+    isDesktop() ? call<boolean>("is_silent_startup") : Promise.resolve(false),
   powerActionState: () => isDesktop() ? call<PowerActionState>("power_action_get") : Promise.resolve({ action: "none", phase: "idle", remaining_seconds: 0, target_count: 0 } as PowerActionState),
   armPowerAction: (action: PowerAction) => call<PowerActionState>("power_action_arm", { action }),
   cancelPowerAction: () => call<PowerActionState>("power_action_cancel"),
@@ -134,8 +137,8 @@ export const api = {
   // ===== 一键更新（用户主动触发；下载强制官方 SHA-256 校验） =====
   /** 下载最新 release 的 NSIS 安装包到系统临时目录并校验，返回待确认运行的路径。 */
   appUpdateDownload: () => call<UpdateDownloadResult>("app_update_download"),
-  /** 运行已下载校验通过的安装包（仅限本应用临时目录内的 maobu-fetch-*-setup.exe）。 */
-  appUpdateRunInstaller: (path: string) => call<void>("app_update_run_installer", { path }),
+  /** 运行已下载校验通过的安装包。默认 silent = true 进行后台静默安装并自动重启，无需人为点击。 */
+  appUpdateRunInstaller: (path: string, silent: boolean = true) => call<void>("app_update_run_installer", { path, silent }),
   /** 下载最新 extension.zip 并解压到应用数据目录的扩展托管目录。 */
   extensionUpdateDownload: () => call<ExtensionUpdateResult>("extension_update_download"),
   /** 在资源管理器中打开扩展托管目录（供浏览器"加载已解压的扩展程序"使用）。 */

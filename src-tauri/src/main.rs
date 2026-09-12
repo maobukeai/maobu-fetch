@@ -38,7 +38,7 @@ fn main() {
     };
 
     match command {
-        CliCommand::Run | CliCommand::Play { .. } | CliCommand::ViewImage { .. } => {
+        CliCommand::Run { .. } | CliCommand::Play { .. } | CliCommand::ViewImage { .. } => {
             // 正常启动 GUI 或唤起播放器/看图器窗口。
             maobu_fetch_lib::run();
         }

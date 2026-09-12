@@ -209,9 +209,9 @@ export function SettingsPage({
     if (!trimmed) {
       setExtResult({
         compatible: false,
-        app_version: appInfo?.version || "0.9.3",
+        app_version: appInfo?.version || "0.9.4",
         extension_version: "未输入",
-        message: "请先在左侧输入框填写扩展版本号（如 0.9.3，可在浏览器扩展管理页查看）",
+        message: "请先在左侧输入框填写扩展版本号（如 0.9.4，可在浏览器扩展管理页查看）",
       });
       notify("请先填写扩展版本号", "error");
       return;
@@ -249,11 +249,11 @@ export function SettingsPage({
     }
   };
 
-  const runAppUpdateInstaller = async () => {
+  const runAppUpdateInstaller = async (silent: boolean = true) => {
     if (!appUpdateReady) return;
     try {
-      await api.appUpdateRunInstaller(appUpdateReady.path);
-      notify("安装程序已启动，请按提示完成安装");
+      await api.appUpdateRunInstaller(appUpdateReady.path, silent);
+      notify(silent ? "正在极速静默安装并自动重启应用…" : "安装程序已启动，请按提示完成安装");
       setAppUpdateReady(null);
     } catch (error) {
       notify(String(error), "error");
@@ -1849,6 +1849,27 @@ export function SettingsPage({
                         v{appInfo?.version || "0.6.9"}
                       </span>
                     </div>
+                    <label
+                      style={{
+                        display: "inline-flex",
+                        alignItems: "center",
+                        gap: "6px",
+                        fontSize: "11px",
+                        color: "var(--text)",
+                        cursor: "pointer",
+                        userSelect: "none",
+                        marginTop: "8px",
+                      }}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={draft.auto_check_app_update !== false}
+                        onChange={(e) =>
+                          set("auto_check_app_update", e.target.checked)
+                        }
+                      />
+                      <span>启动时自动检查应用更新（发现新版本自动弹窗提醒）</span>
+                    </label>
                     {updateResult && !updateResult.error && (
                       <div
                         style={{
@@ -2133,7 +2154,7 @@ export function SettingsPage({
                               }}
                             >
                               <Zap size={11} />
-                              立即安装
+                              极速安装并重启
                             </button>
                           </div>
                         )}

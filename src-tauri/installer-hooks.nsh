@@ -8,7 +8,7 @@
 !macro NSIS_HOOK_POSTINSTALL
   ${If} $AutoStartState <> 0
     WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Run" \
-      "app.lumaget.desktop" '"$INSTDIR\${MAINBINARYNAME}.exe"'
+      "app.lumaget.desktop" '"$INSTDIR\${MAINBINARYNAME}.exe" --autostart'
   ${EndIf}
 !macroend
 

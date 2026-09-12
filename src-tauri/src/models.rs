@@ -740,6 +740,10 @@ fn default_auto_start() -> bool {
     true
 }
 
+fn default_true() -> bool {
+    true
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct AppSettings {
     pub download_dir: String,
@@ -887,6 +891,9 @@ pub struct AppSettings {
     /// 默认 "builtin"。旧 JSON 缺失此字段时通过 serde 默认值安全回填。
     #[serde(default = "default_open_file_action")]
     pub open_file_action: String,
+    /// 是否在启动时自动检查应用新版本（只检查并提醒，不自动下载，符合 AGENTS.md §6）。默认 true。
+    #[serde(default = "default_true")]
+    pub auto_check_app_update: bool,
 }
 
 /// 分时段限速规则（2026-08-17）。
@@ -1119,6 +1126,7 @@ impl Default for AppSettings {
             bt_tracker_subscribe_url: default_bt_tracker_subscribe_url(),
             bt_tracker_auto_update: false,
             open_file_action: default_open_file_action(),
+            auto_check_app_update: true,
         }
     }
 }
