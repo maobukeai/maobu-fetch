@@ -2411,7 +2411,12 @@ impl DownloadManager {
                 };
 
                 if let Some(purl) = play_url {
-                    let temp_client = if task.proxy_override.is_some() {
+                    let is_lan_or_ts = crate::proxy::is_private_or_tailscale_url(&purl)
+                        || is_task_lan_or_tailscale(&task);
+                    if crate::proxy::is_private_or_tailscale_url(&purl) && task.final_url.is_none() {
+                        task.final_url = Some(purl.clone());
+                    }
+                    let temp_client = if task.proxy_override.is_some() || is_lan_or_ts {
                         build_task_client(&settings, &task)?
                     } else {
                         self.client.read().await.clone()
@@ -2455,10 +2460,14 @@ impl DownloadManager {
         if is_resolved_direct_media {
             let output = self.reserve_output_path(&mut task).await?;
             let settings = self.settings().await;
+            let mut target_conn = if task.connection_count > 1 { task.connection_count } else { settings.connections_per_download.max(8) };
+            if is_task_lan_or_tailscale(&task) {
+                target_conn = target_conn.min(4);
+            }
             let conn_count = if task.total_bytes > 0 && task.total_bytes < 10 * 1024 * 1024 {
                 1
             } else {
-                if task.connection_count > 1 { task.connection_count } else { settings.connections_per_download.max(8) }
+                target_conn
             };
             task.connection_count = conn_count;
             task.active_connections = conn_count;
@@ -2466,7 +2475,8 @@ impl DownloadManager {
             self.store.upsert_task(&task).await?;
             self.emit_task("updated", &task);
 
-            let temp_client = if task.proxy_override.is_some() {
+            let is_lan_or_ts = is_task_lan_or_tailscale(&task);
+            let temp_client = if task.proxy_override.is_some() || is_lan_or_ts {
                 let settings = self.settings().await;
                 build_task_client(&settings, &task)?
             } else {
@@ -2570,7 +2580,10 @@ impl DownloadManager {
         if task.media.is_some() {
             self.reserve_output_path(&mut task).await?;
             let settings = self.settings().await;
-            let target_conn = if task.connection_count > 1 { task.connection_count } else { settings.connections_per_download.max(8) };
+            let mut target_conn = if task.connection_count > 1 { task.connection_count } else { settings.connections_per_download.max(8) };
+            if crate::proxy::is_private_or_tailscale_url(&task.url) {
+                target_conn = target_conn.min(4);
+            }
             let conn_count = if task.total_bytes > 0 && task.total_bytes < 10 * 1024 * 1024 { 1 } else { target_conn };
             task.connection_count = conn_count;
             task.active_connections = conn_count;
@@ -2680,11 +2693,16 @@ impl DownloadManager {
             }
             return download_res;
         }
-        // Task 31：任务级 proxy_override 优先于全局；仅在设置了覆盖时重建客户端，
+        // Task 31：任务级 proxy_override 优先于全局；仅在设置了覆盖或目标为局域网/Tailscale 时重建客户端，
         // 避免无覆盖任务每次都付出 settings 读 + client 构造开销。
-        let client = if task.proxy_override.is_some() {
+        let is_private = is_task_lan_or_tailscale(&task);
+        let client = if task.proxy_override.is_some() || is_private {
             let settings = self.settings().await;
-            tracing::info!(task_id = %task.id, proxy_override = ?task.proxy_override, "download_once 使用任务级客户端");
+            if is_private && task.proxy_override.is_none() {
+                tracing::info!(task_id = %task.id, url = %task.url, final_url = ?task.final_url, "download_once 检测到局域网/Tailscale 目标，自动绕过代理直连");
+            } else {
+                tracing::info!(task_id = %task.id, proxy_override = ?task.proxy_override, "download_once 使用任务级客户端");
+            }
             build_task_client(&settings, &task)?
         } else {
             let mode = self.settings().await.proxy_mode;
@@ -2738,11 +2756,22 @@ impl DownloadManager {
         let probe_status = probe.status();
         let probe_is_partial = probe_status == reqwest::StatusCode::PARTIAL_CONTENT;
 
-        task.final_url = Some(probe_url);
+        task.final_url = Some(probe_url.clone());
         task.response_status = Some(probe_status.as_u16());
         task.content_type =
             header_string(&probe, CONTENT_TYPE).map(|value| truncate_text(value, 256));
         task.accepts_ranges = Some(probe_is_partial);
+
+        let client = if task.proxy_override.is_none()
+            && crate::proxy::is_private_or_tailscale_url(&probe_url)
+            && !is_private
+        {
+            let settings = self.settings().await;
+            tracing::info!(task_id = %task.id, probe_url = %probe_url, "探针重定向至局域网/Tailscale 目标，自动切换为直连客户端");
+            build_task_client(&settings, &task)?
+        } else {
+            client
+        };
         self.store.upsert_task(&task).await?;
         self.emit_task("updated", &task);
         if !probe_status.is_success() && !probe_is_partial {
@@ -2898,10 +2927,16 @@ impl DownloadManager {
             } else if settings.connections_per_download > 1
                 && task.connection_count == settings.connections_per_download
             {
-                let suggested = precheck::suggest_connections(Some(total), supports_range);
+                let mut suggested = precheck::suggest_connections(Some(total), supports_range);
+                let is_lan_or_tailscale = is_task_lan_or_tailscale(&task);
+                if is_lan_or_tailscale {
+                    suggested = suggested.min(4);
+                }
                 let is_baidu_task = task.url.contains("baidupcs.com") || task.url.contains("pan.baidu.com");
                 let is_fast_cloud_task = task.url.contains("quark.cn") || task.url.contains("mypikpak.com") || task.url.contains("pikpak") || task.url.contains("lanzou") || task.url.contains("123pan") || task.url.contains("123684");
-                let target_count = if is_baidu_task && total >= 10 * 1024 * 1024 {
+                let target_count = if is_lan_or_tailscale {
+                    suggested.min(4)
+                } else if is_baidu_task && total >= 10 * 1024 * 1024 {
                     16
                 } else if is_fast_cloud_task && total >= 10 * 1024 * 1024 {
                     32
@@ -2934,6 +2969,25 @@ impl DownloadManager {
                 );
                 connections = cdn_cap;
                 task.connection_count = cdn_cap;
+            }
+        }
+
+        // 局域网 / Tailscale 直连感知：对局域网与 Tailscale 对等传输服务，动态并发连接数上限压制至最高 4（如 2-4 连接），
+        // 避免过多并发 Range 连接打垮对方轻量级内存互传服务或造成并发写锁竞争。
+        let is_lan_or_tailscale = is_task_lan_or_tailscale(&task);
+        if is_lan_or_tailscale && !is_user_explicit && task.downloaded_bytes == 0 && task.segments.is_empty() {
+            let lan_cap: u8 = 4;
+            if connections > lan_cap {
+                tracing::info!(
+                    task_id = %task.id,
+                    capped_connections = lan_cap,
+                    original_connections = connections,
+                    "局域网/Tailscale 对等连接感知：自动将连接数从 {} 限制为 {} 以保护轻量互传服务",
+                    connections,
+                    lan_cap
+                );
+                connections = lan_cap;
+                task.connection_count = lan_cap;
             }
         }
 
@@ -4213,7 +4267,8 @@ impl DownloadManager {
             }
             // Task 31：网络探测应与下载使用相同的代理设置，否则会出现
             // "探测通了但下载失败"或"探测失败但下载其实可用"的误判。
-            let client = if task.proxy_override.is_some() {
+            let is_private = is_task_lan_or_tailscale(task);
+            let client = if task.proxy_override.is_some() || is_private {
                 let settings = self.settings().await;
                 match build_task_client(&settings, task) {
                     Ok(c) => c,
@@ -6041,16 +6096,24 @@ fn build_client(s: &AppSettings) -> Result<reqwest::Client, String> {
     builder.build().map_err(|e| e.to_string())
 }
 
+/// 判断任务的目标 URL 或最终重定向 URL 是否属于局域网或 Tailscale 私网。
+pub fn is_task_lan_or_tailscale(task: &DownloadTask) -> bool {
+    crate::proxy::is_private_or_tailscale_url(&task.url)
+        || task
+            .final_url
+            .as_deref()
+            .map_or(false, crate::proxy::is_private_or_tailscale_url)
+}
+
 /// Task 31：根据任务级 `proxy_override` 构造 reqwest 客户端。
 ///
 /// 优先级：
 /// - `task.proxy_override = Some(url)`（非空）：使用任务级代理 URL 与认证。
 ///   `proxy_auth` 中的密码经 [`crate::proxy::decode_proxy_auth`] 解密为明文后附加。
 /// - `task.proxy_override = Some("")`：显式禁用代理（`no_proxy`），覆盖全局 manual。
-/// - `task.proxy_override = None`：回退到全局 [`build_client`]（不在此处理）。
-///
-/// 调用方应仅在 `task.proxy_override.is_some()` 时调用本函数；
-/// `None` 情形应直接复用共享 `self.client` 以避免无谓重建。
+/// - `task.proxy_override = None`：
+///   - 若任务 URL 或最终重定向 URL 指向局域网或 Tailscale 私网地址，自动绕过代理（`no_proxy`）。
+///   - 否则回退到全局设置（manual / none / system）。
 fn build_task_client(s: &AppSettings, task: &DownloadTask) -> Result<reqwest::Client, String> {
     let connection_timeout_secs = s.default_retry_policy.connection_timeout_secs.max(1);
     let mut builder = reqwest::Client::builder()
@@ -6062,6 +6125,7 @@ fn build_task_client(s: &AppSettings, task: &DownloadTask) -> Result<reqwest::Cl
         .tcp_keepalive(Some(Duration::from_secs(30)))
         .http2_adaptive_window(true)
         .timeout(Duration::from_secs(24 * 60 * 60));
+    let is_private = is_task_lan_or_tailscale(task);
     match task.proxy_override.as_deref() {
         Some(url) if !url.is_empty() => {
             let normalized = crate::proxy::normalize_proxy_scheme(url);
@@ -6080,8 +6144,13 @@ fn build_task_client(s: &AppSettings, task: &DownloadTask) -> Result<reqwest::Cl
             builder = builder.no_proxy();
         }
         None => {
-            // 理论上不会进入此分支（调用方先检查 is_some）；安全回退到全局 manual。
-            if s.proxy_mode == "manual" && !s.proxy_url.is_empty() {
+            // 当任务 URL 或最终重定向 URL 指向局域网或 Tailscale 私网地址且没有强制显式手动设置任务级代理时，
+            // 自动绕过代理直连（builder = builder.no_proxy()），
+            // 避免公网代理（如 Clash/v2ray 127.0.0.1:7890）无法路由私有/Tailscale IP。
+            if is_private {
+                tracing::info!(task_id = %task.id, url = %task.url, final_url = ?task.final_url, "局域网/Tailscale 目标且未指定任务代理，自动绕过代理直连");
+                builder = builder.no_proxy();
+            } else if s.proxy_mode == "manual" && !s.proxy_url.is_empty() {
                 let normalized = crate::proxy::normalize_proxy_scheme(&s.proxy_url);
                 let mut proxy = reqwest::Proxy::all(&normalized).map_err(|e| e.to_string())?;
                 if !s.proxy_username.is_empty() {

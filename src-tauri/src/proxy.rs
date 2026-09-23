@@ -201,6 +201,174 @@ pub fn get_effective_system_proxy() -> Option<String> {
     }
 }
 
+/// 判断主机名或 IP 是否属于私有网络、本地环回或 Tailscale 网络。
+///
+/// 匹配规则：
+/// - 单标签主机名（不含点，如 `desktop-pc`、`nas`、`localhost` 等本地 Intranet/mDNS/NetBIOS/Tailscale 机器名）
+/// - localhost 以及以 `.localhost` 结尾的域名
+/// - 本地网络与 mDNS 域名：`.local`、`.lan`、`.home.arpa`、`.internal`
+/// - Tailscale MagicDNS 域名：`*.ts.net`、`*.tailscale.net`
+/// - 本地环回：`127.0.0.0/8`、`::1`
+/// - 未指定与广播：`0.0.0.0/8`、`255.255.255.255`、`::`
+/// - RFC 1918 私有 IPv4 地址：
+///   - `10.0.0.0/8`
+///   - `172.16.0.0/12`（`172.16.0.0` - `172.31.255.255`）
+///   - `192.168.0.0/16`
+/// - 链路本地 IPv4：`169.254.0.0/16`
+/// - Tailscale CGNAT IPv4（RFC 6598）：`100.64.0.0/10`（`100.64.0.0` - `100.127.255.255`）
+/// - IPv4 映射的 IPv6 地址（`::ffff:a.b.c.d`）继承上述 IPv4 规则
+/// - IPv6 私有地址（ULA）：`fc00::/7`
+/// - Tailscale IPv6：`fd7a:115c:a1e0::/48`
+/// - IPv6 链路本地：`fe80::/10`
+pub fn is_private_or_tailscale_host(host: &str) -> bool {
+    let host = host.trim();
+    if host.is_empty() {
+        return false;
+    }
+    // 处理 [ipv6]:port 或 [ipv6]
+    let host_cleaned = if host.starts_with('[') {
+        if let Some(close_bracket) = host.find(']') {
+            &host[1..close_bracket]
+        } else {
+            host.trim_matches(['[', ']'])
+        }
+    } else if let Some(colon_idx) = host.rfind(':') {
+        // 若只有一个冒号，为 host:port；若有多个冒号且无中括号，则为裸 IPv6 地址
+        if host.find(':') == Some(colon_idx) {
+            &host[..colon_idx]
+        } else {
+            host
+        }
+    } else {
+        host
+    };
+
+    let host_cleaned = host_cleaned.trim();
+    if host_cleaned.is_empty() {
+        return false;
+    }
+
+    let host_lower = host_cleaned.to_ascii_lowercase();
+    let host_norm = host_lower.trim_end_matches('.');
+    if host_norm.is_empty() {
+        return false;
+    }
+
+    // 1. IP 地址匹配优先（支持 IPv4、IPv6、IPv4 映射的 IPv6）
+    if let Ok(ip) = host_norm.parse::<std::net::IpAddr>() {
+        return is_private_or_tailscale_ip(ip);
+    }
+
+    // 2. 单标签主机名匹配（Intranet / NetBIOS / mDNS / Tailscale MagicDNS 裸主机名）
+    // 依据 RFC 6761 以及 Windows/Chrome 的 `<local>` Intranet 代理绕过标准，
+    // 不含点号的主机名（如 `desktop-pc`、`nas`、`localhost` 等）属于局域网或内部机器名。
+    if !host_norm.contains('.') {
+        return true;
+    }
+
+    // 3. 域名后缀匹配
+    if host_norm.ends_with(".localhost")
+        || host_norm.ends_with(".local")
+        || host_norm.ends_with(".lan")
+        || host_norm.ends_with(".home.arpa")
+        || host_norm.ends_with(".internal")
+        || host_norm == "ts.net"
+        || host_norm.ends_with(".ts.net")
+        || host_norm == "tailscale.net"
+        || host_norm.ends_with(".tailscale.net")
+    {
+        return true;
+    }
+
+    false
+}
+
+fn is_private_or_tailscale_ipv4(ipv4: std::net::Ipv4Addr) -> bool {
+    let octets = ipv4.octets();
+    // 本地环回 127.0.0.0/8
+    if octets[0] == 127 {
+        return true;
+    }
+    // 未指定 / 本网络 0.0.0.0/8 与广播 255.255.255.255
+    if octets[0] == 0 || ipv4.is_broadcast() {
+        return true;
+    }
+    // RFC 1918 私有 IPv4 地址
+    // 10.0.0.0/8
+    if octets[0] == 10 {
+        return true;
+    }
+    // 172.16.0.0/12 (172.16.0.0 - 172.31.255.255)
+    if octets[0] == 172 && (16..=31).contains(&octets[1]) {
+        return true;
+    }
+    // 192.168.0.0/16
+    if octets[0] == 192 && octets[1] == 168 {
+        return true;
+    }
+    // 链路本地 169.254.0.0/16
+    if octets[0] == 169 && octets[1] == 254 {
+        return true;
+    }
+    // Tailscale CGNAT IPv4: 100.64.0.0/10 (100.64.0.0 - 100.127.255.255)
+    if octets[0] == 100 && (64..=127).contains(&octets[1]) {
+        return true;
+    }
+    false
+}
+
+fn is_private_or_tailscale_ip(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(ipv4) => is_private_or_tailscale_ipv4(ipv4),
+        std::net::IpAddr::V6(ipv6) => {
+            // IPv4 映射的 IPv6 地址（::ffff:a.b.c.d）或兼容 IPv4 地址
+            if let Some(v4) = ipv6.to_ipv4() {
+                return is_private_or_tailscale_ipv4(v4);
+            }
+            // 环回 ::1
+            if ipv6.is_loopback() {
+                return true;
+            }
+            // 未指定 ::
+            if ipv6.is_unspecified() {
+                return true;
+            }
+            let segments = ipv6.segments();
+            // IPv6 私有/唯一本地地址 ULA: fc00::/7 (前缀 fc00::/8 与 fd00::/8)
+            if (segments[0] & 0xfe00) == 0xfc00 {
+                return true;
+            }
+            // Tailscale IPv6: fd7a:115c:a1e0::/48
+            if segments[0] == 0xfd7a && segments[1] == 0x115c && segments[2] == 0xa1e0 {
+                return true;
+            }
+            // 链路本地: fe80::/10
+            if (segments[0] & 0xffc0) == 0xfe80 {
+                return true;
+            }
+            false
+        }
+    }
+}
+
+/// 判断 URL 是否指向局域网或 Tailscale 私有网络。
+pub fn is_private_or_tailscale_url(url_str: &str) -> bool {
+    let trimmed = url_str.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    if let Ok(parsed) = url::Url::parse(trimmed) {
+        if let Some(host) = parsed.host_str() {
+            return is_private_or_tailscale_host(host);
+        }
+    } else if let Ok(parsed) = url::Url::parse(&format!("http://{trimmed}")) {
+        if let Some(host) = parsed.host_str() {
+            return is_private_or_tailscale_host(host);
+        }
+    }
+    false
+}
+
 /// 解析任务实际使用的代理 URL。
 ///
 /// 优先级（高 → 低）：
@@ -209,6 +377,7 @@ pub fn get_effective_system_proxy() -> Option<String> {
 ///    `task.proxy_auth`（任务级）的明文用户名/密码。
 /// 2. `task.proxy_override = Some("")`：显式禁用代理，返回 `None`。
 /// 3. `task.proxy_override = None`：回退到全局。
+///    - 若目标 URL 或重定向目标指向局域网或 Tailscale 私网地址，自动绕过代理，返回 `None`。
 ///    - `settings.proxy_mode = "manual"` 且 `proxy_url` 非空：返回全局 URL。
 ///    - 其他模式（system / none / pac）：返回 `None`（由 reqwest 默认处理）。
 ///
@@ -220,6 +389,15 @@ pub fn resolve_proxy(settings: &AppSettings, task: &DownloadTask) -> Option<Stri
         // Some("") 显式禁用代理。
         Some(_) => None,
         None => {
+            // 私有网络或 Tailscale 目标自动直连绕过代理
+            if is_private_or_tailscale_url(&task.url)
+                || task
+                    .final_url
+                    .as_deref()
+                    .map_or(false, is_private_or_tailscale_url)
+            {
+                return None;
+            }
             if settings.proxy_mode == "manual" && !settings.proxy_url.trim().is_empty() {
                 Some(normalize_proxy_scheme(&settings.proxy_url))
             } else {
@@ -789,5 +967,186 @@ mod tests {
         );
         assert_eq!(normalize_proxy_scheme(""), "");
         assert_eq!(normalize_proxy_scheme("   "), "");
+    }
+
+    #[test]
+    fn test_is_private_or_tailscale_host() {
+        // localhost
+        assert!(is_private_or_tailscale_host("localhost"));
+        assert!(is_private_or_tailscale_host("LOCALHOST"));
+        assert!(is_private_or_tailscale_host("app.localhost"));
+        assert!(is_private_or_tailscale_host("localhost:8080"));
+        assert!(is_private_or_tailscale_host("localhost."));
+
+        // Single-label hostnames without dot (Windows NetBIOS / mDNS / Tailscale MagicDNS short name / intranet)
+        assert!(is_private_or_tailscale_host("desktop-pc"));
+        assert!(is_private_or_tailscale_host("nas"));
+        assert!(is_private_or_tailscale_host("workstation:8000"));
+        assert!(is_private_or_tailscale_host("my-laptop"));
+        assert!(is_private_or_tailscale_host("ubuntu:3000"));
+
+        // .local and .lan
+        assert!(is_private_or_tailscale_host("my-mac.local"));
+        assert!(is_private_or_tailscale_host("local"));
+        assert!(is_private_or_tailscale_host("printer.lan"));
+        assert!(is_private_or_tailscale_host("lan"));
+        assert!(is_private_or_tailscale_host("my-mac.local:3000"));
+        assert!(is_private_or_tailscale_host("my-mac.local."));
+
+        // .home.arpa (RFC 8375) and .internal
+        assert!(is_private_or_tailscale_host("router.home.arpa"));
+        assert!(is_private_or_tailscale_host("service.internal"));
+        assert!(is_private_or_tailscale_host("node.internal:8080"));
+
+        // Tailscale MagicDNS domains
+        assert!(is_private_or_tailscale_host("my-laptop.ts.net"));
+        assert!(is_private_or_tailscale_host("ts.net"));
+        assert!(is_private_or_tailscale_host("node.tailscale.net"));
+        assert!(is_private_or_tailscale_host("tailscale.net"));
+        assert!(is_private_or_tailscale_host("my-laptop.ts.net:8080"));
+        assert!(is_private_or_tailscale_host("my-laptop.ts.net."));
+
+        // IPv4 Loopback
+        assert!(is_private_or_tailscale_host("127.0.0.1"));
+        assert!(is_private_or_tailscale_host("127.1.2.3"));
+        assert!(is_private_or_tailscale_host("127.255.255.255"));
+        assert!(is_private_or_tailscale_host("127.0.0.1:7890"));
+
+        // Unspecified and broadcast
+        assert!(is_private_or_tailscale_host("0.0.0.0"));
+        assert!(is_private_or_tailscale_host("255.255.255.255"));
+
+        // RFC 1918 Private IPv4
+        // 10.0.0.0/8
+        assert!(is_private_or_tailscale_host("10.0.0.1"));
+        assert!(is_private_or_tailscale_host("10.255.255.255"));
+        assert!(is_private_or_tailscale_host("10.0.0.1:8000"));
+        // 172.16.0.0/12
+        assert!(is_private_or_tailscale_host("172.16.0.1"));
+        assert!(is_private_or_tailscale_host("172.20.1.2"));
+        assert!(is_private_or_tailscale_host("172.31.255.255"));
+        // 192.168.0.0/16
+        assert!(is_private_or_tailscale_host("192.168.0.1"));
+        assert!(is_private_or_tailscale_host("192.168.1.100"));
+        assert!(is_private_or_tailscale_host("192.168.1.100:9000"));
+
+        // Link-local 169.254.0.0/16
+        assert!(is_private_or_tailscale_host("169.254.0.1"));
+        assert!(is_private_or_tailscale_host("169.254.169.254"));
+
+        // Tailscale CGNAT IPv4: 100.64.0.0/10 (100.64.0.0 - 100.127.255.255)
+        assert!(is_private_or_tailscale_host("100.64.0.1"));
+        assert!(is_private_or_tailscale_host("100.100.100.100"));
+        assert!(is_private_or_tailscale_host("100.127.255.254"));
+        assert!(is_private_or_tailscale_host("100.100.100.100:8080"));
+
+        // IPv6 loopback and unspecified
+        assert!(is_private_or_tailscale_host("::1"));
+        assert!(is_private_or_tailscale_host("[::1]"));
+        assert!(is_private_or_tailscale_host("[::1]:8080"));
+        assert!(is_private_or_tailscale_host("::"));
+        assert!(is_private_or_tailscale_host("[::]"));
+
+        // IPv4-mapped IPv6
+        assert!(is_private_or_tailscale_host("::ffff:192.168.1.1"));
+        assert!(is_private_or_tailscale_host("[::ffff:192.168.1.1]:8080"));
+        assert!(is_private_or_tailscale_host("::ffff:100.100.100.100"));
+        assert!(is_private_or_tailscale_host("::ffff:127.0.0.1"));
+
+        // IPv6 ULA (fc00::/7)
+        assert!(is_private_or_tailscale_host("fc00::1"));
+        assert!(is_private_or_tailscale_host("fd00::1"));
+        assert!(is_private_or_tailscale_host("[fd00::1]"));
+
+        // Tailscale IPv6: fd7a:115c:a1e0::/48
+        assert!(is_private_or_tailscale_host("fd7a:115c:a1e0::1"));
+        assert!(is_private_or_tailscale_host("[fd7a:115c:a1e0::1]"));
+        assert!(is_private_or_tailscale_host("[fd7a:115c:a1e0::1]:8080"));
+
+        // IPv6 link-local (fe80::/10)
+        assert!(is_private_or_tailscale_host("fe80::1"));
+
+        // Public IPs and domains should return false
+        assert!(!is_private_or_tailscale_host("8.8.8.8"));
+        assert!(!is_private_or_tailscale_host("1.1.1.1"));
+        assert!(!is_private_or_tailscale_host("11.0.0.1"));
+        assert!(!is_private_or_tailscale_host("172.15.0.1"));
+        assert!(!is_private_or_tailscale_host("172.32.0.1"));
+        assert!(!is_private_or_tailscale_host("192.167.1.1"));
+        assert!(!is_private_or_tailscale_host("192.169.1.1"));
+        assert!(!is_private_or_tailscale_host("100.63.255.255"));
+        assert!(!is_private_or_tailscale_host("100.128.0.1"));
+        assert!(!is_private_or_tailscale_host("example.com"));
+        assert!(!is_private_or_tailscale_host("google.com"));
+        assert!(!is_private_or_tailscale_host(""));
+        assert!(!is_private_or_tailscale_host("   "));
+    }
+
+    #[test]
+    fn test_is_private_or_tailscale_url() {
+        assert!(is_private_or_tailscale_url("http://localhost:8080/sync"));
+        assert!(is_private_or_tailscale_url("http://desktop-pc:8000/download"));
+        assert!(is_private_or_tailscale_url("http://127.0.0.1:8080/sync"));
+        assert!(is_private_or_tailscale_url("http://192.168.1.50:9000/stream"));
+        assert!(is_private_or_tailscale_url("http://100.100.100.100:8000/download"));
+        assert!(is_private_or_tailscale_url("http://my-peer.ts.net:3000/file.bin"));
+        assert!(is_private_or_tailscale_url("http://[::1]:8080/file"));
+        assert!(is_private_or_tailscale_url("http://[fd7a:115c:a1e0::1]:8080/file"));
+        assert!(is_private_or_tailscale_url("http://[::ffff:192.168.1.1]:8080/file"));
+
+        // Bare host without scheme
+        assert!(is_private_or_tailscale_url("100.100.100.100:8000/download"));
+        assert!(is_private_or_tailscale_url("192.168.1.100:9000/stream"));
+
+        assert!(!is_private_or_tailscale_url("https://example.com/file.zip"));
+        assert!(!is_private_or_tailscale_url("http://8.8.8.8/file.zip"));
+        assert!(!is_private_or_tailscale_url(""));
+        assert!(!is_private_or_tailscale_url("   "));
+    }
+
+    #[test]
+    fn test_resolve_proxy_tailscale_bypass() {
+        let mut settings = minimal_settings();
+        settings.proxy_mode = "manual".into();
+        settings.proxy_url = "http://127.0.0.1:7890".into();
+
+        // 1. Tailscale URL without task-level override: should bypass proxy (return None)
+        let mut task = minimal_task();
+        task.url = "http://100.100.100.100:8000/download".into();
+        task.proxy_override = None;
+        assert_eq!(resolve_proxy(&settings, &task), None);
+
+        // 2. LAN URL without task-level override: should bypass proxy (return None)
+        task.url = "http://192.168.1.100:8000/share".into();
+        assert_eq!(resolve_proxy(&settings, &task), None);
+
+        // 3. Tailscale MagicDNS URL without task-level override: should bypass proxy (return None)
+        task.url = "http://peer.ts.net:8080/file".into();
+        assert_eq!(resolve_proxy(&settings, &task), None);
+
+        // 4. Single-label host without task-level override: should bypass proxy (return None)
+        task.url = "http://desktop-pc:8080/file".into();
+        assert_eq!(resolve_proxy(&settings, &task), None);
+
+        // 5. Public task.url with redirected final_url pointing to Tailscale: should bypass proxy!
+        task.url = "https://short.link/123".into();
+        task.final_url = Some("http://100.100.100.100:8000/download".into());
+        assert_eq!(resolve_proxy(&settings, &task), None);
+
+        // 6. Public URL without task-level override: should use global manual proxy
+        task.url = "https://example.com/file.zip".into();
+        task.final_url = None;
+        assert_eq!(
+            resolve_proxy(&settings, &task).as_deref(),
+            Some("http://127.0.0.1:7890")
+        );
+
+        // 7. Tailscale URL WITH explicit task-level proxy override: should honor the manual task override
+        task.url = "http://100.100.100.100:8000/download".into();
+        task.proxy_override = Some("http://corp-proxy:1080".into());
+        assert_eq!(
+            resolve_proxy(&settings, &task).as_deref(),
+            Some("http://corp-proxy:1080")
+        );
     }
 }

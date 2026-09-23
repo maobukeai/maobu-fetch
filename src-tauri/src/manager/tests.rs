@@ -2962,3 +2962,82 @@
         let res3 = build_task_client(&settings, &task);
         assert!(res3.is_ok(), "build_task_client should tolerate userinfo bare proxy");
     }
+
+    #[test]
+    fn test_build_task_client_tailscale_and_lan_proxy_bypass() {
+        let mut settings = AppSettings::default();
+        settings.proxy_mode = "manual".into();
+        settings.proxy_url = "http://127.0.0.1:7890".into();
+
+        let mut task = test_task(Path::new("C:\\temp"), "test.bin", CollisionPolicy::Overwrite);
+
+        // 1. Tailscale CGNAT IP without task override should succeed with bypass
+        task.url = "http://100.100.100.100:8000/download".into();
+        task.proxy_override = None;
+        let res = build_task_client(&settings, &task);
+        assert!(res.is_ok());
+
+        // 2. LAN IP without task override should succeed with bypass
+        task.url = "http://192.168.1.100:9000/share".into();
+        let res = build_task_client(&settings, &task);
+        assert!(res.is_ok());
+
+        // 3. Tailscale MagicDNS without task override should succeed with bypass
+        task.url = "http://my-pc.ts.net:3000/file.bin".into();
+        let res = build_task_client(&settings, &task);
+        assert!(res.is_ok());
+
+        // 4. Localhost without task override should succeed with bypass
+        task.url = "http://127.0.0.1:8080/data".into();
+        let res = build_task_client(&settings, &task);
+        assert!(res.is_ok());
+
+        // 5. Single-label intranet/Tailscale host without task override should succeed with bypass
+        task.url = "http://desktop-pc:8080/data".into();
+        task.final_url = None;
+        let res = build_task_client(&settings, &task);
+        assert!(res.is_ok());
+
+        // 6. Public task.url with redirected final_url pointing to Tailscale: should succeed with bypass!
+        task.url = "https://short.link/xyz".into();
+        task.final_url = Some("http://100.100.100.100:8000/download".into());
+        let res = build_task_client(&settings, &task);
+        assert!(res.is_ok());
+        assert!(is_task_lan_or_tailscale(&task));
+
+        // 7. Tailscale URL WITH explicit task proxy override should use the manual override
+        task.url = "http://100.100.100.100:8000/download".into();
+        task.final_url = None;
+        task.proxy_override = Some("http://corp-proxy:1080".into());
+        let res = build_task_client(&settings, &task);
+        assert!(res.is_ok());
+    }
+
+    #[test]
+    fn test_redirect_to_tailscale_probe_and_client_switch() {
+        let mut settings = AppSettings::default();
+        settings.proxy_mode = "manual".into();
+        settings.proxy_url = "http://127.0.0.1:7890".into();
+
+        let mut task = test_task(Path::new("C:\\temp"), "test.bin", CollisionPolicy::Overwrite);
+        task.url = "https://public.service.com/redirect".into();
+        task.final_url = None;
+        task.proxy_override = None;
+
+        // Initial task targets public URL: is_task_lan_or_tailscale should be false
+        assert!(!is_task_lan_or_tailscale(&task));
+
+        // When redirected to Tailscale CGNAT host:
+        let probe_url = "http://100.115.92.24:8080/share/memory.bin".to_string();
+        task.final_url = Some(probe_url.clone());
+
+        // Now is_task_lan_or_tailscale MUST be true
+        assert!(is_task_lan_or_tailscale(&task));
+
+        // Rebuilding client for the redirected task must construct a direct (no-proxy) client successfully
+        let client_res = build_task_client(&settings, &task);
+        assert!(client_res.is_ok());
+
+        // resolve_proxy must also return None (bypass)
+        assert_eq!(crate::proxy::resolve_proxy(&settings, &task), None);
+    }

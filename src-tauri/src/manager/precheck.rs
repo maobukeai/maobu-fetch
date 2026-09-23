@@ -239,13 +239,20 @@ impl DownloadManager {
             file_name = format!("{}.mp4", stem_clean);
         }
 
-        let suggested = if is_hls_m3u8 {
+        let mut suggested = if is_hls_m3u8 {
             settings.connections_per_download
         } else if probe.file_size.is_none() && is_media_url {
             settings.connections_per_download
         } else {
             suggest_connections(probe.file_size, probe.accepts_ranges)
         };
+        // 局域网 / Tailscale 直连感知：并发连接数上限压制至最高 4（如 2-4 连接），
+        // 避免过多并发 Range 连接打垮对端轻量级内存互传服务或产生并发锁冲突
+        if crate::proxy::is_private_or_tailscale_url(&request.url)
+            || crate::proxy::is_private_or_tailscale_url(&probe.final_url)
+        {
+            suggested = suggested.min(4);
+        }
         let supports_resume = probe.accepts_ranges && probe.file_size.is_some();
 
         let target_dir_clone = target_directory.clone();
@@ -391,7 +398,13 @@ fn build_precheck_client(
             builder = builder.no_proxy();
         }
         None => {
-            if settings.proxy_mode == "manual" && !settings.proxy_url.is_empty() {
+            // 当预检 URL 指向局域网或 Tailscale 私网地址且没有显式任务级代理覆盖时，
+            // 自动绕过代理直连（builder = builder.no_proxy()），
+            // 避免公网代理无法路由私有/Tailscale IP。
+            if crate::proxy::is_private_or_tailscale_url(&request.url) {
+                tracing::info!(url = %request.url, "预检检测到局域网/Tailscale 目标，自动绕过代理直连");
+                builder = builder.no_proxy();
+            } else if settings.proxy_mode == "manual" && !settings.proxy_url.is_empty() {
                 let normalized = crate::proxy::normalize_proxy_scheme(&settings.proxy_url);
                 let mut proxy =
                     reqwest::Proxy::all(&normalized).map_err(|e| e.to_string())?;
@@ -435,6 +448,9 @@ fn is_cross_origin(base: &str, target: &str) -> bool {
 /// 探测远程端点：HEAD 优先，HEAD 失败或 405/403 时在该跳回退 GET。
 ///
 /// 手动跟随 3xx 重定向，每一跳记录到 `redirect_chain`；跨域时自动剥离 Cookie 与 Authorization 敏感头部。
+/// 探测远程端点：HEAD 优先，HEAD 失败或 405/403 时在该跳回退 GET。
+///
+/// 手动跟随 3xx 重定向，每一跳记录到 `redirect_chain`；跨域时自动剥离 Cookie 与 Authorization 敏感头部。
 async fn probe_endpoint(
     client: &Client,
     request: &PrecheckRequest,
@@ -443,9 +459,27 @@ async fn probe_endpoint(
     let mut redirect_chain = Vec::new();
     let mut current_url = request.url.to_string();
     let mut headers = request.headers.clone();
+    let mut direct_client: Option<Client> = None;
 
     for _ in 0..PRECHECK_MAX_REDIRECTS {
-        let mut head_builder = client.head(&current_url);
+        let active_client = if request.proxy_override.is_none()
+            && crate::proxy::is_private_or_tailscale_url(&current_url)
+        {
+            if direct_client.is_none() {
+                direct_client = Client::builder()
+                    .redirect(reqwest::redirect::Policy::none())
+                    .timeout(Duration::from_secs(PRECHECK_REQUEST_TIMEOUT_SECS))
+                    .user_agent(default_ua)
+                    .no_proxy()
+                    .build()
+                    .ok();
+            }
+            direct_client.as_ref().unwrap_or(client)
+        } else {
+            client
+        };
+
+        let mut head_builder = active_client.head(&current_url);
         for (k, v) in &headers {
             head_builder = head_builder.header(k, v);
         }
@@ -462,7 +496,7 @@ async fn probe_endpoint(
                 } else {
                     // HEAD 返回 405/403/404 或其他非 2xx/3xx 状态：回退到 GET Range: bytes=0-0
                     if let Ok(get_resp) =
-                        send_get_range_probe(client, &current_url, &headers, default_ua).await
+                        send_get_range_probe(active_client, &current_url, &headers, default_ua).await
                     {
                         (get_resp, true)
                     } else {
@@ -473,7 +507,7 @@ async fn probe_endpoint(
             Err(_) => {
                 // HEAD 网络层失败：回退到 GET Range: bytes=0-0
                 let get_resp =
-                    send_get_range_probe(client, &current_url, &headers, default_ua).await?;
+                    send_get_range_probe(active_client, &current_url, &headers, default_ua).await?;
                 (get_resp, true)
             }
         };
@@ -508,7 +542,7 @@ async fn probe_endpoint(
 
         if response.status().is_success() || status == 206 {
             return collect_and_verify_probe(
-                client,
+                active_client,
                 response,
                 current_url,
                 redirect_chain,
@@ -1770,6 +1804,39 @@ mod tests {
     fn build_precheck_client_succeeds() {
         let settings = AppSettings::default();
         let request = PrecheckRequest::default();
+        let client = build_precheck_client(&settings, &request);
+        assert!(client.is_ok());
+    }
+
+    #[test]
+    fn build_precheck_client_bypasses_proxy_for_tailscale_and_private_targets() {
+        let mut settings = AppSettings::default();
+        settings.proxy_mode = "manual".into();
+        settings.proxy_url = "http://127.0.0.1:7890".into();
+
+        // 1. Tailscale CGNAT IP
+        let mut request = PrecheckRequest::default();
+        request.url = "http://100.100.100.100:8000/download".into();
+        let client = build_precheck_client(&settings, &request);
+        assert!(client.is_ok());
+
+        // 2. LAN IP
+        request.url = "http://192.168.1.100:8080/share".into();
+        let client = build_precheck_client(&settings, &request);
+        assert!(client.is_ok());
+
+        // 3. Tailscale MagicDNS
+        request.url = "http://my-pc.ts.net:3000/file".into();
+        let client = build_precheck_client(&settings, &request);
+        assert!(client.is_ok());
+
+        // 4. Single-label host
+        request.url = "http://desktop-pc:8000/download".into();
+        let client = build_precheck_client(&settings, &request);
+        assert!(client.is_ok());
+
+        // 5. Explicit task-level proxy override is also honored
+        request.proxy_override = Some("http://127.0.0.1:1080".into());
         let client = build_precheck_client(&settings, &request);
         assert!(client.is_ok());
     }
