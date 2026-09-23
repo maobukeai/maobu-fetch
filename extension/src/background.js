@@ -219,23 +219,50 @@ export function inferMediaFilename(url) {
   return undefined;
 }
 
-/// 提取当前标签页的下载认证与防盗链请求头（Cookie、Referer、User-Agent）。
+/// 提取当前标签页与目标 URL 的下载认证与防盗链请求头（Cookie、Referer、User-Agent、Accept、Accept-Language）。
 export async function getTabDownloadHeaders(tab, targetUrl, cookiesApi = chrome?.cookies) {
   const headers = {};
+  if (cookiesApi?.getAll) {
+    const cookieMap = new Map();
+    const collectCookies = async (sourceUrl) => {
+      if (!sourceUrl || !/^https?:/i.test(sourceUrl)) return;
+      try {
+        const params = { url: sourceUrl };
+        if (tab?.cookieStoreId) params.storeId = tab.cookieStoreId;
+        const cookies = await cookiesApi.getAll(params);
+        if (Array.isArray(cookies)) {
+          for (const c of cookies) {
+            if (c?.name && !cookieMap.has(c.name)) {
+              cookieMap.set(c.name, c.value ?? "");
+            }
+          }
+        }
+      } catch {}
+    };
+
+    if (targetUrl) await collectCookies(targetUrl);
+    if (tab?.url && tab.url !== targetUrl) await collectCookies(tab.url);
+
+    if (cookieMap.size > 0) {
+      headers["Cookie"] = Array.from(cookieMap.entries())
+        .map(([name, val]) => `${name}=${val}`)
+        .join("; ");
+    }
+  }
   if (tab?.url && /^https?:/i.test(tab.url)) {
     headers["Referer"] = tab.url;
-    if (cookiesApi?.getAll) {
-      try {
-        const params = { url: tab.url };
-        if (tab.cookieStoreId) params.storeId = tab.cookieStoreId;
-        const cookies = await cookiesApi.getAll(params);
-        const cookieHeader = buildCookieHeader(cookies || []);
-        if (cookieHeader) headers["Cookie"] = cookieHeader;
-      } catch {}
-    }
   }
   if (typeof navigator !== "undefined" && navigator.userAgent) {
     headers["User-Agent"] = navigator.userAgent;
+  }
+  headers["Accept"] = "*/*";
+  if (typeof navigator !== "undefined") {
+    const lang = Array.isArray(navigator.languages) && navigator.languages.length > 0
+      ? navigator.languages.join(",")
+      : (navigator.language || "zh-CN,zh;q=0.9,en;q=0.8");
+    if (lang) {
+      headers["Accept-Language"] = lang;
+    }
   }
   return headers;
 }
@@ -380,8 +407,14 @@ chrome.downloads.onCreated.addListener(async (item) => {
   }
   // 满足接管条件且已配对：立即暂停原生下载，防止在浮层倒计时（1.5s）期间浏览器高速跑满带宽或提前下完
   try { await chrome.downloads.pause(item.id); } catch {}
-  const tab = await findSourceTab(item);
-  const proceed = await confirmTakeoverWithOverlay(item, settings, { tab });
+  let proceed = false;
+  let tab;
+  try {
+    tab = await findSourceTab(item);
+    proceed = await confirmTakeoverWithOverlay(item, settings, { tab });
+  } catch {
+    proceed = true; // 浮层异常时安全回退直接接管
+  }
   if (!proceed) {
     try { await chrome.downloads.resume(item.id); } catch {}
     return;
@@ -389,6 +422,8 @@ chrome.downloads.onCreated.addListener(async (item) => {
   const handled = await interceptBrowserDownload(item, {
     downloads: chrome.downloads, settings, runtimeId: chrome.runtime.id, sendTask, notify,
     isDesktopOfflineError, swStartTime,
+    cookies: chrome.cookies,
+    tab,
     // P2-11：接管成功后在源页面显示徽章；页面不可达时退回可点击系统通知。
     // created（含任务 id）用于徽章上的"撤销"按钮（取消桌面端任务）。
     onTakenOver: (decision, created) => { void announceTakeover(tab, decision?.fileName || "", created?.id); },

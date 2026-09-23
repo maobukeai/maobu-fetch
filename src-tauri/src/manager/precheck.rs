@@ -766,7 +766,7 @@ fn extract_filename_from_url(url: &str) -> Option<String> {
 }
 
 /// 解析 `Content-Disposition` 头中的文件名。
-fn parse_content_disposition_filename(header: &str) -> Option<String> {
+pub(crate) fn parse_content_disposition_filename(header: &str) -> Option<String> {
     // RFC 5987: filename*=UTF-8''value
     for segment in header.split(';') {
         let trimmed = segment.trim();

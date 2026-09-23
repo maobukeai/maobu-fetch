@@ -165,6 +165,7 @@ export function TaskProxySection({
               <>
                 <SettingRow label={t("settings.netProxyAddressLabel")}>
                   <input
+                    className="proxy-address-input"
                     value={customUrl}
                     onChange={(e) => setCustomUrl(e.target.value)}
                     placeholder={t("settings.netProxyAddressPlaceholder")}

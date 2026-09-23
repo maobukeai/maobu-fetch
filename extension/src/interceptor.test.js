@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { evaluateDownload, interceptBrowserDownload, refreshDownload, resetNotificationCooldownsForTest, skipUnpairedDownload } from "./interceptor.js";
+import { evaluateDownload, interceptBrowserDownload, refreshDownload, resetNotificationCooldownsForTest, skipUnpairedDownload, getDownloadAuthHeaders } from "./interceptor.js";
 
 globalThis.chrome = {
   storage: {
@@ -652,4 +652,209 @@ test("evaluateDownload: 非归档/非安装包文件在设定 minSizeMb > 0 时�
   // minSizeMb = 0 (不限大小) 放行
   const resAllowed = evaluateDownload(pdfItem, { ...settings, minSizeMb: 0 }, "extension-id");
   assert.equal(resAllowed.eligible, true);
+});
+
+test("evaluateDownload: POST 表单导出与 blob/data 特殊协议安全放行由浏览器原生下载", () => {
+  const postItem = {
+    id: 530,
+    url: "https://example.com/api/export",
+    method: "POST",
+    filename: "export.xlsx",
+    totalBytes: 200_000,
+    state: "in_progress",
+  };
+  const resPost = evaluateDownload(postItem, settings, "extension-id");
+  assert.equal(resPost.eligible, false);
+  assert.equal(resPost.reason, "post-method");
+
+  const blobItem = {
+    id: 531,
+    url: "blob:https://example.com/uuid-blob-1234",
+    filename: "report.pdf",
+    totalBytes: 150_000,
+    state: "in_progress",
+  };
+  const resBlob = evaluateDownload(blobItem, settings, "extension-id");
+  assert.equal(resBlob.eligible, false);
+  assert.equal(resBlob.reason, "scheme");
+
+  const dataItem = {
+    id: 532,
+    url: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+    filename: "tiny.png",
+    totalBytes: 100,
+    state: "in_progress",
+  };
+  const resData = evaluateDownload(dataItem, settings, "extension-id");
+  assert.equal(resData.eligible, false);
+  assert.equal(resData.reason, "scheme");
+});
+
+test("getDownloadAuthHeaders: 自动按目标 URL 提取 Cookie 并注入完整 User-Agent/Referer/Accept 上下文", async () => {
+  const mockCookiesApi = {
+    getAll: async ({ url }) => {
+      if (url.includes("download.internal.net")) {
+        return [
+          { name: "download_token", value: "sec_987" },
+          { name: "auth_session", value: "sess_654" },
+        ];
+      }
+      return [];
+    },
+  };
+
+  const item = {
+    url: "https://download.internal.net/files/package.tar.gz",
+    referrer: "https://portal.internal.net/downloads",
+  };
+  const tab = {
+    url: "https://portal.internal.net/downloads",
+    cookieStoreId: "store_incognito",
+  };
+
+  const headers = await getDownloadAuthHeaders(item, { cookies: mockCookiesApi, tab });
+  assert.equal(headers["Cookie"], "download_token=sec_987; auth_session=sess_654");
+  assert.equal(headers["Referer"], "https://portal.internal.net/downloads");
+  assert.equal(headers["Accept"], "*/*");
+  assert.ok(headers["User-Agent"]);
+  assert.ok(headers["Accept-Language"]);
+});
+
+test("interceptBrowserDownload: 携带 cookies 与 tab 时自动向 sendTask 注入完整认证头", async () => {
+  const calls = [];
+  const fresh = {
+    id: 777,
+    url: "https://auth.example.com/files/dataset.zip",
+    finalUrl: "https://auth.example.com/files/dataset.zip",
+    filename: "dataset.zip",
+    totalBytes: 5_000_000,
+    referrer: "https://auth.example.com/dashboard",
+  };
+  const downloads = {
+    pause: async () => calls.push("pause"),
+    search: async () => [fresh],
+    cancel: async () => calls.push("cancel"),
+    erase: async () => calls.push("erase"),
+    resume: async () => calls.push("resume"),
+  };
+  const mockCookies = {
+    getAll: async () => [
+      { name: "token", value: "jwt_abc" },
+      { name: "env", value: "prod" },
+    ],
+  };
+  const tab = { url: "https://auth.example.com/dashboard" };
+  const sent = [];
+
+  const handled = await interceptBrowserDownload(fresh, {
+    downloads,
+    settings,
+    runtimeId: "extension-id",
+    wait: async () => {},
+    cookies: mockCookies,
+    tab,
+    sendTask: async (...args) => {
+      calls.push("send");
+      sent.push(args);
+      return { id: "desktop-task-123" };
+    },
+  });
+
+  assert.equal(handled, true);
+  assert.deepEqual(calls, ["pause", "send", "cancel", "erase"]);
+  assert.equal(sent[0][0], fresh.finalUrl);
+  const headers = sent[0][2].headers;
+  assert.equal(headers["Cookie"], "token=jwt_abc; env=prod");
+  assert.equal(headers["Referer"], fresh.referrer);
+  assert.equal(headers["Accept"], "*/*");
+  assert.ok(headers["User-Agent"]);
+  assert.ok(headers["Accept-Language"]);
+});
+
+test("interceptBrowserDownload: 桌面端返回 500 错误时安全回退并恢复浏览器原生下载", async () => {
+  resetNotificationCooldownsForTest();
+  const calls = [];
+  const item = {
+    id: 888,
+    url: "https://example.com/report.zip",
+    finalUrl: "https://example.com/report.zip",
+    filename: "report.zip",
+    totalBytes: 2_000_000,
+  };
+  const downloads = {
+    pause: async () => calls.push("pause"),
+    search: async () => [item],
+    resume: async () => calls.push("resume"),
+    cancel: async () => calls.push("cancel"),
+    erase: async () => calls.push("erase"),
+  };
+  const messages = [];
+  const handled = await interceptBrowserDownload(item, {
+    downloads,
+    settings,
+    runtimeId: "extension-id",
+    wait: async () => {},
+    sendTask: async () => {
+      throw new Error("HTTP 500 Internal Server Error");
+    },
+    notify: (...args) => messages.push(args),
+  });
+
+  assert.equal(handled, false);
+  assert.deepEqual(calls, ["pause", "resume"]);
+  assert.ok(messages.some((m) => m[0].includes("接管失败") || m[1].includes("500")));
+});
+
+test("getDownloadAuthHeaders: 多源 Cookie 去重合并（目标 CDN/文件域 与 页面源域）", async () => {
+  const mockCookiesApi = {
+    getAll: async ({ url }) => {
+      if (url.includes("files.example.com")) {
+        return [
+          { name: "token", value: "file_token_123" },
+          { name: "shared", value: "from_files" },
+        ];
+      }
+      if (url.includes("app.example.com")) {
+        return [
+          { name: "session_id", value: "sess_web_789" },
+          { name: "shared", value: "from_app" },
+        ];
+      }
+      return [];
+    },
+  };
+
+  const item = {
+    url: "https://files.example.com/export/data.csv",
+    referrer: "https://app.example.com/reports",
+  };
+  const tab = {
+    url: "https://app.example.com/reports",
+  };
+
+  const headers = await getDownloadAuthHeaders(item, { cookies: mockCookiesApi, tab });
+  assert.equal(headers["Cookie"], "token=file_token_123; shared=from_files; session_id=sess_web_789");
+  assert.equal(headers["Referer"], "https://app.example.com/reports");
+});
+
+test("evaluateDownload: 只要 url 或 finalUrl 包含 filesystem/chrome-extension/blob 均安全放行", () => {
+  const fsItem = {
+    id: 533,
+    url: "filesystem:chrome-extension://some-ext/temporary/exported.txt",
+    finalUrl: "https://example.com/exported.txt",
+    state: "in_progress",
+  };
+  const resFs = evaluateDownload(fsItem, settings, "extension-id");
+  assert.equal(resFs.eligible, false);
+  assert.equal(resFs.reason, "scheme");
+
+  const extItem = {
+    id: 534,
+    url: "https://example.com/file.zip",
+    finalUrl: "chrome-extension://abcdefghijklmnop/download.zip",
+    state: "in_progress",
+  };
+  const resExt = evaluateDownload(extItem, settings, "extension-id");
+  assert.equal(resExt.eligible, false);
+  assert.equal(resExt.reason, "scheme");
 });

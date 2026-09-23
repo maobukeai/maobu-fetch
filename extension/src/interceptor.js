@@ -1,4 +1,5 @@
 import { IGNORED_HISTORY_MAX, pushIgnoredEntry } from "./ignored-history.js";
+import { buildCookieHeader } from "./auth-download.js";
 
 const HTTP_URL = /^https?:/i;
 
@@ -73,6 +74,13 @@ export function evaluateDownload(item, settings, runtimeId, swStartTime = 0, opt
   if (!options.reevaluation
     && (item.paused || (item.state && item.state !== "in_progress"))) {
     return { eligible: false, reason: "restored-history" };
+  }
+
+  if (item.method && item.method.toUpperCase() === "POST") {
+    return { eligible: false, reason: "post-method" };
+  }
+  if ([item.url, item.finalUrl].some((u) => /^(?:blob|data|file|filesystem|chrome-extension|moz-extension|about):/i.test(u || ""))) {
+    return { eligible: false, reason: "scheme" };
   }
 
   const urls = [...new Set([item.finalUrl, item.url].filter((url) => HTTP_URL.test(url || "")))];
@@ -250,6 +258,68 @@ export function resetNotificationCooldownsForTest() {
   } catch {}
 }
 
+/// 提取下载任务的完整认证与请求头上下文（Cookie、Referer、User-Agent、Accept、Accept-Language）。
+export async function getDownloadAuthHeaders(item, { cookies, tab, url } = {}) {
+  const headers = {};
+  const cookiesApi = cookies || (typeof chrome !== "undefined" ? chrome.cookies : undefined);
+  const targetUrl = url || item?.url || item?.finalUrl;
+
+  // 1. 匹配目标下载 URL 与源页面、Referer 的 Cookie（去重合并，跨无痕 storeId 容错）
+  if (cookiesApi?.getAll) {
+    const cookieMap = new Map();
+    const collectCookies = async (sourceUrl) => {
+      if (!sourceUrl || !/^https?:/i.test(sourceUrl)) return;
+      try {
+        const params = { url: sourceUrl };
+        if (tab?.cookieStoreId) params.storeId = tab.cookieStoreId;
+        const matched = await cookiesApi.getAll(params);
+        if (Array.isArray(matched)) {
+          for (const c of matched) {
+            if (c?.name && !cookieMap.has(c.name)) {
+              cookieMap.set(c.name, c.value ?? "");
+            }
+          }
+        }
+      } catch {}
+    };
+
+    if (targetUrl) await collectCookies(targetUrl);
+    if (item?.finalUrl && item.finalUrl !== targetUrl) await collectCookies(item.finalUrl);
+    if (tab?.url && tab.url !== targetUrl) await collectCookies(tab.url);
+    if (item?.referrer && item.referrer !== targetUrl && item.referrer !== tab?.url) await collectCookies(item.referrer);
+
+    if (cookieMap.size > 0) {
+      headers["Cookie"] = Array.from(cookieMap.entries())
+        .map(([name, val]) => `${name}=${val}`)
+        .join("; ");
+    }
+  }
+
+  // 2. Referer 补齐
+  const referer = item?.referrer || (tab?.url && /^https?:/i.test(tab.url) ? tab.url : undefined);
+  if (referer) {
+    headers["Referer"] = referer;
+  }
+
+  // 3. User-Agent 透传
+  if (typeof navigator !== "undefined" && navigator.userAgent) {
+    headers["User-Agent"] = navigator.userAgent;
+  }
+
+  // 4. Accept 与 Accept-Language
+  headers["Accept"] = "*/*";
+  if (typeof navigator !== "undefined") {
+    const lang = Array.isArray(navigator.languages) && navigator.languages.length > 0
+      ? navigator.languages.join(",")
+      : (navigator.language || "zh-CN,zh;q=0.9,en;q=0.8");
+    if (lang) {
+      headers["Accept-Language"] = lang;
+    }
+  }
+
+  return headers;
+}
+
 export async function interceptBrowserDownload(initial, options) {
   const { downloads, settings, runtimeId, sendTask, notify, wait, isDesktopOfflineError, swStartTime, onTakenOver } = options;
   const preflight = evaluateDownload(initial, settings, runtimeId, swStartTime, { reevaluation: true });
@@ -288,7 +358,13 @@ export async function interceptBrowserDownload(initial, options) {
       await clearPendingTakeover(initial.id);
       return false;
     }
-    const created = await sendTask(decision.url, decision.fileName, { headers: decision.headers });
+    let taskHeaders = { ...(options.headers || {}), ...(decision.headers || {}) };
+    const cookiesApi = options.cookies !== undefined ? options.cookies : (typeof chrome !== "undefined" ? chrome.cookies : undefined);
+    if (cookiesApi?.getAll || options.tab || options.injectAuth) {
+      const authHeaders = await getDownloadAuthHeaders(item, { cookies: cookiesApi, tab: options.tab, url: decision.url });
+      taskHeaders = { ...authHeaders, ...taskHeaders };
+    }
+    const created = await sendTask(decision.url, decision.fileName, { headers: taskHeaders });
     taskSent = true;
     await downloads.cancel(initial.id);
     await downloads.erase({ id: initial.id });

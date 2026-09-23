@@ -18,6 +18,7 @@ export const IGNORE_REASONS = {
   "restored-history": "浏览器重启或会话恢复的历史下载（自动忽略）",
   unpaired: "尚未与桌面端配对，已由浏览器直接下载",
   offline: "桌面端离线，已回退浏览器下载",
+  "post-method": "表单导出或 POST 请求（由浏览器直接下载）",
 };
 
 /// 把 evaluateDownload 的 reason 转为用户可读文案。
@@ -48,6 +49,7 @@ export const SHORT_IGNORE_REASONS = {
   "restored-history": "历史恢复",
   unpaired: "未配对",
   offline: "桌面端离线",
+  "post-method": "POST导出",
 };
 
 /// 分组统计的短标签：`error:` 前缀统一归为"发送失败"；未知 reason 原样返回。

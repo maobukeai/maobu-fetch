@@ -186,7 +186,12 @@ impl DownloadManager {
         self.settings.read().await.clone()
     }
 
-    pub async fn save_settings(&self, settings: AppSettings) -> Result<(), String> {
+    pub async fn save_settings(&self, mut settings: AppSettings) -> Result<(), String> {
+        if settings.proxy_mode == "manual" && !settings.proxy_url.trim().is_empty() {
+            let normalized = crate::proxy::normalize_proxy_scheme(&settings.proxy_url);
+            crate::proxy::validate_proxy_url(&normalized)?;
+            settings.proxy_url = normalized;
+        }
         validate_settings(&settings)?;
         let new_client = build_client(&settings)?;
         self.store.save_settings(&settings).await?;
@@ -306,6 +311,7 @@ impl DownloadManager {
         &self,
         mut request: NewTaskRequest,
     ) -> Result<DownloadTask, String> {
+        canonicalize_headers(&mut request.headers);
         let parsed = Url::parse(request.url.trim())
             .map_err(|_| "请输入有效的 HTTP/HTTPS 链接".to_string())?;
         if !matches!(parsed.scheme(), "http" | "https") {
@@ -962,12 +968,16 @@ impl DownloadManager {
         proxy_override: Option<String>,
         proxy_auth: Option<ProxyAuth>,
     ) -> Result<DownloadTask, String> {
-        // 校验代理 URL 格式（空字符串允许，表示"显式禁用代理"）。
-        if let Some(url) = proxy_override.as_deref() {
-            if !url.is_empty() {
-                crate::proxy::validate_proxy_url(url)?;
+        // 规范化并校验代理 URL 格式（空字符串允许，表示"显式禁用代理"）。
+        let normalized_override = match proxy_override {
+            Some(ref url) if !url.trim().is_empty() => {
+                let norm = crate::proxy::normalize_proxy_scheme(url);
+                crate::proxy::validate_proxy_url(&norm)?;
+                Some(norm)
             }
-        }
+            Some(ref url) if url.trim().is_empty() => Some(String::new()),
+            _ => None,
+        };
         // 加密代理密码：用户传入的是明文，落库前必须经 DPAPI 加密。
         // 用户名为空时整体视为无认证（与 proxy_auth = None 等价）。
         let encrypted_auth = match proxy_auth {
@@ -992,7 +1002,7 @@ impl DownloadManager {
         let Some(mut task) = self.store.get_task(id).await? else {
             return Err("任务不存在".into());
         };
-        task.proxy_override = proxy_override;
+        task.proxy_override = normalized_override;
         task.proxy_auth = encrypted_auth;
         self.store.upsert_task(&task).await?;
         self.emit_task("updated", &task);
@@ -2681,64 +2691,62 @@ impl DownloadManager {
             tracing::info!(task_id = %task.id, proxy_mode = %mode, "download_once 使用全局共享客户端");
             self.client.read().await.clone()
         };
-        let is_baidu_link = task.url.contains("baidupcs.com") || task.url.contains("pan.baidu.com");
-        let probe = if is_baidu_link {
-            // 百度 PCS 服务器对 HEAD 请求一律返回 403 Forbidden，直接使用 GET Range: bytes=0-0 探测
-            let mut get = client
-                .get(&task.url)
-                .header(ACCEPT_ENCODING, "identity")
-                .header(RANGE, "bytes=0-0");
-            for (name, value) in &task.headers {
-                get = get.header(name, value);
-            }
-            get.send().await.map_err(friendly_reqwest)?
-        } else {
-            let mut head = client.head(&task.url).header(ACCEPT_ENCODING, "identity");
-            for (name, value) in &task.headers {
-                head = head.header(name, value);
-            }
-            let initial_probe = match head.send().await {
-                Ok(resp) => resp,
-                Err(err) => {
-                    tracing::error!(task_id = %task.id, error = ?err, "探测 HEAD 失败");
-                    return Err(friendly_reqwest(err));
-                }
-            };
-            // 部分服务器/CDN 不支持 HEAD（403/405/501/400）：回退为 GET + bytes=0-0 探针，
-            // 避免把可以正常 GET 下载的资源直接判为失败。回退响应可能为 206，
-            // 总长度由 probe_total_bytes 从 Content-Range 提取。
-            if !initial_probe.status().is_success() {
-                let mut get = client
-                    .get(&task.url)
-                    .header(ACCEPT_ENCODING, "identity")
-                    .header(RANGE, "bytes=0-0");
-                for (name, value) in &task.headers {
-                    get = get.header(name, value);
-                }
-                match get.send().await {
-                    Ok(get_resp) if get_resp.status().is_success() || get_resp.status() == reqwest::StatusCode::PARTIAL_CONTENT => get_resp,
-                    _ => initial_probe,
-                }
-            } else {
-                initial_probe
+        inject_media_credentials(&mut task, &self.store).await;
+
+        // 零成本探针（Zero-Cost Probe）：
+        // 消除会消耗并作废一次性/限时防盗链签名 Token 的独立冗余 HEAD 请求。
+        // 直接使用 GET Range: bytes=0-0 一次性探测：
+        // 1. 若服务端支持 Range：返回 206 Partial Content，Content-Range 给出精确总长度，
+        //    只传输 1 字节探针体，且无需后续重复 Range 验证请求；
+        // 2. 若服务端不支持 Range（或 CDN 忽略 Range 头部）：返回 200 OK，Content-Length 给出总长度，
+        //    此时该响应已是自字节 0 起的有效下载流！直接无缝将该响应交由单连接流式下载消费，
+        //    实现单请求 100% 成功下载，彻底解决一次性 Token / 签名直链二次请求被拒问题。
+        let mut probe_req = client
+            .get(&task.url)
+            .header(ACCEPT_ENCODING, "identity")
+            .header(RANGE, "bytes=0-0");
+        for (name, value) in &task.headers {
+            probe_req = probe_req.header(name, value);
+        }
+        let initial_probe = match probe_req.send().await {
+            Ok(resp) => resp,
+            Err(err) => {
+                tracing::error!(task_id = %task.id, error = ?err, "探测 GET Range 失败");
+                return Err(friendly_reqwest(err));
             }
         };
-        task.final_url = Some(diagnostic_url(probe.url()));
-        task.response_status = Some(probe.status().as_u16());
+
+        // 对 Range 头部返回非成功状态（如 400/403/405/416/501 等）：回退为标准 GET 探测
+        let probe = if !initial_probe.status().is_success()
+            && initial_probe.status() != reqwest::StatusCode::PARTIAL_CONTENT
+        {
+            let mut fallback_req = client
+                .get(&task.url)
+                .header(ACCEPT_ENCODING, "identity");
+            for (name, value) in &task.headers {
+                fallback_req = fallback_req.header(name, value);
+            }
+            match fallback_req.send().await {
+                Ok(resp) if resp.status().is_success() => resp,
+                _ => initial_probe,
+            }
+        } else {
+            initial_probe
+        };
+
+        let probe_url = diagnostic_url(probe.url());
+        let probe_status = probe.status();
+        let probe_is_partial = probe_status == reqwest::StatusCode::PARTIAL_CONTENT;
+
+        task.final_url = Some(probe_url);
+        task.response_status = Some(probe_status.as_u16());
         task.content_type =
             header_string(&probe, CONTENT_TYPE).map(|value| truncate_text(value, 256));
-        task.accepts_ranges = Some(
-            probe.status() == reqwest::StatusCode::PARTIAL_CONTENT
-                || probe
-                    .headers()
-                    .get(ACCEPT_RANGES)
-                    .and_then(|value| value.to_str().ok())
-                    .is_some_and(|value| value.eq_ignore_ascii_case("bytes")),
-        );
+        task.accepts_ranges = Some(probe_is_partial);
         self.store.upsert_task(&task).await?;
         self.emit_task("updated", &task);
-        if !probe.status().is_success() && probe.status() != reqwest::StatusCode::PARTIAL_CONTENT {
-            return Err(format!("服务器返回 HTTP {}", probe.status()));
+        if !probe_status.is_success() && !probe_is_partial {
+            return Err(format!("服务器返回 HTTP {}", probe_status));
         }
 
         let is_m3u8_stream = task.url.contains(".m3u8")
@@ -2827,7 +2835,7 @@ impl DownloadManager {
         task.etag = etag;
         task.last_modified = last_modified;
         task.total_bytes = total;
-        if task.file_name == "download" {
+        if task.file_name == "download" || !task.file_name.contains('.') {
             if let Some(name) = disposition_name(&probe) {
                 // Task 20: 服务器 Content-Disposition 提供的文件名也属于"未手动编辑"来源，
                 // 应用清理规则后再做 safe_name 规范化。失败时静默回退到 disposition 原始名。
@@ -2858,41 +2866,29 @@ impl DownloadManager {
         }
         self.store.upsert_task(&task).await?;
         self.emit_task("updated", &task);
-        let supports_range = probe
-            .headers()
-            .get(ACCEPT_RANGES)
-            .and_then(|v| v.to_str().ok())
-            .is_some_and(|v| v.eq_ignore_ascii_case("bytes"));
+        // 零成本探针已经通过 GET Range: bytes=0-0 探测过 Range 支持状态：
+        // 1. 若服务端返回 206 Partial Content：已实锤支持 Range 且总长度确切（total > 0），
+        //    无需发起冗余二次 Range 请求（彻底避免二次请求作废一次性签名/直链）。
+        // 2. 若服务端返回 200 OK：服务端忽略 Range 请求并返回了自字节 0 起的完整响应流，
+        //    此时不支持 Range，且该 probe 响应流可直接用于单连接流式下载！
+        let supports_range = probe_is_partial && total > 0;
+        let initial_stream_response = if !supports_range
+            && probe_status == reqwest::StatusCode::OK
+            && task.downloaded_bytes == 0
+            && task.segments.is_empty()
+        {
+            Some(probe)
+        } else {
+            None
+        };
+        task.accepts_ranges = Some(supports_range);
+
         let settings = self.settings().await;
         let mut connections = effective_connection_count(&settings, task.connection_count);
         // CDN cap 前置判定：必须在下方动态连接数调整改写 task.connection_count 之前计算
         // "用户是否显式设置"，否则 suggest_connections 的自动调整结果会被误判为用户
         // 显式设置，导致 CDN 连接数上限几乎从不生效。
         let is_user_explicit = task.connection_count != settings.connections_per_download;
-        // Accept-Ranges is only advisory and is frequently omitted by CDNs.
-        // Verify multi-connection support with an actual one-byte range request.
-        let supports_range = if connections > 1 {
-            let mut request = client.get(&task.url);
-            for (name, value) in &task.headers {
-                request = request.header(name, value);
-            }
-            request = request
-                .header(ACCEPT_ENCODING, "identity")
-                .header(RANGE, "bytes=0-0");
-            match request.send().await {
-                Ok(response) if response.status() == reqwest::StatusCode::PARTIAL_CONTENT => {
-                    let valid_range = matches!(
-                        parse_content_range(&response),
-                        Some((0, 0, response_total)) if response_total == total
-                    );
-                    valid_range && response.bytes().await.is_ok_and(|body| body.len() == 1)
-                }
-                _ => false,
-            }
-        } else {
-            supports_range
-        };
-        task.accepts_ranges = Some(supports_range);
 
         // Dynamically adjust connections based on file size for un-started tasks
         if task.downloaded_bytes == 0 && task.segments.is_empty() {
@@ -2968,7 +2964,14 @@ impl DownloadManager {
             self.store.upsert_task(&task).await?;
             self.emit_task("updated", &task);
             task = self
-                .download_stream(task, &client, &temp, token.clone(), task_limiter)
+                .download_stream_with_initial_response(
+                    task,
+                    &client,
+                    &temp,
+                    token.clone(),
+                    task_limiter,
+                    initial_stream_response,
+                )
                 .await?;
         }
         if token.is_cancelled() {
@@ -3046,22 +3049,40 @@ impl DownloadManager {
 
     async fn download_stream(
         &self,
-        mut task: DownloadTask,
+        task: DownloadTask,
         client: &reqwest::Client,
         temp: &Path,
         token: CancellationToken,
         task_limiter: Arc<RateLimiter>,
     ) -> Result<DownloadTask, String> {
+        self.download_stream_with_initial_response(task, client, temp, token, task_limiter, None)
+            .await
+    }
+
+    async fn download_stream_with_initial_response(
+        &self,
+        mut task: DownloadTask,
+        client: &reqwest::Client,
+        temp: &Path,
+        token: CancellationToken,
+        task_limiter: Arc<RateLimiter>,
+        initial_response: Option<reqwest::Response>,
+    ) -> Result<DownloadTask, String> {
         let runtime_options = self.runtime_task_options(&task).await;
         let existing = fs::metadata(temp).await.map(|m| m.len()).unwrap_or(0);
-        let mut request = client.get(&task.url).header(ACCEPT_ENCODING, "identity");
-        for (name, value) in &task.headers {
-            request = request.header(name, value);
-        }
-        if existing > 0 {
-            request = request.header(RANGE, format!("bytes={existing}-"));
-        }
-        let response = request.send().await.map_err(friendly_reqwest)?;
+        let response = if existing == 0 && initial_response.is_some() {
+            tracing::info!(task_id = %task.id, "复用零成本探针已打开的流式响应，避免二次请求作废一次性直链");
+            initial_response.unwrap()
+        } else {
+            let mut request = client.get(&task.url).header(ACCEPT_ENCODING, "identity");
+            for (name, value) in &task.headers {
+                request = request.header(name, value);
+            }
+            if existing > 0 {
+                request = request.header(RANGE, format!("bytes={existing}-"));
+            }
+            request.send().await.map_err(friendly_reqwest)?
+        };
         let append = existing > 0 && response.status() == reqwest::StatusCode::PARTIAL_CONTENT;
         if !response.status().is_success() {
             return Err(format!("服务器返回 HTTP {}", response.status()));
@@ -3183,6 +3204,13 @@ impl DownloadManager {
                 "下载提前结束（已接收 {} 字节 / 共 {} 字节），将自动续传",
                 task.downloaded_bytes, task.total_bytes
             ));
+        }
+        if task.total_bytes == 0 && task.downloaded_bytes > 0 {
+            task.total_bytes = task.downloaded_bytes;
+            if let Some(segment) = task.segments.first_mut() {
+                segment.end_byte = task.downloaded_bytes.saturating_sub(1);
+                segment.downloaded_bytes = task.downloaded_bytes;
+            }
         }
         task.active_connections = 0;
         if let Some(segment) = task.segments.first_mut() {
@@ -6224,14 +6252,31 @@ fn probe_total_bytes(response: &reqwest::Response) -> u64 {
     }
 }
 fn disposition_name(response: &reqwest::Response) -> Option<String> {
-    response
-        .headers()
-        .get(CONTENT_DISPOSITION)?
-        .to_str()
-        .ok()?
-        .split(';')
-        .find_map(|p| p.trim().strip_prefix("filename="))
-        .map(|v| safe_name(v.trim_matches(['\"', '\''])))
+    let cd = response.headers().get(CONTENT_DISPOSITION)?.to_str().ok()?;
+    precheck::parse_content_disposition_filename(cd).map(|v| safe_name(&v))
+}
+
+pub(crate) fn canonicalize_headers(headers: &mut HashMap<String, String>) {
+    let mut normalized = HashMap::with_capacity(headers.len());
+    for (k, v) in headers.drain() {
+        let key = if k.eq_ignore_ascii_case("cookie") {
+            "Cookie".to_string()
+        } else if k.eq_ignore_ascii_case("referer") || k.eq_ignore_ascii_case("referrer") {
+            "Referer".to_string()
+        } else if k.eq_ignore_ascii_case("user-agent") {
+            "User-Agent".to_string()
+        } else if k.eq_ignore_ascii_case("accept") {
+            "Accept".to_string()
+        } else if k.eq_ignore_ascii_case("accept-language") {
+            "Accept-Language".to_string()
+        } else if k.eq_ignore_ascii_case("authorization") {
+            "Authorization".to_string()
+        } else {
+            k
+        };
+        normalized.insert(key, v);
+    }
+    *headers = normalized;
 }
 pub(crate) fn friendly_reqwest(error: reqwest::Error) -> String {
     if error.is_timeout() {

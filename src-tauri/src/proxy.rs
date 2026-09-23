@@ -135,16 +135,22 @@ pub fn detect_windows_system_proxy() -> Option<String> {
 }
 
 /// 规范化代理 scheme。
-/// 特别地，将 `socks5://` 自动升级为 `socks5h://`，强制让远程代理服务器执行 DNS 域名解析，
-/// 彻底避免客户端本地 DNS 污染导致访问境外/受限域名（如 chatgpt.com）时 TLS 握手异常重置。
+/// 1. 若没有 scheme（如用户输入的纯 `host:port`，如 `127.0.0.1:7890`），自动补全 `http://` 前缀，
+///    避免 `reqwest::Proxy::all` 解析相对 URL 时报错。
+/// 2. 特别地，将 `socks5://` 自动升级为 `socks5h://`，强制让远程代理服务器执行 DNS 域名解析，
+///    彻底避免客户端本地 DNS 污染导致访问境外/受限域名（如 chatgpt.com）时 TLS 握手异常重置。
 pub fn normalize_proxy_scheme(url: &str) -> String {
     let trimmed = url.trim();
-    if let Some(rest) = trimmed.strip_prefix("socks5://") {
-        format!("socks5h://{rest}")
-    } else if let Some(rest) = trimmed.strip_prefix("SOCKS5://") {
-        format!("socks5h://{rest}")
-    } else {
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    if lower.starts_with("socks5://") {
+        format!("socks5h://{}", &trimmed["socks5://".len()..])
+    } else if lower.contains("://") {
         trimmed.to_string()
+    } else {
+        format!("http://{trimmed}")
     }
 }
 
@@ -210,12 +216,12 @@ pub fn get_effective_system_proxy() -> Option<String> {
 /// 调用方在 reqwest::Proxy::all 失败时回退到"无代理"状态。
 pub fn resolve_proxy(settings: &AppSettings, task: &DownloadTask) -> Option<String> {
     match task.proxy_override.as_deref() {
-        Some(url) if !url.is_empty() => Some(url.to_string()),
+        Some(url) if !url.trim().is_empty() => Some(normalize_proxy_scheme(url)),
         // Some("") 显式禁用代理。
         Some(_) => None,
         None => {
-            if settings.proxy_mode == "manual" && !settings.proxy_url.is_empty() {
-                Some(settings.proxy_url.clone())
+            if settings.proxy_mode == "manual" && !settings.proxy_url.trim().is_empty() {
+                Some(normalize_proxy_scheme(&settings.proxy_url))
             } else {
                 None
             }
@@ -579,6 +585,30 @@ mod tests {
     }
 
     #[test]
+    fn resolve_proxy_normalizes_bare_host_port_for_global_and_task() {
+        let mut settings = minimal_settings();
+        settings.proxy_mode = "manual".into();
+        settings.proxy_url = "127.0.0.1:7890".into();
+        let mut task = minimal_task();
+        assert_eq!(
+            resolve_proxy(&settings, &task).as_deref(),
+            Some("http://127.0.0.1:7890")
+        );
+
+        task.proxy_override = Some("127.0.0.1:1080".into());
+        assert_eq!(
+            resolve_proxy(&settings, &task).as_deref(),
+            Some("http://127.0.0.1:1080")
+        );
+
+        task.proxy_override = Some("socks5://127.0.0.1:1080".into());
+        assert_eq!(
+            resolve_proxy(&settings, &task).as_deref(),
+            Some("socks5h://127.0.0.1:1080")
+        );
+    }
+
+    #[test]
     fn validate_proxy_url_rejects_empty_input() {
         assert!(validate_proxy_url("").is_err());
         assert!(validate_proxy_url("   ").is_err());
@@ -737,5 +767,27 @@ mod tests {
             normalize_proxy_scheme("socks5h://127.0.0.1:7890"),
             "socks5h://127.0.0.1:7890"
         );
+        assert_eq!(
+            normalize_proxy_scheme("127.0.0.1:7890"),
+            "http://127.0.0.1:7890"
+        );
+        assert_eq!(
+            normalize_proxy_scheme("  127.0.0.1:7890  "),
+            "http://127.0.0.1:7890"
+        );
+        assert_eq!(
+            normalize_proxy_scheme("localhost:1080"),
+            "http://localhost:1080"
+        );
+        assert_eq!(
+            normalize_proxy_scheme("user:pass@127.0.0.1:7890"),
+            "http://user:pass@127.0.0.1:7890"
+        );
+        assert_eq!(
+            normalize_proxy_scheme("socks5://alice:secret@127.0.0.1:1080"),
+            "socks5h://alice:secret@127.0.0.1:1080"
+        );
+        assert_eq!(normalize_proxy_scheme(""), "");
+        assert_eq!(normalize_proxy_scheme("   "), "");
     }
 }

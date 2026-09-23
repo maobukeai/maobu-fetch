@@ -2814,3 +2814,151 @@
         assert_eq!(ordered[1].start_byte, 20_000_001);
         assert_eq!(ordered[1].end_byte, 50_000_000);
     }
+
+    #[test]
+    fn test_new_task_request_deserializes_and_preserves_auth_headers() {
+        let json_data = serde_json::json!({
+            "url": "https://example.com/protected/export.xlsx",
+            "file_name": "export.xlsx",
+            "headers": {
+                "Cookie": "session_id=abcdef123456; token=secret999",
+                "Referer": "https://example.com/dashboard",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+                "Accept": "*/*",
+                "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8"
+            }
+        });
+
+        let req: NewTaskRequest = serde_json::from_value(json_data).expect("反序列化任务请求失败");
+        assert_eq!(req.headers.get("Cookie").unwrap(), "session_id=abcdef123456; token=secret999");
+        assert_eq!(req.headers.get("Referer").unwrap(), "https://example.com/dashboard");
+        assert_eq!(req.headers.get("User-Agent").unwrap(), "Mozilla/5.0 (Windows NT 10.0; Win64; x64)");
+        assert_eq!(req.headers.get("Accept").unwrap(), "*/*");
+        assert_eq!(req.headers.get("Accept-Language").unwrap(), "zh-CN,zh;q=0.9,en;q=0.8");
+    }
+
+    #[test]
+    fn test_zero_cost_probe_range_support_and_stream_reuse_logic() {
+        // 场景 1：206 Partial Content 探针响应（支持 Range）
+        let probe_is_partial_206 = true;
+        let total_bytes = 10_485_760u64;
+        let supports_range_206 = probe_is_partial_206 && total_bytes > 0;
+        assert!(supports_range_206);
+
+        // 场景 2：200 OK 探针响应（不支持 Range，例如单次导出接口或普通 CDN）
+        let probe_is_partial_200 = false;
+        let probe_status_200 = reqwest::StatusCode::OK;
+        let downloaded_bytes = 0u64;
+        let segments_empty = true;
+        let supports_range_200 = probe_is_partial_200 && total_bytes > 0;
+        assert!(!supports_range_200);
+
+        let can_reuse_initial_stream_200 = !supports_range_200
+            && probe_status_200 == reqwest::StatusCode::OK
+            && downloaded_bytes == 0
+            && segments_empty;
+        assert!(can_reuse_initial_stream_200, "200 OK 全新任务必须复用探针已打开的响应流，避免二次请求作废一次性签名");
+
+        // 场景 3（防御性漏洞根治）：若探针返回 206 但无法解析 Content-Range（total=0），
+        // 严禁将 1 字节探针误作为 initial_stream_response，否则会导致整个下载以 1 字节提前结束并损坏文件！
+        let probe_is_partial_206_unknown_total = true;
+        let total_bytes_zero = 0u64;
+        let supports_range_206_zero = probe_is_partial_206_unknown_total && total_bytes_zero > 0;
+        assert!(!supports_range_206_zero);
+        let probe_status_206 = reqwest::StatusCode::PARTIAL_CONTENT;
+
+        let can_reuse_initial_stream_206 = !supports_range_206_zero
+            && probe_status_206 == reqwest::StatusCode::OK
+            && downloaded_bytes == 0
+            && segments_empty;
+        assert!(!can_reuse_initial_stream_206, "206 Partial Content 绝不能复用为完整流响应（仅含 1 字节）");
+    }
+
+    #[test]
+    fn test_canonicalize_headers_normalizes_case_and_preserves_values() {
+        use std::collections::HashMap;
+        let mut headers = HashMap::new();
+        headers.insert("cookie".to_string(), "sess=123".to_string());
+        headers.insert("user-agent".to_string(), "Mozilla/5.0 Custom".to_string());
+        headers.insert("referer".to_string(), "https://example.com/from".to_string());
+        headers.insert("accept".to_string(), "application/json".to_string());
+        headers.insert("accept-language".to_string(), "zh-CN".to_string());
+        headers.insert("x-custom-token".to_string(), "custom_val".to_string());
+
+        super::canonicalize_headers(&mut headers);
+
+        assert_eq!(headers.get("Cookie").unwrap(), "sess=123");
+        assert_eq!(headers.get("User-Agent").unwrap(), "Mozilla/5.0 Custom");
+        assert_eq!(headers.get("Referer").unwrap(), "https://example.com/from");
+        assert_eq!(headers.get("Accept").unwrap(), "application/json");
+        assert_eq!(headers.get("Accept-Language").unwrap(), "zh-CN");
+        assert_eq!(headers.get("x-custom-token").unwrap(), "custom_val");
+        assert!(!headers.contains_key("cookie"));
+        assert!(!headers.contains_key("user-agent"));
+        assert!(!headers.contains_key("referer"));
+    }
+
+    #[test]
+    fn test_disposition_name_rfc5987_parsing() {
+        let rfc5987_header = "attachment; filename*=UTF-8''%E6%8A%A5%E8%A1%A8%EF%BC%882026%EF%BC%89.xlsx";
+        let parsed = crate::manager::precheck::parse_content_disposition_filename(rfc5987_header);
+        assert_eq!(parsed.as_deref(), Some("报表（2026）.xlsx"));
+
+        let standard_header = "attachment; filename=\"report_final.pdf\"";
+        let parsed_std = crate::manager::precheck::parse_content_disposition_filename(standard_header);
+        assert_eq!(parsed_std.as_deref(), Some("report_final.pdf"));
+    }
+
+    #[test]
+    fn test_build_client_with_bare_host_port_proxy() {
+        let mut settings = AppSettings::default();
+        settings.proxy_mode = "manual".into();
+        settings.proxy_url = "127.0.0.1:7890".into();
+        let client_res = build_client(&settings);
+        assert!(
+            client_res.is_ok(),
+            "build_client should tolerate bare host:port proxy: {:?}",
+            client_res.err()
+        );
+
+        settings.proxy_url = "socks5://127.0.0.1:1080".into();
+        let client_res2 = build_client(&settings);
+        assert!(
+            client_res2.is_ok(),
+            "build_client should handle socks5 proxy: {:?}",
+            client_res2.err()
+        );
+
+        settings.proxy_url = "  127.0.0.1:7890  ".into();
+        let client_res3 = build_client(&settings);
+        assert!(
+            client_res3.is_ok(),
+            "build_client should tolerate whitespace around bare proxy: {:?}",
+            client_res3.err()
+        );
+
+        settings.proxy_url = "user:pass@127.0.0.1:7890".into();
+        let client_res4 = build_client(&settings);
+        assert!(
+            client_res4.is_ok(),
+            "build_client should tolerate bare proxy with userinfo: {:?}",
+            client_res4.err()
+        );
+    }
+
+    #[test]
+    fn test_build_task_client_with_bare_host_port_proxy() {
+        let settings = AppSettings::default();
+        let mut task = test_task(Path::new("C:\\temp"), "test.bin", CollisionPolicy::Overwrite);
+        task.proxy_override = Some("127.0.0.1:7890".into());
+        let res1 = build_task_client(&settings, &task);
+        assert!(res1.is_ok(), "build_task_client should tolerate bare host:port proxy");
+
+        task.proxy_override = Some("socks5://127.0.0.1:1080".into());
+        let res2 = build_task_client(&settings, &task);
+        assert!(res2.is_ok(), "build_task_client should tolerate socks5 proxy");
+
+        task.proxy_override = Some("user:pass@127.0.0.1:7890".into());
+        let res3 = build_task_client(&settings, &task);
+        assert!(res3.is_ok(), "build_task_client should tolerate userinfo bare proxy");
+    }

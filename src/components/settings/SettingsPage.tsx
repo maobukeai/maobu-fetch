@@ -209,9 +209,9 @@ export function SettingsPage({
     if (!trimmed) {
       setExtResult({
         compatible: false,
-        app_version: appInfo?.version || "0.9.9",
+        app_version: appInfo?.version || "0.10.0",
         extension_version: "未输入",
-        message: "请先在左侧输入框填写扩展版本号（如 0.9.9，可在浏览器扩展管理页查看）",
+        message: "请先在左侧输入框填写扩展版本号（如 0.10.0，可在浏览器扩展管理页查看）",
       });
       notify("请先填写扩展版本号", "error");
       return;
@@ -917,6 +917,7 @@ export function SettingsPage({
                     <>
                       <SettingRow label={t("settings.netProxyAddressLabel")}>
                         <input
+                          className="proxy-address-input"
                           value={draft.proxy_url}
                           onChange={(e) => set("proxy_url", e.target.value)}
                           placeholder={t(
@@ -963,17 +964,10 @@ export function SettingsPage({
                       </SettingRow>
                     </>
                   )}
-                  <SettingRow label={t("settings.netPacLabel")}>
-                    <input
-                      value={draft.pac_script_path ?? ""}
-                      onChange={(e) =>
-                        set("pac_script_path", e.target.value || null)
-                      }
-                      placeholder={t("settings.netPacPlaceholder")}
-                    />
-                  </SettingRow>
                 </div>
-                <p className="settings-note">{t("settings.netProxyNote")}</p>
+                {draft.proxy_mode === "manual" && (
+                  <p className="settings-note">{t("settings.netProxyNote")}</p>
+                )}
               </SettingsGroup>
               <SettingsGroup title={t("settings.netRetryGroup")}>
                 <div className="retry-policy-grid">
@@ -2882,6 +2876,19 @@ function FileAssociationSection({
     }
   };
 
+  const handleToggleSingle = async (extension: string, currentAssociated: boolean) => {
+    try {
+      setLoading(true);
+      await api.setFileAssociations([extension], !currentAssociated);
+      notify(`已${currentAssociated ? "注销" : "注册"} .${extension} 文件关联`, "ok");
+      loadAssocs();
+    } catch (err) {
+      notify(`切换 .${extension} 关联失败: ${err}`, "error");
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const handleOpenDefaultSettings = () => {
     api.openDefaultAppsSettings().catch((err) => notify(`无法打开系统设置: ${err}`, "error"));
   };
@@ -2917,84 +2924,99 @@ function FileAssociationSection({
       </div>
 
       <p className="settings-note">
-        猫步下载器内置轻量、硬件加速视频播放器与极速看图器。注册关联后，您可在 Windows 右键菜单「打开方式」或「默认应用」设置中将其设为默认打开程序。
+        猫步下载器内置轻量、硬件加速视频播放器与极速看图器。注册关联后，您可在 Windows 右键菜单「打开方式」或「默认应用」设置中将其设为默认打开程序。支持点击单个格式单独开启或取消。
       </p>
 
-      {/* 视频关联 */}
-      <div className="mt-3">
-        <div className="text-xs font-semibold text-neutral-300 mb-1.5 flex items-center justify-between">
-          <span>视频格式关联 ({videoAssocs.filter((a) => a.is_associated).length}/{videoAssocs.length})</span>
+      <div className="file-assoc-card">
+        {/* 视频关联 */}
+        <div className="file-assoc-section">
+          <div className="file-assoc-header">
+            <div className="file-assoc-title">
+              <span>视频格式关联</span>
+              <span className="file-assoc-count">
+                {videoAssocs.filter((a) => a.is_associated).length} / {videoAssocs.length}
+              </span>
+            </div>
+            <button
+              type="button"
+              disabled={loading}
+              onClick={handleRegisterVideos}
+              className="file-assoc-btn secondary"
+            >
+              一键注册所有视频关联
+            </button>
+          </div>
+          <div className="file-assoc-grid">
+            {videoAssocs.map((item) => (
+              <button
+                type="button"
+                key={item.extension}
+                disabled={loading}
+                onClick={() => handleToggleSingle(item.extension, item.is_associated)}
+                title={item.is_associated ? `点击注销 .${item.extension} 关联` : `点击注册 .${item.extension} 关联`}
+                className={`file-assoc-badge ${item.is_associated ? "associated" : "unassociated"}`}
+              >
+                <span>.{item.extension}</span>
+                {item.is_associated && <span className="check-icon">✓</span>}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* 图片关联 */}
+        <div className="file-assoc-section">
+          <div className="file-assoc-header">
+            <div className="file-assoc-title">
+              <span>图片格式关联</span>
+              <span className="file-assoc-count">
+                {imageAssocs.filter((a) => a.is_associated).length} / {imageAssocs.length}
+              </span>
+            </div>
+            <button
+              type="button"
+              disabled={loading}
+              onClick={handleRegisterImages}
+              className="file-assoc-btn secondary"
+            >
+              一键注册所有图片关联
+            </button>
+          </div>
+          <div className="file-assoc-grid">
+            {imageAssocs.map((item) => (
+              <button
+                type="button"
+                key={item.extension}
+                disabled={loading}
+                onClick={() => handleToggleSingle(item.extension, item.is_associated)}
+                title={item.is_associated ? `点击注销 .${item.extension} 关联` : `点击注册 .${item.extension} 关联`}
+                className={`file-assoc-badge ${item.is_associated ? "associated" : "unassociated"}`}
+              >
+                <span>.{item.extension}</span>
+                {item.is_associated && <span className="check-icon">✓</span>}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* 底部操作栏 */}
+        <div className="file-assoc-footer">
           <button
             type="button"
             disabled={loading}
-            onClick={handleRegisterVideos}
-            className="btn btn-secondary text-xs py-0.5 px-2"
+            onClick={handleOpenDefaultSettings}
+            className="file-assoc-btn primary"
           >
-            一键注册所有视频关联
+            打开 Windows 默认应用设置
           </button>
-        </div>
-        <div className="flex flex-wrap gap-1.5 my-1">
-          {videoAssocs.map((item) => (
-            <span
-              key={item.extension}
-              className={`px-2 py-0.5 rounded text-xs font-mono font-medium ${
-                item.is_associated
-                  ? "bg-sky-500/20 text-sky-400 border border-sky-500/30"
-                  : "bg-neutral-800 text-neutral-400 border border-neutral-700"
-              }`}
-            >
-              .{item.extension} {item.is_associated && "✓"}
-            </span>
-          ))}
-        </div>
-      </div>
-
-      {/* 图片关联 */}
-      <div className="mt-4">
-        <div className="text-xs font-semibold text-neutral-300 mb-1.5 flex items-center justify-between">
-          <span>图片格式关联 ({imageAssocs.filter((a) => a.is_associated).length}/{imageAssocs.length})</span>
           <button
             type="button"
             disabled={loading}
-            onClick={handleRegisterImages}
-            className="btn btn-secondary text-xs py-0.5 px-2"
+            onClick={handleUnregisterAll}
+            className="file-assoc-btn ghost-danger"
           >
-            一键注册所有图片关联
+            注销所有关联
           </button>
         </div>
-        <div className="flex flex-wrap gap-1.5 my-1">
-          {imageAssocs.map((item) => (
-            <span
-              key={item.extension}
-              className={`px-2 py-0.5 rounded text-xs font-mono font-medium ${
-                item.is_associated
-                  ? "bg-sky-500/20 text-sky-400 border border-sky-500/30"
-                  : "bg-neutral-800 text-neutral-400 border border-neutral-700"
-              }`}
-            >
-              .{item.extension} {item.is_associated && "✓"}
-            </span>
-          ))}
-        </div>
-      </div>
-
-      <div className="flex items-center gap-2 mt-4 pt-2 border-t border-neutral-800/80">
-        <button
-          type="button"
-          disabled={loading}
-          onClick={handleOpenDefaultSettings}
-          className="btn btn-primary text-xs"
-        >
-          打开 Windows 默认应用设置
-        </button>
-        <button
-          type="button"
-          disabled={loading}
-          onClick={handleUnregisterAll}
-          className="btn btn-ghost text-xs text-neutral-400 hover:text-red-400"
-        >
-          注销所有关联
-        </button>
       </div>
     </SettingsGroup>
   );
