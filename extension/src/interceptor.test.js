@@ -858,3 +858,13 @@ test("evaluateDownload: 只要 url 或 finalUrl 包含 filesystem/chrome-extensi
   assert.equal(resExt.eligible, false);
   assert.equal(resExt.reason, "scheme");
 });
+
+test("getDownloadAuthHeaders: 自动提取 URL query 中的 token 与 pin 转化为 x-qr-token 与 x-pin 请求头", async () => {
+  const item = {
+    url: "http://192.168.1.50:8080/api/download/file.bin?token=qr_tok_abc123&pin=8899",
+    referrer: "http://192.168.1.50:8080/share?token=fallback_tok",
+  };
+  const headers = await getDownloadAuthHeaders(item, {});
+  assert.equal(headers["x-qr-token"], "qr_tok_abc123");
+  assert.equal(headers["x-pin"], "8899");
+});

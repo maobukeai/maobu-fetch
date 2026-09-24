@@ -317,6 +317,22 @@ export async function getDownloadAuthHeaders(item, { cookies, tab, url } = {}) {
     }
   }
 
+  // 5. 提取 URL query 中的 token/pin 参数，转换成对应的请求头
+  //    局域网互联2 / LanDisk 类服务器用 ?token= 或 ?pin= 鉴权
+  const extractQueryAuth = (urlStr) => {
+    if (!urlStr) return;
+    try {
+      const u = new URL(urlStr);
+      const token = u.searchParams.get('token');
+      const pin = u.searchParams.get('pin');
+      if (token && !headers['x-qr-token']) headers['x-qr-token'] = token;
+      if (pin && !headers['x-pin']) headers['x-pin'] = pin;
+    } catch {}
+  };
+  extractQueryAuth(targetUrl);
+  if (item?.finalUrl && item.finalUrl !== targetUrl) extractQueryAuth(item.finalUrl);
+  if (item?.referrer && item.referrer !== targetUrl) extractQueryAuth(item.referrer);
+
   return headers;
 }
 
