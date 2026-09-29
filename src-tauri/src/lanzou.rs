@@ -585,6 +585,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "依赖外部实时蓝奏云共享连接，仅供本地联调验证"]
     async fn test_live_lanzou_resolve() {
         let info = inspect_lanzou_share("https://www.lanzoui.com/u/yoyodadada", None).await.unwrap();
         assert!(!info.files.is_empty(), "必须拉取到文件列表");

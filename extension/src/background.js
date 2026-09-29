@@ -375,6 +375,44 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
   }
 });
 
+// ---- 压制原生浏览器“另存为”对话框的核心机制 ----
+// 当浏览器（特别是在设置中开启了“下载前询问每个文件的保存位置”时）发起下载，
+// 会在确定文件名阶段弹出系统“另存为”模态窗口。
+// 必须注册 onDeterminingFilename，并在接管判定期间返回 true 挂起该过程。
+// 待桌面端接管成功调用 cancel() 取消原生下载后，另存为对话框自始至终不会被拉起。
+const pendingDetermining = new Map();
+
+function resolveDetermining(id, suggestion) {
+  const entry = pendingDetermining.get(id);
+  if (!entry) return;
+  pendingDetermining.delete(id);
+  if (entry.timer) clearTimeout(entry.timer);
+  try {
+    if (suggestion) entry.suggest(suggestion);
+    else entry.suggest();
+  } catch {}
+}
+
+if (typeof chrome !== "undefined" && chrome.downloads?.onDeterminingFilename?.addListener) {
+  chrome.downloads.onDeterminingFilename.addListener((item, suggest) => {
+    // 快速预检：其它扩展发起的下载或特殊协议，立即放行，不挂起
+    if (item.byExtensionId && item.byExtensionId !== chrome.runtime?.id) {
+      suggest();
+      return false;
+    }
+    if ([item.url, item.finalUrl].some((u) => /^(?:blob|data|file|filesystem|chrome-extension|moz-extension|about):/i.test(u || ""))) {
+      suggest();
+      return false;
+    }
+    // 异步安全超时：最多挂起 15 秒，避免未处理下载被永久悬挂
+    const timer = setTimeout(() => {
+      resolveDetermining(item.id);
+    }, 15_000);
+    pendingDetermining.set(item.id, { suggest, timer });
+    return true; // 告知 Chromium 异步处理，在此期间绝对不弹出“另存为”对话框！
+  });
+}
+
 chrome.downloads.onCreated.addListener(async (item) => {
   const settings = await config();
   // 桌面端接管设置接线：桌面端"设置 → 浏览器"中的开关与最小体积阈值
@@ -389,6 +427,7 @@ chrome.downloads.onCreated.addListener(async (item) => {
   }
   const evalResult = evaluateDownload(item, settings, chrome.runtime.id, swStartTime);
   if (!evalResult.eligible) {
+    resolveDetermining(item.id);
     await recordIgnored({
       url: item.url,
       filename: item.filename ? item.filename.split(/[\\/]/).pop() : "未知文件",
@@ -402,6 +441,7 @@ chrome.downloads.onCreated.addListener(async (item) => {
   // 配对预检：未配对时不进入浮层与接管流程，直接由浏览器下载。
   // 避免未配对状态下每个下载都弹浮层 + 重复"接管失败"通知。
   if (await skipUnpairedDownload(item, notify)) {
+    resolveDetermining(item.id);
     try { await chrome.downloads.resume(item.id); } catch {}
     return;
   }
@@ -416,6 +456,7 @@ chrome.downloads.onCreated.addListener(async (item) => {
     proceed = true; // 浮层异常时安全回退直接接管
   }
   if (!proceed) {
+    resolveDetermining(item.id);
     try { await chrome.downloads.resume(item.id); } catch {}
     return;
   }
@@ -428,6 +469,8 @@ chrome.downloads.onCreated.addListener(async (item) => {
     // created（含任务 id）用于徽章上的"撤销"按钮（取消桌面端任务）。
     onTakenOver: (decision, created) => { void announceTakeover(tab, decision?.fileName || "", created?.id); },
   });
+  // 接管流程完毕：释放文件名确定等待，无论成功 cancel 还是回退 resume 均完成闭环
+  resolveDetermining(item.id);
   if (!handled) {
     try { await chrome.downloads.resume(item.id); } catch {}
   }

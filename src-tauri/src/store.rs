@@ -311,6 +311,18 @@ impl Store {
             settings.min_file_size_mb = 0;
             let _ = self.save_settings(&settings).await;
         }
+        // 自动迁移旧版硬编码下载目录：
+        // 若当前保存的路径为空，或是旧版硬编码的 USERPROFILE\Downloads（但在本机系统已被重定向到如 D:\Downloads），
+        // 自动平滑迁移为系统真实的下载目录并落库，避免在 C 盘强行创建无效目录。
+        if let Some(new_dir) = crate::system_dirs::migrate_download_dir_if_needed(&settings.download_dir) {
+            tracing::info!(
+                old_dir = %settings.download_dir,
+                new_dir = %new_dir,
+                "检测到系统真实下载目录（如 Win11 重定向路径）与原配置不一致，自动平滑迁移"
+            );
+            settings.download_dir = new_dir;
+            let _ = self.save_settings(&settings).await;
+        }
         // Task 31.3：全局代理密码以 DPAPI 密文形式落库。
         // 读取后尝试解密；解密失败说明是旧版本明文（或跨用户迁移），保留原值
         // 让下一次 save_settings 重新加密。空密码跳过。
@@ -2180,6 +2192,31 @@ mod tests {
             assert!(restored.frosted_glass);
         });
         assert!(directory.path().join("lumaget.db").exists());
+    }
+
+    #[test]
+    fn migrates_legacy_hardcoded_download_dir_in_sqlite() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::open(directory.path().to_path_buf()).unwrap();
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        runtime.block_on(async {
+            if let Some(legacy_c_dir) = crate::system_dirs::legacy_hardcoded_userprofile_downloads() {
+                let sys_dir = crate::system_dirs::system_download_dir();
+                // 模拟旧版本将 USERPROFILE\Downloads 硬编码写入数据库
+                let mut old_settings = AppSettings::default();
+                old_settings.download_dir = legacy_c_dir.to_string_lossy().to_string();
+                store.save_settings(&old_settings).await.unwrap();
+
+                // 读取设置：若系统实际下载目录与旧版硬编码不同（如 Win11 设为了 D:\Downloads），
+                // 必须自动平滑迁移为系统实际下载目录并落库
+                let loaded = store.get_settings().await.unwrap();
+                if !crate::system_dirs::paths_equal(&legacy_c_dir, &sys_dir) {
+                    assert_eq!(loaded.download_dir, sys_dir.to_string_lossy().to_string());
+                } else {
+                    assert_eq!(loaded.download_dir, legacy_c_dir.to_string_lossy().to_string());
+                }
+            }
+        });
     }
 
     #[test]

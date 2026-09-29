@@ -1061,10 +1061,7 @@ fn default_detail_default_collapsed() -> bool {
 
 impl Default for AppSettings {
     fn default() -> Self {
-        let download_dir = std::env::var_os("USERPROFILE")
-            .map(std::path::PathBuf::from)
-            .unwrap_or_else(|| std::path::PathBuf::from("."))
-            .join("Downloads")
+        let download_dir = crate::system_dirs::system_download_dir()
             .to_string_lossy()
             .to_string();
         Self {

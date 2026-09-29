@@ -35,6 +35,7 @@ mod proxy;
 mod portable;
 mod secure_storage;
 mod store;
+pub mod system_dirs;
 mod task_transfer;
 mod tray_icon;
 mod updater;
@@ -366,6 +367,13 @@ async fn queue_reorder(ids: Vec<String>, manager: State<'_, SharedManager>) -> R
 #[tauri::command]
 async fn settings_get(manager: State<'_, SharedManager>) -> Result<AppSettings, String> {
     Ok(manager.settings().await)
+}
+
+#[tauri::command]
+fn system_get_download_dir() -> String {
+    crate::system_dirs::system_download_dir()
+        .to_string_lossy()
+        .to_string()
 }
 
 #[tauri::command]
@@ -4179,6 +4187,7 @@ pub fn run() {
             queue_reorder,
             settings_get,
             settings_save,
+            system_get_download_dir,
             power_action_get,
             power_action_arm,
             power_action_cancel,

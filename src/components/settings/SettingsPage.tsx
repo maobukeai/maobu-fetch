@@ -209,9 +209,9 @@ export function SettingsPage({
     if (!trimmed) {
       setExtResult({
         compatible: false,
-        app_version: appInfo?.version || "0.10.2",
+        app_version: appInfo?.version || "0.10.3",
         extension_version: "未输入",
-        message: "请先在左侧输入框填写扩展版本号（如 0.10.2，可在浏览器扩展管理页查看）",
+        message: "请先在左侧输入框填写扩展版本号（如 0.10.3，可在浏览器扩展管理页查看）",
       });
       notify("请先填写扩展版本号", "error");
       return;
@@ -316,6 +316,34 @@ export function SettingsPage({
   const openLogsDir = async () => {
     try {
       await api.openLogsDir();
+    } catch (error) {
+      notify(String(error), "error");
+    }
+  };
+
+  const handleSelectDownloadDir = async () => {
+    try {
+      const selected = await pickPath({
+        directory: true,
+        multiple: false,
+        defaultPath: draft.download_dir || undefined,
+        title: t("settings.selectDownloadDirTitle") || "选择默认下载目录",
+      });
+      if (typeof selected === "string" && selected.trim()) {
+        set("download_dir", selected.trim());
+      }
+    } catch (error) {
+      notify(String(error), "error");
+    }
+  };
+
+  const handleUseSystemDownloadDir = async () => {
+    try {
+      const sysDir = await api.getSystemDownloadDir();
+      if (sysDir && sysDir.trim()) {
+        set("download_dir", sysDir.trim());
+        notify(`已读取系统真实下载目录: ${sysDir.trim()}`);
+      }
     } catch (error) {
       notify(String(error), "error");
     }
@@ -702,10 +730,31 @@ export function SettingsPage({
             <SettingsGroup title={t("settings.groupSavePerformance")}>
               <div className="settings-group-content">
                 <SettingRow label={t("settings.downloadDirLabel")}>
-                  <input
-                    value={draft.download_dir}
-                    onChange={(e) => set("download_dir", e.target.value)}
-                  />
+                  <div className="download-dir-control">
+                    <input
+                      value={draft.download_dir}
+                      onChange={(e) => set("download_dir", e.target.value)}
+                      placeholder={t("settings.downloadDirLabel")}
+                    />
+                    <button
+                      type="button"
+                      className="download-dir-btn"
+                      onClick={handleSelectDownloadDir}
+                      title={t("settings.selectDownloadDirTitle") || "浏览并选择文件夹"}
+                    >
+                      <FolderOpen size={14} />
+                      <span>{t("settings.browseDir") || "浏览..."}</span>
+                    </button>
+                    <button
+                      type="button"
+                      className="download-dir-btn"
+                      onClick={handleUseSystemDownloadDir}
+                      title="自动读取操作系统真实设置的下载目录（支持 Win11 重定向路径）"
+                    >
+                      <RefreshCw size={13} />
+                      <span>{t("settings.useSystemDir") || "系统默认"}</span>
+                    </button>
+                  </div>
                 </SettingRow>
                 <SettingRow label={t("settings.collisionLabel")}>
                   <div className="fluent-segmented-control settings-segmented">

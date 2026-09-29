@@ -63,6 +63,8 @@ export const api = {
   reorder: (ids: string[]) => call<void>("queue_reorder", { ids }),
   settings: () => call<AppSettings>("settings_get"),
   saveSettings: (settings: AppSettings) => call<void>("settings_save", { settings }),
+  /** 获取操作系统真实配置的默认下载目录（支持 Win11 重定向路径） */
+  getSystemDownloadDir: () => call<string>("system_get_download_dir"),
   /** 检查是否为静默启动（开机自启或开启了启动时最小化） */
   isSilentStartup: () =>
     isDesktop() ? call<boolean>("is_silent_startup") : Promise.resolve(false),

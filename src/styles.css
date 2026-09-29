@@ -1198,6 +1198,12 @@ svg { flex: 0 0 auto; }
 .setting-row input.proxy-address-input { width: 480px; max-width: 100%; }
 .setting-row:has(.proxy-address-input) { grid-template-columns: minmax(90px, auto) minmax(0, 1fr); }
 .setting-row:has(.proxy-address-input) input.proxy-address-input { width: 100%; max-width: 500px; justify-self: end; }
+.setting-row:has(.download-dir-control) { grid-template-columns: minmax(90px, auto) minmax(0, 1fr); }
+.download-dir-control { display: flex; align-items: center; gap: 8px; justify-self: end; width: 100%; max-width: 520px; }
+.download-dir-control input { flex: 1; min-width: 160px; width: 100% !important; justify-self: stretch !important; }
+.download-dir-btn { display: inline-flex; align-items: center; justify-content: center; gap: 5px; height: 31px; padding: 0 11px; border: 1px solid var(--border-strong); border-radius: 6px; background: var(--control); color: var(--text); font-size: 11px; font-weight: 500; white-space: nowrap; cursor: pointer; flex-shrink: 0; transition: border-color 0.15s, background-color 0.15s, transform 0.1s; }
+.download-dir-btn:hover { border-color: var(--accent); background: var(--surface-alt); }
+.download-dir-btn:active { transform: scale(0.98); }
 .toggle { position: relative; justify-self: end; width: 36px !important; min-height: 20px !important; height: 20px !important; padding: 0 !important; appearance: none; border: none !important; border-radius: 10px !important; background: var(--toggle-bg) !important; cursor: pointer; transition: background-color .15s; }
 .toggle::after { content: ""; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: #ffffff; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15); transition: transform .15s; }
 .toggle:checked { background: var(--success) !important; }
