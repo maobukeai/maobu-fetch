@@ -233,7 +233,8 @@
     "taskStatusPause": "暂停",
     "taskStatusResume": "继续",
     "tempAuthBadge": "包含临时登录态",
-    "tempAuthHint": "本任务通过浏览器扩展传入了当前页 Cookie/Referer/User-Agent，仅本次下载使用，完成后自动清除。"
+    "tempAuthHint": "本任务通过浏览器扩展传入了当前页 Cookie/Authorization/Referer/User-Agent 等临时登录态，仅本次下载使用，完成后自动清除。",
+    "templateAuthStripped": "为保护账号安全，模板不保存 Cookie、Authorization 等认证头；其余请求头将原样保存。"
   },
   "connections": {
     "title": "分片连接",
@@ -297,7 +298,10 @@
     "frostedGlassFailed": "无法应用磨砂玻璃效果：{error}",
     "kernelConnectionFailed": "无法连接下载内核：{error}",
     "redownloading": "已清除旧分片，重新开始下载",
-    "meteredResumed": "已在计量网络下继续下载"
+    "meteredResumed": "已在计量网络下继续下载",
+    "quickViewSaveFailed": "快捷视图保存失败：{error}",
+    "quickViewDeleteFailed": "快捷视图删除失败：{error}",
+    "quickViewLoadFailed": "快捷视图加载失败：{error}"
   },
   "dialogs": {
     "selectedItemsCount": "已选择 {count} 项",
@@ -335,6 +339,21 @@
     "closeExit": "退出程序",
     "rememberChoice": "记住选择",
     "languageSection": "语言"
+  },
+  "deleteConfirm": {
+    "filesTitle": "删除本地文件",
+    "recordsTitle": "删除任务记录",
+    "historyFilesTitle": "彻底删除任务与文件",
+    "historyRecordsTitle": "彻底删除历史记录",
+    "filesBody": "将删除 {taskCount} 个任务的本地文件（共 {fileCount} 个文件），任务记录与下载链接将保留在历史记录中。",
+    "historyFilesBody": "将彻底删除 {taskCount} 个历史任务及其本地文件（共 {fileCount} 个文件）。",
+    "recordsBody": "选中的 {taskCount} 个任务将移入历史记录，已完成任务的本地文件保留，可在历史中重新下载。",
+    "recordsBodyHistory": "将彻底删除 {taskCount} 条历史记录，本地文件保留在磁盘上。",
+    "incompleteNote": "其中 {count} 个任务尚未完成，未完成的分片数据将被清理。",
+    "fileListLabel": "涉及文件：",
+    "irreversible": "此操作不可恢复。",
+    "confirmDelete": "删除",
+    "confirmDeleteFiles": "删除文件"
   },
   "settings": {
     "title": "设置",

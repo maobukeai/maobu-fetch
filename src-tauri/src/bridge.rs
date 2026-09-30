@@ -239,7 +239,12 @@ async fn add_task(
     request.source = Some("browser".into());
     // 2026-08-16 BT/磁力：url 字段承载 magnet: URI 时走 BT 内核。
     // /v1 请求结构不变（§5），扩展按原协议发送即可。
-    if request.url.trim().to_ascii_lowercase().starts_with("magnet:") {
+    if request
+        .url
+        .trim()
+        .to_ascii_lowercase()
+        .starts_with("magnet:")
+    {
         let settings = state.manager.settings().await;
         if !settings.bt_intercept_magnet {
             return Err((StatusCode::FORBIDDEN, "磁力接管已在桌面端设置中关闭".into()));
@@ -463,8 +468,8 @@ async fn sync_media_credentials(
     body: Bytes,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
     authorize(&state, &headers, &body).await?;
-    let req: MediaCredentialSyncRequest = serde_json::from_slice(&body)
-        .map_err(|_| (StatusCode::BAD_REQUEST, "参数无效".into()))?;
+    let req: MediaCredentialSyncRequest =
+        serde_json::from_slice(&body).map_err(|_| (StatusCode::BAD_REQUEST, "参数无效".into()))?;
 
     let domain = req.domain.trim().to_lowercase();
     if domain.is_empty() {
@@ -507,7 +512,12 @@ async fn sync_media_credentials(
         updated_at: crate::now_iso8601_utc(),
     };
 
-    if let Ok(Some(existing)) = state.manager.store.media_credential_get_matching(&domain).await {
+    if let Ok(Some(existing)) = state
+        .manager
+        .store
+        .media_credential_get_matching(&domain)
+        .await
+    {
         // 保护用户手动配置：如果已存在的 Cookie 是 Netscape cookies.txt 格式
         // （只能由用户从「导出 cookies.txt」按钮导出后手动导入，扩展自动同步
         // 永远只发 HTTP 头格式），则不允许被自动同步覆盖。这避免了
@@ -531,7 +541,6 @@ async fn sync_media_credentials(
     Ok(StatusCode::OK)
 }
 
-
 async fn authorize(
     state: &BridgeState,
     headers: &HeaderMap,
@@ -549,7 +558,10 @@ async fn authorize(
         .and_then(|v| v.parse::<u64>().ok())
         .ok_or((StatusCode::UNAUTHORIZED, "缺少时间戳".into()))?;
     if now().abs_diff(timestamp) > 5 * 60 * 1000 {
-        return Err((StatusCode::UNAUTHORIZED, "请求已过期（请检查并同步电脑 Windows 系统时间）".into()));
+        return Err((
+            StatusCode::UNAUTHORIZED,
+            "请求已过期（请检查并同步电脑 Windows 系统时间）".into(),
+        ));
     }
     let signature = headers
         .get("x-luma-signature")
@@ -625,6 +637,10 @@ async fn rate_limit_pair(queue: &Mutex<VecDeque<Instant>>) -> Result<(), (Status
     Ok(())
 }
 fn validate_origin(headers: &HeaderMap, extension: &str) -> Result<(), (StatusCode, String)> {
+    // §5 精确扩展 Origin 校验：仅接受与扩展 ID 完全一致的浏览器扩展 Origin。
+    // 扩展端所有桥接请求均由 background service worker 发出（content script 经
+    // chrome.runtime.sendMessage 转发），浏览器会自动携带真实扩展 Origin；
+    // 不存在任何自定义请求头旁路，防止本机其他进程伪造扩展标识。
     let origin = headers
         .get("origin")
         .and_then(|v| v.to_str().ok())
@@ -634,16 +650,6 @@ fn validate_origin(headers: &HeaderMap, extension: &str) -> Result<(), (StatusCo
     let edge = format!("edge-extension://{extension}");
     let moz = format!("moz-extension://{extension}");
     if origin == chrome || origin == edge || origin == moz {
-        return Ok(());
-    }
-    // 浏览器 HTTP 规范：跨域请求（如 GET / 页面 content script 发起的 fetch）可能不带 Origin，
-    // 或 Origin 为网页 Origin / null。如果请求携带了匹配的 X-Luma-Extension 请求头，
-    // 放行交由 authorize 进行 HMAC 签名或配对码校验。
-    let has_ext = headers
-        .get("x-luma-extension")
-        .and_then(|v| v.to_str().ok())
-        .map_or(false, |ext| ext == extension);
-    if has_ext {
         return Ok(());
     }
     Err((StatusCode::FORBIDDEN, "Origin 不受信任".into()))
@@ -697,6 +703,17 @@ mod tests {
         );
         assert!(validate_origin(&headers, id).is_ok());
         headers.insert("origin", HeaderValue::from_static("http://localhost"));
+        assert!(validate_origin(&headers, id).is_err());
+
+        // §5：自定义 X-Luma-Extension 头不能替代精确 Origin 校验
+        //（防止本机进程伪造扩展标识提交配对码或调用受保护端点）。
+        headers.remove("origin");
+        headers.insert(
+            "x-luma-extension",
+            HeaderValue::from_static("abcdefghijklmnop"),
+        );
+        assert!(validate_origin(&headers, id).is_err());
+        headers.insert("origin", HeaderValue::from_static("null"));
         assert!(validate_origin(&headers, id).is_err());
     }
 

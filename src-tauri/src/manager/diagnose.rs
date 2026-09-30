@@ -1558,10 +1558,8 @@ mod tests {
             MediaPlatformError::LoginExpired
         );
         // 中文文案应引导用户到「设置 → 媒体凭证」，且不包含敏感字段
-        let msg = platform_error_to_chinese(
-            MediaPlatformError::LoginExpired,
-            MediaPlatform::YouTube,
-        );
+        let msg =
+            platform_error_to_chinese(MediaPlatformError::LoginExpired, MediaPlatform::YouTube);
         assert!(msg.contains("媒体凭证"));
         assert!(msg.contains("Cookie"));
         // 与 Twitter 的 Cookie 文案区分（不应混淆平台）

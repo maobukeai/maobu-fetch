@@ -70,8 +70,8 @@ pub fn parse_magnet(input: &str) -> Result<MagnetInfo, String> {
             _ => {}
         }
     }
-    let info_hash = info_hash
-        .ok_or_else(|| "磁力链接缺少 xt=urn:btih:… 参数，无法确定资源标识".to_string())?;
+    let info_hash =
+        info_hash.ok_or_else(|| "磁力链接缺少 xt=urn:btih:… 参数，无法确定资源标识".to_string())?;
     Ok(MagnetInfo {
         info_hash,
         display_name,

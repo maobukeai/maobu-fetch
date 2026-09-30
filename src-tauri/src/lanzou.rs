@@ -101,9 +101,9 @@ pub fn is_lanzou_host(host: &str) -> bool {
 /// 计算阿里云 WAF 安全验证 Cookie (`acw_sc__v2`)
 fn compute_acw_sc_v2(arg1: &str) -> String {
     let m = [
-        0xf, 0x23, 0x1d, 0x18, 0x21, 0x10, 0x1, 0x26, 0xa, 0x9, 0x13, 0x1f, 0x28, 0x1b, 0x16,
-        0x17, 0x19, 0xd, 0x6, 0xb, 0x27, 0x12, 0x14, 0x8, 0xe, 0x15, 0x20, 0x1a, 0x2, 0x1e,
-        0x7, 0x4, 0x11, 0x5, 0x3, 0x1c, 0x22, 0x25, 0xc, 0x24,
+        0xf, 0x23, 0x1d, 0x18, 0x21, 0x10, 0x1, 0x26, 0xa, 0x9, 0x13, 0x1f, 0x28, 0x1b, 0x16, 0x17,
+        0x19, 0xd, 0x6, 0xb, 0x27, 0x12, 0x14, 0x8, 0xe, 0x15, 0x20, 0x1a, 0x2, 0x1e, 0x7, 0x4,
+        0x11, 0x5, 0x3, 0x1c, 0x22, 0x25, 0xc, 0x24,
     ];
     let p = "3000176000856006061501533003690027800375";
     let arg1_chars: Vec<char> = arg1.chars().collect();
@@ -157,7 +157,10 @@ async fn fetch_lanzou_page(
         req = req.header("Cookie", ck);
     }
 
-    let resp = req.send().await.map_err(|e| format!("请求蓝奏云页面失败：{e}"))?;
+    let resp = req
+        .send()
+        .await
+        .map_err(|e| format!("请求蓝奏云页面失败：{e}"))?;
     let html = resp.text().await.unwrap_or_default();
 
     if html.contains("var arg1") {
@@ -176,7 +179,10 @@ async fn fetch_lanzou_page(
                 req2 = req2.header("Referer", ref_);
             }
 
-            let resp2 = req2.send().await.map_err(|e| format!("挑战验证后重新请求失败：{e}"))?;
+            let resp2 = req2
+                .send()
+                .await
+                .map_err(|e| format!("挑战验证后重新请求失败：{e}"))?;
             return Ok((resp2.text().await.unwrap_or_default(), Some(cookie_val)));
         }
     }
@@ -188,9 +194,11 @@ pub async fn inspect_lanzou_share(
     share_url: &str,
     pass_code: Option<&str>,
 ) -> Result<LanzouShareInfo, String> {
-    let parsed = parse_lanzou_url(share_url)
-        .ok_or_else(|| "无法识别的蓝奏云分享链接".to_string())?;
-    let effective_pwd = pass_code.map(|s| s.to_string()).or(parsed.pass_code.clone());
+    let parsed =
+        parse_lanzou_url(share_url).ok_or_else(|| "无法识别的蓝奏云分享链接".to_string())?;
+    let effective_pwd = pass_code
+        .map(|s| s.to_string())
+        .or(parsed.pass_code.clone());
 
     let client = reqwest::Client::builder()
         .user_agent(LANZOU_USER_AGENT)
@@ -249,7 +257,10 @@ pub async fn inspect_lanzou_share(
                 if let (Some(k), Some(v)) = (cap.get(1), cap.get(2)) {
                     let key = k.as_str().trim().to_string();
                     let raw_val = v.as_str().trim().trim_matches('\'').trim_matches('"');
-                    let mut val = var_map.get(raw_val).cloned().unwrap_or_else(|| raw_val.to_string());
+                    let mut val = var_map
+                        .get(raw_val)
+                        .cloned()
+                        .unwrap_or_else(|| raw_val.to_string());
                     if val == "pgs" || val == "pg" {
                         val = "1".to_string();
                     }
@@ -292,14 +303,31 @@ pub async fn inspect_lanzou_share(
                 if let Ok(json_val) = serde_json::from_str::<serde_json::Value>(&json_text) {
                     if let Some(text_arr) = json_val.get("text").and_then(|v| v.as_array()) {
                         for item in text_arr {
-                            let item_id = item.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                            let item_id = item
+                                .get("id")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string();
                             if item_id.is_empty() || item_id == "-1" {
                                 continue;
                             }
-                            let raw_name = item.get("name_all").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                            let clean_name = raw_name.replace("<span class=\"s_ad\">推广</span>", "");
-                            let size_str = item.get("size").and_then(|v| v.as_str()).unwrap_or("0").to_string();
-                            let time_str = item.get("time").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                            let raw_name = item
+                                .get("name_all")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string();
+                            let clean_name =
+                                raw_name.replace("<span class=\"s_ad\">推广</span>", "");
+                            let size_str = item
+                                .get("size")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("0")
+                                .to_string();
+                            let time_str = item
+                                .get("time")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string();
                             let parsed_size = parse_size_to_bytes(&size_str);
 
                             let item_url = if item_id.starts_with("http") {
@@ -384,9 +412,11 @@ pub async fn resolve_lanzou_file(
     file_id: &str,
     pass_code: Option<&str>,
 ) -> Result<LanzouDirectUrlResult, String> {
-    let parsed = parse_lanzou_url(share_url)
-        .ok_or_else(|| "无法识别的蓝奏云分享链接".to_string())?;
-    let effective_pwd = pass_code.map(|s| s.to_string()).or(parsed.pass_code.clone());
+    let parsed =
+        parse_lanzou_url(share_url).ok_or_else(|| "无法识别的蓝奏云分享链接".to_string())?;
+    let effective_pwd = pass_code
+        .map(|s| s.to_string())
+        .or(parsed.pass_code.clone());
 
     let target_url = if file_id.starts_with("http") {
         file_id.to_string()
@@ -404,7 +434,8 @@ pub async fn resolve_lanzou_file(
     let (html, cookie_opt) = fetch_lanzou_page(&client, &target_url, Some(share_url), None).await?;
     let re_find_iframe = Regex::new(r#"(?is)<iframe[^>]*\s+src=['"]?([^'"\s>]+)['"]?"#).unwrap();
 
-    let (sign_html, req_host, iframe_ref) = if let Some(iframe_cap) = re_find_iframe.captures(&html) {
+    let (sign_html, req_host, iframe_ref) = if let Some(iframe_cap) = re_find_iframe.captures(&html)
+    {
         if let Some(m) = iframe_cap.get(1) {
             let path = m.as_str();
             let iframe_url = if path.starts_with("http") {
@@ -412,7 +443,13 @@ pub async fn resolve_lanzou_file(
             } else {
                 format!("https://{}{}", parsed.host, path)
             };
-            let (if_html, _) = fetch_lanzou_page(&client, &iframe_url, Some(&target_url), cookie_opt.as_deref()).await?;
+            let (if_html, _) = fetch_lanzou_page(
+                &client,
+                &iframe_url,
+                Some(&target_url),
+                cookie_opt.as_deref(),
+            )
+            .await?;
             (if_html, parsed.host.clone(), iframe_url)
         } else {
             (html.clone(), parsed.host.clone(), target_url.clone())
@@ -447,7 +484,10 @@ pub async fn resolve_lanzou_file(
             if let (Some(k), Some(v)) = (cap.get(1), cap.get(2)) {
                 let key = k.as_str().trim().to_string();
                 let raw_val = v.as_str().trim().trim_matches('\'').trim_matches('"');
-                let mut val = var_map.get(raw_val).cloned().unwrap_or_else(|| raw_val.to_string());
+                let mut val = var_map
+                    .get(raw_val)
+                    .cloned()
+                    .unwrap_or_else(|| raw_val.to_string());
                 if raw_val == "kdns" || raw_val == "kd" {
                     val = "1".to_string();
                 }
@@ -587,10 +627,19 @@ mod tests {
     #[tokio::test]
     #[ignore = "依赖外部实时蓝奏云共享连接，仅供本地联调验证"]
     async fn test_live_lanzou_resolve() {
-        let info = inspect_lanzou_share("https://www.lanzoui.com/u/yoyodadada", None).await.unwrap();
+        let info = inspect_lanzou_share("https://www.lanzoui.com/u/yoyodadada", None)
+            .await
+            .unwrap();
         assert!(!info.files.is_empty(), "必须拉取到文件列表");
         let first_file = &info.files[0];
-        let direct = resolve_lanzou_file("https://www.lanzoui.com/u/yoyodadada", &first_file.id, None).await.unwrap();
-        assert!(direct.url.starts_with("http"), "必须返回以 http 开头的直链: {}", direct.url);
+        let direct =
+            resolve_lanzou_file("https://www.lanzoui.com/u/yoyodadada", &first_file.id, None)
+                .await
+                .unwrap();
+        assert!(
+            direct.url.starts_with("http"),
+            "必须返回以 http 开头的直链: {}",
+            direct.url
+        );
     }
 }

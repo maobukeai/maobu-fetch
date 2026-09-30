@@ -14,15 +14,12 @@ use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
 use crate::manager::{
-    friendly_body_error, friendly_reqwest, DownloadManager, RateLimiter,
-    RuntimeTaskOptions,
+    friendly_body_error, friendly_reqwest, DownloadManager, RateLimiter, RuntimeTaskOptions,
 };
 use crate::models::{DownloadTask, TaskStatus};
 
 use super::crypto::{decrypt_aes_128, derive_iv_from_sequence};
-use super::parser::{
-    parse_m3u8, select_best_variant, EncryptionMethod, ParsedPlaylist,
-};
+use super::parser::{parse_m3u8, select_best_variant, EncryptionMethod, ParsedPlaylist};
 
 /// M3U8 原生下载执行入口
 pub async fn download_m3u8_task(
@@ -47,10 +44,7 @@ pub async fn download_m3u8_task(
 
         let resp = req.send().await.map_err(friendly_reqwest)?;
         if !resp.status().is_success() {
-            return Err(format!(
-                "获取 M3U8 播放列表失败：HTTP {}",
-                resp.status()
-            ));
+            return Err(format!("获取 M3U8 播放列表失败：HTTP {}", resp.status()));
         }
 
         let final_resp_url = resp.url().to_string();
@@ -88,6 +82,14 @@ pub async fn download_m3u8_task(
         .insert(task.id.clone(), runtime_options.clone());
 
     let total_segments = media_playlist.segments.len();
+    // fMP4 流（#EXT-X-MAP）的初始化分片必须最先合并进输出文件，否则产出缺少
+    // ftyp/moov 头的损坏文件。以 total_segments 作为其专用分片索引，避免与
+    // 真实切片 0 的临时文件冲突；复用现有 worker 下载逻辑（含密钥与断点续传）。
+    let init_segment = media_playlist.init_segment.as_ref().map(|init| {
+        let mut seg = init.clone();
+        seg.index = total_segments;
+        seg
+    });
 
     // 统计已存在的分片（断点续传）
     let progress_bytes = Arc::new(AtomicU64::new(0));
@@ -105,7 +107,11 @@ pub async fn download_m3u8_task(
 
     // 3. 密钥缓存池（避免重复请求相同的 16 字节解密 Key）
     let key_cache = Arc::new(Mutex::new(HashMap::<String, Vec<u8>>::new()));
-    let pending_queue = Arc::new(Mutex::new(VecDeque::from(media_playlist.segments.clone())));
+    let mut queued_segments = media_playlist.segments.clone();
+    if let Some(init) = &init_segment {
+        queued_segments.push(init.clone());
+    }
+    let pending_queue = Arc::new(Mutex::new(VecDeque::from(queued_segments)));
 
     task.status = TaskStatus::Downloading;
     task.active_connections = connections;
@@ -285,7 +291,8 @@ pub async fn download_m3u8_task(
                             if let Some(err) = stream_err {
                                 if retries < 3 {
                                     retries += 1;
-                                    tokio::time::sleep(Duration::from_millis(500 * retries as u64)).await;
+                                    tokio::time::sleep(Duration::from_millis(500 * retries as u64))
+                                        .await;
                                     continue;
                                 }
                                 return Err(err);
@@ -296,7 +303,8 @@ pub async fn download_m3u8_task(
                         Ok(resp) => {
                             if retries < 3 {
                                 retries += 1;
-                                tokio::time::sleep(Duration::from_millis(500 * retries as u64)).await;
+                                tokio::time::sleep(Duration::from_millis(500 * retries as u64))
+                                    .await;
                                 continue;
                             }
                             return Err(format!(
@@ -308,7 +316,8 @@ pub async fn download_m3u8_task(
                         Err(e) => {
                             if retries < 3 {
                                 retries += 1;
-                                tokio::time::sleep(Duration::from_millis(500 * retries as u64)).await;
+                                tokio::time::sleep(Duration::from_millis(500 * retries as u64))
+                                    .await;
                                 continue;
                             }
                             return Err(friendly_reqwest(e));
@@ -319,7 +328,9 @@ pub async fn download_m3u8_task(
                 // 执行解密（若有 AES-128）
                 let final_data = if let Some(k) = &key_bytes {
                     let iv = if let Some(key_info) = &seg.key {
-                        key_info.iv.unwrap_or_else(|| derive_iv_from_sequence(seg.sequence))
+                        key_info
+                            .iv
+                            .unwrap_or_else(|| derive_iv_from_sequence(seg.sequence))
                     } else {
                         derive_iv_from_sequence(seg.sequence)
                     };
@@ -339,7 +350,9 @@ pub async fn download_m3u8_task(
                 f.flush().await.map_err(|e| e.to_string())?;
                 drop(f);
 
-                let _ = fs::rename(&tmp_seg_path, &seg_path).await;
+                fs::rename(&tmp_seg_path, &seg_path)
+                    .await
+                    .map_err(|e| format!("保存分片文件失败: {e}"))?;
                 completed_counter.fetch_add(1, Ordering::Relaxed);
             }
         }));
@@ -350,6 +363,11 @@ pub async fn download_m3u8_task(
     for handle in worker_handles {
         match handle.await {
             Ok(Err(e)) => {
+                // Worker 在收到取消信号时以固定哨兵错误退出，属于正常中断；
+                // 其余错误才是真实失败原因，需要保留并取消其余 Worker。
+                if e == "任务已暂停" {
+                    continue;
+                }
                 if worker_error.is_none() {
                     worker_error = Some(e);
                     token.cancel();
@@ -368,15 +386,6 @@ pub async fn download_m3u8_task(
     reporter_handle.abort();
 
     if let Some(err) = worker_error {
-        if token.is_cancelled() {
-            task.status = TaskStatus::Paused;
-            task.speed = 0;
-            task.eta_seconds = None;
-            task.active_connections = 0;
-            let _ = manager.store.upsert_task(&task).await;
-            manager.emit_task("updated", &task);
-            return Err("任务已暂停".to_string());
-        }
         task.status = TaskStatus::Failed;
         task.error = Some(err.clone());
         let _ = manager.store.upsert_task(&task).await;
@@ -408,6 +417,33 @@ pub async fn download_m3u8_task(
     let mut total_merged_bytes = 0u64;
     let mut seg_cleanup_list = Vec::new();
     let mut copy_buf = vec![0u8; 256 * 1024];
+
+    // fMP4：初始化分片必须写在所有媒体切片之前
+    if init_segment.is_some() {
+        let init_part = segment_part_path(temp_path, total_segments);
+        if !init_part.exists() {
+            let _ = fs::remove_file(&merge_path).await;
+            return Err("初始化分片（#EXT-X-MAP）数据丢失，无法完成合并".into());
+        }
+        let mut init_f = File::open(&init_part)
+            .await
+            .map_err(|e| format!("读取初始化分片失败: {e}"))?;
+        loop {
+            let n = init_f
+                .read(&mut copy_buf)
+                .await
+                .map_err(|e| format!("读取初始化分片流失败: {e}"))?;
+            if n == 0 {
+                break;
+            }
+            buf_writer
+                .write_all(&copy_buf[..n])
+                .await
+                .map_err(|e| format!("写入合并流失败: {e}"))?;
+            total_merged_bytes += n as u64;
+        }
+        seg_cleanup_list.push(init_part);
+    }
 
     for i in 0..total_segments {
         let seg_path = segment_part_path(temp_path, i);

@@ -98,6 +98,10 @@ import { ContextMenu } from "./components/common/ContextMenu";
 import { Details } from "./components/details/Details";
 import { AdvancedFilterPanel } from "./components/modals/AdvancedFilterPanel";
 import { CloseConfirmDialog } from "./components/modals/CloseConfirmDialog";
+import {
+  DeleteConfirmDialog,
+  type DeleteConfirmRequest,
+} from "./components/modals/DeleteConfirmDialog";
 import { NewTaskDialog } from "./components/modals/NewTaskDialog";
 import { RenameDialog } from "./components/modals/RenameDialog";
 import { RefreshUrlDialog } from "./components/modals/RefreshUrlDialog";
@@ -288,6 +292,8 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [categoriesExpanded, setCategoriesExpanded] = useState(true);
   const [showCloseConfirm, setShowCloseConfirm] = useState(false);
+  const [deleteConfirm, setDeleteConfirm] =
+    useState<DeleteConfirmRequest | null>(null);
   const [splash, setSplash] = useState(true);
   const [initialUrlFromClipboard, setInitialUrlFromClipboard] = useState("");
   const [toast, setToast] = useState<{ kind: "ok" | "error"; text: string }>();
@@ -443,7 +449,12 @@ export default function App() {
           const parsed = JSON.parse(raw) as QuickView[];
           if (Array.isArray(parsed)) setQuickViews(parsed);
         }
-      } catch {}
+      } catch (error) {
+        notifyRef.current(
+          t("toasts.quickViewLoadFailed", { error: String(error) }),
+          "error"
+        );
+      }
       return;
     }
     let cancelled = false;
@@ -472,10 +483,20 @@ export default function App() {
               }
             }
             localStorage.removeItem(QUICK_VIEWS_STORAGE_KEY);
-          } catch {}
+          } catch (error) {
+            notifyRef.current(
+              t("toasts.quickViewLoadFailed", { error: String(error) }),
+              "error"
+            );
+          }
         }
         if (!cancelled) setQuickViews(views);
-      } catch {}
+      } catch (error) {
+        notifyRef.current(
+          t("toasts.quickViewLoadFailed", { error: String(error) }),
+          "error"
+        );
+      }
     })();
     return () => {
       cancelled = true;
@@ -484,7 +505,12 @@ export default function App() {
 
   useEffect(() => {
     const reload = () => {
-      void api.savedViewList().then(setQuickViews).catch(() => {});
+      void api.savedViewList().then(setQuickViews).catch((error) => {
+        notifyRef.current(
+          t("toasts.quickViewLoadFailed", { error: String(error) }),
+          "error"
+        );
+      });
     };
     window.addEventListener("maobu:backup-restored", reload);
     return () => window.removeEventListener("maobu:backup-restored", reload);
@@ -903,6 +929,7 @@ export default function App() {
         speedLimitTarget ||
         aboutOpen ||
         showCloseConfirm ||
+        deleteConfirm ||
         context
       )
         return;
@@ -978,6 +1005,7 @@ export default function App() {
     speedLimitTarget,
     aboutOpen,
     showCloseConfirm,
+    deleteConfirm,
     context,
   ]);
 
@@ -1083,7 +1111,30 @@ export default function App() {
     taskTags,
   ]);
 
+  // 批量操作只作用于"当前可见列表中被选中"的任务：选择集可以跨过滤保留，
+  // 但暂停/恢复/删除/复制链接等操作范围必须收敛到可见项，避免误操作被隐藏的任务。
+  const visibleSelection = useMemo(() => {
+    const ids = new Set<string>();
+    for (const task of visible) {
+      if (selected.has(task.id)) ids.add(task.id);
+    }
+    return {
+      ids,
+      tasks: visible.filter((task) => ids.has(task.id)),
+      allSelected: visible.length > 0 && ids.size === visible.length,
+    };
+  }, [visible, selected]);
   const selectedTasks = tasks.filter((task) => selected.has(task.id));
+
+  // 表头全选框的"半选"状态：部分可见任务被选中时呈现 indeterminate。
+  const selectAllRef = useRef<HTMLInputElement | null>(null);
+  useEffect(() => {
+    const el = selectAllRef.current;
+    if (el) {
+      el.indeterminate =
+        visibleSelection.ids.size > 0 && !visibleSelection.allSelected;
+    }
+  }, [visibleSelection]);
   const selectedOne =
     selectedTasks.length === 1 ? selectedTasks[0] : undefined;
   const activeTask = useMemo(() => {
@@ -1148,11 +1199,12 @@ export default function App() {
 
   const bulk = async (action: string) => {
     try {
+      const selectedIds = visibleSelection.ids;
       if (
         view === "history" &&
         (action === "resume" || action === "redownload")
       ) {
-        for (const id of selected) {
+        for (const id of selectedIds) {
           await api.action(id, "redownload");
         }
         setSelected(new Set());
@@ -1161,11 +1213,11 @@ export default function App() {
       }
       const ids =
         action === "resume"
-          ? [...selected].filter((id) => {
+          ? [...selectedIds].filter((id) => {
               const t = tasks.find((task) => task.id === id);
               return t && !["completed", "cancelled"].includes(t.status);
             })
-          : [...selected];
+          : [...selectedIds];
       if (ids.length === 0) return;
       await api.bulkAction(ids, action);
       notify(action === "pause" ? "已暂停所选任务" : "任务已加入队列");
@@ -1174,50 +1226,13 @@ export default function App() {
     }
   };
 
-  const removeSelected = async (deleteFile: boolean) => {
-    try {
-      const isHistory = view === "history";
-      const selectedList = tasks.filter((t) => selected.has(t.id));
-      const hasIncomplete = selectedList.some(
-        (t) => t.status !== "completed"
-      );
-      for (const id of selected) {
-        if (isHistory) {
-          await api.remove(id, deleteFile);
-        } else {
-          await api.archive(id, deleteFile);
-        }
-      }
-      setSelected(new Set());
-      notify(
-        isHistory
-          ? deleteFile
-            ? "已从历史中彻底删除任务及文件"
-            : "已从历史中彻底删除任务记录"
-          : deleteFile
-          ? "任务文件已删除，下载链接已归档至历史记录"
-          : hasIncomplete
-          ? "未完成任务已清理，下载链接已保留至历史记录"
-          : "任务已移入历史记录（可在历史中随时重新下载）"
-      );
-    } catch (error) {
-      notify(String(error), "error");
-    }
-  };
-
-  const clearHistory = async (deleteFile: boolean) => {
-    try {
-      for (const task of partitioned.historyTasks)
-        await api.remove(task.id, deleteFile);
-      setSelected(new Set());
-      notify(
-        deleteFile
-          ? `已删除 ${partitioned.historyTasks.length} 个历史任务及文件`
-          : `已删除 ${partitioned.historyTasks.length} 个历史任务记录`
-      );
-    } catch (error) {
-      notify(String(error), "error");
-    }
+  /** 打开删除确认对话框；实际删除在用户确认后交由 handleDeleteTasks 执行。 */
+  const requestDeleteConfirmation = (
+    taskIds: Set<string>,
+    deleteFile: boolean
+  ) => {
+    if (taskIds.size === 0) return;
+    setDeleteConfirm({ taskIds, deleteFile, historyView: view === "history" });
   };
 
   const handleTaskMouseDown = useCallback(
@@ -1425,6 +1440,7 @@ export default function App() {
         speedLimitTarget ||
         aboutOpen ||
         showCloseConfirm ||
+        deleteConfirm ||
         context
       )
         return;
@@ -1465,11 +1481,7 @@ export default function App() {
       if (matchesShortcut(event, keys.select_all)) {
         if (visible.length === 0) return;
         event.preventDefault();
-        const allSelected =
-          visible.length > 0 &&
-          selected.size === visible.length &&
-          visible.every((t) => selected.has(t.id));
-        if (allSelected) {
+        if (visibleSelection.allSelected) {
           setSelected(new Set());
         } else {
           setSelected(new Set(visible.map((task) => task.id)));
@@ -1477,12 +1489,16 @@ export default function App() {
         return;
       }
       if (matchesShortcut(event, keys.copy_url)) {
-        if (selectedTasks.length === 0) return;
+        if (visibleSelection.tasks.length === 0) return;
         event.preventDefault();
-        const text = selectedTasks.map((task) => task.url).join("\n");
+        const text = visibleSelection.tasks
+          .map((task) => task.url)
+          .join("\n");
         void navigator.clipboard
           .writeText(text)
-          .then(() => notify(`已复制 ${selectedTasks.length} 个来源 URL`))
+          .then(() =>
+            notify(`已复制 ${visibleSelection.tasks.length} 个来源 URL`)
+          )
           .catch((error) =>
             notify(`复制 URL 失败：${String(error)}`, "error")
           );
@@ -1497,15 +1513,15 @@ export default function App() {
         return;
       }
       if (matchesShortcut(event, keys.delete_file)) {
-        if (selected.size === 0) return;
+        if (visibleSelection.ids.size === 0) return;
         event.preventDefault();
-        void handleDeleteTasks(new Set(selected), true);
+        requestDeleteConfirmation(visibleSelection.ids, true);
         return;
       }
       if (matchesShortcut(event, keys.delete_task)) {
-        if (selected.size === 0) return;
+        if (visibleSelection.ids.size === 0) return;
         event.preventDefault();
-        void handleDeleteTasks(new Set(selected), false);
+        requestDeleteConfirmation(visibleSelection.ids, false);
         return;
       }
       if (matchesShortcut(event, keys.rename_task)) {
@@ -1519,18 +1535,16 @@ export default function App() {
         return;
       }
       if (matchesShortcut(event, keys.toggle_pause) && !event.repeat) {
-        if (selected.size === 0) return;
+        if (visibleSelection.ids.size === 0) return;
         event.preventDefault();
-        const anyActive = tasks.some(
-          (task) =>
-            selected.has(task.id) &&
-            [
-              "downloading",
-              "waiting-network",
-              "connecting",
-              "verifying",
-              "extracting",
-            ].includes(task.status)
+        const anyActive = visibleSelection.tasks.some((task) =>
+          [
+            "downloading",
+            "waiting-network",
+            "connecting",
+            "verifying",
+            "extracting",
+          ].includes(task.status)
         );
         void bulk(anyActive ? "pause" : "resume");
         return;
@@ -1540,9 +1554,8 @@ export default function App() {
     return () => window.removeEventListener("keydown", handler);
   }, [
     selected,
-    tasks,
     visible,
-    selectedTasks,
+    visibleSelection,
     selectedOne,
     newOpen,
     settingsOpen,
@@ -1550,9 +1563,10 @@ export default function App() {
     speedLimitTarget,
     aboutOpen,
     showCloseConfirm,
+    deleteConfirm,
     context,
     view,
-    handleDeleteTasks,
+    requestDeleteConfirmation,
     settings.shortcut_keys,
     notify,
     bulk,
@@ -1899,14 +1913,14 @@ export default function App() {
 
               <div className="action-group">
                 <button
-                  disabled={!selected.size}
+                  disabled={visibleSelection.ids.size === 0}
                   onClick={() => void bulk("resume")}
                   title={t("toolbar.startTask")}
                 >
                   <Play size={14} />
                 </button>
                 <button
-                  disabled={!selected.size}
+                  disabled={visibleSelection.ids.size === 0}
                   onClick={() => void bulk("pause")}
                   title={t("toolbar.pauseTask")}
                 >
@@ -1914,8 +1928,10 @@ export default function App() {
                 </button>
                 <button
                   className="danger-action"
-                  disabled={!selected.size}
-                  onClick={() => void removeSelected(false)}
+                  disabled={visibleSelection.ids.size === 0}
+                  onClick={() =>
+                    requestDeleteConfirmation(visibleSelection.ids, false)
+                  }
                   title={t("toolbar.deleteRecord")}
                 >
                   <Trash2 size={14} />
@@ -1953,7 +1969,12 @@ export default function App() {
                 <button
                   className="action-btn-standalone danger-action"
                   disabled={partitioned.historyTasks.length === 0}
-                  onClick={() => void clearHistory(true)}
+                  onClick={() =>
+                    requestDeleteConfirmation(
+                      new Set(partitioned.historyTasks.map((task) => task.id)),
+                      true
+                    )
+                  }
                   title={t("toolbar.clearHistory")}
                 >
                   <Trash2 size={14} />
@@ -2081,19 +2102,43 @@ export default function App() {
                 setAdvancedFilter({ ...qv.filter })
               }
               onSaveQuickView={(name) => {
-                const view: QuickView = {
+                const quickView: QuickView = {
                   id: newQuickViewId(),
                   name,
                   filter: advancedFilter,
                 };
-                setQuickViews((current) => [...current, view]);
-                void api.savedViewUpsert(view).catch(() => {});
+                setQuickViews((current) => [...current, quickView]);
+                void api.savedViewUpsert(quickView).catch((error) => {
+                  // 函数式回滚：仅移除本条，避免并发保存/删除时抹掉其他已成功的更新
+                  setQuickViews((current) =>
+                    current.filter((qv) => qv.id !== quickView.id)
+                  );
+                  notify(
+                    t("toasts.quickViewSaveFailed", { error: String(error) }),
+                    "error"
+                  );
+                });
               }}
               onDeleteQuickView={(id) => {
+                const deletedView = quickViews.find((qv) => qv.id === id);
                 setQuickViews((current) =>
                   current.filter((qv) => qv.id !== id)
                 );
-                void api.savedViewDelete(id).catch(() => {});
+                void api.savedViewDelete(id).catch((error) => {
+                  // 函数式回滚：按 id 重新插回，避免并发操作时覆盖其他更新
+                  setQuickViews((current) => {
+                    if (current.some((qv) => qv.id === id) || !deletedView) {
+                      return current;
+                    }
+                    return [...current, deletedView];
+                  });
+                  notify(
+                    t("toasts.quickViewDeleteFailed", {
+                      error: String(error),
+                    }),
+                    "error"
+                  );
+                });
               }}
               onClear={() => setAdvancedFilter({ ...EMPTY_ADVANCED_FILTER })}
             />
@@ -2117,15 +2162,13 @@ export default function App() {
                 <div className="table-header">
                   <label>
                     <input
+                      ref={selectAllRef}
                       type="checkbox"
                       aria-label={t("toolbar.selectAll")}
-                      checked={
-                        visible.length > 0 &&
-                        visible.every((task) => selected.has(task.id))
-                      }
+                      checked={visibleSelection.allSelected}
                       onChange={() =>
                         setSelected(
-                          visible.every((task) => selected.has(task.id))
+                          visibleSelection.allSelected
                             ? new Set()
                             : new Set(visible.map((task) => task.id))
                         )
@@ -2292,11 +2335,15 @@ export default function App() {
             )}
           </section>
           <BulkActionBar
-            selectedCount={selected.size}
+            selectedCount={visibleSelection.ids.size}
             onStartAll={() => void bulk("resume")}
             onPauseAll={() => void bulk("pause")}
-            onDeleteRecords={() => void removeSelected(false)}
-            onDeleteFiles={() => void removeSelected(true)}
+            onDeleteRecords={() =>
+              requestDeleteConfirmation(visibleSelection.ids, false)
+            }
+            onDeleteFiles={() =>
+              requestDeleteConfirmation(visibleSelection.ids, true)
+            }
             onDeselectAll={() => setSelected(new Set())}
           />
         </main>
@@ -2307,6 +2354,7 @@ export default function App() {
           !speedLimitTarget &&
           !aboutOpen &&
           !showCloseConfirm &&
+          !deleteConfirm &&
           !context && (
             <div className="drop-overlay" aria-hidden="true">
               <div className="drop-overlay-card">
@@ -2357,14 +2405,14 @@ export default function App() {
               x={context.x}
               y={context.y}
               task={contextTask}
-              selectedTaskIds={selected}
+              selectedTaskIds={visibleSelection.ids}
               allTasks={tasks}
               close={() => setContext(undefined)}
               notify={notify}
               onSetSpeedLimit={setSpeedLimitTarget}
               onRefreshUrl={setRefreshUrlTarget}
               onDelete={(taskIds, deleteFile) =>
-                void handleDeleteTasks(taskIds, deleteFile)
+                requestDeleteConfirmation(taskIds, deleteFile)
               }
               onViewDetails={() => {
                 setPrimaryTaskId(contextTask.id);
@@ -2402,6 +2450,18 @@ export default function App() {
           <CloseConfirmDialog
             onClose={() => setShowCloseConfirm(false)}
             onConfirm={handleCloseConfirm}
+          />
+        )}
+        {deleteConfirm && (
+          <DeleteConfirmDialog
+            request={deleteConfirm}
+            tasks={tasks}
+            onCancel={() => setDeleteConfirm(null)}
+            onConfirm={() => {
+              const { taskIds, deleteFile } = deleteConfirm;
+              setDeleteConfirm(null);
+              void handleDeleteTasks(taskIds, deleteFile);
+            }}
           />
         )}
         {aboutOpen && (

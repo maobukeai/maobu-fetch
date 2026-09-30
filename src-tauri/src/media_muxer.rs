@@ -47,7 +47,10 @@ struct Mp4Box {
 /// 大端序读取 u32。
 fn read_u32_be(data: &[u8], offset: usize) -> Result<u32, String> {
     if offset + 4 > data.len() {
-        return Err(format!("读取 u32 越界：offset={offset}, len={}", data.len()));
+        return Err(format!(
+            "读取 u32 越界：offset={offset}, len={}",
+            data.len()
+        ));
     }
     Ok(u32::from_be_bytes([
         data[offset],
@@ -60,7 +63,10 @@ fn read_u32_be(data: &[u8], offset: usize) -> Result<u32, String> {
 /// 大端序写入 u32。
 fn write_u32_be(data: &mut [u8], offset: usize, value: u32) -> Result<(), String> {
     if offset + 4 > data.len() {
-        return Err(format!("写入 u32 越界：offset={offset}, len={}", data.len()));
+        return Err(format!(
+            "写入 u32 越界：offset={offset}, len={}",
+            data.len()
+        ));
     }
     data[offset..offset + 4].copy_from_slice(&value.to_be_bytes());
     Ok(())
@@ -73,7 +79,10 @@ fn write_u32_be(data: &mut [u8], offset: usize, value: u32) -> Result<(), String
 /// - `box_type`：4 字节类型。
 fn parse_box_header(data: &[u8], offset: usize) -> Result<(usize, usize, [u8; 4]), String> {
     if offset + 8 > data.len() {
-        return Err(format!("box header 越界：offset={offset}, len={}", data.len()));
+        return Err(format!(
+            "box header 越界：offset={offset}, len={}",
+            data.len()
+        ));
     }
     let size = read_u32_be(data, offset)? as usize;
     let mut box_type = [0u8; 4];
@@ -81,7 +90,10 @@ fn parse_box_header(data: &[u8], offset: usize) -> Result<(usize, usize, [u8; 4]
     if size == 1 {
         // 64 位扩展大小：header 为 16 字节（4 size + 4 type + 8 extended size）
         if offset + 16 > data.len() {
-            return Err(format!("扩展 box header 越界：offset={offset}, len={}", data.len()));
+            return Err(format!(
+                "扩展 box header 越界：offset={offset}, len={}",
+                data.len()
+            ));
         }
         let extended = u64::from_be_bytes([
             data[offset + 8],
@@ -405,8 +417,7 @@ pub async fn merge_fragmented_mp4(
     };
 
     // 构建新 moov
-    let video_moov_bytes =
-        &video_data[video_moov.offset..video_moov.offset + video_moov.size];
+    let video_moov_bytes = &video_data[video_moov.offset..video_moov.offset + video_moov.size];
     let new_moov = build_merged_moov_with_extras(
         video_moov_bytes,
         &audio_trak_bytes,
@@ -420,7 +431,8 @@ pub async fn merge_fragmented_mp4(
     // 拼接输出文件：
     // 视频 ftyp + 视频 (ftyp 到 moov 之间的 box，如 free) + 新 moov + 视频 fragments + 音频 fragments
     let mut output = Vec::with_capacity(
-        video_moov.offset + new_moov.len()
+        video_moov.offset
+            + new_moov.len()
             + (video_data.len() - video_first_frag_offset)
             + audio_fragments.len(),
     );
@@ -615,7 +627,7 @@ mod tests {
         let boxes = parse_top_level_boxes(&data).expect("应成功解析");
         let moov = boxes.iter().find(|b| &b.box_type == b"moov").unwrap();
         let moov_bytes = &data[moov.offset..moov.offset + moov.size];
-        let mut moov_payload = moov_bytes[8..].to_vec();
+        let moov_payload = moov_bytes[8..].to_vec();
 
         let trak_boxes = find_trak_boxes_in_moov(&moov_payload).expect("应找到 trak");
         let trak = trak_boxes[0];
@@ -697,24 +709,15 @@ mod tests {
     fn build_merged_moov_with_extras_combines_correctly() {
         let video_data = build_minimal_fmp4(1);
         let video_boxes = parse_top_level_boxes(&video_data).unwrap();
-        let video_moov = video_boxes
-            .iter()
-            .find(|b| &b.box_type == b"moov")
-            .unwrap();
-        let video_moov_bytes =
-            &video_data[video_moov.offset..video_moov.offset + video_moov.size];
+        let video_moov = video_boxes.iter().find(|b| &b.box_type == b"moov").unwrap();
+        let video_moov_bytes = &video_data[video_moov.offset..video_moov.offset + video_moov.size];
 
         let audio_data = build_minimal_fmp4(1);
         let audio_boxes = parse_top_level_boxes(&audio_data).unwrap();
-        let audio_moov = audio_boxes
-            .iter()
-            .find(|b| &b.box_type == b"moov")
-            .unwrap();
-        let audio_moov_bytes =
-            &audio_data[audio_moov.offset..audio_moov.offset + audio_moov.size];
+        let audio_moov = audio_boxes.iter().find(|b| &b.box_type == b"moov").unwrap();
+        let audio_moov_bytes = &audio_data[audio_moov.offset..audio_moov.offset + audio_moov.size];
         let audio_moov_payload = &audio_moov_bytes[8..];
-        let audio_trak_bytes =
-            extract_and_patch_audio_trak(audio_moov_payload, 2).unwrap();
+        let audio_trak_bytes = extract_and_patch_audio_trak(audio_moov_payload, 2).unwrap();
 
         // 提取音频 mvex
         let audio_mvex_bytes = {
@@ -787,7 +790,8 @@ mod tests {
 
         // 验证第一个 trak 的 track_id 是 1（视频）
         let video_trak = trak_boxes[0];
-        let video_trak_bytes = &moov_payload[video_trak.offset..video_trak.offset + video_trak.size];
+        let video_trak_bytes =
+            &moov_payload[video_trak.offset..video_trak.offset + video_trak.size];
         // trak_bytes 含 8 字节 header，tkhd 在 payload 中
         let video_trak_payload = &video_trak_bytes[8..];
         let video_tkhd = find_child_boxes(video_trak_payload, b"tkhd").unwrap()[0];
@@ -796,7 +800,8 @@ mod tests {
 
         // 验证第二个 trak 的 track_id 是 2（音频）
         let audio_trak = trak_boxes[1];
-        let audio_trak_bytes = &moov_payload[audio_trak.offset..audio_trak.offset + audio_trak.size];
+        let audio_trak_bytes =
+            &moov_payload[audio_trak.offset..audio_trak.offset + audio_trak.size];
         let audio_trak_payload = &audio_trak_bytes[8..];
         let audio_tkhd = find_child_boxes(audio_trak_payload, b"tkhd").unwrap()[0];
         let audio_track_id = read_u32_be(audio_trak_payload, audio_tkhd.offset + 20).unwrap();

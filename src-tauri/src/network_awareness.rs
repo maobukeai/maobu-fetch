@@ -17,7 +17,6 @@
 //!   （本模块不接触这些数据，仅读取系统网络状态）。
 
 use std::time::Duration;
-use tokio::process::Command;
 
 /// PowerShell 子进程超时时间。8 秒足够冷启动 PowerShell 并完成 WinRT 调用，
 /// 超时则视为检测失败（安全回退到非计量）。

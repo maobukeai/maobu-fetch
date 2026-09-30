@@ -10,8 +10,8 @@ mod logging;
 pub mod m3u8;
 mod manager;
 mod media;
-pub mod media_protocol;
 mod media_cookies;
+pub mod media_protocol;
 // 纯 Rust 实现的 fragmented MP4 合并器。
 // 用于 Twitter/X 等平台：yt-dlp 在没有 FFmpeg 时下载视频和音频为两个独立的 fMP4 文件，
 // 本模块将其合并为单个 fMP4 文件（视频 track_id=1 + 音频 track_id=2），
@@ -20,14 +20,14 @@ mod media_muxer;
 // Task 37 / 39：媒体平台识别与适配（抖音 / TikTok / Twitter/X 等）。
 // 提供 detect_platform / expand_short_url / classify_platform_error /
 // is_twitter_space / format_twitter_filename 等函数。
+mod lanzou;
 mod media_platforms;
 mod media_tools;
 mod models;
 mod network_awareness;
+mod pan123;
 mod pikpak;
 mod quark;
-mod lanzou;
-mod pan123;
 // Task 31：代理配置精细化（resolve_proxy / test_proxy）与 DPAPI 安全存储。
 mod proxy;
 // Task 34：便携版模式。检测 EXE 同目录 maobu.portable 标记文件，
@@ -51,14 +51,14 @@ use manager::{
 use manager::{DownloadManager, ErrorContext, SharedManager};
 use media_tools::MediaTools;
 use models::{
-    AppSettings, BatchTaskRequest, CacheClearResult, CacheInspectResult, CategoryRule, CategoryRuleTestResult, CollisionPolicy,
-    CompletionAction, DetectedMediaTools, DownloadPreset, DownloadTask, DuplicateCheckResult,
-    ErrorDiagnosis, ExtensionCompatibilityResult, FilenameCleanupRule, MediaCredential,
-    MediaCredentialCheckResult,
+    AppSettings, BatchTaskRequest, CacheClearResult, CacheInspectResult, CategoryRule,
+    CategoryRuleTestResult, CollisionPolicy, CompletionAction, DetectedMediaTools, DownloadPreset,
+    DownloadTask, DuplicateCheckResult, ErrorDiagnosis, ExtensionCompatibilityResult,
+    ExtensionUpdateResult, FilenameCleanupRule, MediaCredential, MediaCredentialCheckResult,
     MediaProbeResult, NewTaskRequest, PairingInfo, PlatformCompatibility, PlatformNamingTemplate,
     PowerAction, PowerActionState, PrecheckRequest, PrecheckResult, ProxyAuth, ProxyTestResult,
-    RestorePreview, RestoreStats, RetryPolicy, SavedView, Tag, TaskTemplate, TaskTemplateTestResult,
-    ToolComponent, ToolStatus, UpdateCheckResult, UpdateDownloadResult, ExtensionUpdateResult,
+    RestorePreview, RestoreStats, RetryPolicy, SavedView, Tag, TaskTemplate,
+    TaskTemplateTestResult, ToolComponent, ToolStatus, UpdateCheckResult, UpdateDownloadResult,
     UrlHistoryEntry, WaitReason, YtDlpUpdateInfo,
 };
 use std::{path::PathBuf, sync::Arc};
@@ -164,7 +164,11 @@ async fn bt_inspect_torrent(
             .map_err(|e| format!("解码 Base64 失败: {e}"))?;
         return crate::bt::inspect_torrent_bytes(&bytes);
     }
-    let input = source.or(torrent_path).unwrap_or_default().trim().to_string();
+    let input = source
+        .or(torrent_path)
+        .unwrap_or_default()
+        .trim()
+        .to_string();
     if input.is_empty() {
         return Err("请提供种子文件路径、磁力链接或 Base64 数据".into());
     }
@@ -356,7 +360,9 @@ async fn bt_update_trackers(
     subscribe_url: Option<String>,
     manager: State<'_, SharedManager>,
 ) -> Result<usize, String> {
-    manager.fetch_and_update_trackers(subscribe_url.as_deref()).await
+    manager
+        .fetch_and_update_trackers(subscribe_url.as_deref())
+        .await
 }
 
 #[tauri::command]
@@ -505,12 +511,22 @@ async fn task_open_file(
 
     // 1. 如果指定了具体子文件路径
     if let Some(sub) = file_path.filter(|s| !s.trim().is_empty()) {
+        // 恶意种子的文件路径可能携带 ".." 分量：canonicalize 后必须仍位于
+        // 下载目录之内才允许打开（§7 路径安全）。
+        let Ok(dest_canonical) = dest_dir.canonicalize() else {
+            return Err("下载目录不存在或无法访问".into());
+        };
+        let in_dest = |p: &PathBuf| -> bool {
+            p.canonicalize()
+                .map(|c| c.starts_with(&dest_canonical) && c.is_file())
+                .unwrap_or(false)
+        };
         let direct_path = dest_dir.join(&sub);
-        if direct_path.exists() && direct_path.is_file() {
+        if in_dest(&direct_path) {
             return open::that(&direct_path).map_err(|e| format!("打开文件失败: {e}"));
         }
         let nested_path = dest_dir.join(&task.file_name).join(&sub);
-        if nested_path.exists() && nested_path.is_file() {
+        if in_dest(&nested_path) {
             return open::that(&nested_path).map_err(|e| format!("打开文件失败: {e}"));
         }
     }
@@ -518,7 +534,24 @@ async fn task_open_file(
     let is_media_ext = |p: &std::path::Path| -> bool {
         p.extension()
             .and_then(|ext| ext.to_str())
-            .map(|ext| matches!(ext.to_ascii_lowercase().as_str(), "mp4" | "mkv" | "avi" | "mov" | "flv" | "wmv" | "ts" | "webm" | "mp3" | "flac" | "wav" | "m4a" | "aac"))
+            .map(|ext| {
+                matches!(
+                    ext.to_ascii_lowercase().as_str(),
+                    "mp4"
+                        | "mkv"
+                        | "avi"
+                        | "mov"
+                        | "flv"
+                        | "wmv"
+                        | "ts"
+                        | "webm"
+                        | "mp3"
+                        | "flac"
+                        | "wav"
+                        | "m4a"
+                        | "aac"
+                )
+            })
             .unwrap_or(false)
     };
 
@@ -542,7 +575,9 @@ async fn task_open_file(
                 let p = entry.path();
                 if p.is_file() && is_media_ext(&p) {
                     let len = entry.metadata().await.map(|m| m.len()).unwrap_or(0);
-                    if len > 0 && (largest_media.is_none() || len > largest_media.as_ref().unwrap().1) {
+                    if len > 0
+                        && (largest_media.is_none() || len > largest_media.as_ref().unwrap().1)
+                    {
                         largest_media = Some((p, len));
                     }
                 } else if p.is_dir() {
@@ -551,7 +586,10 @@ async fn task_open_file(
                             let sub_p = sub_entry.path();
                             if sub_p.is_file() && is_media_ext(&sub_p) {
                                 let len = sub_entry.metadata().await.map(|m| m.len()).unwrap_or(0);
-                                if len > 0 && (largest_media.is_none() || len > largest_media.as_ref().unwrap().1) {
+                                if len > 0
+                                    && (largest_media.is_none()
+                                        || len > largest_media.as_ref().unwrap().1)
+                                {
                                     largest_media = Some((sub_p, len));
                                 }
                             }
@@ -568,8 +606,12 @@ async fn task_open_file(
         }
     }
 
-    if task.status == crate::models::TaskStatus::Downloading || task.status == crate::models::TaskStatus::Queued {
-        return Err("视频文件正在缓冲中（首段数据尚未写入磁盘），请等待下载产生进度后再点击播放".into());
+    if task.status == crate::models::TaskStatus::Downloading
+        || task.status == crate::models::TaskStatus::Queued
+    {
+        return Err(
+            "视频文件正在缓冲中（首段数据尚未写入磁盘），请等待下载产生进度后再点击播放".into(),
+        );
     }
 
     Err("未在下载目录中找到可播放的媒体文件".into())
@@ -892,9 +934,7 @@ async fn app_update_download(app: tauri::AppHandle) -> Result<UpdateDownloadResu
     }
     let latest = check.latest.ok_or("未获取到最新版本信息")?;
     // 同版本也允许下载（用于修复安装/重新安装）；仅拒绝降级到低于当前版本。
-    if updater::version_compare(&latest.version, updater::APP_VERSION)
-        == std::cmp::Ordering::Less
-    {
+    if updater::version_compare(&latest.version, updater::APP_VERSION) == std::cmp::Ordering::Less {
         return Err(format!(
             "最新版本 v{} 不高于当前版本 v{}，无需更新",
             latest.version,
@@ -951,8 +991,7 @@ fn app_update_run_installer(
     if is_silent {
         cmd.args(["/S", "/R"]);
     }
-    cmd.spawn()
-        .map_err(|e| format!("无法启动安装程序：{e}"))?;
+    cmd.spawn().map_err(|e| format!("无法启动安装程序：{e}"))?;
 
     if is_silent {
         // 静默安装时，自动退出当前应用以解除文件占用，安装器完成后会通过 /R 重新拉起新版
@@ -971,9 +1010,7 @@ fn app_update_run_installer(
 /// 最新 release 高于当前桌面端时提示先更新应用；下载同样强制 digest 校验，
 /// 解压先写入暂存目录成功后原子替换，失败不破坏旧扩展。
 #[tauri::command]
-async fn extension_update_download(
-    app: tauri::AppHandle,
-) -> Result<ExtensionUpdateResult, String> {
+async fn extension_update_download(app: tauri::AppHandle) -> Result<ExtensionUpdateResult, String> {
     let check = updater::check_app_update().await;
     if let Some(error) = &check.error {
         return Err(error.clone());
@@ -999,10 +1036,41 @@ async fn extension_update_download(
         std::fs::remove_dir_all(&staging).map_err(|e| format!("清理暂存目录失败：{e}"))?;
     }
     updater::extract_extension_zip(&archive, &staging)?;
-    if managed.exists() {
-        std::fs::remove_dir_all(&managed).map_err(|e| format!("替换旧扩展目录失败：{e}"))?;
+    // 可回滚替换（§7）：先把旧目录改名备份，新目录就位后再删除备份；
+    // 任一步失败都恢复旧目录，保证旧扩展不被破坏。
+    // 清理历史失败残留的备份目录，避免 extension-old-* 常驻占用
+    if let Ok(entries) = std::fs::read_dir(&data_dir) {
+        for entry in entries.filter_map(|e| e.ok()) {
+            if entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with("extension-old-")
+            {
+                let _ = std::fs::remove_dir_all(entry.path());
+            }
+        }
     }
-    std::fs::rename(&staging, &managed).map_err(|e| format!("移动扩展目录失败：{e}"))?;
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    let backup = data_dir.join(format!("extension-old-{stamp}"));
+    if managed.exists() {
+        std::fs::rename(&managed, &backup).map_err(|e| format!("备份旧扩展目录失败：{e}"))?;
+    }
+    if let Err(e) = std::fs::rename(&staging, &managed) {
+        let restored = backup.exists() && std::fs::rename(&backup, &managed).is_ok();
+        if restored {
+            return Err(format!("移动扩展目录失败，已保留旧扩展：{e}"));
+        }
+        return Err(format!(
+            "移动扩展目录失败，旧扩展已备份至 {}：{e}",
+            backup.to_string_lossy()
+        ));
+    }
+    if let Err(e) = std::fs::remove_dir_all(&backup) {
+        tracing::warn!(backup = %backup.to_string_lossy(), error = %e, "扩展更新完成，但清理旧目录备份失败");
+    }
     let _ = std::fs::remove_file(&archive);
     Ok(ExtensionUpdateResult {
         version: latest.version,
@@ -1603,7 +1671,10 @@ async fn saved_view_list(manager: State<'_, SharedManager>) -> Result<Vec<SavedV
 
 /// 新增或更新快捷视图（按 id upsert）。
 #[tauri::command]
-async fn saved_view_upsert(view: SavedView, manager: State<'_, SharedManager>) -> Result<(), String> {
+async fn saved_view_upsert(
+    view: SavedView,
+    manager: State<'_, SharedManager>,
+) -> Result<(), String> {
     manager.store.saved_view_upsert(&view).await
 }
 
@@ -2819,7 +2890,11 @@ async fn quark_inspect_share(
     let effective_pass_code = pass_code.or(passCode);
     let mut effective_cookie = cookie;
     if effective_cookie.as_deref().unwrap_or("").trim().is_empty() {
-        if let Ok(Some(cred)) = manager.store.media_credential_get_matching("pan.quark.cn").await {
+        if let Ok(Some(cred)) = manager
+            .store
+            .media_credential_get_matching("pan.quark.cn")
+            .await
+        {
             if !cred.cookie.trim().is_empty() {
                 effective_cookie = Some(cred.cookie);
             }
@@ -2845,7 +2920,11 @@ async fn quark_resolve_file(
     let effective_share_fid_token = share_fid_token.or(shareFidToken);
     let mut effective_cookie = cookie;
     if effective_cookie.as_deref().unwrap_or("").trim().is_empty() {
-        if let Ok(Some(cred)) = manager.store.media_credential_get_matching("pan.quark.cn").await {
+        if let Ok(Some(cred)) = manager
+            .store
+            .media_credential_get_matching("pan.quark.cn")
+            .await
+        {
             if !cred.cookie.trim().is_empty() {
                 effective_cookie = Some(cred.cookie);
             }
@@ -2856,8 +2935,9 @@ async fn quark_resolve_file(
         &effective_fid,
         effective_share_fid_token.as_deref(),
         stoken.as_deref(),
-        effective_cookie.as_deref()
-    ).await
+        effective_cookie.as_deref(),
+    )
+    .await
 }
 
 #[tauri::command]
@@ -2872,13 +2952,22 @@ async fn baidupan_inspect_share(
     let effective_pass_code = pass_code.or(passCode);
     let mut effective_cookie = cookie;
     if effective_cookie.as_deref().unwrap_or("").trim().is_empty() {
-        if let Ok(Some(cred)) = manager.store.media_credential_get_matching("pan.baidu.com").await {
+        if let Ok(Some(cred)) = manager
+            .store
+            .media_credential_get_matching("pan.baidu.com")
+            .await
+        {
             if !cred.cookie.trim().is_empty() {
                 effective_cookie = Some(cred.cookie);
             }
         }
     }
-    baidupan::inspect_baidu_share(&url, effective_pass_code.as_deref(), effective_cookie.as_deref()).await
+    baidupan::inspect_baidu_share(
+        &url,
+        effective_pass_code.as_deref(),
+        effective_cookie.as_deref(),
+    )
+    .await
 }
 
 #[tauri::command]
@@ -2901,7 +2990,11 @@ async fn baidupan_resolve_file(
     let effective_share_id = share_id.or(shareId);
     let mut effective_cookie = cookie;
     if effective_cookie.as_deref().unwrap_or("").trim().is_empty() {
-        if let Ok(Some(cred)) = manager.store.media_credential_get_matching("pan.baidu.com").await {
+        if let Ok(Some(cred)) = manager
+            .store
+            .media_credential_get_matching("pan.baidu.com")
+            .await
+        {
             if !cred.cookie.trim().is_empty() {
                 effective_cookie = Some(cred.cookie);
             }
@@ -2945,7 +3038,12 @@ async fn lanzou_resolve_file(
     let effective_url = share_url.or(shareUrl).unwrap_or_default();
     let effective_fid = file_id.or(fileId).unwrap_or_default();
     let effective_pass_code = pass_code.or(passCode);
-    lanzou::resolve_lanzou_file(&effective_url, &effective_fid, effective_pass_code.as_deref()).await
+    lanzou::resolve_lanzou_file(
+        &effective_url,
+        &effective_fid,
+        effective_pass_code.as_deref(),
+    )
+    .await
 }
 
 #[tauri::command]
@@ -2981,7 +3079,12 @@ async fn pan123_resolve_file(
 
     let stored_cred = match manager.store.media_credential_get(".123pan.com").await {
         Ok(Some(c)) => Some(c),
-        _ => manager.store.media_credential_get("123pan.com").await.ok().flatten(),
+        _ => manager
+            .store
+            .media_credential_get("123pan.com")
+            .await
+            .ok()
+            .flatten(),
     };
 
     let token_str = stored_cred.as_ref().map(|c| c.cookie.as_str());
@@ -3081,16 +3184,14 @@ async fn player_window_set_always_on_top(
     always_on_top: bool,
 ) -> Result<(), String> {
     if let Some(win) = app.get_webview_window("player") {
-        win.set_always_on_top(always_on_top).map_err(|e| e.to_string())?;
+        win.set_always_on_top(always_on_top)
+            .map_err(|e| e.to_string())?;
     }
     Ok(())
 }
 
 #[tauri::command]
-async fn player_window_toggle_mini_mode(
-    app: tauri::AppHandle,
-    mini: bool,
-) -> Result<bool, String> {
+async fn player_window_toggle_mini_mode(app: tauri::AppHandle, mini: bool) -> Result<bool, String> {
     if let Some(win) = app.get_webview_window("player") {
         if mini {
             let _ = win.set_min_size(Some(tauri::Size::Logical(tauri::LogicalSize {
@@ -3179,7 +3280,15 @@ async fn player_save_screenshot(
                 format!("{m:02}_{s:02}")
             }
         })
-        .unwrap_or_else(|| format!("{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs()));
+        .unwrap_or_else(|| {
+            format!(
+                "{}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs()
+            )
+        });
 
     let mut file_name = format!("{safe_title}_{time_str}.png");
     let mut file_path = target_dir.join(&file_name);
@@ -3242,18 +3351,24 @@ fn natural_sort_key(s: &str) -> Vec<(bool, String, u64)> {
 #[tauri::command]
 async fn player_get_folder_videos(current_file_path: String) -> Result<Vec<PlaylistItem>, String> {
     let p = PathBuf::from(&current_file_path);
-    let parent = p.parent().ok_or_else(|| "无法获取文件所在目录".to_string())?;
+    let parent = p
+        .parent()
+        .ok_or_else(|| "无法获取文件所在目录".to_string())?;
 
     if !parent.exists() {
         return Ok(vec![PlaylistItem {
             path: current_file_path.clone(),
-            name: p.file_name().unwrap_or_default().to_string_lossy().to_string(),
+            name: p
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string(),
             size_bytes: 0,
         }]);
     }
 
     let video_exts = [
-        "mp4", "mkv", "webm", "avi", "mov", "flv", "wmv", "ts", "m4v", "rmvb", "3gp", "vob", "iso"
+        "mp4", "mkv", "webm", "avi", "mov", "flv", "wmv", "ts", "m4v", "rmvb", "3gp", "vob", "iso",
     ];
 
     let mut items = Vec::new();
@@ -3264,7 +3379,11 @@ async fn player_get_folder_videos(current_file_path: String) -> Result<Vec<Playl
                 if let Some(ext) = path.extension().and_then(|s| s.to_str()) {
                     let ext_lower = ext.to_ascii_lowercase();
                     if video_exts.contains(&ext_lower.as_str()) {
-                        let name = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+                        let name = path
+                            .file_name()
+                            .unwrap_or_default()
+                            .to_string_lossy()
+                            .to_string();
                         let meta = entry.metadata().await.ok();
                         let size_bytes = meta.map(|m| m.len()).unwrap_or(0);
                         items.push(PlaylistItem {
@@ -3281,11 +3400,18 @@ async fn player_get_folder_videos(current_file_path: String) -> Result<Vec<Playl
     items.sort_by(|a, b| natural_sort_key(&a.name).cmp(&natural_sort_key(&b.name)));
 
     if !items.iter().any(|it| it.path == current_file_path) {
-        items.insert(0, PlaylistItem {
-            path: current_file_path.clone(),
-            name: p.file_name().unwrap_or_default().to_string_lossy().to_string(),
-            size_bytes: 0,
-        });
+        items.insert(
+            0,
+            PlaylistItem {
+                path: current_file_path.clone(),
+                name: p
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_string(),
+                size_bytes: 0,
+            },
+        );
     }
 
     Ok(items)
@@ -3309,7 +3435,12 @@ async fn player_get_matched_subtitles(video_path: String) -> Result<Vec<Subtitle
         return Ok(Vec::new());
     }
 
-    let video_stem = p.file_stem().unwrap_or_default().to_string_lossy().to_string().to_lowercase();
+    let video_stem = p
+        .file_stem()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_string()
+        .to_lowercase();
     let sub_exts = ["srt", "vtt", "ass", "ssa", "txt"];
 
     let mut matched = Vec::new();
@@ -3320,11 +3451,22 @@ async fn player_get_matched_subtitles(video_path: String) -> Result<Vec<Subtitle
                 if let Some(ext) = path.extension().and_then(|s| s.to_str()) {
                     let ext_lower = ext.to_ascii_lowercase();
                     if sub_exts.contains(&ext_lower.as_str()) {
-                        let name = path.file_name().unwrap_or_default().to_string_lossy().to_string();
-                        let stem = path.file_stem().unwrap_or_default().to_string_lossy().to_string().to_lowercase();
+                        let name = path
+                            .file_name()
+                            .unwrap_or_default()
+                            .to_string_lossy()
+                            .to_string();
+                        let stem = path
+                            .file_stem()
+                            .unwrap_or_default()
+                            .to_string_lossy()
+                            .to_string()
+                            .to_lowercase();
 
                         // 精确同名、包含视频文件名或同目录下字幕均纳入
-                        let is_matched = stem == video_stem || stem.starts_with(&video_stem) || video_stem.starts_with(&stem);
+                        let is_matched = stem == video_stem
+                            || stem.starts_with(&video_stem)
+                            || video_stem.starts_with(&stem);
                         if is_matched {
                             matched.push(SubtitleItem {
                                 path: path.to_string_lossy().to_string(),
@@ -3357,7 +3499,9 @@ async fn player_read_subtitle_content(subtitle_path: String) -> Result<String, S
     if !p.exists() {
         return Err("字幕文件不存在".to_string());
     }
-    let bytes = tokio::fs::read(&p).await.map_err(|e| format!("读取字幕失败: {e}"))?;
+    let bytes = tokio::fs::read(&p)
+        .await
+        .map_err(|e| format!("读取字幕失败: {e}"))?;
     if bytes.len() > 10 * 1024 * 1024 {
         return Err("字幕文件过大 (超过 10MB)".to_string());
     }
@@ -3365,7 +3509,9 @@ async fn player_read_subtitle_content(subtitle_path: String) -> Result<String, S
     let content = if let Ok(s) = std::str::from_utf8(&bytes) {
         s.trim_start_matches('\u{feff}').to_string()
     } else {
-        String::from_utf8_lossy(&bytes).trim_start_matches('\u{feff}').to_string()
+        String::from_utf8_lossy(&bytes)
+            .trim_start_matches('\u{feff}')
+            .to_string()
     };
 
     Ok(content)
@@ -3408,23 +3554,22 @@ pub fn open_or_focus_player_window(
         let _ = player_win.show();
         let _ = player_win.unminimize();
         let _ = player_win.set_focus();
-        let _ = player_win.emit("player-load-file", serde_json::json!({
-            "file": file_path,
-            "title": title
-        }));
+        let _ = player_win.emit(
+            "player-load-file",
+            serde_json::json!({
+                "file": file_path,
+                "title": title
+            }),
+        );
     } else {
-        let builder = WebviewWindowBuilder::new(
-            app,
-            "player",
-            WebviewUrl::App(query.into()),
-        )
-        .title(window_title)
-        .inner_size(960.0, 580.0)
-        .min_inner_size(480.0, 320.0)
-        .center()
-        .decorations(false)
-        .transparent(true)
-        .resizable(true);
+        let builder = WebviewWindowBuilder::new(app, "player", WebviewUrl::App(query.into()))
+            .title(window_title)
+            .inner_size(960.0, 580.0)
+            .min_inner_size(480.0, 320.0)
+            .center()
+            .decorations(false)
+            .transparent(true)
+            .resizable(true);
 
         builder
             .build()
@@ -3444,7 +3589,8 @@ async fn open_media_player(
 
 #[derive(Default)]
 pub struct ImageViewerState {
-    pub current_files: std::sync::Mutex<std::collections::HashMap<String, (String, Option<String>)>>,
+    pub current_files:
+        std::sync::Mutex<std::collections::HashMap<String, (String, Option<String>)>>,
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -3469,7 +3615,12 @@ async fn image_viewer_get_current_file(
     window: tauri::WebviewWindow,
     state: State<'_, ImageViewerState>,
 ) -> Result<Option<(String, Option<String>)>, String> {
-    Ok(state.current_files.lock().unwrap().get(window.label()).cloned())
+    Ok(state
+        .current_files
+        .lock()
+        .unwrap()
+        .get(window.label())
+        .cloned())
 }
 
 #[tauri::command]
@@ -3479,10 +3630,11 @@ async fn image_viewer_notify_file_changed(
     file_path: String,
     title: Option<String>,
 ) -> Result<(), String> {
-    state.current_files.lock().unwrap().insert(
-        window.label().to_string(),
-        (file_path, title),
-    );
+    state
+        .current_files
+        .lock()
+        .unwrap()
+        .insert(window.label().to_string(), (file_path, title));
     Ok(())
 }
 
@@ -3513,7 +3665,9 @@ async fn image_viewer_window_close(
 }
 
 #[tauri::command]
-async fn image_viewer_window_toggle_fullscreen(window: tauri::WebviewWindow) -> Result<bool, String> {
+async fn image_viewer_window_toggle_fullscreen(
+    window: tauri::WebviewWindow,
+) -> Result<bool, String> {
     let is_fs = window.is_fullscreen().unwrap_or(false);
     let next_fs = !is_fs;
     window.set_fullscreen(next_fs).map_err(|e| e.to_string())?;
@@ -3521,10 +3675,14 @@ async fn image_viewer_window_toggle_fullscreen(window: tauri::WebviewWindow) -> 
 }
 
 #[tauri::command]
-async fn image_viewer_window_toggle_always_on_top(window: tauri::WebviewWindow) -> Result<bool, String> {
+async fn image_viewer_window_toggle_always_on_top(
+    window: tauri::WebviewWindow,
+) -> Result<bool, String> {
     let is_top = window.is_always_on_top().unwrap_or(false);
     let next_top = !is_top;
-    window.set_always_on_top(next_top).map_err(|e| e.to_string())?;
+    window
+        .set_always_on_top(next_top)
+        .map_err(|e| e.to_string())?;
     Ok(next_top)
 }
 
@@ -3542,7 +3700,10 @@ async fn image_viewer_window_set_size(
         let (max_w, max_h) = if let Some(m) = monitor {
             let size = m.size();
             let scale = m.scale_factor();
-            ((size.width as f64 / scale) * 0.75, (size.height as f64 / scale) * 0.75)
+            (
+                (size.width as f64 / scale) * 0.75,
+                (size.height as f64 / scale) * 0.75,
+            )
         } else {
             (1280.0, 800.0)
         };
@@ -3559,21 +3720,33 @@ async fn image_viewer_window_set_size(
 }
 
 #[tauri::command]
-async fn image_viewer_get_folder_images(current_file_path: String) -> Result<Vec<ImageItem>, String> {
+async fn image_viewer_get_folder_images(
+    current_file_path: String,
+) -> Result<Vec<ImageItem>, String> {
     let p = PathBuf::from(&current_file_path);
-    let parent = p.parent().ok_or_else(|| "无法获取文件所在目录".to_string())?;
+    let parent = p
+        .parent()
+        .ok_or_else(|| "无法获取文件所在目录".to_string())?;
 
     if !parent.exists() {
         return Ok(vec![ImageItem {
             path: current_file_path.clone(),
-            name: p.file_name().unwrap_or_default().to_string_lossy().to_string(),
+            name: p
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string(),
             size_bytes: 0,
-            ext: p.extension().and_then(|s| s.to_str()).unwrap_or("png").to_ascii_lowercase(),
+            ext: p
+                .extension()
+                .and_then(|s| s.to_str())
+                .unwrap_or("png")
+                .to_ascii_lowercase(),
         }]);
     }
 
     let img_exts = [
-        "png", "jpg", "jpeg", "webp", "gif", "bmp", "svg", "ico", "avif", "tiff", "tif", "jfif"
+        "png", "jpg", "jpeg", "webp", "gif", "bmp", "svg", "ico", "avif", "tiff", "tif", "jfif",
     ];
 
     let mut items = Vec::new();
@@ -3584,7 +3757,11 @@ async fn image_viewer_get_folder_images(current_file_path: String) -> Result<Vec
                 if let Some(ext) = path.extension().and_then(|s| s.to_str()) {
                     let ext_lower = ext.to_ascii_lowercase();
                     if img_exts.contains(&ext_lower.as_str()) {
-                        let name = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+                        let name = path
+                            .file_name()
+                            .unwrap_or_default()
+                            .to_string_lossy()
+                            .to_string();
                         let meta = entry.metadata().await.ok();
                         let size_bytes = meta.map(|m| m.len()).unwrap_or(0);
                         items.push(ImageItem {
@@ -3602,12 +3779,23 @@ async fn image_viewer_get_folder_images(current_file_path: String) -> Result<Vec
     items.sort_by(|a, b| natural_sort_key(&a.name).cmp(&natural_sort_key(&b.name)));
 
     if !items.iter().any(|it| it.path == current_file_path) {
-        items.insert(0, ImageItem {
-            path: current_file_path.clone(),
-            name: p.file_name().unwrap_or_default().to_string_lossy().to_string(),
-            size_bytes: 0,
-            ext: p.extension().and_then(|s| s.to_str()).unwrap_or("png").to_ascii_lowercase(),
-        });
+        items.insert(
+            0,
+            ImageItem {
+                path: current_file_path.clone(),
+                name: p
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_string(),
+                size_bytes: 0,
+                ext: p
+                    .extension()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("png")
+                    .to_ascii_lowercase(),
+            },
+        );
     }
 
     Ok(items)
@@ -3616,11 +3804,22 @@ async fn image_viewer_get_folder_images(current_file_path: String) -> Result<Vec
 #[tauri::command]
 async fn image_viewer_get_info(file_path: String) -> Result<ImageFileInfo, String> {
     let p = PathBuf::from(&file_path);
-    let meta = tokio::fs::metadata(&p).await.map_err(|e| format!("获取图片信息失败: {e}"))?;
+    let meta = tokio::fs::metadata(&p)
+        .await
+        .map_err(|e| format!("获取图片信息失败: {e}"))?;
     let size_bytes = meta.len();
-    let name = p.file_name().unwrap_or_default().to_string_lossy().to_string();
-    let ext = p.extension().and_then(|s| s.to_str()).unwrap_or("").to_ascii_lowercase();
-    let modified_ms = meta.modified()
+    let name = p
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_string();
+    let ext = p
+        .extension()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let modified_ms = meta
+        .modified()
         .ok()
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
         .map(|d| d.as_millis() as u64)
@@ -3646,7 +3845,10 @@ pub fn probe_image_dimensions(path: &std::path::Path) -> Option<(u32, u32)> {
     let data = &buffer[..n];
 
     // 1. PNG: 8 字节魔数 + 4 字节 chunk 长度 + 4 字节 "IHDR" + 4 字节宽 + 4 字节高
-    if data.len() >= 24 && &data[..8] == [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A] && &data[12..16] == b"IHDR" {
+    if data.len() >= 24
+        && &data[..8] == [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]
+        && &data[12..16] == b"IHDR"
+    {
         let w = u32::from_be_bytes(data[16..20].try_into().ok()?);
         let h = u32::from_be_bytes(data[20..24].try_into().ok()?);
         return Some((w, h));
@@ -3795,10 +3997,13 @@ pub fn open_or_focus_image_window(
             let _ = win.set_always_on_top(false);
         }
         let _ = win.set_focus();
-        let _ = win.emit("image-viewer-load-file", serde_json::json!({
-            "file": file_path,
-            "title": title
-        }));
+        let _ = win.emit(
+            "image-viewer-load-file",
+            serde_json::json!({
+                "file": file_path,
+                "title": title
+            }),
+        );
         return Ok(());
     }
 
@@ -3839,18 +4044,14 @@ pub fn open_or_focus_image_window(
         .map(|(w, h)| calculate_optimal_viewer_size(w, h))
         .unwrap_or((600.0, 440.0));
 
-    let builder = WebviewWindowBuilder::new(
-        app,
-        &label,
-        WebviewUrl::App(query.into()),
-    )
-    .title(window_title)
-    .inner_size(initial_w, initial_h)
-    .min_inner_size(360.0, 260.0)
-    .center()
-    .decorations(false)
-    .transparent(true)
-    .resizable(true);
+    let builder = WebviewWindowBuilder::new(app, &label, WebviewUrl::App(query.into()))
+        .title(window_title)
+        .inner_size(initial_w, initial_h)
+        .min_inner_size(360.0, 260.0)
+        .center()
+        .decorations(false)
+        .transparent(true)
+        .resizable(true);
 
     let win = builder
         .build()
@@ -3919,7 +4120,8 @@ pub fn run() {
                     .get("range")
                     .and_then(|v| v.to_str().ok())
                     .map(|s| s.to_string());
-                let response = media_protocol::handle_media_request(&full_uri, range_header.as_deref()).await;
+                let response =
+                    media_protocol::handle_media_request(&full_uri, range_header.as_deref()).await;
                 responder.respond(response);
             });
         })
@@ -4014,7 +4216,10 @@ pub fn run() {
             }
 
             let initial_settings = tauri::async_runtime::block_on(manager.settings());
-            let is_autostart = matches!(parsed_startup_cmd, Some(CliCommand::Run { autostart: true }));
+            let is_autostart = matches!(
+                parsed_startup_cmd,
+                Some(CliCommand::Run { autostart: true })
+            );
             let is_silent = is_autostart || initial_settings.start_minimized;
             app.manage(StartupState { is_silent });
 
@@ -4396,7 +4601,7 @@ mod image_viewer_tests {
         data[0] = b'B';
         data[1] = b'M';
         data[18..22].copy_from_slice(&1024i32.to_le_bytes()); // width = 1024
-        data[22..26].copy_from_slice(&768i32.to_le_bytes());  // height = 768
+        data[22..26].copy_from_slice(&768i32.to_le_bytes()); // height = 768
 
         let temp_dir = std::env::temp_dir();
         let path = temp_dir.join("test_probe.bmp");
@@ -4408,4 +4613,3 @@ mod image_viewer_tests {
         assert_eq!(dims, Some((1024, 768)));
     }
 }
-

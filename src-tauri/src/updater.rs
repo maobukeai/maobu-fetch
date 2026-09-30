@@ -10,9 +10,7 @@
 //! 所有网络/解析错误使用 `redact_sensitive` 脱敏后以中文返回，不泄露内部细节。
 
 use crate::manager::redact_sensitive;
-use crate::models::{
-    ExtensionCompatibilityResult, UpdateAssetInfo, UpdateCheckResult, UpdateInfo,
-};
+use crate::models::{ExtensionCompatibilityResult, UpdateAssetInfo, UpdateCheckResult, UpdateInfo};
 use reqwest::Client;
 use std::cmp::Ordering;
 use std::time::Duration;
@@ -27,12 +25,10 @@ const RELEASES_LATEST_URL: &str =
     "https://api.github.com/repos/maobukeai/maobu-fetch/releases/latest";
 
 /// GitHub Releases Atom Feed 端点（用于 API 403 限流时的订阅源自动降级，不消耗 API 配额）。
-const RELEASES_ATOM_URL: &str =
-    "https://github.com/maobukeai/maobu-fetch/releases.atom";
+const RELEASES_ATOM_URL: &str = "https://github.com/maobukeai/maobu-fetch/releases.atom";
 
 /// GitHub Releases 最新网页端点（用于 API 403 限流时的 302 重定向探针降级）。
-const RELEASES_LATEST_WEB_URL: &str =
-    "https://github.com/maobukeai/maobu-fetch/releases/latest";
+const RELEASES_LATEST_WEB_URL: &str = "https://github.com/maobukeai/maobu-fetch/releases/latest";
 
 /// `html_url` 缺失时的回退页面。
 const RELEASES_PAGE: &str = "https://github.com/maobukeai/maobu-fetch/releases";
@@ -81,7 +77,8 @@ pub async fn check_app_update() -> UpdateCheckResult {
         Err(e) => {
             // API 域名连接失败时，尝试 Web 降级通道
             if let Some(fallback_info) = fetch_fallback_update_info(&client).await {
-                let has_update = version_compare(&fallback_info.version, current) == Ordering::Greater;
+                let has_update =
+                    version_compare(&fallback_info.version, current) == Ordering::Greater;
                 return UpdateCheckResult {
                     latest: Some(fallback_info),
                     has_update,
@@ -99,9 +96,14 @@ pub async fn check_app_update() -> UpdateCheckResult {
         let err_body = response.text().await.unwrap_or_default();
 
         // 核心防限流容灾：触发 403 限流时，自动无缝切换至不受 API 限流影响的 Web/Atom 降级通道
-        if status_code == 403 && (err_body.contains("rate limit") || err_body.contains("Rate limit") || err_body.contains("API rate limit")) {
+        if status_code == 403
+            && (err_body.contains("rate limit")
+                || err_body.contains("Rate limit")
+                || err_body.contains("API rate limit"))
+        {
             if let Some(fallback_info) = fetch_fallback_update_info(&client).await {
-                let has_update = version_compare(&fallback_info.version, current) == Ordering::Greater;
+                let has_update =
+                    version_compare(&fallback_info.version, current) == Ordering::Greater;
                 return UpdateCheckResult {
                     latest: Some(fallback_info),
                     has_update,
@@ -111,8 +113,13 @@ pub async fn check_app_update() -> UpdateCheckResult {
             }
         }
 
-        let display_err = if status_code == 403 && (err_body.contains("rate limit") || err_body.contains("Rate limit") || err_body.contains("API rate limit")) {
-            "当前网络 IP 请求 GitHub 接口太频繁，已触发限流 (403)，请稍后重试或更换代理节点".to_string()
+        let display_err = if status_code == 403
+            && (err_body.contains("rate limit")
+                || err_body.contains("Rate limit")
+                || err_body.contains("API rate limit"))
+        {
+            "当前网络 IP 请求 GitHub 接口太频繁，已触发限流 (403)，请稍后重试或更换代理节点"
+                .to_string()
         } else if status_code == 404 {
             "未找到可用版本 (404)。请确认 GitHub 仓库已设置为公开 (Public) 且已发布至少一个 Release 包".to_string()
         } else {
@@ -299,7 +306,9 @@ fn parse_sha256_from_body(body: &str) -> Option<String> {
         if let Some(hex) = extract_first_64_hex(rest) {
             return Some(hex);
         }
-        let clean = rest.trim().trim_matches(|c: char| c == '`' || c == '"' || c == '\'');
+        let clean = rest
+            .trim()
+            .trim_matches(|c: char| c == '`' || c == '"' || c == '\'');
         if clean.len() == 64 && clean.chars().all(|c| c.is_ascii_hexdigit()) {
             return Some(clean.to_ascii_lowercase());
         }
@@ -328,7 +337,6 @@ pub fn safe_subslice(s: &str, start: usize, max_len: usize) -> &str {
     }
     &sub[..end]
 }
-
 
 /// 双通道降级探针：当 API 遇到 403 限流或网络异常时，尝试从 Web 订阅源或 302 重定向获取最新版本。
 ///
@@ -360,10 +368,18 @@ pub async fn fetch_redirect_fallback_info() -> Option<UpdateInfo> {
         .build()
         .ok()?;
 
-    let resp = no_redirect_client.get(RELEASES_LATEST_WEB_URL).send().await.ok()?;
+    let resp = no_redirect_client
+        .get(RELEASES_LATEST_WEB_URL)
+        .send()
+        .await
+        .ok()?;
     let status = resp.status();
     if status.is_redirection() {
-        let location = resp.headers().get(reqwest::header::LOCATION)?.to_str().ok()?;
+        let location = resp
+            .headers()
+            .get(reqwest::header::LOCATION)?
+            .to_str()
+            .ok()?;
         let version = extract_tag_from_location(location)?;
         let download_url = if location.starts_with("http") {
             location.to_string()
@@ -463,14 +479,24 @@ pub fn extract_all_filenames_by_extension(text: &str, ext: &str) -> Vec<String> 
         let after_ext = actual_pos + ext.len();
         let raw = text[start..after_ext].trim();
         let name = raw.trim_matches(|c: char| {
-            c == '`' || c == '"' || c == '\'' || c == '|' || c == ' ' || c == '(' || c == ')' || c == '（' || c == '）'
+            c == '`'
+                || c == '"'
+                || c == '\''
+                || c == '|'
+                || c == ' '
+                || c == '('
+                || c == ')'
+                || c == '（'
+                || c == '）'
         });
         if !name.is_empty()
             && !name.contains('<')
             && !name.contains('>')
             && !name.contains('/')
             && !name.contains('\\')
-            && !results.iter().any(|existing: &String| existing.eq_ignore_ascii_case(name))
+            && !results
+                .iter()
+                .any(|existing: &String| existing.eq_ignore_ascii_case(name))
         {
             results.push(name.to_string());
         }
@@ -482,7 +508,9 @@ pub fn extract_all_filenames_by_extension(text: &str, ext: &str) -> Vec<String> 
 /// 保持向后兼容的单文件名提取接口。
 #[allow(dead_code)]
 pub fn extract_filename_by_extension(text: &str, ext: &str) -> Option<String> {
-    extract_all_filenames_by_extension(text, ext).into_iter().next()
+    extract_all_filenames_by_extension(text, ext)
+        .into_iter()
+        .next()
 }
 
 /// 在指定文件名附近窗口中查找 64 位 SHA-256 哈希。
@@ -596,7 +624,10 @@ pub fn parse_assets_from_feed_content(
     }
 
     // 4. 如果未提取到安装包，但拥有全局 SHA，提供标准命名安装包回退
-    if !assets.iter().any(|a| a.name.to_ascii_lowercase().ends_with(".exe")) {
+    if !assets
+        .iter()
+        .any(|a| a.name.to_ascii_lowercase().ends_with(".exe"))
+    {
         if let Some(sha) = global_sha {
             let standard_name = format!("Maobu.Fetch_{}_x64-setup.exe", version);
             let download_url = format!(
@@ -896,7 +927,10 @@ pub async fn download_release_asset(
 /// - `enclosed_name` 阻止绝对路径与 `..` 穿越路径（AGENTS.md §6）；
 /// - 只接受常规文件条目（目录条目在创建父目录时自然生成）；
 /// - 解压完成后校验根级 `manifest.json` 存在，防止误用非扩展压缩包。
-pub fn extract_extension_zip(archive: &std::path::Path, target_dir: &std::path::Path) -> Result<(), String> {
+pub fn extract_extension_zip(
+    archive: &std::path::Path,
+    target_dir: &std::path::Path,
+) -> Result<(), String> {
     let file = std::fs::File::open(archive).map_err(|e| e.to_string())?;
     let mut zip = zip::ZipArchive::new(file).map_err(|e| format!("扩展压缩包无效：{e}"))?;
     std::fs::create_dir_all(target_dir).map_err(|e| e.to_string())?;
@@ -948,7 +982,10 @@ mod tests {
         // "你好" 前两个字每个字 3 字节，共 6 字节
         // 尝试从第 0 字节截取 4 字节（落在 '好' 字内部）
         let slice = safe_subslice(text, 0, 4);
-        assert_eq!(slice, "你", "必须安全在最近的字符边界截断，不能截碎字符引发 panic");
+        assert_eq!(
+            slice, "你",
+            "必须安全在最近的字符边界截断，不能截碎字符引发 panic"
+        );
 
         // 尝试截取超长
         let slice2 = safe_subslice(text, 0, 9999);
@@ -1301,7 +1338,9 @@ mod tests {
     fn parse_assets_handles_missing_or_invalid_digest() {
         assert_eq!(parse_digest_sha256("sha256:abc123"), None, "长度不足");
         assert_eq!(
-            parse_digest_sha256("sha256:xyz48cb955d55c8821b60ccbdbbc6f61bc958f2f3d3b7ad5eaf3d83a543293a27"),
+            parse_digest_sha256(
+                "sha256:xyz48cb955d55c8821b60ccbdbbc6f61bc958f2f3d3b7ad5eaf3d83a543293a27"
+            ),
             None,
             "非十六进制"
         );
@@ -1337,7 +1376,10 @@ mod tests {
         ];
         let selected = select_installer_asset(&assets).expect("应选中安装包");
         assert_eq!(selected.name, "Maobu.Fetch_0.6.9_x64-setup.exe");
-        assert!(select_installer_asset(&assets[..1]).is_none(), "无 exe 资产时应为 None");
+        assert!(
+            select_installer_asset(&assets[..1]).is_none(),
+            "无 exe 资产时应为 None"
+        );
     }
 
     #[test]
@@ -1439,7 +1481,9 @@ mod tests {
     #[test]
     fn extract_tag_from_location_extracts_tag() {
         assert_eq!(
-            extract_tag_from_location("https://github.com/maobukeai/maobu-fetch/releases/tag/v0.8.10"),
+            extract_tag_from_location(
+                "https://github.com/maobukeai/maobu-fetch/releases/tag/v0.8.10"
+            ),
             Some("0.8.10".into())
         );
         assert_eq!(
@@ -1498,7 +1542,9 @@ mod tests {
         );
         assert!(!info.assets.is_empty());
         assert_eq!(info.assets[0].name, "Maobu.Fetch_0.8.10_x64-setup.exe");
-        assert!(info.assets[0].url.contains("v0.8.10/Maobu.Fetch_0.8.10_x64-setup.exe"));
+        assert!(info.assets[0]
+            .url
+            .contains("v0.8.10/Maobu.Fetch_0.8.10_x64-setup.exe"));
     }
 
     #[test]
@@ -1556,7 +1602,11 @@ mod tests {
     async fn test_live_check_app_update_fallback() {
         let res = check_app_update().await;
         println!("Live update check result: {:?}", res);
-        assert!(res.error.is_none(), "实时更新检查不应报错，error: {:?}", res.error);
+        assert!(
+            res.error.is_none(),
+            "实时更新检查不应报错，error: {:?}",
+            res.error
+        );
         let latest = res.latest.expect("应成功获取到最新版本");
         assert!(!latest.version.is_empty(), "最新版本号不应为空");
         assert!(version_compare(&latest.version, "0.8.0") == Ordering::Greater);

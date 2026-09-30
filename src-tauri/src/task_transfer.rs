@@ -117,7 +117,10 @@ fn import_request(item: TaskExportItem, destination: &Path) -> Result<NewTaskReq
             item.completion_action
         },
         media: item.media,
-        connection_count: Some(item.connection_count.clamp(1, 32)),
+        // 连接数必须收敛到允许档位 1/2/4/8/16/32（§3），而不是任意 clamp 到 1-32 区间。
+        connection_count: Some(crate::manager::normalize_connection_count(u32::from(
+            item.connection_count,
+        )) as u8),
         start_paused: true,
         user_edited_file_name: true,
         // 导出文件出于安全不包含云盘刷新凭据（pass_code_token 等），
@@ -1058,8 +1061,7 @@ mod tests {
             last_used: 1,
         }];
         let current_task_ids: HashSet<String> = std::iter::once(existing_task.id.clone()).collect();
-        let current_saved_view_ids: HashSet<String> =
-            std::iter::once("view-1".into()).collect();
+        let current_saved_view_ids: HashSet<String> = std::iter::once("view-1".into()).collect();
         let current = CurrentState {
             settings: &current_settings,
             category_rules: &current_category_rules,

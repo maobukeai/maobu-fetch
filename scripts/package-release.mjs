@@ -22,6 +22,46 @@ if (!version) {
 
 console.log(`==> 开始封装 v${version} 发布资产...`);
 
+// 1.5 版本一致性门禁（AGENTS.md §10）：五处版本必须与目标版本完全一致，
+// 防止把旧版本二进制重命名成新版本发布。
+function readJsonVersion(file) {
+  return JSON.parse(fs.readFileSync(file, 'utf8')).version;
+}
+function readCargoVersion(file) {
+  const m = fs.readFileSync(file, 'utf8').match(/^version\s*=\s*"([^"]+)"/m);
+  if (!m) throw new Error(`无法从 ${file} 读取 version 字段`);
+  return m[1];
+}
+function readManifestVersion(file) {
+  const v = readJsonVersion(file);
+  // Chrome/Edge MV3 manifest.version 仅允许点分隔的非负整数，不接受预发布后缀
+  if (!/^\d+(\.\d+){0,3}$/.test(v)) {
+    throw new Error(`${file} 的 version "${v}" 不是 Chrome/Edge 扩展允许的纯数字版本`);
+  }
+  return v;
+}
+
+const versionSources = {
+  'package.json': readJsonVersion(path.join(rootDir, 'package.json')),
+  'src-tauri/Cargo.toml': readCargoVersion(path.join(rootDir, 'src-tauri', 'Cargo.toml')),
+  'src-tauri/tauri.conf.json': readJsonVersion(path.join(rootDir, 'src-tauri', 'tauri.conf.json')),
+  'extension/package.json': readJsonVersion(path.join(rootDir, 'extension', 'package.json')),
+  'extension/manifest.json': readManifestVersion(path.join(rootDir, 'extension', 'manifest.json')),
+};
+const mismatched = Object.entries(versionSources).filter(([, v]) => v !== version);
+if (mismatched.length > 0) {
+  throw new Error(
+    `版本不一致，拒绝发布：目标 v${version}，但 ` +
+      mismatched.map(([f, v]) => `${f}=${v}`).join('、') +
+      '。请先运行 node scripts/bump-version.mjs 同步全部版本号。'
+  );
+}
+const refName = process.env.GITHUB_REF_NAME;
+if (refName && /^v\d/.test(refName) && refName.replace(/^v/, '') !== version) {
+  throw new Error(`Git 标签 ${refName} 与目标版本 v${version} 不一致，拒绝发布`);
+}
+console.log(`✔ 版本一致性校验通过：五处版本均为 ${version}`);
+
 const outDir = path.join(rootDir, 'releases_out');
 if (fs.existsSync(outDir)) {
   fs.rmSync(outDir, { recursive: true, force: true });
@@ -55,25 +95,21 @@ const candidateNsisDirs = [
 for (const dir of candidateNsisDirs) {
   if (fs.existsSync(dir)) {
     const files = fs.readdirSync(dir);
+    // 门禁：只接受文件名含精确版本号的产物，禁止"任意 setup.exe 回退"，
+    // 防止把旧版本安装包重命名成新版本发布。
     const exact = files.find(f => f.includes(version) && f.endsWith('.exe'));
     if (exact) {
       srcSetupPath = path.join(dir, exact);
-      break;
-    }
-    const found = files.find(f => f.toLowerCase().endsWith('-setup.exe') || (f.toLowerCase().endsWith('.exe') && f.toLowerCase().includes('setup')));
-    if (found) {
-      srcSetupPath = path.join(dir, found);
       break;
     }
   }
 }
 
 if (!srcSetupPath) {
-  srcSetupPath = findFileRecursive(targetDir, name => name.toLowerCase().endsWith('-setup.exe') || (name.toLowerCase().endsWith('.exe') && name.toLowerCase().includes('setup')));
-}
-
-if (!srcSetupPath) {
-  throw new Error(`在 ${targetDir} 中未找到 setup.exe 安装程序`);
+  throw new Error(
+    `未找到文件名包含 ${version} 的 NSIS 安装程序（候选目录：${candidateNsisDirs.join(', ')}）。` +
+      '禁止回退选择其他版本产物，请确认构建版本与发布版本一致后重试。'
+  );
 }
 
 const dstSetupPath = path.join(outDir, `Maobu.Fetch_${version}_x64-setup.exe`);
@@ -90,25 +126,20 @@ const candidateMsiDirs = [
 for (const dir of candidateMsiDirs) {
   if (fs.existsSync(dir)) {
     const files = fs.readdirSync(dir);
+    // 门禁：MSI 同样只接受精确版本匹配，禁止任意回退（同 NSIS）。
     const exact = files.find(f => f.includes(version) && f.endsWith('.msi'));
     if (exact) {
       srcMsiPath = path.join(dir, exact);
-      break;
-    }
-    const found = files.find(f => f.toLowerCase().endsWith('.msi'));
-    if (found) {
-      srcMsiPath = path.join(dir, found);
       break;
     }
   }
 }
 
 if (!srcMsiPath) {
-  srcMsiPath = findFileRecursive(targetDir, name => name.toLowerCase().endsWith('.msi'));
-}
-
-if (!srcMsiPath) {
-  throw new Error(`在 ${targetDir} 中未找到 MSI 安装包 (*.msi)`);
+  throw new Error(
+    `未找到文件名包含 ${version} 的 MSI 安装包（候选目录：${candidateMsiDirs.join(', ')}）。` +
+      '禁止回退选择其他版本产物，请确认构建版本与发布版本一致后重试。'
+  );
 }
 
 const dstMsiPath = path.join(outDir, `Maobu.Fetch_${version}_x64.msi`);
@@ -149,6 +180,53 @@ const extDistSrc = path.join(rootDir, 'extension', 'dist', '*');
 execSync(`powershell -Command "Compress-Archive -Path '${extDistSrc}' -DestinationPath '${extVersionZip}' -Force"`);
 fs.copyFileSync(extVersionZip, extCommonZip);
 console.log(`✔ 浏览器扩展已打包: maobu-fetch-extension-v${version}.zip 与 extension.zip`);
+
+// 5.5 发布硬门禁（AGENTS.md §6/§10）：未验证通过不得继续封装发布资产。
+const MAX_INSTALLER_BYTES = 30 * 1024 * 1024;
+for (const [label, file] of [
+  ['NSIS 安装包', dstSetupPath],
+  ['MSI 安装包', dstMsiPath],
+]) {
+  const size = fs.statSync(file).size;
+  if (size >= MAX_INSTALLER_BYTES) {
+    throw new Error(
+      `${label} ${(size / 1024 / 1024).toFixed(2)} MB 达到/超过 30 MB 强约束，拒绝发布`
+    );
+  }
+}
+console.log('✔ 体积门禁通过：NSIS/MSI 均低于 30 MB');
+
+function assertExeMetadata(exePath, expectedVersion) {
+  const out = execSync(
+    `powershell -NoProfile -Command "(Get-Item -LiteralPath '${exePath}').VersionInfo | Format-List ProductVersion,ProductName,FileDescription,OriginalFilename | Out-String"`,
+    { encoding: 'utf8' }
+  );
+  const pick = name => {
+    const m = out.match(new RegExp(`${name}\\s*:\\s*(.*)`));
+    return m ? m[1].trim() : '';
+  };
+  const productVersion = pick('ProductVersion');
+  const productName = pick('ProductName');
+  const fileDescription = pick('FileDescription');
+  const originalFilename = pick('OriginalFilename');
+  if (!productVersion.includes(expectedVersion)) {
+    throw new Error(
+      `EXE 的 ProductVersion "${productVersion}" 不含目标版本 ${expectedVersion}，Windows 版本资源可能损坏或版本不一致，拒绝发布`
+    );
+  }
+  if (!productName.toLowerCase().includes('maobu') && !fileDescription.toLowerCase().includes('maobu')) {
+    throw new Error(
+      `EXE 的 ProductName "${productName}" 异常，Windows 版本资源可能损坏，拒绝发布`
+    );
+  }
+  if (originalFilename && !originalFilename.toLowerCase().endsWith('.exe')) {
+    throw new Error(
+      `EXE 的 OriginalFilename "${originalFilename}" 异常，Windows 版本资源可能损坏，拒绝发布`
+    );
+  }
+}
+assertExeMetadata(dstPortablePath, version);
+console.log('✔ EXE 版本资源门禁通过（ProductVersion / ProductName / OriginalFilename）');
 
 // 6. 计算各文件 SHA-256
 const targetFiles = [
@@ -206,6 +284,20 @@ if (fs.existsSync(notesPath)) {
     `- 基础安装包内零捆绑第三方可执行程序（严格按需下载与 SHA-256 校验清单）；\n` +
     `- 本地通信严格限制在 127.0.0.1，保留 HMAC-SHA256 签名鉴权；\n` +
     `- 扩展包提供版本化文件与通用命名文件双产物，保证历史客户端一键平滑更新。\n`;
+}
+
+// §10 门禁：发布说明叙述正文严禁出现形如 *.exe / *.zip 的文件名，
+// 防止 Atom Feed 降级解析器把示例名称误识别为资产包；资产名只允许出现在校验表格中。
+const narrative = body
+  .split(/\r?\n/)
+  .filter(line => !line.trim().startsWith('|'))
+  .join('\n');
+const interfering = narrative.match(/[A-Za-z0-9._-]+\.(exe|zip)\b/gi);
+if (interfering) {
+  throw new Error(
+    `发布说明正文出现干扰性文件名 ${[...new Set(interfering)].join('、')}，` +
+      '请改用非文件名表述（资产名仅允许出现在校验表格中）'
+  );
 }
 
 fs.writeFileSync(path.join(outDir, 'release_notes.md'), body, 'utf8');

@@ -211,9 +211,7 @@ impl BtEngine {
                 let _ = session.unpause(&handle).await;
                 (handle.info_hash().as_string(), handle)
             }
-            AddTorrentResponse::Added(_, handle) => {
-                (handle.info_hash().as_string(), handle)
-            }
+            AddTorrentResponse::Added(_, handle) => (handle.info_hash().as_string(), handle),
             _ => {
                 return Err("添加 BT 任务未返回有效 Handle".into());
             }
@@ -233,9 +231,12 @@ impl BtEngine {
 
         // 追加内置公共 Trackers
         for tracker in DEFAULT_PUBLIC_TRACKERS {
-            let encoded_tr: String = url::form_urlencoded::byte_serialize(tracker.as_bytes()).collect();
+            let encoded_tr: String =
+                url::form_urlencoded::byte_serialize(tracker.as_bytes()).collect();
             let check_fragment = format!("tr={}", encoded_tr).to_ascii_lowercase();
-            if !existing_lower.contains(&check_fragment) && !existing_lower.contains(&tracker.to_ascii_lowercase()) {
+            if !existing_lower.contains(&check_fragment)
+                && !existing_lower.contains(&tracker.to_ascii_lowercase())
+            {
                 url.push_str("&tr=");
                 url.push_str(&encoded_tr);
                 existing_lower.push_str(&check_fragment);
@@ -246,7 +247,8 @@ impl BtEngine {
         for line in settings.bt_extra_trackers.lines() {
             let trimmed = line.trim();
             if !trimmed.is_empty() && !trimmed.starts_with('#') {
-                let encoded_tr: String = url::form_urlencoded::byte_serialize(trimmed.as_bytes()).collect();
+                let encoded_tr: String =
+                    url::form_urlencoded::byte_serialize(trimmed.as_bytes()).collect();
                 url.push_str("&tr=");
                 url.push_str(&encoded_tr);
             }
@@ -266,10 +268,7 @@ impl BtEngine {
             bindings.get(task_id).cloned()
         };
         if let (Some(session), Some(handle)) = (session_opt, handle_opt) {
-            let _ = tokio::time::timeout(
-                Duration::from_secs(1),
-                session.pause(&handle)
-            ).await;
+            let _ = tokio::time::timeout(Duration::from_secs(1), session.pause(&handle)).await;
         }
         Ok(())
     }
@@ -290,20 +289,24 @@ impl BtEngine {
         }
         if let (Some(session), Some(handle)) = (session_opt, handle_opt) {
             let hash = handle.info_hash();
-            let _ = tokio::time::timeout(
-                Duration::from_secs(1),
-                session.delete(hash.into(), false)
-            ).await;
+            let _ =
+                tokio::time::timeout(Duration::from_secs(1), session.delete(hash.into(), false))
+                    .await;
         }
         Ok(())
     }
 
     /// 查询任务进度快照。
-    pub async fn status_of(&self, task_id: &str, base_dir: &str) -> Result<status::BtProgress, String> {
+    pub async fn status_of(
+        &self,
+        task_id: &str,
+        base_dir: &str,
+    ) -> Result<status::BtProgress, String> {
         let handle = {
             let bindings = self.bindings.lock().await;
             bindings.get(task_id).cloned()
-        }.ok_or_else(|| "BT 任务尚未注册".to_string())?;
+        }
+        .ok_or_else(|| "BT 任务尚未注册".to_string())?;
 
         let stats = handle.stats();
         let info_hash = handle.info_hash().as_string();
@@ -311,20 +314,27 @@ impl BtEngine {
 
         let live = stats.live.as_ref();
         let num_peers = live.map(|l| l.snapshot.peer_stats.live as u32).unwrap_or(0);
-        let num_seeds = live.map(|l| {
-            l.snapshot.peer_stats.live.saturating_sub(l.snapshot.peer_stats.queued) as u32
-        }).unwrap_or(0);
+        let num_seeds = live
+            .map(|l| {
+                l.snapshot
+                    .peer_stats
+                    .live
+                    .saturating_sub(l.snapshot.peer_stats.queued) as u32
+            })
+            .unwrap_or(0);
 
         // 真实瞬时速度采样计算
         let now = std::time::Instant::now();
         let mut samples = self.speed_samples.lock().await;
-        let sample = samples.entry(task_id.to_string()).or_insert_with(|| SpeedSample {
-            last_time: now,
-            last_downloaded: stats.progress_bytes,
-            last_uploaded: stats.uploaded_bytes,
-            current_download_speed: 0,
-            current_upload_speed: 0,
-        });
+        let sample = samples
+            .entry(task_id.to_string())
+            .or_insert_with(|| SpeedSample {
+                last_time: now,
+                last_downloaded: stats.progress_bytes,
+                last_uploaded: stats.uploaded_bytes,
+                current_download_speed: 0,
+                current_upload_speed: 0,
+            });
         let dt = now.duration_since(sample.last_time).as_secs_f64();
         if dt >= 0.8 {
             let down_diff = stats.progress_bytes.saturating_sub(sample.last_downloaded);
@@ -338,45 +348,43 @@ impl BtEngine {
         let download_speed = sample.current_download_speed;
         let upload_speed = sample.current_upload_speed;
 
-        let (display_name, files, is_error, err_msg) = handle.with_state(|state| {
-            match state {
-                librqbit::ManagedTorrentState::Live(live) => {
-                    let info = live.info();
-                    let name = info.name().map(|n| n.to_string());
-                    let mut file_entries = Vec::new();
-                    let base_path = Path::new(base_dir);
-                    for (idx, f) in info.iter_file_details().enumerate() {
-                        let filename_str = f.filename.to_string();
-                        let local_file = base_path.join(&filename_str);
-                        let local_file_nested = if let Some(n) = &name {
-                            base_path.join(n).join(&filename_str)
-                        } else {
-                            local_file.clone()
-                        };
-                        let downloaded = if stats.finished {
-                            f.len
-                        } else if local_file.exists() {
-                            local_file.metadata().map(|m| m.len()).unwrap_or(0)
-                        } else if local_file_nested.exists() {
-                            local_file_nested.metadata().map(|m| m.len()).unwrap_or(0)
-                        } else {
-                            0
-                        };
-                        file_entries.push(BtFileEntry {
-                            index: (idx + 1) as u32,
-                            path: filename_str,
-                            length_bytes: f.len,
-                            selected: true,
-                            downloaded_bytes: std::cmp::min(downloaded, f.len),
-                        });
-                    }
-                    (name, file_entries, false, None)
+        let (display_name, files, is_error, err_msg) = handle.with_state(|state| match state {
+            librqbit::ManagedTorrentState::Live(live) => {
+                let info = live.info();
+                let name = info.name().map(|n| n.to_string());
+                let mut file_entries = Vec::new();
+                let base_path = Path::new(base_dir);
+                for (idx, f) in info.iter_file_details().enumerate() {
+                    let filename_str = f.filename.to_string();
+                    let local_file = base_path.join(&filename_str);
+                    let local_file_nested = if let Some(n) = &name {
+                        base_path.join(n).join(&filename_str)
+                    } else {
+                        local_file.clone()
+                    };
+                    let downloaded = if stats.finished {
+                        f.len
+                    } else if local_file.exists() {
+                        local_file.metadata().map(|m| m.len()).unwrap_or(0)
+                    } else if local_file_nested.exists() {
+                        local_file_nested.metadata().map(|m| m.len()).unwrap_or(0)
+                    } else {
+                        0
+                    };
+                    file_entries.push(BtFileEntry {
+                        index: (idx + 1) as u32,
+                        path: filename_str,
+                        length_bytes: f.len,
+                        selected: true,
+                        downloaded_bytes: std::cmp::min(downloaded, f.len),
+                    });
                 }
-                librqbit::ManagedTorrentState::Error(err) => {
-                    (None, Vec::new(), true, Some(err.to_string()))
-                }
-                _ => (None, Vec::new(), false, None),
+                (name, file_entries, false, None)
             }
+            librqbit::ManagedTorrentState::Error(err) => {
+                (None, Vec::new(), true, Some(err.to_string()))
+            }
+            _ => (None, Vec::new(), false, None),
         });
 
         let progress = status::BtProgress {
@@ -406,7 +414,11 @@ impl BtEngine {
     }
 
     /// 列出种子内文件。
-    pub async fn files_of(&self, task_id: &str, base_dir: &str) -> Result<Vec<BtFileEntry>, String> {
+    pub async fn files_of(
+        &self,
+        task_id: &str,
+        base_dir: &str,
+    ) -> Result<Vec<BtFileEntry>, String> {
         let progress = self.status_of(task_id, base_dir).await?;
         if progress.metadata_fetching {
             return Err("BT_METADATA_PENDING: 磁力元数据尚未获取，请稍后再试".into());
@@ -425,7 +437,11 @@ impl BtEngine {
     }
 
     /// 预检磁力链接元数据（使用 librqbit list_only 模式）。
-    pub async fn inspect_magnet(&self, magnet_url: &str, timeout_secs: u64) -> Result<crate::models::BtTorrentInspectResult, String> {
+    pub async fn inspect_magnet(
+        &self,
+        magnet_url: &str,
+        timeout_secs: u64,
+    ) -> Result<crate::models::BtTorrentInspectResult, String> {
         let mut guard = self.session.lock().await;
         let session = if let Some(s) = guard.as_ref() {
             s.clone()
@@ -468,7 +484,11 @@ impl BtEngine {
 
         match response {
             librqbit::AddTorrentResponse::ListOnly(resp) => {
-                let name = resp.info.name().map(|n| n.to_string()).unwrap_or_else(|| "未命名种子".into());
+                let name = resp
+                    .info
+                    .name()
+                    .map(|n| n.to_string())
+                    .unwrap_or_else(|| "未命名种子".into());
                 let mut files = Vec::new();
                 let mut total_bytes = 0u64;
                 for (idx, f) in resp.info.iter_file_details().enumerate() {
@@ -520,35 +540,55 @@ pub fn validate_torrent_file(path: &Path) -> Result<(), String> {
     use std::io::Read;
     let mut file = std::fs::File::open(path).map_err(|e| format!("打开种子失败：{e}"))?;
     let mut buf = [0u8; 16];
-    let n = file.read(&mut buf).map_err(|e| format!("读取种子头部失败：{e}"))?;
+    let n = file
+        .read(&mut buf)
+        .map_err(|e| format!("读取种子头部失败：{e}"))?;
     validate_torrent_bytes(&buf[..n])
 }
 
 pub async fn validate_torrent_file_async(path: &Path) -> Result<(), String> {
-    let metadata = tokio::fs::metadata(path).await.map_err(|e| format!("无法读取种子文件属性：{e}"))?;
+    let metadata = tokio::fs::metadata(path)
+        .await
+        .map_err(|e| format!("无法读取种子文件属性：{e}"))?;
     if metadata.len() > 20 * 1024 * 1024 {
         return Err("种子文件超过 20MB 限制".into());
     }
     use tokio::io::AsyncReadExt;
-    let mut file = tokio::fs::File::open(path).await.map_err(|e| format!("打开种子失败：{e}"))?;
+    let mut file = tokio::fs::File::open(path)
+        .await
+        .map_err(|e| format!("打开种子失败：{e}"))?;
     let mut buf = [0u8; 16];
-    let n = file.read(&mut buf).await.map_err(|e| format!("读取种子头部失败：{e}"))?;
+    let n = file
+        .read(&mut buf)
+        .await
+        .map_err(|e| format!("读取种子头部失败：{e}"))?;
     validate_torrent_bytes(&buf[..n])
 }
 
 /// 解析种子文件字节内容，提取文件名、总大小与文件列表（用于新建任务前预览与勾选）。
-pub fn inspect_torrent_bytes(bytes: &[u8]) -> Result<crate::models::BtTorrentInspectResult, String> {
+pub fn inspect_torrent_bytes(
+    bytes: &[u8],
+) -> Result<crate::models::BtTorrentInspectResult, String> {
     validate_torrent_bytes(bytes)?;
     let meta = librqbit::torrent_from_bytes(bytes)
         .map_err(|e| format!("未能从种子数据解析出有效元数据: {e}"))?;
     let info = &meta.info.data;
-    let name = info.name.as_ref().map(|n| n.to_string()).unwrap_or_else(|| "未命名种子".into());
+    let name = info
+        .name
+        .as_ref()
+        .map(|n| n.to_string())
+        .unwrap_or_else(|| "未命名种子".into());
     let mut files = Vec::new();
     let mut total_bytes = 0u64;
 
     if let Some(meta_files) = &info.files {
         for (idx, f) in meta_files.iter().enumerate() {
-            let path_str = f.path.iter().map(|p| p.to_string()).collect::<Vec<_>>().join("/");
+            let path_str = f
+                .path
+                .iter()
+                .map(|p| p.to_string())
+                .collect::<Vec<_>>()
+                .join("/");
             total_bytes += f.length;
             files.push(BtFileEntry {
                 index: (idx + 1) as u32,
@@ -578,7 +618,9 @@ pub fn inspect_torrent_bytes(bytes: &[u8]) -> Result<crate::models::BtTorrentIns
 }
 
 /// 从本地文件路径解析种子元数据。
-pub async fn inspect_torrent_file(path: &Path) -> Result<crate::models::BtTorrentInspectResult, String> {
+pub async fn inspect_torrent_file(
+    path: &Path,
+) -> Result<crate::models::BtTorrentInspectResult, String> {
     validate_torrent_file_async(path).await?;
     let bytes = tokio::fs::read(path)
         .await
@@ -638,8 +680,16 @@ async fn poll_until_finished(
                     return Ok(task.clone());
                 }
                 // 若开启做种，检查是否达到目标分享率
-                let downloaded = if progress.total_bytes > 0 { progress.total_bytes } else { progress.downloaded_bytes };
-                let ratio = if downloaded > 0 { progress.uploaded_bytes as f64 / downloaded as f64 } else { 0.0 };
+                let downloaded = if progress.total_bytes > 0 {
+                    progress.total_bytes
+                } else {
+                    progress.downloaded_bytes
+                };
+                let ratio = if downloaded > 0 {
+                    progress.uploaded_bytes as f64 / downloaded as f64
+                } else {
+                    0.0
+                };
                 if settings.bt_seed_ratio > 0.0 && ratio >= settings.bt_seed_ratio {
                     tracing::info!(task_id = %task.id, ratio, target = settings.bt_seed_ratio, "已达到目标分享率，停止做种");
                     let _ = manager.bt.pause_task(&task.id).await;
@@ -647,9 +697,7 @@ async fn poll_until_finished(
                 }
             }
             "error" => {
-                let message = progress
-                    .error
-                    .unwrap_or_else(|| "BT 下载失败".into());
+                let message = progress.error.unwrap_or_else(|| "BT 下载失败".into());
                 return fail_terminal(manager, task, &message).await;
             }
             "removed" => {
@@ -718,10 +766,7 @@ fn apply_metadata_transition(task: &mut DownloadTask, progress: &status::BtProgr
 }
 
 fn last_path_component(path: &str) -> String {
-    path.rsplit(['/', '\\'])
-        .next()
-        .unwrap_or(path)
-        .to_string()
+    path.rsplit(['/', '\\']).next().unwrap_or(path).to_string()
 }
 
 /// 终态失败：落库 Failed + emit + 返回 `BT_TERMINAL` 前缀错误。
@@ -740,9 +785,10 @@ async fn fail_terminal(
     Err(format!("{BT_TERMINAL_PREFIX}{message}"))
 }
 
-/// 删除 BT 任务的物理文件：只删除任务目录下、由本任务 file_name 直接
-/// 命中的普通文件；路径规范化后必须位于任务目录之内，绝不递归删除
-/// 目录（AGENTS.md §7：删除文件与仅删除记录是两个明确选项）。
+/// 删除 BT 任务的物理文件：单文件种子命中普通文件；多文件种子的
+/// file_name 是 safe_name 子目录，删除该子目录。目标 canonicalize 后
+/// 必须严格位于任务下载目录之内（AGENTS.md §7：删除文件与仅删除记录
+/// 是两个明确选项，且禁止逃逸下载目录）。
 pub async fn delete_task_files(task: &DownloadTask) -> Vec<String> {
     let mut deleted = Vec::new();
     let destination = std::path::Path::new(&task.destination);
@@ -757,8 +803,16 @@ pub async fn delete_task_files(task: &DownloadTask) -> Vec<String> {
     let Ok(canonical) = direct.canonicalize() else {
         return deleted;
     };
-    if canonical.starts_with(&destination_root) && canonical.is_file() {
+    if !canonical.starts_with(&destination_root) || canonical == destination_root {
+        return deleted;
+    }
+    if canonical.is_file() {
         if tokio::fs::remove_file(&canonical).await.is_ok() {
+            deleted.push(canonical.to_string_lossy().into_owned());
+        }
+    } else if canonical.is_dir() {
+        // 多文件种子：整个任务专属子目录随"删除文件"一并清理
+        if tokio::fs::remove_dir_all(&canonical).await.is_ok() {
             deleted.push(canonical.to_string_lossy().into_owned());
         }
     }

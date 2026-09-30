@@ -141,61 +141,123 @@ export async function refreshDownload(downloads, initial, wait = sleep) {
 // 之间死亡，浏览器下载会永久停留在暂停状态。pause 前把下载 ID 记入
 // storage.session（随浏览器会话存续，跨 SW 重启可读），退出接管流程时清除；
 // background 的 alarms 看门狗定期调用 recoverStuckTakeovers 恢复超龄条目。
+//
+// 记录形态：{ [下载项 id]: { ts, url, phase } }
+//   - ts：写入时间戳，看门狗据此判断超龄（兼容旧版纯时间戳数字）。
+//   - url：下载地址，供 SW 重启后诊断。
+//   - phase：恢复决策依据，见 PENDING_TAKEOVER_PHASES。
+// 顺序强约束：任何 chrome.downloads.pause() 之前必须先成功写入本记录；
+// 写入失败时调用方必须放弃暂停（宁可不暂停，也不留下无法恢复的暂停态）。
 export const TAKEOVER_STUCK_MS = 90_000;
 
-async function markPendingTakeover(id) {
-  try {
-    const session = chrome.storage?.session;
-    if (!session?.get || !session?.set) return;
-    const { pendingTakeover = {} } = await session.get("pendingTakeover");
-    pendingTakeover[String(id)] = Date.now();
-    await session.set({ pendingTakeover });
-  } catch { /* 标记失败不阻断接管；看门狗只是兜底。 */ }
+// 记录阶段：
+//   confirming —— 已（或即将）暂停，浮层确认中，尚未进入接管流程；
+//   sending    —— 接管流程进行中（刷新 URL、发送任务）；
+//   task-sent  —— 桌面任务已发送、浏览器下载待取消，此阶段死亡时按"取消"
+//                 恢复（防重复文件），绝不 resume。
+const PENDING_TAKEOVER_PHASES = new Set(["confirming", "sending", "task-sent"]);
+
+// storage.session 的读写是异步的，并发下载同时到达时"读-改-写"会互相覆盖、
+// 丢失记录。MV3 同一时刻只有一个 SW 实例，模块级串行队列即可保证
+// mark/clear 对 pendingTakeover 映射的更新互不踩踏。
+let pendingTakeoverQueue = Promise.resolve();
+function withPendingTakeoverLock(task) {
+  const next = pendingTakeoverQueue.then(task, task);
+  pendingTakeoverQueue = next.catch(() => {});
+  return next;
 }
 
-async function clearPendingTakeover(id) {
-  try {
-    const session = chrome.storage?.session;
-    if (!session?.get || !session?.set) return;
-    const { pendingTakeover = {} } = await session.get("pendingTakeover");
-    if (!(String(id) in pendingTakeover)) return;
-    delete pendingTakeover[String(id)];
-    await session.set({ pendingTakeover });
-  } catch {}
+/// 写入/刷新某下载项的接管恢复记录。返回是否已持久化：
+/// false 表示 storage.session 不可用或写入失败，调用方不得执行首次 pause()。
+export async function markPendingTakeover(id, meta = {}) {
+  return withPendingTakeoverLock(async () => {
+    try {
+      const session = chrome.storage?.session;
+      if (!session?.get || !session?.set) return false;
+      const { pendingTakeover = {} } = await session.get("pendingTakeover");
+      pendingTakeover[String(id)] = {
+        ts: Date.now(),
+        url: String(meta.url || ""),
+        phase: PENDING_TAKEOVER_PHASES.has(meta.phase) ? meta.phase : "sending",
+      };
+      await session.set({ pendingTakeover });
+      return true;
+    } catch { /* 标记失败不阻断接管；调用方据此跳过暂停。 */ return false; }
+  });
 }
 
-/// 恢复卡死的接管下载：条目超过 TAKEOVER_STUCK_MS 仍未清除时，
-/// 若下载仍处于暂停态则 resume 放行，并移除标记。
-/// "任务已发送但 cancel 失败"的下载会被主动清除标记（有意保持暂停避免
-/// 产生重复文件），看门狗不会碰它们。
+/// 清除某下载项的接管恢复记录（幂等）。
+export async function clearPendingTakeover(id) {
+  return withPendingTakeoverLock(async () => {
+    try {
+      const session = chrome.storage?.session;
+      if (!session?.get || !session?.set) return;
+      const { pendingTakeover = {} } = await session.get("pendingTakeover");
+      if (!(String(id) in pendingTakeover)) return;
+      delete pendingTakeover[String(id)];
+      await session.set({ pendingTakeover });
+    } catch {}
+  });
+}
+
+/// 读取记录条目的时间戳与阶段（兼容旧版纯时间戳数字形态）。
+const pendingEntryInfo = (entry) => {
+  if (entry && typeof entry === "object") {
+    return { ts: Number(entry.ts || 0), phase: PENDING_TAKEOVER_PHASES.has(entry.phase) ? entry.phase : "sending" };
+  }
+  return { ts: Number(entry || 0), phase: "sending" };
+};
+
+/// 恢复卡死的接管下载：条目超过 TAKEOVER_STUCK_MS 仍未清除时：
+///   - confirming / sending（含旧版数字条目）：下载仍处于暂停态则 resume 放行；
+///   - task-sent：桌面任务已发送，按接管成功路径取消并移除浏览器下载（防重复
+///     文件），绝不 resume——resume 会与桌面端任务产生同一文件的两份下载。
+/// 已清除条目采用"重读-合并-写回"，避免覆盖处理期间新流程写入的记录。
 export async function recoverStuckTakeovers(deps = {}) {
   const downloads = deps.downloads || chrome.downloads;
   const session = deps.session || chrome.storage?.session;
   if (!downloads?.search || !session?.get || !session?.set) {
-    return { recovered: [], remaining: {} };
+    return { recovered: [], cancelled: [], remaining: {} };
   }
   let pending = {};
   try {
     pending = { ...((await session.get("pendingTakeover"))?.pendingTakeover || {}) };
   } catch {
-    return { recovered: [], remaining: {} };
+    return { recovered: [], cancelled: [], remaining: {} };
   }
   const now = deps.now || Date.now();
   const recovered = [];
-  for (const [idText, timestamp] of Object.entries(pending)) {
+  const cancelled = [];
+  const processed = [];
+  for (const [idText, entry] of Object.entries(pending)) {
     const id = Number(idText);
-    if (!Number.isInteger(id) || now - Number(timestamp || 0) < TAKEOVER_STUCK_MS) continue;
+    const { ts, phase } = pendingEntryInfo(entry);
+    if (!Number.isInteger(id) || now - ts < TAKEOVER_STUCK_MS) continue;
+    processed.push(idText);
     try {
       const [item] = await downloads.search({ id });
-      if (item && item.paused) {
+      if (phase === "task-sent") {
+        // 仍存在（未被正常流程 erase）才清理；桌面端任务继续完成下载。
+        if (item) {
+          try { await downloads.cancel?.(id); } catch {}
+          try { await downloads.erase?.({ id }); } catch {}
+          cancelled.push(id);
+        }
+      } else if (item && item.paused) {
         await downloads.resume(id);
         recovered.push(id);
       }
     } catch { /* 下载可能已被接管完成并 erase；直接清除标记。 */ }
-    delete pending[idText];
   }
-  try { await session.set({ pendingTakeover: pending }); } catch {}
-  return { recovered, remaining: pending };
+  if (processed.length) {
+    try {
+      const latest = { ...((await session.get("pendingTakeover"))?.pendingTakeover || {}) };
+      for (const idText of processed) delete latest[idText];
+      await session.set({ pendingTakeover: latest });
+      pending = latest;
+    } catch { /* 写回失败时本次不清除，下次看门狗重试。 */ }
+  }
+  return { recovered, cancelled, remaining: pending };
 }
 
 /// 统一记录"被放行（未接管）"的下载（P2-14）。
@@ -351,10 +413,15 @@ export async function interceptBrowserDownload(initial, options) {
     return false;
   }
 
-  await markPendingTakeover(initial.id);
-  try {
-    await downloads.pause(initial.id);
-  } catch {}
+  // P0-4 修复：恢复记录必须先于 pause() 落盘。写入失败（storage.session 不可用）
+  // 时放弃暂停——接管流程照常进行，发送成功后仍会 cancel 浏览器下载；
+  // 宁可让下载在接管期间继续，也不留下无法被看门狗恢复的暂停态。
+  const recorded = await markPendingTakeover(initial.id, { url: initial.finalUrl || initial.url, phase: "sending" });
+  if (recorded) {
+    try {
+      await downloads.pause(initial.id);
+    } catch {}
+  }
 
   let taskSent = false;
   try {
@@ -382,6 +449,9 @@ export async function interceptBrowserDownload(initial, options) {
     }
     const created = await sendTask(decision.url, decision.fileName, { headers: taskHeaders });
     taskSent = true;
+    // 阶段推进为 task-sent：若 SW 在 cancel/erase 前死亡，看门狗按"取消浏览器
+    // 下载"恢复（防重复文件），而不是 resume。
+    await markPendingTakeover(initial.id, { url: decision.url, phase: "task-sent" });
     await downloads.cancel(initial.id);
     await downloads.erase({ id: initial.id });
     await clearPendingTakeover(initial.id);

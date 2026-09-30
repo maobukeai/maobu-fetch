@@ -11,13 +11,13 @@ use crate::{
     store::Store,
 };
 use futures_util::StreamExt;
+use md5::Md5;
 use reqwest::header::{
-    ACCEPT_ENCODING, ACCEPT_RANGES, CONTENT_DISPOSITION, CONTENT_LENGTH, CONTENT_RANGE,
-    CONTENT_TYPE, ETAG, IF_RANGE, LAST_MODIFIED, RANGE,
+    ACCEPT_ENCODING, CONTENT_DISPOSITION, CONTENT_LENGTH, CONTENT_RANGE, CONTENT_TYPE, ETAG,
+    IF_RANGE, LAST_MODIFIED, RANGE,
 };
 use sha1::Sha1;
 use sha2::{Digest, Sha256};
-use md5::Md5;
 use std::{
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
@@ -53,7 +53,6 @@ use bandwidth::BandwidthScheduler;
 pub use category_rules::{apply_category_rules, normalize_directory, test_category_rule};
 pub use diagnose::{classify_error, redact_sensitive, ErrorContext};
 pub use filename_cleanup::apply_filename_cleanup;
-pub use naming_template::{apply_naming_template, find_template_for_platform, NamingVars};
 pub use task_template::{apply_template_to_request, match_template, test_task_template};
 pub use work_stealing::{RangeWindow, WindowStatus, WorkStealingCoordinator};
 
@@ -307,10 +306,7 @@ impl DownloadManager {
         self.emit_power_action_state(&state);
     }
 
-    pub async fn add(
-        &self,
-        mut request: NewTaskRequest,
-    ) -> Result<DownloadTask, String> {
+    pub async fn add(&self, mut request: NewTaskRequest) -> Result<DownloadTask, String> {
         canonicalize_headers(&mut request.headers);
         let parsed = Url::parse(request.url.trim())
             .map_err(|_| "请输入有效的 HTTP/HTTPS 链接".to_string())?;
@@ -408,10 +404,11 @@ impl DownloadManager {
             per_task_speed_limit: request.per_task_speed_limit,
             collision_policy: request.collision_policy,
             completion_action,
-            connection_count: request
-                .connection_count
-                .unwrap_or(settings.connections_per_download)
-                .clamp(1, 32),
+            connection_count: normalize_connection_count(u32::from(
+                request
+                    .connection_count
+                    .unwrap_or(settings.connections_per_download),
+            )) as u8,
             active_connections: 0,
             segments: Vec::new(),
             retry_policy_override: None,
@@ -427,7 +424,8 @@ impl DownloadManager {
         if task.cloud_refresh.is_none() {
             if let Some(meta) = crate::pikpak::parse_pikpak_direct_link_meta(&task.url) {
                 if !task.headers.contains_key("Referer") {
-                    task.headers.insert("Referer".to_string(), "https://mypikpak.com/".to_string());
+                    task.headers
+                        .insert("Referer".to_string(), "https://mypikpak.com/".to_string());
                 }
                 task.cloud_refresh = Some(crate::models::CloudRefreshMeta {
                     platform: "pikpak-direct".to_string(),
@@ -577,7 +575,10 @@ impl DownloadManager {
                     let mut settings = self.settings().await;
                     if !settings.user_resumed_after_metered {
                         settings.user_resumed_after_metered = true;
-                        self.save_settings(settings).await?;
+                        // 该标记不是恢复任务的前置条件；持久化失败不应阻塞恢复动作
+                        if let Err(e) = self.save_settings(settings).await {
+                            tracing::warn!(error = %e, "计量网络恢复标记持久化失败，已忽略");
+                        }
                     }
                 }
             }
@@ -806,15 +807,22 @@ impl DownloadManager {
             let is_completed = task.status == TaskStatus::Completed;
             if task.task_kind == TaskKind::Bt {
                 let _ = self.bt.remove_task(id).await;
-                if delete_file || !is_completed {
+                // 与 HTTP 内核对齐：仅删除记录时保留已下载数据（重新添加同一种子
+                // 可续传），文件删除严格绑定 delete_file（§7）。
+                if delete_file {
                     let _ = crate::bt::delete_task_files(&task).await;
                 }
-            } else if delete_file || !is_completed {
-                let path = PathBuf::from(&task.destination).join(&task.file_name);
-                let _ = fs::remove_file(&path).await;
-                let temp_path = PathBuf::from(format!("{}.lumaget", path.to_string_lossy()));
-                let _ = fs::remove_file(&temp_path).await;
-                self.clear_parts(&task).await;
+            } else {
+                // "仅删除记录"不得动用户目标文件（§7）；未完成任务的分片临时数据随之清理。
+                if delete_file && is_safe_path_component(&task.file_name) {
+                    let path = PathBuf::from(&task.destination).join(&task.file_name);
+                    let _ = fs::remove_file(&path).await;
+                    let temp_path = PathBuf::from(format!("{}.lumaget", path.to_string_lossy()));
+                    let _ = fs::remove_file(&temp_path).await;
+                }
+                if delete_file || !is_completed {
+                    self.clear_parts(&task).await;
+                }
             }
         }
 
@@ -840,15 +848,22 @@ impl DownloadManager {
             let is_completed = task.status == TaskStatus::Completed;
             if task.task_kind == TaskKind::Bt {
                 let _ = self.bt.remove_task(id).await;
-                if delete_file || !is_completed {
+                // 与 HTTP 内核对齐：仅删除记录时保留已下载数据（重新添加同一种子
+                // 可续传），文件删除严格绑定 delete_file（§7）。
+                if delete_file {
                     let _ = crate::bt::delete_task_files(&task).await;
                 }
-            } else if delete_file || !is_completed {
-                let path = PathBuf::from(&task.destination).join(&task.file_name);
-                let _ = fs::remove_file(&path).await;
-                let temp_path = PathBuf::from(format!("{}.lumaget", path.to_string_lossy()));
-                let _ = fs::remove_file(&temp_path).await;
-                self.clear_parts(&task).await;
+            } else {
+                // "仅删除记录"不得动用户目标文件（§7）；未完成任务的分片临时数据随之清理。
+                if delete_file && is_safe_path_component(&task.file_name) {
+                    let path = PathBuf::from(&task.destination).join(&task.file_name);
+                    let _ = fs::remove_file(&path).await;
+                    let temp_path = PathBuf::from(format!("{}.lumaget", path.to_string_lossy()));
+                    let _ = fs::remove_file(&temp_path).await;
+                }
+                if delete_file || !is_completed {
+                    self.clear_parts(&task).await;
+                }
             }
 
             task.status = TaskStatus::Cancelled;
@@ -1112,10 +1127,7 @@ impl DownloadManager {
     /// - `Ok(true)`：刷新成功，`task.url` 与请求头已更新。
     /// - `Ok(false)`：任务无刷新元数据或平台暂不支持自动刷新。
     /// - `Err(e)`：刷新尝试失败（分享失效、网络错误等）。
-    async fn refresh_cloud_direct_link(
-        &self,
-        task: &mut DownloadTask,
-    ) -> Result<bool, String> {
+    async fn refresh_cloud_direct_link(&self, task: &mut DownloadTask) -> Result<bool, String> {
         let Some(meta) = task.cloud_refresh.clone() else {
             return Ok(false);
         };
@@ -1172,7 +1184,10 @@ impl DownloadManager {
     }
 
     /// 从订阅源拉取并更新 BT Trackers 列表。
-    pub async fn fetch_and_update_trackers(&self, custom_url: Option<&str>) -> Result<usize, String> {
+    pub async fn fetch_and_update_trackers(
+        &self,
+        custom_url: Option<&str>,
+    ) -> Result<usize, String> {
         let settings = self.settings().await;
         let url = custom_url
             .unwrap_or(settings.bt_tracker_subscribe_url.as_str())
@@ -1201,14 +1216,26 @@ impl DownloadManager {
         // 保留现有有效 trackers
         for line in settings.bt_extra_trackers.lines() {
             let t = line.trim();
-            if !t.is_empty() && (t.starts_with("http://") || t.starts_with("https://") || t.starts_with("udp://") || t.starts_with("ws://") || t.starts_with("wss://")) {
+            if !t.is_empty()
+                && (t.starts_with("http://")
+                    || t.starts_with("https://")
+                    || t.starts_with("udp://")
+                    || t.starts_with("ws://")
+                    || t.starts_with("wss://"))
+            {
                 trackers_set.insert(t.to_string());
             }
         }
 
         for line in text.lines() {
             let t = line.trim();
-            if !t.is_empty() && (t.starts_with("http://") || t.starts_with("https://") || t.starts_with("udp://") || t.starts_with("ws://") || t.starts_with("wss://")) {
+            if !t.is_empty()
+                && (t.starts_with("http://")
+                    || t.starts_with("https://")
+                    || t.starts_with("udp://")
+                    || t.starts_with("ws://")
+                    || t.starts_with("wss://"))
+            {
                 trackers_set.insert(t.to_string());
             }
         }
@@ -1651,7 +1678,10 @@ impl DownloadManager {
                         break;
                     }
                     Err(error) if error.starts_with("MEDIA_PROBE_ERROR:") => {
-                        let clean_err = error.strip_prefix("MEDIA_PROBE_ERROR:").unwrap_or(&error).to_string();
+                        let clean_err = error
+                            .strip_prefix("MEDIA_PROBE_ERROR:")
+                            .unwrap_or(&error)
+                            .to_string();
                         if let Ok(Some(current)) = manager.store.get_task(&id).await {
                             task = current;
                         }
@@ -1682,7 +1712,11 @@ impl DownloadManager {
                                     // 旧 token 已在 download_segments 收尾时取消，
                                     // 必须重建，否则续传会立即以"任务已暂停"失败。
                                     token = CancellationToken::new();
-                                    manager.controls.lock().await.insert(id.clone(), token.clone());
+                                    manager
+                                        .controls
+                                        .lock()
+                                        .await
+                                        .insert(id.clone(), token.clone());
                                     task.status = TaskStatus::Downloading;
                                     task.error = Some(format!(
                                         "下载直链已过期，已自动刷新（第 {} 次），正在续传",
@@ -1722,9 +1756,8 @@ impl DownloadManager {
                                         task = current;
                                     }
                                     task.status = TaskStatus::Failed;
-                                    task.error = Some(format!(
-                                        "直链已失效，自动刷新失败：{refresh_error}"
-                                    ));
+                                    task.error =
+                                        Some(format!("直链已失效，自动刷新失败：{refresh_error}"));
                                     task.speed = 0;
                                     task.eta_seconds = None;
                                     task.active_connections = 0;
@@ -1853,25 +1886,38 @@ impl DownloadManager {
     ) -> Result<(), String> {
         let raw_url = task.url.trim().to_string();
         if raw_url.contains("pan.baidu.com/s/") || raw_url.contains("pan.baidu.com/share/init") {
-            let cookie = if let Some(c) = task.headers.get("Cookie").filter(|s| !s.trim().is_empty()) {
-                Some(c.clone())
-            } else if let Ok(Some(cred)) = self.store.media_credential_get_matching("pan.baidu.com").await {
-                Some(cred.cookie)
-            } else {
-                None
-            };
+            let cookie =
+                if let Some(c) = task.headers.get("Cookie").filter(|s| !s.trim().is_empty()) {
+                    Some(c.clone())
+                } else if let Ok(Some(cred)) = self
+                    .store
+                    .media_credential_get_matching("pan.baidu.com")
+                    .await
+                {
+                    Some(cred.cookie)
+                } else {
+                    None
+                };
 
             let pwd = if let Ok(parsed) = url::Url::parse(&raw_url) {
-                parsed.query_pairs().find(|(k, _)| k == "pwd").map(|(_, v)| v.to_string())
+                parsed
+                    .query_pairs()
+                    .find(|(k, _)| k == "pwd")
+                    .map(|(_, v)| v.to_string())
             } else {
                 None
             };
 
-            let share_info = crate::baidupan::inspect_baidu_share(&raw_url, pwd.as_deref(), cookie.as_deref())
-                .await
-                .map_err(|e| format!("解析百度网盘分享失败：{}", e))?;
+            let share_info =
+                crate::baidupan::inspect_baidu_share(&raw_url, pwd.as_deref(), cookie.as_deref())
+                    .await
+                    .map_err(|e| format!("解析百度网盘分享失败：{}", e))?;
 
-            let file_items: Vec<_> = share_info.files.into_iter().filter(|f| f.kind == "drive#file").collect();
+            let file_items: Vec<_> = share_info
+                .files
+                .into_iter()
+                .filter(|f| f.kind == "drive#file")
+                .collect();
             if file_items.is_empty() {
                 return Err("百度网盘分享中未找到可下载的文件".into());
             }
@@ -1933,7 +1979,9 @@ impl DownloadManager {
                         seckey.as_deref(),
                         randsk.as_deref(),
                         c_opt.as_deref(),
-                    ).await {
+                    )
+                    .await
+                    {
                         let mut sub_headers = sub_dlink.headers;
                         if let Some(c) = c_opt {
                             sub_headers.insert("Cookie".to_string(), c);
@@ -1967,7 +2015,10 @@ impl DownloadManager {
 
         if crate::lanzou::parse_lanzou_url(&raw_url).is_some() {
             let pwd = if let Ok(parsed) = url::Url::parse(&raw_url) {
-                parsed.query_pairs().find(|(k, _)| k == "pwd" || k == "p" || k == "passcode").map(|(_, v)| v.to_string())
+                parsed
+                    .query_pairs()
+                    .find(|(k, _)| k == "pwd" || k == "p" || k == "passcode")
+                    .map(|(_, v)| v.to_string())
             } else {
                 None
             };
@@ -1981,13 +2032,10 @@ impl DownloadManager {
             }
 
             let first_file = &share_info.files[0];
-            let dlink_res = crate::lanzou::resolve_lanzou_file(
-                &raw_url,
-                &first_file.id,
-                pwd.as_deref(),
-            )
-            .await
-            .map_err(|e| format!("获取蓝奏云直链失败：{}", e))?;
+            let dlink_res =
+                crate::lanzou::resolve_lanzou_file(&raw_url, &first_file.id, pwd.as_deref())
+                    .await
+                    .map_err(|e| format!("获取蓝奏云直链失败：{}", e))?;
 
             task.url = dlink_res.url;
             if !first_file.name.is_empty() {
@@ -2014,7 +2062,9 @@ impl DownloadManager {
                 let sub_manager = self.clone();
 
                 tokio::spawn(async move {
-                    if let Ok(sub_dlink) = crate::lanzou::resolve_lanzou_file(&s_url, &f_id, pwd_c.as_deref()).await {
+                    if let Ok(sub_dlink) =
+                        crate::lanzou::resolve_lanzou_file(&s_url, &f_id, pwd_c.as_deref()).await
+                    {
                         let sub_headers = sub_dlink.headers;
                         let req = NewTaskRequest {
                             url: sub_dlink.url,
@@ -2049,7 +2099,11 @@ impl DownloadManager {
                 .await
                 .map_err(|e| format!("解析 123云盘分享失败：{}", e))?;
 
-            let file_items: Vec<_> = share_info.files.into_iter().filter(|f| f.kind == "file").collect();
+            let file_items: Vec<_> = share_info
+                .files
+                .into_iter()
+                .filter(|f| f.kind == "file")
+                .collect();
             if file_items.is_empty() {
                 return Err("123云盘分享中未找到可下载的文件".into());
             }
@@ -2057,7 +2111,12 @@ impl DownloadManager {
             let first_file = &file_items[0];
             let stored_cred = match self.store.media_credential_get(".123pan.com").await {
                 Ok(Some(c)) => Some(c),
-                _ => self.store.media_credential_get("123pan.com").await.ok().flatten(),
+                _ => self
+                    .store
+                    .media_credential_get("123pan.com")
+                    .await
+                    .ok()
+                    .flatten(),
             };
             let token_str = stored_cred.as_ref().map(|c| c.cookie.as_str());
 
@@ -2159,7 +2218,9 @@ impl DownloadManager {
         }
 
         let platform = crate::media_platforms::detect_platform(&task.url);
-        if platform != crate::media_platforms::MediaPlatform::Unknown && (task.media.is_none() || task.file_name == "download" || task.file_name.is_empty()) {
+        if platform != crate::media_platforms::MediaPlatform::Unknown
+            && (task.media.is_none() || task.file_name == "download" || task.file_name.is_empty())
+        {
             let settings = self.settings().await;
             let mut cookie = task.headers.get("Cookie").map(|s| s.as_str());
             let mut referer = task.headers.get("Referer").map(|s| s.as_str());
@@ -2184,37 +2245,18 @@ impl DownloadManager {
                     }
                     Ok(None) => {
                         tracing::info!(domain = %domain, "未在数据库中找到匹配的凭据");
-                        stored_cred = crate::models::MediaCredential {
-                            domain: String::new(),
-                            cookie: String::new(),
-                            referer: None,
-                            user_agent: None,
-                            updated_at: String::new(),
-                        };
                     }
                     Err(e) => {
                         tracing::error!(domain = %domain, error = %e, "获取凭据时发生错误");
-                        stored_cred = crate::models::MediaCredential {
-                            domain: String::new(),
-                            cookie: String::new(),
-                            referer: None,
-                            user_agent: None,
-                            updated_at: String::new(),
-                        };
                     }
                 }
             } else {
                 tracing::warn!(url = %task.url, "无法提取域名，跳过凭据匹配");
-                stored_cred = crate::models::MediaCredential {
-                    domain: String::new(),
-                    cookie: String::new(),
-                    referer: None,
-                    user_agent: None,
-                    updated_at: String::new(),
-                };
             }
 
-            match crate::media::probe(&self.app, &settings, &task.url, cookie, referer, user_agent).await {
+            match crate::media::probe(&self.app, &settings, &task.url, cookie, referer, user_agent)
+                .await
+            {
                 Ok(media) => {
                     // 抖音图集自动拆分：用户直接提交抖音图集短链（未先点击"分析媒体"）时，
                     // 自动 probe 识别为 Gallery 后，把每张图作为独立子任务，使用图片直链走 HTTP Range 路径。
@@ -2229,7 +2271,8 @@ impl DownloadManager {
                             .collect();
                         if image_formats.is_empty() {
                             return Err(
-                                "图集未识别到图片直链，请先点击\"分析媒体\"按钮选择图片后再下载".into(),
+                                "图集未识别到图片直链，请先点击\"分析媒体\"按钮选择图片后再下载"
+                                    .into(),
                             );
                         }
                         // 文件名 stem：使用 probe 返回的 title（清理 hashtag 后）
@@ -2285,7 +2328,7 @@ impl DownloadManager {
                                 priority: task.priority,
                                 expected_checksum: None,
                                 source: Some(task.source.clone()),
-                                 per_task_speed_limit: task.per_task_speed_limit,
+                                per_task_speed_limit: task.per_task_speed_limit,
                                 collision_policy: task.collision_policy.clone(),
                                 // 子任务不触发关机/打开文件夹等完成动作
                                 completion_action: CompletionAction::None,
@@ -2301,18 +2344,28 @@ impl DownloadManager {
                             }
                         }
                     } else if !media.formats.is_empty() {
-                        let direct = media.formats.iter()
-                            .filter(|item| item.has_video && !item.requires_ffmpeg && item.url.is_some())
+                        let direct = media
+                            .formats
+                            .iter()
+                            .filter(|item| {
+                                item.has_video && !item.requires_ffmpeg && item.url.is_some()
+                            })
                             .max_by_key(|item| item.height.unwrap_or(0));
-                        let has_ffmpeg = crate::media_tools::resolve_ffmpeg(&self.app, &settings).is_some();
+                        let has_ffmpeg =
+                            crate::media_tools::resolve_ffmpeg(&self.app, &settings).is_some();
                         let merged = if has_ffmpeg {
-                            media.formats.iter()
-                                .filter(|item| item.has_video && item.has_audio && item.requires_ffmpeg)
+                            media
+                                .formats
+                                .iter()
+                                .filter(|item| {
+                                    item.has_video && item.has_audio && item.requires_ffmpeg
+                                })
                                 .max_by_key(|item| item.height.unwrap_or(0))
                         } else {
                             None
                         };
-                        let selected_format = direct.or(merged).unwrap_or(&media.formats[0]).clone();
+                        let selected_format =
+                            direct.or(merged).unwrap_or(&media.formats[0]).clone();
                         task.media = Some(crate::models::MediaSelection {
                             extractor: media.extractor,
                             format_id: Some(selected_format.id.clone()),
@@ -2331,11 +2384,17 @@ impl DownloadManager {
                             || task.file_name.starts_with("LHmt")
                             || task.file_name.is_empty()
                             || is_bilibili_or_media_id
-                            || task.file_name.chars().all(|c| c.is_ascii_digit() || c == '.' || c == '_')
+                            || task
+                                .file_name
+                                .chars()
+                                .all(|c| c.is_ascii_digit() || c == '.' || c == '_')
                             || task.file_name.contains(&task.url);
 
                         if is_default_name {
-                            let ext = selected_format.extension.unwrap_or_else(|| "mp4".to_string()).replace(".", "");
+                            let ext = selected_format
+                                .extension
+                                .unwrap_or_else(|| "mp4".to_string())
+                                .replace(".", "");
                             let mut name_stem = media.title.clone();
                             if let Ok(rules) = self.store.filename_cleanup_rule_list().await {
                                 let after = apply_filename_cleanup(&name_stem, &rules);
@@ -2379,7 +2438,11 @@ impl DownloadManager {
                 let user_agent = task.headers.get("User-Agent").map(|s| s.as_str());
 
                 let target_probe_url = if let Some(ref_hdr) = task.headers.get("Referer") {
-                    if ref_hdr.contains("douyin.com") || ref_hdr.contains("bilibili.com") || ref_hdr.contains("youtube.com") || ref_hdr.contains("tiktok.com") {
+                    if ref_hdr.contains("douyin.com")
+                        || ref_hdr.contains("bilibili.com")
+                        || ref_hdr.contains("youtube.com")
+                        || ref_hdr.contains("tiktok.com")
+                    {
                         ref_hdr.as_str()
                     } else {
                         &task.url
@@ -2390,19 +2453,35 @@ impl DownloadManager {
 
                 let play_url = if let Some(u) = media_sel.url.as_deref().filter(|s| !s.is_empty()) {
                     Some(u.to_string())
-                } else if let Ok(probe_res) = crate::media::probe(&self.app, &settings, target_probe_url, cookie, referer, user_agent).await {
+                } else if let Ok(probe_res) = crate::media::probe(
+                    &self.app,
+                    &settings,
+                    target_probe_url,
+                    cookie,
+                    referer,
+                    user_agent,
+                )
+                .await
+                {
                     if !probe_res.title.trim().is_empty() {
                         let raw_title = probe_res.title.clone();
-                        let cleaned = crate::manager::naming_template::sanitize_filename(&regex::Regex::new(r"#[^\s#.]+")
-                            .map(|re| re.replace_all(&raw_title, "").to_string())
-                            .unwrap_or_else(|_| raw_title.clone()));
+                        let cleaned = crate::manager::naming_template::sanitize_filename(
+                            &regex::Regex::new(r"#[^\s#.]+")
+                                .map(|re| re.replace_all(&raw_title, "").to_string())
+                                .unwrap_or_else(|_| raw_title.clone()),
+                        );
                         if !cleaned.trim().is_empty() {
                             task.file_name = format!("{}.mp4", cleaned.trim());
                             task.category = category(&task.file_name);
                         }
                     }
                     if let Some(fmt_id) = &media_sel.format_id {
-                        probe_res.formats.iter().find(|f| &f.id == fmt_id).and_then(|f| f.url.clone()).or_else(|| probe_res.formats.first().and_then(|f| f.url.clone()))
+                        probe_res
+                            .formats
+                            .iter()
+                            .find(|f| &f.id == fmt_id)
+                            .and_then(|f| f.url.clone())
+                            .or_else(|| probe_res.formats.first().and_then(|f| f.url.clone()))
                     } else {
                         probe_res.formats.first().and_then(|f| f.url.clone())
                     }
@@ -2413,7 +2492,8 @@ impl DownloadManager {
                 if let Some(purl) = play_url {
                     let is_lan_or_ts = crate::proxy::is_private_or_tailscale_url(&purl)
                         || is_task_lan_or_tailscale(&task);
-                    if crate::proxy::is_private_or_tailscale_url(&purl) && task.final_url.is_none() {
+                    if crate::proxy::is_private_or_tailscale_url(&purl) && task.final_url.is_none()
+                    {
                         task.final_url = Some(purl.clone());
                     }
                     let temp_client = if task.proxy_override.is_some() || is_lan_or_ts {
@@ -2422,14 +2502,31 @@ impl DownloadManager {
                         self.client.read().await.clone()
                     };
 
-                    let mut req = temp_client.get(&purl).header(ACCEPT_ENCODING, "identity").header(RANGE, "bytes=0-0");
-                    if !task.headers.keys().any(|k| k.eq_ignore_ascii_case("User-Agent")) {
+                    let mut req = temp_client
+                        .get(&purl)
+                        .header(ACCEPT_ENCODING, "identity")
+                        .header(RANGE, "bytes=0-0");
+                    if !task
+                        .headers
+                        .keys()
+                        .any(|k| k.eq_ignore_ascii_case("User-Agent"))
+                    {
                         req = req.header(reqwest::header::USER_AGENT, &settings.user_agent);
                     }
-                    if !task.headers.keys().any(|k| k.eq_ignore_ascii_case("Referer")) {
-                        if purl.contains("bilibili.com") || purl.contains("bilivideo.com") || task.url.contains("bilibili.com") {
+                    if !task
+                        .headers
+                        .keys()
+                        .any(|k| k.eq_ignore_ascii_case("Referer"))
+                    {
+                        if purl.contains("bilibili.com")
+                            || purl.contains("bilivideo.com")
+                            || task.url.contains("bilibili.com")
+                        {
                             req = req.header(reqwest::header::REFERER, "https://www.bilibili.com/");
-                            task.headers.insert("Referer".to_string(), "https://www.bilibili.com/".to_string());
+                            task.headers.insert(
+                                "Referer".to_string(),
+                                "https://www.bilibili.com/".to_string(),
+                            );
                         }
                     }
                     for (name, value) in &task.headers {
@@ -2437,12 +2534,15 @@ impl DownloadManager {
                     }
                     if let Ok(resp) = req.send().await {
                         if resp.status().is_success() || resp.status() == 206 {
-                            let total_size = resp.headers().get(CONTENT_RANGE)
+                            let total_size = resp
+                                .headers()
+                                .get(CONTENT_RANGE)
                                 .and_then(|v| v.to_str().ok())
                                 .and_then(parse_content_range_value)
                                 .map(|v| v.2)
                                 .or_else(|| {
-                                    resp.headers().get(CONTENT_LENGTH)
+                                    resp.headers()
+                                        .get(CONTENT_LENGTH)
                                         .and_then(|v| v.to_str().ok())
                                         .and_then(|s| s.parse::<u64>().ok())
                                 });
@@ -2460,7 +2560,11 @@ impl DownloadManager {
         if is_resolved_direct_media {
             let output = self.reserve_output_path(&mut task).await?;
             let settings = self.settings().await;
-            let mut target_conn = if task.connection_count > 1 { task.connection_count } else { settings.connections_per_download.max(8) };
+            let mut target_conn = if task.connection_count > 1 {
+                task.connection_count
+            } else {
+                settings.connections_per_download.max(8)
+            };
             if is_task_lan_or_tailscale(&task) {
                 target_conn = target_conn.min(4);
             }
@@ -2490,34 +2594,70 @@ impl DownloadManager {
 
             let task_backup = task.clone();
             let task_id_for_saved = task.id.clone();
-            let is_media = task.media.is_some();
+            // 直播直链判定必须在 task 被移动进下载函数之前完成。
+            // 注意：不含裸 .m3u8 信号——点播 HLS 同样命中，会导致普通点播
+            // 下载中断时把半成品发布为完成文件（§3）。
+            let is_live_direct = crate::media_platforms::is_douyin_live(&task.url)
+                || task.url.contains("pull-hls-")
+                || task.url.contains("pull-flv-");
             let download_res = if total > 0 && conn_count > 1 {
-                self.download_segments(task, &temp_client, &temp, total, conn_count, token.clone(), task_limiter).await
+                self.download_segments(
+                    task,
+                    &temp_client,
+                    &temp,
+                    total,
+                    conn_count,
+                    token.clone(),
+                    task_limiter,
+                )
+                .await
             } else {
-                self.download_stream(task, &temp_client, &temp, token.clone(), task_limiter).await
+                self.download_stream(task, &temp_client, &temp, token.clone(), task_limiter)
+                    .await
             };
 
             if token.is_cancelled() || download_res.is_err() {
-                let is_cancel = token.is_cancelled();
-                if (is_cancel || is_media) && temp.exists() {
+                // 直播直链（FLV/HLS 直播流）与下方 yt-dlp 直播路径语义一致：
+                // 暂停或录制中断 = 结束录制，把已录制内容保存为完成文件。
+                // 非直播任务严禁走该分支：出错/暂停必须保持可恢复状态，
+                // 禁止把截断的半成品发布为完成文件（§3）。
+                if is_live_direct && temp.exists() {
                     if let Ok(meta) = fs::metadata(&temp).await {
                         if meta.len() > 0 {
                             let final_output = output;
-                            if let Err(_) = fs::rename(&temp, &final_output).await {
-                                let _ = fs::copy(&temp, &final_output).await;
-                                let _ = fs::remove_file(&temp).await;
-                            }
-                            crate::media_tools::remux_flv_to_mp4_if_needed(&self.app, &settings, &final_output).await;
+                            replace_file_atomically(&temp, &final_output).await?;
+                            crate::media_tools::remux_flv_to_mp4_if_needed(
+                                &self.app,
+                                &settings,
+                                &final_output,
+                            )
+                            .await;
                             let mut saved_task = match download_res {
                                 Ok(t) => t,
-                                Err(_) => self.store.get_task(&task_id_for_saved).await.ok().flatten().unwrap_or(task_backup),
+                                Err(_) => self
+                                    .store
+                                    .get_task(&task_id_for_saved)
+                                    .await
+                                    .ok()
+                                    .flatten()
+                                    .unwrap_or(task_backup),
                             };
-                            saved_task.downloaded_bytes = meta.len();
-                            saved_task.total_bytes = meta.len();
+                            let final_len = fs::metadata(&final_output)
+                                .await
+                                .map(|m| m.len())
+                                .unwrap_or(meta.len());
+                            saved_task.downloaded_bytes = final_len;
+                            saved_task.total_bytes = final_len;
                             saved_task.status = TaskStatus::Completed;
+                            saved_task.completed_at = Some(now());
                             let _ = self.store.upsert_task(&saved_task).await;
                             self.emit_task("updated", &saved_task);
                             self.clear_parts(&saved_task).await;
+                            tracing::info!(
+                                task_id = %saved_task.id,
+                                file_size = final_len,
+                                "直播直链录制已停止，已保存为完成文件"
+                            );
                             return Ok(saved_task);
                         }
                     }
@@ -2526,38 +2666,47 @@ impl DownloadManager {
             }
 
             task = download_res?;
-            let final_output = if output.exists() && task.collision_policy == CollisionPolicy::Rename {
-                self.reserve_output_path(&mut task).await?
-            } else {
-                output
-            };
+            let final_output =
+                if output.exists() && task.collision_policy == CollisionPolicy::Rename {
+                    self.reserve_output_path(&mut task).await?
+                } else {
+                    output
+                };
             if final_output.exists() {
                 match task.collision_policy {
-                    CollisionPolicy::Overwrite => {
-                        let _ = fs::remove_file(&final_output).await;
-                    }
                     CollisionPolicy::Skip => return Err("目标文件已存在，任务已跳过".into()),
-                    CollisionPolicy::Rename => return Err("目标文件在下载完成时发生冲突，请重试任务".into()),
+                    CollisionPolicy::Rename => {
+                        return Err("目标文件在下载完成时发生冲突，请重试任务".into())
+                    }
+                    CollisionPolicy::Overwrite => {}
                 }
             }
-            if let Err(e) = fs::rename(&temp, &final_output).await {
-                fs::copy(&temp, &final_output).await.map_err(|err| format!("无法保存完成文件：{err} (原错误: {e})"))?;
-                let _ = fs::remove_file(&temp).await;
-            }
+            replace_file_atomically(&temp, &final_output).await?;
             self.clear_parts(&task).await;
 
             if task.media.is_some() {
                 let settings = self.settings().await;
-                let naming_templates = self.store.platform_naming_template_list().await.unwrap_or_default();
+                let naming_templates = self
+                    .store
+                    .platform_naming_template_list()
+                    .await
+                    .unwrap_or_default();
                 inject_media_credentials(&mut task, &self.store).await;
                 let cookie = task.headers.get("Cookie").cloned();
                 let referer = task.headers.get("Referer").cloned();
                 let user_agent = task.headers.get("User-Agent").cloned();
 
                 let _ = crate::media::apply_platform_naming_template(
-                    &self.app, &settings, &mut task, &final_output,
-                    cookie.as_deref(), referer.as_deref(), user_agent.as_deref(), &naming_templates,
-                ).await;
+                    &self.app,
+                    &settings,
+                    &mut task,
+                    &final_output,
+                    cookie.as_deref(),
+                    referer.as_deref(),
+                    user_agent.as_deref(),
+                    &naming_templates,
+                )
+                .await;
 
                 if !task.file_name.contains('.') {
                     let current_disk_path = Path::new(&task.destination).join(&task.file_name);
@@ -2580,11 +2729,19 @@ impl DownloadManager {
         if task.media.is_some() {
             self.reserve_output_path(&mut task).await?;
             let settings = self.settings().await;
-            let mut target_conn = if task.connection_count > 1 { task.connection_count } else { settings.connections_per_download.max(8) };
+            let mut target_conn = if task.connection_count > 1 {
+                task.connection_count
+            } else {
+                settings.connections_per_download.max(8)
+            };
             if crate::proxy::is_private_or_tailscale_url(&task.url) {
                 target_conn = target_conn.min(4);
             }
-            let conn_count = if task.total_bytes > 0 && task.total_bytes < 10 * 1024 * 1024 { 1 } else { target_conn };
+            let conn_count = if task.total_bytes > 0 && task.total_bytes < 10 * 1024 * 1024 {
+                1
+            } else {
+                target_conn
+            };
             task.connection_count = conn_count;
             task.active_connections = conn_count;
             self.store.upsert_task(&task).await?;
@@ -2619,19 +2776,15 @@ impl DownloadManager {
                 .unwrap_or_else(|| std::path::PathBuf::from(&task.destination));
             let task_backup = task.clone();
             let task_id_for_saved = task.id.clone();
-            let download_res = crate::media::download(
-                &self.app,
-                &settings,
-                task,
-                token.clone(),
-                naming_templates,
-            )
-            .await;
+            let download_res =
+                crate::media::download(&self.app, &settings, task, token.clone(), naming_templates)
+                    .await;
 
             if token.is_cancelled() && is_live_task {
                 // 手动结束/暂停录制：与 B 站直播 download_stream 暂停保存逻辑一致，
                 // 将已录制的片段保存并转封装为标准 MP4，然后将任务标记为已完成。
-                let live_file = crate::media::find_live_output_file(&output_dir, &task_backup.file_name).await;
+                let live_file =
+                    crate::media::find_live_output_file(&output_dir, &task_backup.file_name).await;
                 let saved_file = match &live_file {
                     Some(f) if f.exists() => Some(f.clone()),
                     _ if output.exists() => Some(output.clone()),
@@ -2640,7 +2793,8 @@ impl DownloadManager {
                 if let Some(file_path) = saved_file {
                     if let Ok(meta) = fs::metadata(&file_path).await {
                         if meta.len() > 0 {
-                            let clean_file_path = if file_path.to_string_lossy().ends_with(".part") {
+                            let clean_file_path = if file_path.to_string_lossy().ends_with(".part")
+                            {
                                 let non_part = file_path.with_extension("");
                                 let _ = fs::rename(&file_path, &non_part).await;
                                 non_part
@@ -2649,7 +2803,9 @@ impl DownloadManager {
                             };
 
                             let final_path = crate::media_tools::remux_flv_to_mp4_if_needed(
-                                &self.app, &settings, &clean_file_path,
+                                &self.app,
+                                &settings,
+                                &clean_file_path,
                             )
                             .await;
 
@@ -2667,7 +2823,9 @@ impl DownloadManager {
                                     .flatten()
                                     .unwrap_or(task_backup),
                             };
-                            if let Some(final_name) = final_path.file_name().and_then(|s| s.to_str()) {
+                            if let Some(final_name) =
+                                final_path.file_name().and_then(|s| s.to_str())
+                            {
                                 saved_task.file_name = final_name.to_string();
                                 saved_task.category = category(&saved_task.file_name);
                             }
@@ -2738,9 +2896,7 @@ impl DownloadManager {
         let probe = if !initial_probe.status().is_success()
             && initial_probe.status() != reqwest::StatusCode::PARTIAL_CONTENT
         {
-            let mut fallback_req = client
-                .get(&task.url)
-                .header(ACCEPT_ENCODING, "identity");
+            let mut fallback_req = client.get(&task.url).header(ACCEPT_ENCODING, "identity");
             for (name, value) in &task.headers {
                 fallback_req = fallback_req.header(name, value);
             }
@@ -2780,12 +2936,26 @@ impl DownloadManager {
 
         let is_m3u8_stream = task.url.contains(".m3u8")
             || task.url.contains("pull-hls-")
-            || task.content_type.as_deref().map(|ct| ct.contains("mpegurl") || ct.contains("m3u8")).unwrap_or(false);
+            || task
+                .content_type
+                .as_deref()
+                .map(|ct| ct.contains("mpegurl") || ct.contains("m3u8"))
+                .unwrap_or(false);
 
         if is_m3u8_stream {
-            if task.file_name.ends_with(".m3u8") || task.file_name == "download" || task.file_name.is_empty() {
-                let stem = Path::new(&task.file_name).file_stem().and_then(|s| s.to_str()).unwrap_or("video");
-                let stem_clean = if stem == "download" || stem == "index" || stem == "playlist" { "video" } else { stem };
+            if task.file_name.ends_with(".m3u8")
+                || task.file_name == "download"
+                || task.file_name.is_empty()
+            {
+                let stem = Path::new(&task.file_name)
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("video");
+                let stem_clean = if stem == "download" || stem == "index" || stem == "playlist" {
+                    "video"
+                } else {
+                    stem
+                };
                 task.file_name = format!("{}.mp4", stem_clean);
                 task.category = category(&task.file_name);
             }
@@ -2809,10 +2979,7 @@ impl DownloadManager {
             match download_res {
                 Ok(mut completed_task) => {
                     if temp.exists() {
-                        if let Err(_) = fs::rename(&temp, &output).await {
-                            let _ = fs::copy(&temp, &output).await;
-                            let _ = fs::remove_file(&temp).await;
-                        }
+                        replace_file_atomically(&temp, &output).await?;
                     }
                     completed_task.status = TaskStatus::Completed;
                     completed_task.completed_at = Some(now());
@@ -2932,8 +3099,14 @@ impl DownloadManager {
                 if is_lan_or_tailscale {
                     suggested = suggested.min(4);
                 }
-                let is_baidu_task = task.url.contains("baidupcs.com") || task.url.contains("pan.baidu.com");
-                let is_fast_cloud_task = task.url.contains("quark.cn") || task.url.contains("mypikpak.com") || task.url.contains("pikpak") || task.url.contains("lanzou") || task.url.contains("123pan") || task.url.contains("123684");
+                let is_baidu_task =
+                    task.url.contains("baidupcs.com") || task.url.contains("pan.baidu.com");
+                let is_fast_cloud_task = task.url.contains("quark.cn")
+                    || task.url.contains("mypikpak.com")
+                    || task.url.contains("pikpak")
+                    || task.url.contains("lanzou")
+                    || task.url.contains("123pan")
+                    || task.url.contains("123684");
                 let target_count = if is_lan_or_tailscale {
                     suggested.min(4)
                 } else if is_baidu_task && total >= 10 * 1024 * 1024 {
@@ -2975,7 +3148,11 @@ impl DownloadManager {
         // 局域网 / Tailscale 直连感知：对局域网与 Tailscale 对等传输服务，动态并发连接数上限压制至最高 4（如 2-4 连接），
         // 避免过多并发 Range 连接打垮对方轻量级内存互传服务或造成并发写锁竞争。
         let is_lan_or_tailscale = is_task_lan_or_tailscale(&task);
-        if is_lan_or_tailscale && !is_user_explicit && task.downloaded_bytes == 0 && task.segments.is_empty() {
+        if is_lan_or_tailscale
+            && !is_user_explicit
+            && task.downloaded_bytes == 0
+            && task.segments.is_empty()
+        {
             let lan_cap: u8 = 4;
             if connections > lan_cap {
                 tracing::info!(
@@ -3038,21 +3215,14 @@ impl DownloadManager {
         };
         if final_output.exists() {
             match task.collision_policy {
-                CollisionPolicy::Overwrite => fs::remove_file(&final_output)
-                    .await
-                    .map_err(|error| format!("无法覆盖已有文件：{error}"))?,
                 CollisionPolicy::Skip => return Err("目标文件已存在，任务已跳过".into()),
                 CollisionPolicy::Rename => {
                     return Err("目标文件在下载完成时发生冲突，请重试任务".into())
                 }
+                CollisionPolicy::Overwrite => {}
             }
         }
-        if let Err(e) = fs::rename(&temp, &final_output).await {
-            fs::copy(&temp, &final_output)
-                .await
-                .map_err(|err| format!("无法保存完成文件：{err} (原错误: {e})"))?;
-            let _ = fs::remove_file(&temp).await;
-        }
+        replace_file_atomically(&temp, &final_output).await?;
         self.clear_parts(&task).await;
 
         if task.media.is_some() {
@@ -3416,7 +3586,10 @@ impl DownloadManager {
                     runtime_options.apply(&mut snapshot).await;
                     sample.apply(&mut snapshot);
                     adaptive.observe(snapshot.speed);
-                    let active_conn_count: u32 = runtimes.iter().map(|r| r.active_windows.load(Ordering::Relaxed) as u32).sum();
+                    let active_conn_count: u32 = runtimes
+                        .iter()
+                        .map(|r| r.active_windows.load(Ordering::Relaxed) as u32)
+                        .sum();
                     snapshot.active_connections = active_conn_count.min(connections as u32) as u8;
                     let statuses: Vec<u8> = runtimes
                         .iter()
@@ -3561,8 +3734,6 @@ impl DownloadManager {
             let adaptive = adaptive_for_workers.clone();
             let bandwidth = bandwidth_for_workers.clone();
             let task_id = task_id_for_workers.clone();
-            let write_buffer_size = write_buffer_size;
-            let segment_max_retries = segment_max_retries;
             let segment_retry_policy = segment_retry_policy.clone();
 
             worker_handles.push(tokio::spawn(async move {
@@ -4525,6 +4696,16 @@ impl DownloadManager {
     /// - **URL 历史**：按 URL 去重，重复的更新 `last_used`。
     /// - **任务**：按 ID 去重，已存在的跳过（不覆盖用户进度），不存在的直接 upsert（保留原状态）。
     fn sanitize_restored_task(task: &mut DownloadTask) {
+        // 身份安全（§7）：任务 ID 必须是 UUID。备份中的伪造 ID（如 ".."）会被拼进
+        // _maobu_tmp/[task_id] 临时目录路径，后续"清除分片/删除任务"会递归删除错误目录。
+        // 无法解析时重新生成 UUID：恢复的任务本就是新增任务，重生成 ID 不影响既有数据。
+        if Uuid::parse_str(&task.id).is_err() {
+            task.id = Uuid::new_v4().to_string();
+        }
+        // 路径安全（§7）：文件名必须是可安全拼接到下载目录下的单一组件。
+        task.file_name = sanitize_restored_file_name(&task.file_name);
+        // 连接数收敛到允许档位（§3）。
+        task.connection_count = normalize_connection_count(u32::from(task.connection_count)) as u8;
         // 强制状态安全：恢复的任务不得以激活状态（Queued / Downloading / Connecting）直接挂载
         if matches!(task.status, TaskStatus::Queued | TaskStatus::Downloading) {
             task.status = TaskStatus::Paused;
@@ -4692,8 +4873,8 @@ impl DownloadManager {
     }
     async fn clear_parts(&self, task: &DownloadTask) {
         // 1. 删除任务专属隐藏临时目录 _maobu_tmp/[task_id]/
-        let task_dir = task_temp_dir(&task.destination, &task.id);
-        let _ = fs::remove_dir_all(&task_dir).await;
+        //    （canonicalize 后校验严格位于 _maobu_tmp 之下，防止伪造 ID 导致路径穿越，§7）
+        remove_task_temp_dir_safely(&task.destination, &task.id).await;
 
         // 2. 若 _maobu_tmp 根目录变为空目录，将其一并删除
         let root_dir = PathBuf::from(&task.destination).join("_maobu_tmp");
@@ -4703,7 +4884,11 @@ impl DownloadManager {
             }
         }
 
-        // 3. 兜底清理可能残留在根目录的旧格式 .lumaget 与 .partN 分片
+        // 3. 兜底清理可能残留在根目录的旧格式 .lumaget 与 .partN 分片。
+        //    仅当文件名是安全单一组件时执行，避免拼接出逃逸路径（§7）。
+        if !is_safe_path_component(&task.file_name) {
+            return;
+        }
         let output = PathBuf::from(&task.destination).join(&task.file_name);
         let temp = PathBuf::from(format!("{}.lumaget", output.to_string_lossy()));
         for index in 0..128 {
@@ -4898,6 +5083,106 @@ fn is_window_part_name(name: &str, prefix: &str) -> bool {
         && start.bytes().all(|byte| byte.is_ascii_digit())
 }
 
+/// 允许的连接数档位（§3 强约束）：1 / 2 / 4 / 8 / 16 / 32。
+const CONNECTION_TIERS: [u32; 6] = [1, 2, 4, 8, 16, 32];
+
+/// 将任意连接数收敛到允许档位（§3 强约束）。
+///
+/// 任务创建、JSON 导入与备份恢复三个入口都必须经过该函数。
+/// 收敛规则：取与输入最接近的档位，距离相同时取较小档。
+pub fn normalize_connection_count(n: u32) -> u32 {
+    let mut best = CONNECTION_TIERS[0];
+    for tier in CONNECTION_TIERS {
+        if n.abs_diff(tier) < n.abs_diff(best) {
+            best = tier;
+        }
+    }
+    best
+}
+
+/// 判断名称是否为安全的单一路径组件：非空、非 "." / ".."、不含路径分隔符。
+pub(crate) fn is_safe_path_component(name: &str) -> bool {
+    !name.is_empty() && name != "." && name != ".." && !name.contains(['/', '\\'])
+}
+
+/// 恢复任务时净化文件名：剥离任何路径前缀与父级引用，保证可安全拼接到下载目录下。
+fn sanitize_restored_file_name(raw: &str) -> String {
+    let normalized = raw.replace('\\', "/");
+    let last = normalized.rsplit('/').next().unwrap_or("").trim();
+    if is_safe_path_component(last) {
+        last.to_string()
+    } else {
+        "download".to_string()
+    }
+}
+
+/// 用同目录候选文件安全替换目标文件（§3：完成文件必须原子替换，禁止丢失用户原文件）。
+///
+/// 目标已存在时先在同目录改名备份；候选改名成功后删除备份，失败则恢复备份并返回错误。
+/// 候选（`_maobu_tmp` 内）与目标（下载目录）通常位于同一卷，rename 为原子操作；
+/// 跨卷等极端场景回退为复制，复制失败同样恢复备份，保证目标路径不残留半成品。
+pub(crate) async fn replace_file_atomically(candidate: &Path, target: &Path) -> Result<(), String> {
+    let mut backup: Option<PathBuf> = None;
+    if target.exists() {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let name = target
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .ok_or_else(|| "目标路径无效".to_string())?;
+        let bak = target.with_file_name(format!("{name}.maobu-bak-{stamp}"));
+        fs::rename(target, &bak)
+            .await
+            .map_err(|e| format!("无法备份原文件以完成覆盖，已保留原文件：{e}"))?;
+        backup = Some(bak);
+    }
+    if let Err(rename_err) = fs::rename(candidate, target).await {
+        match fs::copy(candidate, target).await {
+            Ok(_) => {
+                let _ = fs::remove_file(candidate).await;
+            }
+            Err(copy_err) => {
+                if let Some(bak) = &backup {
+                    let _ = fs::rename(bak, target).await;
+                }
+                return Err(format!(
+                    "无法保存完成文件：{copy_err}（原错误：{rename_err}）"
+                ));
+            }
+        }
+    }
+    if let Some(bak) = &backup {
+        if let Err(e) = fs::remove_file(bak).await {
+            tracing::warn!(
+                backup = %bak.to_string_lossy(),
+                error = %e,
+                "覆盖完成，但清理原文件备份失败，请手动删除 .maobu-bak-* 文件"
+            );
+        }
+    }
+    Ok(())
+}
+
+/// 删除任务专属临时目录 `_maobu_tmp/[task_id]`（带路径穿越防护，§7）。
+///
+/// 先 canonicalize，再校验目标严格位于 `destination/_maobu_tmp` 之下才允许递归删除；
+/// 目录不存在时静默返回。
+async fn remove_task_temp_dir_safely(destination: &str, task_id: &str) {
+    let root = PathBuf::from(destination).join("_maobu_tmp");
+    let task_dir = root.join(task_id);
+    let (Ok(canonical_dir), Ok(canonical_root)) = (
+        fs::canonicalize(&task_dir).await,
+        fs::canonicalize(&root).await,
+    ) else {
+        return;
+    };
+    if canonical_dir != canonical_root && canonical_dir.starts_with(&canonical_root) {
+        let _ = fs::remove_dir_all(&canonical_dir).await;
+    }
+}
+
 /// 返回任务隐藏临时目录路径：`destination/_maobu_tmp/[task_id]/`
 pub fn task_temp_dir(destination: &str, task_id: &str) -> PathBuf {
     PathBuf::from(destination).join("_maobu_tmp").join(task_id)
@@ -5065,8 +5350,6 @@ async fn drop_segment_files(temp: &Path, index: u8) {
         }
     }
 }
-
-
 
 /// 限速器（基于 GCRA / Virtual Scheduling 算法）。
 ///
@@ -5668,7 +5951,11 @@ impl Drop for AdaptiveConnectionPermit {
 const RANGE_WINDOW_BASE_BYTES: u64 = 8 * 1024 * 1024;
 const RANGE_WINDOW_STEP_BYTES: u64 = 256 * 1024;
 
-fn layout_from_existing_starts(start: u64, end: u64, starts: &[u64]) -> Option<Vec<(u32, u64, u64)>> {
+fn layout_from_existing_starts(
+    start: u64,
+    end: u64,
+    starts: &[u64],
+) -> Option<Vec<(u32, u64, u64)>> {
     if starts.is_empty() || starts.first() != Some(&start) {
         return None;
     }
@@ -6223,11 +6510,14 @@ pub(crate) fn category(name: &str) -> String {
         .to_ascii_lowercase()
         .as_str()
     {
-        "mp4" | "mkv" | "mov" | "webm" | "m3u8" | "avi" | "flv" | "wmv" | "ts" | "rmvb" | "m4v" | "3gp" => "video",
+        "mp4" | "mkv" | "mov" | "webm" | "m3u8" | "avi" | "flv" | "wmv" | "ts" | "rmvb" | "m4v"
+        | "3gp" => "video",
         "mp3" | "wav" | "flac" | "aac" | "m4a" | "ogg" | "wma" | "opus" | "ape" => "audio",
         "jpg" | "jpeg" | "png" | "gif" | "webp" | "svg" | "bmp" | "ico" | "avif" => "images",
         "zip" | "rar" | "7z" | "tar" | "gz" | "bz2" | "xz" | "iso" => "archives",
-        "pdf" | "doc" | "docx" | "xls" | "xlsx" | "ppt" | "pptx" | "txt" | "md" | "csv" => "documents",
+        "pdf" | "doc" | "docx" | "xls" | "xlsx" | "ppt" | "pptx" | "txt" | "md" | "csv" => {
+            "documents"
+        }
         "exe" | "msi" | "dmg" | "pkg" | "appimage" | "apk" | "deb" | "rpm" => "apps",
         _ => "other",
     }
@@ -6480,7 +6770,10 @@ fn media_task_tool_requirements(task: &DownloadTask) -> (bool, bool) {
 ///
 async fn inject_media_credentials(task: &mut DownloadTask, store: &Arc<Store>) {
     let platform = crate::media_platforms::detect_platform(&task.url);
-    let is_douyin = platform == crate::media_platforms::MediaPlatform::Douyin || task.url.contains("douyin.com") || task.url.contains("douyinvod.com") || task.url.contains("amemv.com");
+    let is_douyin = platform == crate::media_platforms::MediaPlatform::Douyin
+        || task.url.contains("douyin.com")
+        || task.url.contains("douyinvod.com")
+        || task.url.contains("amemv.com");
     let is_baidu = task.url.contains("baidupcs.com") || task.url.contains("pan.baidu.com");
 
     let mut has_cookie = task
@@ -6528,17 +6821,25 @@ async fn inject_media_credentials(task: &mut DownloadTask, store: &Arc<Store>) {
     }
 
     if is_baidu {
-        let current_ua = task.headers.get("User-Agent").map(|s| s.as_str()).unwrap_or("");
+        let current_ua = task
+            .headers
+            .get("User-Agent")
+            .map(|s| s.as_str())
+            .unwrap_or("");
         if current_ua.is_empty() {
             // 根据直链 URL 中的端点 app_id 智能选择最匹配的 User-Agent 避免 403 签名冲突
             let ua = if task.url.contains("-250528-") || task.url.contains("app_id=250528") {
                 "pan.baidu.com"
-            } else if task.url.contains("-266719-") || task.url.contains("-498065-") || task.url.contains("-309847-") {
+            } else if task.url.contains("-266719-")
+                || task.url.contains("-498065-")
+                || task.url.contains("-309847-")
+            {
                 crate::baidupan::BAIDU_DLINK_USER_AGENT
             } else {
                 "pan.baidu.com"
             };
-            task.headers.insert("User-Agent".to_string(), ua.to_string());
+            task.headers
+                .insert("User-Agent".to_string(), ua.to_string());
             has_user_agent = true;
         }
     }
@@ -6547,7 +6848,8 @@ async fn inject_media_credentials(task: &mut DownloadTask, store: &Arc<Store>) {
         task.headers.insert("User-Agent".to_string(), "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36".to_string());
     }
     if !has_referer && is_douyin {
-        task.headers.insert("Referer".to_string(), "https://www.douyin.com/".to_string());
+        task.headers
+            .insert("Referer".to_string(), "https://www.douyin.com/".to_string());
     }
 }
 
@@ -6709,10 +7011,8 @@ async fn sha256_file(path: &Path) -> Result<String, String> {
     digest_file(path, ChecksumAlgorithm::Sha256).await
 }
 
-
 #[cfg(test)]
 mod tests;
-
 
 /// Task 30.2 Windows 原生 Toast 通知辅助函数。
 ///
@@ -6730,8 +7030,8 @@ fn notify_win_toast<R: tauri::Runtime>(
     task_id: String,
     app: tauri::AppHandle<R>,
 ) -> Result<(), String> {
-    use tauri_winrt_notification::Toast;
     use tauri::Manager;
+    use tauri_winrt_notification::Toast;
     // 开发构建（debug_assertions，如 `pnpm tauri dev`）没有注册 AUMID，
     // 回退到 PowerShell AUMID 保证 Toast 能弹出（图标显示为 PowerShell）；
     // 正式构建——无论从安装目录运行还是直接运行 target\release 产物——一律用应用标识。

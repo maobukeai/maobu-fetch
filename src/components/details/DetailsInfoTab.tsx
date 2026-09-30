@@ -36,6 +36,10 @@ import { isMediaTask, btRuntimeActive } from "../common/TaskRow";
 import { TaskRetryPolicySection } from "./TaskRetryPolicySection";
 import { TaskProxySection } from "./TaskProxySection";
 import { TaskTagEditor } from "./TaskTagEditor";
+import {
+  hasTemporaryAuthHeaders,
+  stripCredentialHeaders,
+} from "../../task-headers";
 
 export function DetailValue({
   label,
@@ -218,17 +222,8 @@ export function DetailsInfoTab({
       ? t("details.priorityLow")
       : t("details.priorityNormal");
   const waitReasonLabel = waitReason ? waitReasonText(waitReason) : null;
-  const hasTempAuth =
-    !!task.headers &&
-    Object.keys(task.headers).some((name) => {
-      const lower = name.toLowerCase();
-      return (
-        lower === "cookie" ||
-        lower === "referer" ||
-        lower === "referrer" ||
-        lower === "user-agent"
-      );
-    });
+  // 临时登录态判定统一走大小写不敏感的辅助函数，覆盖 Cookie/Authorization/Referer/User-Agent。
+  const hasTempAuth = hasTemporaryAuthHeaders(task.headers);
 
   const [saveTplOpen, setSaveTplOpen] = useState(false);
   const [tplDraft, setTplDraft] = useState<TaskTemplate | null>(null);
@@ -241,10 +236,8 @@ export function DetailsInfoTab({
     } catch {
       domain = "";
     }
-    const headers =
-      task.headers && Object.keys(task.headers).length > 0
-        ? { ...task.headers }
-        : null;
+    // 安全默认：模板为持久化配置，保存前剔除 Cookie/Authorization 等认证头。
+    const headers = stripCredentialHeaders(task.headers);
     setTplDraft({
       id: `tpl-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       name: domain ? `${domain} ${t("common.custom")}` : t("common.custom"),
@@ -292,7 +285,8 @@ export function DetailsInfoTab({
         }
         headers[lineTrim.slice(0, idx).trim()] = lineTrim.slice(idx + 1).trim();
       }
-      if (Object.keys(headers).length === 0) headers = null;
+      // 手动编辑的请求头同样剔除认证头，避免凭据进入持久化模板。
+      headers = stripCredentialHeaders(headers);
     }
     const toSave: TaskTemplate = {
       ...tplDraft,
@@ -754,6 +748,9 @@ export function DetailsInfoTab({
                 />
               </Field>
             </div>
+            <p className="settings-note" style={{ margin: 0 }}>
+              {t("details.templateAuthStripped")}
+            </p>
             <div className="dialog-actions">
               <button onClick={() => setSaveTplOpen(false)}>取消</button>
               <button

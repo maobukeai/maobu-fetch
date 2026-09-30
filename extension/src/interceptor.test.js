@@ -2,12 +2,25 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { evaluateDownload, interceptBrowserDownload, refreshDownload, resetNotificationCooldownsForTest, skipUnpairedDownload, getDownloadAuthHeaders } from "./interceptor.js";
 
+// storage.session 内存模拟：接管恢复记录（pendingTakeover）与通知节流时间戳
+// 都存放于此，语义与真实 storage.session 一致（键值深拷贝隔离引用）。
+const sessionStore = {};
+
 globalThis.chrome = {
   storage: {
     local: {
       set: async () => {},
       get: async () => ({}),
-    }
+    },
+    session: {
+      get: async (key) => (key in sessionStore ? { [key]: JSON.parse(JSON.stringify(sessionStore[key])) } : {}),
+      set: async (entries) => {
+        for (const [k, v] of Object.entries(entries)) sessionStore[k] = JSON.parse(JSON.stringify(v));
+      },
+      remove: async (keys) => {
+        for (const k of [].concat(keys)) delete sessionStore[k];
+      },
+    },
   }
 };
 
@@ -535,7 +548,7 @@ test("siteChoices: 仅精确域名或子域命中，无关域名不受影响", (
 
 // ---- P0-4：接管看门狗 recoverStuckTakeovers ----
 
-import { recoverStuckTakeovers, TAKEOVER_STUCK_MS } from "./interceptor.js";
+import { recoverStuckTakeovers, TAKEOVER_STUCK_MS, markPendingTakeover } from "./interceptor.js";
 
 function makeWatchdogDeps({ sessionData, downloadsById, now }) {
   const sessionStore = { ...sessionData };
@@ -594,6 +607,96 @@ test("watchdog: storage.session 不可用时安全返回空结果", async () => 
   const result = await recoverStuckTakeovers({ session: undefined, downloads: { search: async () => [] } });
   assert.deepEqual(result.recovered, []);
   assert.deepEqual(result.remaining, {});
+});
+
+// ---- P0-4 修复：pause 前必须先持久化恢复记录（浮层确认期死亡可恢复）----
+
+test("watchdog: SW 在浮层确认期死亡（已 pause 未进入接管流程），重启后恢复该下载", async () => {
+  // 1. 复现 background onCreated 修复后的顺序：先经 markPendingTakeover 把恢复
+  //    记录（phase=confirming）写入 storage.session，再执行 pause()。随后 SW
+  //    终止——内存态全部丢失，仅剩记录与浏览器里被暂停的下载。
+  const persisted = await markPendingTakeover(105, { url: "https://example.com/big.zip", phase: "confirming" });
+  assert.equal(persisted, true, "首次 pause 之前恢复记录必须已持久化");
+  const record = sessionStore.pendingTakeover?.["105"];
+  assert.equal(record.phase, "confirming");
+  assert.equal(record.url, "https://example.com/big.zip");
+  assert.ok(Number.isFinite(record.ts), "记录应包含写入时间戳");
+
+  // 2. SW 重启：background 启动时立即执行一次看门狗检查，此时已超龄。
+  const deps = makeWatchdogDeps({
+    now: record.ts + TAKEOVER_STUCK_MS + 1000,
+    sessionData: { pendingTakeover: JSON.parse(JSON.stringify(sessionStore.pendingTakeover)) },
+    downloadsById: { 105: { id: 105, paused: true } },
+  });
+  const { recovered, remaining } = await recoverStuckTakeovers(deps);
+  assert.deepEqual(recovered, [105], "已暂停但未接管的下载应被看门狗恢复放行");
+  assert.deepEqual(deps.resumed, [105]);
+  assert.deepEqual(remaining, {});
+  delete sessionStore.pendingTakeover["105"]; // 清理，避免影响同文件后续用例
+});
+
+test("watchdog: 任务已发送（task-sent）后 SW 死亡，重启后取消浏览器下载而非 resume（防重复文件）", async () => {
+  const now = Date.now();
+  const calls = [];
+  const deps = makeWatchdogDeps({
+    now,
+    sessionData: {
+      pendingTakeover: {
+        106: { ts: now - TAKEOVER_STUCK_MS - 1, url: "https://example.com/a.zip", phase: "task-sent" },
+      },
+    },
+    downloadsById: { 106: { id: 106, paused: true } },
+  });
+  deps.downloads.cancel = async (id) => calls.push(`cancel:${id}`);
+  deps.downloads.erase = async (query) => calls.push(`erase:${query.id}`);
+  const { recovered, cancelled, remaining } = await recoverStuckTakeovers(deps);
+  assert.deepEqual(recovered, [], "task-sent 阶段绝不能 resume，否则与桌面任务产生重复文件");
+  assert.deepEqual(cancelled, [106]);
+  assert.deepEqual(calls, ["cancel:106", "erase:106"]);
+  assert.deepEqual(remaining, {});
+});
+
+test("接管成功后清除恢复记录，且记录先于 pause 落盘", async () => {
+  const calls = [];
+  const fresh = { id: 107, url: "https://example.com/f.zip", finalUrl: "https://example.com/f.zip", filename: "f.zip", totalBytes: 3_000_000 };
+  const downloads = {
+    pause: async () => {
+      calls.push("pause");
+      assert.ok(sessionStore.pendingTakeover?.["107"], "pause 发生时恢复记录必须已存在");
+    },
+    search: async () => [fresh],
+    cancel: async () => calls.push("cancel"),
+    erase: async () => calls.push("erase"),
+    resume: async () => calls.push("resume"),
+  };
+  const handled = await interceptBrowserDownload(fresh, {
+    downloads, settings, runtimeId: "extension-id", wait: async () => {},
+    sendTask: async () => { calls.push("send"); return { id: "task-lifecycle-1" }; },
+  });
+  assert.equal(handled, true);
+  assert.deepEqual(calls, ["pause", "send", "cancel", "erase"]);
+  assert.equal(sessionStore.pendingTakeover?.["107"], undefined, "接管完成后恢复记录应被清除");
+});
+
+test("桌面端离线回退时恢复下载并清除恢复记录", async () => {
+  resetNotificationCooldownsForTest();
+  const calls = [];
+  const item = { id: 108, url: "https://example.com/offline.zip", finalUrl: "https://example.com/offline.zip", filename: "offline.zip", totalBytes: 3_000_000 };
+  const downloads = {
+    pause: async () => calls.push("pause"),
+    search: async () => [item],
+    resume: async () => calls.push("resume"),
+    cancel: async () => calls.push("cancel"),
+    erase: async () => calls.push("erase"),
+  };
+  const handled = await interceptBrowserDownload(item, {
+    downloads, settings, runtimeId: "extension-id", wait: async () => {},
+    sendTask: async () => { throw new TypeError("Failed to fetch"); },
+    notify: () => {},
+  });
+  assert.equal(handled, false);
+  assert.deepEqual(calls, ["pause", "resume"], "离线回退必须恢复浏览器下载");
+  assert.equal(sessionStore.pendingTakeover?.["108"], undefined, "回退后恢复记录必须被清除");
 });
 
 // ---- 最小文件大小与归档/安装包免除过滤测试 ----

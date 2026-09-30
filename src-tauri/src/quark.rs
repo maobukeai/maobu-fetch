@@ -100,7 +100,8 @@ pub fn parse_quark_url(raw: &str) -> Option<ParsedQuarkUrl> {
     }
 
     if pass_code.is_none() {
-        let pwd_re = Regex::new(r"(?i)(?:提取码|密码|pwd|code|passcode)[:：\s]+([a-zA-Z0-9]{4,8})").ok();
+        let pwd_re =
+            Regex::new(r"(?i)(?:提取码|密码|pwd|code|passcode)[:：\s]+([a-zA-Z0-9]{4,8})").ok();
         if let Some(re) = pwd_re {
             if let Some(m) = re.captures(text) {
                 if let Some(c) = m.get(1) {
@@ -134,7 +135,10 @@ pub async fn get_share_token(
     }
 
     let mut req = client
-        .post(format!("{}/1/clouddrive/share/sharepage/token", QUARK_API_HOST))
+        .post(format!(
+            "{}/1/clouddrive/share/sharepage/token",
+            QUARK_API_HOST
+        ))
         .header("Content-Type", "application/json")
         .header("Referer", "https://pan.quark.cn/")
         .body(payload.to_string());
@@ -145,18 +149,26 @@ pub async fn get_share_token(
         }
     }
 
-    let resp = req.send().await.map_err(|e| format!("连接夸克分享服务失败: {}", e))?;
+    let resp = req
+        .send()
+        .await
+        .map_err(|e| format!("连接夸克分享服务失败: {}", e))?;
 
-    let text = resp.text().await.map_err(|e| format!("读取夸克响应失败: {}", e))?;
+    let text = resp
+        .text()
+        .await
+        .map_err(|e| format!("读取夸克响应失败: {}", e))?;
     let json: serde_json::Value = serde_json::from_str(&text).unwrap_or_default();
 
     let status = json.get("status").and_then(|v| v.as_i64()).unwrap_or(0);
     let code = json.get("code").and_then(|v| v.as_i64()).unwrap_or(status);
 
-    if code == 40010 || code == 40011 || text.contains("提取码错误") || text.contains("密码错误") {
+    if code == 40010 || code == 40011 || text.contains("提取码错误") || text.contains("密码错误")
+    {
         return Err("提取码错误，请重新输入".to_string());
     }
-    if code == 40008 || code == 40009 || text.contains("分享已失效") || text.contains("分享不存在") {
+    if code == 40008 || code == 40009 || text.contains("分享已失效") || text.contains("分享不存在")
+    {
         return Err("该夸克分享已失效或不存在".to_string());
     }
 
@@ -201,7 +213,10 @@ async fn fetch_directory_tree(
         let mut page = 1;
         loop {
             let mut req = client
-                .get(format!("{}/1/clouddrive/share/sharepage/detail", QUARK_API_HOST))
+                .get(format!(
+                    "{}/1/clouddrive/share/sharepage/detail",
+                    QUARK_API_HOST
+                ))
                 .query(&[
                     ("pwd_id", pwd_id),
                     ("stoken", stoken),
@@ -217,32 +232,69 @@ async fn fetch_directory_tree(
                 }
             }
 
-            let resp = req.send().await.map_err(|e| format!("拉取夸克分享内容失败: {}", e))?;
+            let resp = req
+                .send()
+                .await
+                .map_err(|e| format!("拉取夸克分享内容失败: {}", e))?;
 
-            let text = resp.text().await.map_err(|e| format!("读取夸克文件列表失败: {}", e))?;
+            let text = resp
+                .text()
+                .await
+                .map_err(|e| format!("读取夸克文件列表失败: {}", e))?;
             let json: serde_json::Value = serde_json::from_str(&text).unwrap_or_default();
 
             if let Some(data) = json.get("data") {
-                let list = data.get("list").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+                let list = data
+                    .get("list")
+                    .and_then(|v| v.as_array())
+                    .cloned()
+                    .unwrap_or_default();
                 if list.is_empty() {
                     break;
                 }
 
                 for item in list {
-                    let fid = item.get("fid").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                    let file_name = item.get("file_name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    let fid = item
+                        .get("fid")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let file_name = item
+                        .get("file_name")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
                     let is_dir = item.get("dir").and_then(|v| v.as_bool()).unwrap_or(false)
                         || item.get("file").and_then(|v| v.as_bool()) == Some(false)
-                        || item.get("is_dir").and_then(|v| v.as_bool()).unwrap_or(false)
+                        || item
+                            .get("is_dir")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(false)
                         || item.get("obj_type").and_then(|v| v.as_str()) == Some("dir")
                         || item.get("format_type").and_then(|v| v.as_str()) == Some("dir");
-                    let size = item.get("size").and_then(|v| v.as_u64()).or_else(|| {
-                        item.get("size").and_then(|v| v.as_str()).and_then(|s| s.parse::<u64>().ok())
-                    }).unwrap_or(0);
-                    let format_type = item.get("format_type").and_then(|v| v.as_str()).map(|s| s.to_string());
-                    let file_extension = item.get("file_extension").and_then(|v| v.as_str()).map(|s| s.to_string())
+                    let size = item
+                        .get("size")
+                        .and_then(|v| v.as_u64())
+                        .or_else(|| {
+                            item.get("size")
+                                .and_then(|v| v.as_str())
+                                .and_then(|s| s.parse::<u64>().ok())
+                        })
+                        .unwrap_or(0);
+                    let format_type = item
+                        .get("format_type")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string());
+                    let file_extension = item
+                        .get("file_extension")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string())
                         .or_else(|| file_name.split('.').last().map(|s| s.to_string()));
-                    let thumbnail_url = item.get("thumbnail").or_else(|| item.get("icon")).and_then(|v| v.as_str()).map(|s| s.to_string());
+                    let thumbnail_url = item
+                        .get("thumbnail")
+                        .or_else(|| item.get("icon"))
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string());
 
                     let item_path = if current_path.is_empty() {
                         file_name.clone()
@@ -255,7 +307,8 @@ async fn fetch_directory_tree(
                         file_count += 1;
                     }
 
-                    let share_fid_token = item.get("share_fid_token")
+                    let share_fid_token = item
+                        .get("share_fid_token")
                         .or_else(|| item.get("fid_token"))
                         .and_then(|v| v.as_str())
                         .map(|s| s.to_string());
@@ -302,12 +355,16 @@ pub async fn inspect_quark_share(
     provided_pass_code: Option<String>,
     cookie: Option<String>,
 ) -> Result<QuarkShareInfo, String> {
-    let parsed = parse_quark_url(raw_url).ok_or_else(|| {
-        "无效的夸克分享链接，格式应为 https://pan.quark.cn/s/xxxx".to_string()
-    })?;
+    let parsed = parse_quark_url(raw_url)
+        .ok_or_else(|| "无效的夸克分享链接，格式应为 https://pan.quark.cn/s/xxxx".to_string())?;
 
     let effective_pass_code = provided_pass_code.or(parsed.pass_code);
-    let stoken_res = get_share_token(&parsed.pwd_id, effective_pass_code.as_deref(), cookie.as_deref()).await;
+    let stoken_res = get_share_token(
+        &parsed.pwd_id,
+        effective_pass_code.as_deref(),
+        cookie.as_deref(),
+    )
+    .await;
 
     let stoken = match stoken_res {
         Ok(t) => t,
@@ -334,9 +391,15 @@ pub async fn inspect_quark_share(
         .map(|i| i.size)
         .sum();
     let file_count = all_items.iter().filter(|i| i.kind == "drive#file").count();
-    let folder_count = all_items.iter().filter(|i| i.kind == "drive#folder").count();
+    let folder_count = all_items
+        .iter()
+        .filter(|i| i.kind == "drive#folder")
+        .count();
 
-    let title = if let Some(top_folder) = all_items.iter().find(|i| i.kind == "drive#folder" && !i.path.contains('/')) {
+    let title = if let Some(top_folder) = all_items
+        .iter()
+        .find(|i| i.kind == "drive#folder" && !i.path.contains('/'))
+    {
         top_folder.name.clone()
     } else if let Some(first) = all_items.iter().find(|i| i.kind == "drive#file") {
         first.name.clone()
@@ -379,7 +442,10 @@ async fn save_share_file_to_drive(
     }
 
     let resp = client
-        .post(format!("{}/1/clouddrive/share/sharepage/save?pr=ucpro&fr=pc", QUARK_API_HOST))
+        .post(format!(
+            "{}/1/clouddrive/share/sharepage/save?pr=ucpro&fr=pc",
+            QUARK_API_HOST
+        ))
         .header("Content-Type", "application/json")
         .header("Cookie", cookie)
         .header("Referer", "https://pan.quark.cn/")
@@ -390,17 +456,25 @@ async fn save_share_file_to_drive(
         .await
         .map_err(|e| format!("自动转存请求失败: {}", e))?;
 
-    let text = resp.text().await.map_err(|e| format!("读取转存响应失败: {}", e))?;
+    let text = resp
+        .text()
+        .await
+        .map_err(|e| format!("读取转存响应失败: {}", e))?;
     let json: serde_json::Value = serde_json::from_str(&text).unwrap_or_default();
 
     if let Some(code) = json.get("code").and_then(|v| v.as_i64()) {
         if code != 0 && code != 200 {
-            let msg = json.get("message").or_else(|| json.get("msg")).and_then(|v| v.as_str()).unwrap_or("未知错误");
+            let msg = json
+                .get("message")
+                .or_else(|| json.get("msg"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("未知错误");
             return Err(format!("自动转存失败: {}", msg));
         }
     }
 
-    let task_id = json.get("data")
+    let task_id = json
+        .get("data")
         .and_then(|d| d.get("task_id").or_else(|| d.get("task_id_str")))
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
@@ -410,7 +484,10 @@ async fn save_share_file_to_drive(
         for retry in 0..12 {
             tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
             let poll_resp = client
-                .get(format!("{}/1/clouddrive/task?task_id={}&retry_index={}&pr=ucpro&fr=pc", QUARK_API_HOST, tid, retry))
+                .get(format!(
+                    "{}/1/clouddrive/task?task_id={}&retry_index={}&pr=ucpro&fr=pc",
+                    QUARK_API_HOST, tid, retry
+                ))
                 .header("Cookie", cookie)
                 .header("Referer", "https://pan.quark.cn/")
                 .header("Origin", "https://pan.quark.cn")
@@ -420,11 +497,14 @@ async fn save_share_file_to_drive(
 
             if let Ok(p_resp) = poll_resp {
                 if let Ok(p_text) = p_resp.text().await {
-                    let p_json: serde_json::Value = serde_json::from_str(&p_text).unwrap_or_default();
+                    let p_json: serde_json::Value =
+                        serde_json::from_str(&p_text).unwrap_or_default();
                     if let Some(data) = p_json.get("data") {
                         let status = data.get("status").and_then(|v| v.as_i64()).unwrap_or(0);
                         // 1. 尝试从各种可能的文件 ID 数组中提取
-                        for field_name in &["save_as_top_fids", "save_as_fids", "fids", "target_fids"] {
+                        for field_name in
+                            &["save_as_top_fids", "save_as_fids", "fids", "target_fids"]
+                        {
                             if let Some(fids) = data.get(*field_name).and_then(|v| v.as_array()) {
                                 if let Some(first_fid) = fids.first().and_then(|v| v.as_str()) {
                                     if !first_fid.is_empty() {
@@ -433,14 +513,20 @@ async fn save_share_file_to_drive(
                                 }
                             }
                         }
-                        if let Some(fid_val) = data.get("fid").or_else(|| data.get("file_id")).and_then(|v| v.as_str()) {
+                        if let Some(fid_val) = data
+                            .get("fid")
+                            .or_else(|| data.get("file_id"))
+                            .and_then(|v| v.as_str())
+                        {
                             if !fid_val.is_empty() {
                                 return Ok(fid_val.to_string());
                             }
                         }
                         if let Some(list) = data.get("list").and_then(|v| v.as_array()) {
                             if let Some(first_item) = list.first() {
-                                if let Some(first_fid) = first_item.get("fid").and_then(|v| v.as_str()) {
+                                if let Some(first_fid) =
+                                    first_item.get("fid").and_then(|v| v.as_str())
+                                {
                                     return Ok(first_fid.to_string());
                                 }
                             }
@@ -458,10 +544,17 @@ async fn save_share_file_to_drive(
 
                             if let Ok(s_resp) = sort_resp {
                                 if let Ok(s_text) = s_resp.text().await {
-                                    let s_json: serde_json::Value = serde_json::from_str(&s_text).unwrap_or_default();
-                                    if let Some(list) = s_json.get("data").and_then(|d| d.get("list")).and_then(|v| v.as_array()) {
+                                    let s_json: serde_json::Value =
+                                        serde_json::from_str(&s_text).unwrap_or_default();
+                                    if let Some(list) = s_json
+                                        .get("data")
+                                        .and_then(|d| d.get("list"))
+                                        .and_then(|v| v.as_array())
+                                    {
                                         if let Some(first_item) = list.first() {
-                                            if let Some(first_fid) = first_item.get("fid").and_then(|v| v.as_str()) {
+                                            if let Some(first_fid) =
+                                                first_item.get("fid").and_then(|v| v.as_str())
+                                            {
                                                 return Ok(first_fid.to_string());
                                             }
                                         }
@@ -496,7 +589,10 @@ pub async fn resolve_quark_file(
                 "pwd_id": pwd_id,
             });
             let token_resp = client
-                .post(format!("{}/1/clouddrive/share/sharepage/token", QUARK_API_HOST))
+                .post(format!(
+                    "{}/1/clouddrive/share/sharepage/token",
+                    QUARK_API_HOST
+                ))
                 .header("Content-Type", "application/json")
                 .header("Referer", "https://pan.quark.cn/")
                 .body(token_payload.to_string())
@@ -505,8 +601,10 @@ pub async fn resolve_quark_file(
 
             if let Ok(t_resp) = token_resp {
                 if let Ok(t_text) = t_resp.text().await {
-                    let t_json: serde_json::Value = serde_json::from_str(&t_text).unwrap_or_default();
-                    t_json.get("data")
+                    let t_json: serde_json::Value =
+                        serde_json::from_str(&t_text).unwrap_or_default();
+                    t_json
+                        .get("data")
                         .and_then(|d| d.get("stoken"))
                         .and_then(|v| v.as_str())
                         .unwrap_or("")
@@ -530,7 +628,10 @@ pub async fn resolve_quark_file(
     let mut last_error_msg = String::new();
 
     let resp_res = client
-        .post(format!("{}/1/clouddrive/file/download?pr=ucpro&fr=pc", QUARK_PC_API_HOST))
+        .post(format!(
+            "{}/1/clouddrive/file/download?pr=ucpro&fr=pc",
+            QUARK_PC_API_HOST
+        ))
         .header("Content-Type", "application/json")
         .header("Cookie", cookie_val)
         .header("Referer", "https://pan.quark.cn/")
@@ -543,7 +644,8 @@ pub async fn resolve_quark_file(
     if let Ok(resp) = resp_res {
         if let Ok(text) = resp.text().await {
             let json: serde_json::Value = serde_json::from_str(&text).unwrap_or_default();
-            let direct_url = json.get("data")
+            let direct_url = json
+                .get("data")
                 .and_then(|d| d.get("download_url").or_else(|| d.get("url")))
                 .and_then(|v| v.as_str())
                 .or_else(|| {
@@ -554,7 +656,9 @@ pub async fn resolve_quark_file(
                             if let Some(s) = f.as_str() {
                                 Some(s)
                             } else {
-                                f.get("download_url").or_else(|| f.get("url")).and_then(|v| v.as_str())
+                                f.get("download_url")
+                                    .or_else(|| f.get("url"))
+                                    .and_then(|v| v.as_str())
                             }
                         })
                 })
@@ -564,14 +668,18 @@ pub async fn resolve_quark_file(
                 resolved_url = Some(url);
             } else {
                 let code = json.get("code").and_then(|v| v.as_i64()).unwrap_or(0);
-                let msg = json.get("message")
+                let msg = json
+                    .get("message")
                     .or_else(|| json.get("msg"))
                     .or_else(|| json.get("error"))
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
                 last_error_msg = msg.to_string();
 
-                let is_size_limit = code == 23018 || msg.contains("size limit") || msg.contains("limit") || msg.contains("超限");
+                let is_size_limit = code == 23018
+                    || msg.contains("size limit")
+                    || msg.contains("limit")
+                    || msg.contains("超限");
                 if is_size_limit {
                     let mut stoken_to_use = effective_stoken.clone();
                     if stoken_to_use.is_empty() {
@@ -579,7 +687,10 @@ pub async fn resolve_quark_file(
                             "pwd_id": pwd_id,
                         });
                         if let Ok(t_resp) = client
-                            .post(format!("{}/1/clouddrive/share/sharepage/token", QUARK_API_HOST))
+                            .post(format!(
+                                "{}/1/clouddrive/share/sharepage/token",
+                                QUARK_API_HOST
+                            ))
                             .header("Content-Type", "application/json")
                             .header("Referer", "https://pan.quark.cn/")
                             .body(token_payload.to_string())
@@ -587,21 +698,37 @@ pub async fn resolve_quark_file(
                             .await
                         {
                             if let Ok(t_text) = t_resp.text().await {
-                                let t_json: serde_json::Value = serde_json::from_str(&t_text).unwrap_or_default();
-                                if let Some(stk) = t_json.get("data").and_then(|d| d.get("stoken")).and_then(|v| v.as_str()) {
+                                let t_json: serde_json::Value =
+                                    serde_json::from_str(&t_text).unwrap_or_default();
+                                if let Some(stk) = t_json
+                                    .get("data")
+                                    .and_then(|d| d.get("stoken"))
+                                    .and_then(|v| v.as_str())
+                                {
                                     stoken_to_use = stk.to_string();
                                 }
                             }
                         }
                     }
 
-                    match save_share_file_to_drive(pwd_id, fid, share_fid_token, &stoken_to_use, cookie_val).await {
+                    match save_share_file_to_drive(
+                        pwd_id,
+                        fid,
+                        share_fid_token,
+                        &stoken_to_use,
+                        cookie_val,
+                    )
+                    .await
+                    {
                         Ok(saved_fid) => {
                             let save_payload = serde_json::json!({
                                 "fids": [saved_fid],
                             });
                             let save_down = client
-                                .post(format!("{}/1/clouddrive/file/download?pr=ucpro&fr=pc", QUARK_PC_API_HOST))
+                                .post(format!(
+                                    "{}/1/clouddrive/file/download?pr=ucpro&fr=pc",
+                                    QUARK_PC_API_HOST
+                                ))
                                 .header("Content-Type", "application/json")
                                 .header("Cookie", cookie_val)
                                 .header("Referer", "https://pan.quark.cn/")
@@ -613,19 +740,26 @@ pub async fn resolve_quark_file(
 
                             if let Ok(s_resp) = save_down {
                                 if let Ok(s_text) = s_resp.text().await {
-                                    let s_json: serde_json::Value = serde_json::from_str(&s_text).unwrap_or_default();
-                                    let s_direct_url = s_json.get("data")
-                                        .and_then(|d| d.get("download_url").or_else(|| d.get("url")))
+                                    let s_json: serde_json::Value =
+                                        serde_json::from_str(&s_text).unwrap_or_default();
+                                    let s_direct_url = s_json
+                                        .get("data")
+                                        .and_then(|d| {
+                                            d.get("download_url").or_else(|| d.get("url"))
+                                        })
                                         .and_then(|v| v.as_str())
                                         .or_else(|| {
-                                            s_json.get("data")
+                                            s_json
+                                                .get("data")
                                                 .and_then(|d| d.as_array())
                                                 .and_then(|arr| arr.first())
                                                 .and_then(|f| {
                                                     if let Some(s) = f.as_str() {
                                                         Some(s)
                                                     } else {
-                                                        f.get("download_url").or_else(|| f.get("url")).and_then(|v| v.as_str())
+                                                        f.get("download_url")
+                                                            .or_else(|| f.get("url"))
+                                                            .and_then(|v| v.as_str())
                                                     }
                                                 })
                                         })
@@ -634,8 +768,13 @@ pub async fn resolve_quark_file(
                                     if let Some(url) = s_direct_url {
                                         resolved_url = Some(url);
                                     } else {
-                                        let s_msg = s_json.get("message").or_else(|| s_json.get("msg")).and_then(|v| v.as_str()).unwrap_or("");
-                                        last_error_msg = format!("转存成功但获取直链失败: {}", s_msg);
+                                        let s_msg = s_json
+                                            .get("message")
+                                            .or_else(|| s_json.get("msg"))
+                                            .and_then(|v| v.as_str())
+                                            .unwrap_or("");
+                                        last_error_msg =
+                                            format!("转存成功但获取直链失败: {}", s_msg);
                                     }
                                 }
                             }

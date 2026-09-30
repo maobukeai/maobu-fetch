@@ -11,7 +11,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 /// 获取所有缓存文件的路径与大小信息。
-pub async fn inspect_cache_files(app_data_dir: &Path, store: &Store) -> Result<Vec<(PathBuf, u64)>, String> {
+pub async fn inspect_cache_files(
+    app_data_dir: &Path,
+    store: &Store,
+) -> Result<Vec<(PathBuf, u64)>, String> {
     let mut files = Vec::new();
 
     // 1. 扫描日志目录 (app_data_dir/logs) 中所有的旧日志文件（除了当天的活动日志）
@@ -54,7 +57,15 @@ pub async fn inspect_cache_files(app_data_dir: &Path, store: &Store) -> Result<V
     let tasks = store.list_tasks().await?;
     let active_temp_files: HashSet<PathBuf> = tasks
         .iter()
-        .filter(|t| matches!(t.status, TaskStatus::Downloading | TaskStatus::Paused | TaskStatus::Queued | TaskStatus::Scheduled))
+        .filter(|t| {
+            matches!(
+                t.status,
+                TaskStatus::Downloading
+                    | TaskStatus::Paused
+                    | TaskStatus::Queued
+                    | TaskStatus::Scheduled
+            )
+        })
         .filter_map(|t| {
             let p = PathBuf::from(&t.destination).join(&t.file_name);
             Some(PathBuf::from(format!("{}.lumaget", p.to_string_lossy())))
@@ -100,7 +111,11 @@ fn scan_orphaned_lumaget_files(
                         }
                     }
                 }
-            } else if path.is_dir() && path.file_name().map_or(false, |n| n != "logs" && n != "tools") {
+            } else if path.is_dir()
+                && path
+                    .file_name()
+                    .map_or(false, |n| n != "logs" && n != "tools")
+            {
                 // 递归扫描一层子目录（如 _maobu_tmp/[task_id]）
                 scan_orphaned_lumaget_files(&path, active_temp_files, files);
             }
@@ -109,7 +124,10 @@ fn scan_orphaned_lumaget_files(
 }
 
 /// 评估缓存大小。
-pub async fn inspect_cache(app_data_dir: &Path, store: &Store) -> Result<CacheInspectResult, String> {
+pub async fn inspect_cache(
+    app_data_dir: &Path,
+    store: &Store,
+) -> Result<CacheInspectResult, String> {
     let files = inspect_cache_files(app_data_dir, store).await?;
     let total_bytes: u64 = files.iter().map(|(_, sz)| *sz).sum();
     Ok(CacheInspectResult {
@@ -145,7 +163,12 @@ mod tests {
     use crate::models::{DownloadTask, TaskStatus};
     use tempfile::tempdir;
 
-    fn make_test_task(id: &str, file_name: &str, destination: &str, status: TaskStatus) -> DownloadTask {
+    fn make_test_task(
+        id: &str,
+        file_name: &str,
+        destination: &str,
+        status: TaskStatus,
+    ) -> DownloadTask {
         DownloadTask {
             id: id.into(),
             url: "https://example.com/file".into(),
@@ -248,7 +271,12 @@ mod tests {
 
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
-            let task = make_test_task("task-1", "test.mp4", &download_dir.to_string_lossy(), TaskStatus::Downloading);
+            let task = make_test_task(
+                "task-1",
+                "test.mp4",
+                &download_dir.to_string_lossy(),
+                TaskStatus::Downloading,
+            );
             store.upsert_task(&task).await.unwrap();
 
             let inspect = inspect_cache(&app_data_dir, &store).await.unwrap();

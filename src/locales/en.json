@@ -233,7 +233,8 @@
     "taskStatusPause": "Pause",
     "taskStatusResume": "Resume",
     "tempAuthBadge": "Includes temporary login state",
-    "tempAuthHint": "This task carries the current page Cookie/Referer/User-Agent from the browser extension, used only for this download and cleared on completion."
+    "tempAuthHint": "This task carries temporary login state (Cookie/Authorization/Referer/User-Agent) from the browser extension, used only for this download and cleared on completion.",
+    "templateAuthStripped": "For account security, authentication headers such as Cookie and Authorization are not saved in templates; other headers are saved as-is."
   },
   "connections": {
     "title": "Segment connections",
@@ -297,7 +298,10 @@
     "frostedGlassFailed": "Failed to apply frosted glass effect: {error}",
     "kernelConnectionFailed": "Cannot connect to download kernel: {error}",
     "redownloading": "Old shards cleared, restarting download",
-    "meteredResumed": "Resumed download on metered network"
+    "meteredResumed": "Resumed download on metered network",
+    "quickViewSaveFailed": "Failed to save quick view: {error}",
+    "quickViewDeleteFailed": "Failed to delete quick view: {error}",
+    "quickViewLoadFailed": "Failed to load quick views: {error}"
   },
   "dialogs": {
     "selectedItemsCount": "{count} selected",
@@ -335,6 +339,21 @@
     "closeExit": "Exit program",
     "rememberChoice": "Remember choice",
     "languageSection": "Language"
+  },
+  "deleteConfirm": {
+    "filesTitle": "Delete Local Files",
+    "recordsTitle": "Delete Task Records",
+    "historyFilesTitle": "Permanently Delete Tasks and Files",
+    "historyRecordsTitle": "Permanently Delete History Records",
+    "filesBody": "Local files of {taskCount} tasks ({fileCount} files in total) will be deleted; task records and download links will be kept in history.",
+    "historyFilesBody": "{taskCount} history tasks and their local files ({fileCount} files in total) will be permanently deleted.",
+    "recordsBody": "{taskCount} selected tasks will be moved to history; local files of completed tasks are kept and can be re-downloaded from history.",
+    "recordsBodyHistory": "{taskCount} history records will be permanently deleted; local files remain on disk.",
+    "incompleteNote": "{count} of them are incomplete; unfinished shard data will be cleaned up.",
+    "fileListLabel": "Files involved:",
+    "irreversible": "This action cannot be undone.",
+    "confirmDelete": "Delete",
+    "confirmDeleteFiles": "Delete Files"
   },
   "settings": {
     "title": "Settings",

@@ -77,7 +77,9 @@ pub fn is_baidu_url(url: &str) -> bool {
     if trimmed.is_empty() {
         return false;
     }
-    let re = Regex::new(r"(?i)https?://(?:pan|yun)\.baidu\.com/(?:s/|share/init\?surl=)[a-zA-Z0-9_-]+").unwrap();
+    let re =
+        Regex::new(r"(?i)https?://(?:pan|yun)\.baidu\.com/(?:s/|share/init\?surl=)[a-zA-Z0-9_-]+")
+            .unwrap();
     re.is_match(trimmed)
 }
 
@@ -96,8 +98,12 @@ pub fn parse_baidu_url(raw: &str) -> Option<ParsedBaiduUrl> {
     let surl = caps.get(1).or_else(|| caps.get(2))?.as_str().to_string();
 
     // 匹配提取码
-    let pass_code_re = Regex::new(r"(?i)(?:(?:pwd|code|提取码|密码)[：:\s=]*([a-zA-Z0-9]{4}))").unwrap();
-    let pass_code = pass_code_re.captures(trimmed).and_then(|c| c.get(1)).map(|m| m.as_str().to_string());
+    let pass_code_re =
+        Regex::new(r"(?i)(?:(?:pwd|code|提取码|密码)[：:\s=]*([a-zA-Z0-9]{4}))").unwrap();
+    let pass_code = pass_code_re
+        .captures(trimmed)
+        .and_then(|c| c.get(1))
+        .map(|m| m.as_str().to_string());
 
     Some(ParsedBaiduUrl { surl, pass_code })
 }
@@ -126,11 +132,7 @@ pub async fn verify_baidu_pass_code(surl: &str, pass_code: &str) -> Result<Strin
         BAIDU_API_HOST, clean_surl
     );
 
-    let params = [
-        ("pwd", pass_code),
-        ("vcode", ""),
-        ("vcode_str", ""),
-    ];
+    let params = [("pwd", pass_code), ("vcode", ""), ("vcode_str", "")];
 
     let resp = client
         .post(&verify_url)
@@ -154,7 +156,10 @@ pub async fn verify_baidu_pass_code(surl: &str, pass_code: &str) -> Result<Strin
         }
     }
 
-    let text = resp.text().await.map_err(|e| format!("读取验证响应失败: {}", e))?;
+    let text = resp
+        .text()
+        .await
+        .map_err(|e| format!("读取验证响应失败: {}", e))?;
     let json: serde_json::Value = serde_json::from_str(&text).unwrap_or_default();
 
     let errno = json.get("errno").and_then(|v| v.as_i64()).unwrap_or(0);
@@ -162,7 +167,11 @@ pub async fn verify_baidu_pass_code(surl: &str, pass_code: &str) -> Result<Strin
         if errno == -9 {
             return Err("提取码错误，请重新输入 4 位提取码".to_string());
         }
-        let msg = json.get("err_msg").or_else(|| json.get("show_msg")).and_then(|v| v.as_str()).unwrap_or("提取码验证失败");
+        let msg = json
+            .get("err_msg")
+            .or_else(|| json.get("show_msg"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("提取码验证失败");
         return Err(format!("验证提取码失败 (错误码 {}): {}", errno, msg));
     }
 
@@ -190,7 +199,7 @@ pub async fn inspect_baidu_share(
     let effective_pass_code = pass_code.or(parsed.pass_code.as_deref());
 
     let mut current_randsk = String::new();
-    let mut need_pass_code = false;
+    let need_pass_code = false;
 
     // 若有提取码，优先验证提取码拿到 randsk
     if let Some(pwd) = effective_pass_code {
@@ -221,12 +230,17 @@ pub async fn inspect_baidu_share(
         .await
         .map_err(|e| format!("请求百度网盘分享页失败: {}", e))?;
 
-    let html = page_resp.text().await.map_err(|e| format!("读取分享页面失败: {}", e))?;
+    let html = page_resp
+        .text()
+        .await
+        .map_err(|e| format!("读取分享页面失败: {}", e))?;
 
     // 判断是否需要提取码
-    if html.contains("请输入提取码") || html.contains("share-verify-form") || html.contains("init?surl=") {
+    if html.contains("请输入提取码")
+        || html.contains("share-verify-form")
+        || html.contains("init?surl=")
+    {
         if current_randsk.is_empty() {
-            need_pass_code = true;
             return Ok(BaiduShareInfo {
                 surl: clean_surl.to_string(),
                 share_id: None,
@@ -269,7 +283,10 @@ pub async fn inspect_baidu_share(
         }
     }
 
-    let shareid_re = Regex::new(r#"["']shareid["']\s*:\s*["']?(\d+)["']?|["']share_id["']\s*:\s*["']?(\d+)["']?"#).unwrap();
+    let shareid_re = Regex::new(
+        r#"["']shareid["']\s*:\s*["']?(\d+)["']?|["']share_id["']\s*:\s*["']?(\d+)["']?"#,
+    )
+    .unwrap();
     if let Some(caps) = shareid_re.captures(&html) {
         if let Some(m) = caps.get(1).or_else(|| caps.get(2)) {
             share_id = Some(m.as_str().to_string());
@@ -283,7 +300,9 @@ pub async fn inspect_baidu_share(
         }
     }
 
-    let ts_re = Regex::new(r#"["']timestamp["']\s*:\s*["']?(\d+)["']?|["']servertime["']\s*,\s*(\d+)"#).unwrap();
+    let ts_re =
+        Regex::new(r#"["']timestamp["']\s*:\s*["']?(\d+)["']?|["']servertime["']\s*,\s*(\d+)"#)
+            .unwrap();
     if let Some(caps) = ts_re.captures(&html) {
         if let Some(m) = caps.get(1).or_else(|| caps.get(2)) {
             timestamp = m.as_str().parse::<i64>().ok();
@@ -318,7 +337,8 @@ pub async fn inspect_baidu_share(
         dir_queue.push_back(("/".to_string(), String::new()));
 
         while let Some((current_dir, parent_path)) = dir_queue.pop_front() {
-            let encoded_dir: String = url::form_urlencoded::byte_serialize(current_dir.as_bytes()).collect();
+            let encoded_dir: String =
+                url::form_urlencoded::byte_serialize(current_dir.as_bytes()).collect();
             let is_root = if current_dir == "/" { "1" } else { "0" };
             let list_url = format!(
                 "{}/share/list?shorturl={}&uk={}&shareid={}&root={}&order=other&desc=1&showempty=0&web=1&page=1&num=100&dir={}&channel=chunlei&app_id=250528",
@@ -342,10 +362,12 @@ pub async fn inspect_baidu_share(
                     let json: serde_json::Value = serde_json::from_str(&text).unwrap_or_default();
                     if let Some(list) = json.get("list").and_then(|v| v.as_array()) {
                         for item in list {
-                            let isdir = item.get("isdir").and_then(|v| v.as_i64()).unwrap_or(0) == 1
+                            let isdir = item.get("isdir").and_then(|v| v.as_i64()).unwrap_or(0)
+                                == 1
                                 || item.get("isdir").and_then(|v| v.as_str()).unwrap_or("0") == "1";
 
-                            let fs_id = if let Some(s) = item.get("fs_id").and_then(|v| v.as_str()) {
+                            let fs_id = if let Some(s) = item.get("fs_id").and_then(|v| v.as_str())
+                            {
                                 s.to_string()
                             } else if let Some(n) = item.get("fs_id").and_then(|v| v.as_i64()) {
                                 n.to_string()
@@ -353,7 +375,11 @@ pub async fn inspect_baidu_share(
                                 item.get("fs_id").map(|v| v.to_string()).unwrap_or_default()
                             };
 
-                            let server_filename = item.get("server_filename").and_then(|v| v.as_str()).unwrap_or("unknown").to_string();
+                            let server_filename = item
+                                .get("server_filename")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("unknown")
+                                .to_string();
 
                             let size = if let Some(n) = item.get("size").and_then(|v| v.as_u64()) {
                                 n
@@ -363,9 +389,16 @@ pub async fn inspect_baidu_share(
                                 0
                             };
 
-                            let md5 = item.get("md5").and_then(|v| v.as_str()).map(|s| s.to_string());
-                            let category = item.get("category").and_then(|v| v.as_i64())
-                                .or_else(|| item.get("category").and_then(|v| v.as_str()).and_then(|s| s.parse::<i64>().ok()));
+                            let md5 = item
+                                .get("md5")
+                                .and_then(|v| v.as_str())
+                                .map(|s| s.to_string());
+                            let category =
+                                item.get("category").and_then(|v| v.as_i64()).or_else(|| {
+                                    item.get("category")
+                                        .and_then(|v| v.as_str())
+                                        .and_then(|s| s.parse::<i64>().ok())
+                                });
 
                             let item_path = if parent_path.is_empty() {
                                 server_filename.clone()
@@ -375,7 +408,15 @@ pub async fn inspect_baidu_share(
 
                             if isdir {
                                 folder_count += 1;
-                                let sub_dir = item.get("path").and_then(|v| v.as_str()).unwrap_or(&format!("{}/{}", current_dir.trim_end_matches('/'), server_filename)).to_string();
+                                let sub_dir = item
+                                    .get("path")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or(&format!(
+                                        "{}/{}",
+                                        current_dir.trim_end_matches('/'),
+                                        server_filename
+                                    ))
+                                    .to_string();
                                 dir_queue.push_back((sub_dir, item_path.clone()));
 
                                 all_files.push(BaiduFileItem {
@@ -418,7 +459,11 @@ pub async fn inspect_baidu_share(
         file_count,
         folder_count,
         pass_code_required: need_pass_code,
-        randsk: if current_randsk.is_empty() { None } else { Some(current_randsk) },
+        randsk: if current_randsk.is_empty() {
+            None
+        } else {
+            Some(current_randsk)
+        },
         sign,
         timestamp,
         seckey,
@@ -468,7 +513,13 @@ pub async fn resolve_baidu_file(
     let mut effective_randsk = randsk.map(|s| s.to_string());
 
     if effective_share_id.is_none() || effective_uk.is_none() {
-        if let Ok(info) = inspect_baidu_share(&format!("{}/s/1{}", BAIDU_API_HOST, clean_surl), None, cookie).await {
+        if let Ok(info) = inspect_baidu_share(
+            &format!("{}/s/1{}", BAIDU_API_HOST, clean_surl),
+            None,
+            cookie,
+        )
+        .await
+        {
             if effective_share_id.is_none() {
                 effective_share_id = info.share_id;
             }
@@ -542,7 +593,6 @@ pub async fn resolve_baidu_file(
 
         if let Ok(r) = resp {
             if let Ok(text) = r.text().await {
-                eprintln!("DEBUG sharedownload resp: {}", text);
                 let json: serde_json::Value = serde_json::from_str(&text).unwrap_or_default();
                 if let Some(0) = json.get("errno").and_then(|v| v.as_i64()) {
                     if let Some(list) = json.get("list").and_then(|v| v.as_array()) {
@@ -550,7 +600,10 @@ pub async fn resolve_baidu_file(
                             if let Some(dlink) = item.get("dlink").and_then(|v| v.as_str()) {
                                 if !dlink.is_empty() {
                                     let mut headers = HashMap::new();
-                                    headers.insert("User-Agent".to_string(), BAIDU_DLINK_USER_AGENT.to_string());
+                                    headers.insert(
+                                        "User-Agent".to_string(),
+                                        BAIDU_DLINK_USER_AGENT.to_string(),
+                                    );
                                     if !cookie_header.is_empty() {
                                         headers.insert("Cookie".to_string(), cookie_header.clone());
                                     }
@@ -568,9 +621,11 @@ pub async fn resolve_baidu_file(
     }
 
     // 2. 若直接获取失败，检查是否具备登录 Cookie（包含 BDUSS），尝试转存后拉取直链
-    if cookie_header.contains("BDUSS") && effective_share_id.is_some() && effective_uk.is_some() {
-        let sid = effective_share_id.as_ref().unwrap();
-        let u = effective_uk.as_ref().unwrap();
+    if let (true, Some(sid), Some(u)) = (
+        cookie_header.contains("BDUSS"),
+        effective_share_id.as_ref(),
+        effective_uk.as_ref(),
+    ) {
         let transfer_url = format!(
             "{}/share/transfer?shareid={}&from={}&ondup=newcopy&async=0&channel=chunlei&clienttype=0&web=1&app_id=250528",
             BAIDU_API_HOST, sid, u
@@ -595,27 +650,33 @@ pub async fn resolve_baidu_file(
             .send()
             .await;
 
-        println!(">>> [转存请求执行完毕] t_resp is_ok={}", t_resp.is_ok());
         if let Ok(tr) = t_resp {
             if let Ok(text) = tr.text().await {
-                println!(">>> [百度转存回执] {}", text);
                 let json: serde_json::Value = serde_json::from_str(&text).unwrap_or_default();
                 let errno = json.get("errno").and_then(|v| v.as_i64()).unwrap_or(-1);
+                tracing::debug!(baidu_errno = errno, "百度转存请求已返回");
                 if errno == 0 || errno == 12 || errno == 111 {
                     let target_fs_id = if let Some(extra) = json.get("extra") {
-                        extra.get("list").and_then(|l| l.as_array()).and_then(|arr| arr.first()).and_then(|item| {
-                            item.get("to_fs_id").or_else(|| item.get("fs_id")).and_then(|v| {
-                                if let Some(s) = v.as_str() {
-                                    Some(s.to_string())
-                                } else if let Some(n) = v.as_i64() {
-                                    Some(n.to_string())
-                                } else if let Some(u) = v.as_u64() {
-                                    Some(u.to_string())
-                                } else {
-                                    None
-                                }
+                        extra
+                            .get("list")
+                            .and_then(|l| l.as_array())
+                            .and_then(|arr| arr.first())
+                            .and_then(|item| {
+                                item.get("to_fs_id")
+                                    .or_else(|| item.get("fs_id"))
+                                    .and_then(|v| {
+                                        if let Some(s) = v.as_str() {
+                                            Some(s.to_string())
+                                        } else if let Some(n) = v.as_i64() {
+                                            Some(n.to_string())
+                                        } else if let Some(u) = v.as_u64() {
+                                            Some(u.to_string())
+                                        } else {
+                                            None
+                                        }
+                                    })
                             })
-                        }).unwrap_or_else(|| fs_id.to_string())
+                            .unwrap_or_else(|| fs_id.to_string())
                     } else {
                         fs_id.to_string()
                     };
@@ -624,9 +685,18 @@ pub async fn resolve_baidu_file(
                     if let Some(extra) = json.get("extra") {
                         if let Some(list) = extra.get("list").and_then(|l| l.as_array()) {
                             if let Some(item) = list.first() {
-                                if let Some(p) = item.get("to").or_else(|| item.get("path")).or_else(|| item.get("to_path")).and_then(|p| p.as_str()) {
+                                if let Some(p) = item
+                                    .get("to")
+                                    .or_else(|| item.get("path"))
+                                    .or_else(|| item.get("to_path"))
+                                    .and_then(|p| p.as_str())
+                                {
                                     resolved_path = Some(p.to_string());
-                                } else if let Some(name) = item.get("to_server_filename").or_else(|| item.get("server_filename")).and_then(|n| n.as_str()) {
+                                } else if let Some(name) = item
+                                    .get("to_server_filename")
+                                    .or_else(|| item.get("server_filename"))
+                                    .and_then(|n| n.as_str())
+                                {
                                     resolved_path = Some(format!("/{}", name));
                                 }
                             }
@@ -641,13 +711,16 @@ pub async fn resolve_baidu_file(
                             }
                         }
                     }
-                    println!(">>> [解析到的目标文件] target_fs_id={}, resolved_path={:?}", target_fs_id, resolved_path);
+                    tracing::debug!(target_fs_id, "百度转存目标文件已解析");
 
                     let fsids_param = format!("[{}]", target_fs_id);
 
                     // 1. 如果路径仍未确定，通过 OpenAPI 查询 target_fs_id 的元数据补全 path
                     if resolved_path.is_none() {
-                        let meta_url = format!("{}/rest/2.0/xpan/multimedia?method=filemetas", BAIDU_API_HOST);
+                        let meta_url = format!(
+                            "{}/rest/2.0/xpan/multimedia?method=filemetas",
+                            BAIDU_API_HOST
+                        );
                         if let Ok(meta_resp) = client
                             .post(&meta_url)
                             .form(&[("fsids", fsids_param.as_str())])
@@ -657,18 +730,27 @@ pub async fn resolve_baidu_file(
                             .await
                         {
                             if let Ok(meta_text) = meta_resp.text().await {
-                                println!(">>> [OpenAPI 补全元数据回执] {}", meta_text);
-                                let meta_json: serde_json::Value = serde_json::from_str(&meta_text).unwrap_or_default();
-                                if let Some(list) = meta_json.get("list").and_then(|v| v.as_array()) {
+                                let meta_json: serde_json::Value =
+                                    serde_json::from_str(&meta_text).unwrap_or_default();
+                                if let Some(list) = meta_json.get("list").and_then(|v| v.as_array())
+                                {
                                     if let Some(item) = list.first() {
                                         if let Some(p) = item.get("path").and_then(|p| p.as_str()) {
                                             resolved_path = Some(p.to_string());
                                         }
-                                        if let Some(dlink) = item.get("dlink").and_then(|v| v.as_str()) {
+                                        if let Some(dlink) =
+                                            item.get("dlink").and_then(|v| v.as_str())
+                                        {
                                             if !dlink.is_empty() {
                                                 let mut headers = HashMap::new();
-                                                headers.insert("User-Agent".to_string(), BAIDU_DLINK_USER_AGENT.to_string());
-                                                headers.insert("Cookie".to_string(), cookie_header.clone());
+                                                headers.insert(
+                                                    "User-Agent".to_string(),
+                                                    BAIDU_DLINK_USER_AGENT.to_string(),
+                                                );
+                                                headers.insert(
+                                                    "Cookie".to_string(),
+                                                    cookie_header.clone(),
+                                                );
                                                 return Ok(BaiduDirectUrlResult {
                                                     url: dlink.to_string(),
                                                     headers,
@@ -699,16 +781,30 @@ pub async fn resolve_baidu_file(
 
                             if let Ok(fm_r) = fm_resp {
                                 if let Ok(fm_text) = fm_r.text().await {
-                                    println!(">>> [web filemetas UA={}] {}", ua, fm_text);
-                                    let fm_json: serde_json::Value = serde_json::from_str(&fm_text).unwrap_or_default();
-                                    if let Some(list) = fm_json.get("list").and_then(|v| v.as_array()) {
+                                    let fm_json: serde_json::Value =
+                                        serde_json::from_str(&fm_text).unwrap_or_default();
+                                    if let Some(list) =
+                                        fm_json.get("list").and_then(|v| v.as_array())
+                                    {
                                         if let Some(item) = list.first() {
-                                            if let Some(dlink) = item.get("dlink").and_then(|v| v.as_str()) {
+                                            if let Some(dlink) =
+                                                item.get("dlink").and_then(|v| v.as_str())
+                                            {
                                                 if !dlink.is_empty() {
                                                     let mut headers = HashMap::new();
-                                                    headers.insert("User-Agent".to_string(), ua.to_string());
-                                                    headers.insert("Cookie".to_string(), cookie_header.clone());
-                                                    headers.insert("Referer".to_string(), "https://pan.baidu.com/disk/home".to_string());
+                                                    headers.insert(
+                                                        "User-Agent".to_string(),
+                                                        ua.to_string(),
+                                                    );
+                                                    headers.insert(
+                                                        "Cookie".to_string(),
+                                                        cookie_header.clone(),
+                                                    );
+                                                    headers.insert(
+                                                        "Referer".to_string(),
+                                                        "https://pan.baidu.com/disk/home"
+                                                            .to_string(),
+                                                    );
                                                     return Ok(BaiduDirectUrlResult {
                                                         url: dlink.to_string(),
                                                         headers,
@@ -744,16 +840,30 @@ pub async fn resolve_baidu_file(
                                 .await
                             {
                                 if let Ok(loc_text) = loc_resp.text().await {
-                                    println!(">>> [locatedownload app_id={}] {}", app_id, loc_text);
-                                    let loc_json: serde_json::Value = serde_json::from_str(&loc_text).unwrap_or_default();
-                                    if let Some(urls) = loc_json.get("urls").and_then(|v| v.as_array()) {
+                                    let loc_json: serde_json::Value =
+                                        serde_json::from_str(&loc_text).unwrap_or_default();
+                                    if let Some(urls) =
+                                        loc_json.get("urls").and_then(|v| v.as_array())
+                                    {
                                         if let Some(u_item) = urls.first() {
-                                            if let Some(url_str) = u_item.get("url").and_then(|v| v.as_str()) {
+                                            if let Some(url_str) =
+                                                u_item.get("url").and_then(|v| v.as_str())
+                                            {
                                                 if !url_str.is_empty() {
                                                     let mut headers = HashMap::new();
-                                                    headers.insert("User-Agent".to_string(), req_ua.to_string());
-                                                    headers.insert("Cookie".to_string(), cookie_header.clone());
-                                                    headers.insert("Referer".to_string(), "https://pan.baidu.com/disk/home".to_string());
+                                                    headers.insert(
+                                                        "User-Agent".to_string(),
+                                                        req_ua.to_string(),
+                                                    );
+                                                    headers.insert(
+                                                        "Cookie".to_string(),
+                                                        cookie_header.clone(),
+                                                    );
+                                                    headers.insert(
+                                                        "Referer".to_string(),
+                                                        "https://pan.baidu.com/disk/home"
+                                                            .to_string(),
+                                                    );
                                                     return Ok(BaiduDirectUrlResult {
                                                         url: url_str.to_string(),
                                                         headers,
@@ -784,8 +894,6 @@ pub async fn resolve_baidu_file(
                                 "https://d.pcs.baidu.com/rest/2.0/pcs/file?method=download&path={}&app_id={}&vip=2",
                                 encoded_path, app_id
                             );
-                            println!(">>> [尝试 PCS Direct 极速通道 app_id={}] {}", app_id, pcs_direct_url);
-
                             if let Ok(pcs_resp) = no_redirect_client
                                 .get(&pcs_direct_url)
                                 .header("Cookie", &cookie_header)
@@ -793,14 +901,20 @@ pub async fn resolve_baidu_file(
                                 .send()
                                 .await
                             {
-                                println!(">>> [PCS Direct 响应状态 app_id={}] status={}", app_id, pcs_resp.status());
+                                tracing::debug!(pcs_app_id = app_id, status = %pcs_resp.status(), "PCS Direct 响应状态");
                                 if pcs_resp.status().is_redirection() {
                                     if let Some(loc) = pcs_resp.headers().get("location") {
                                         if let Ok(loc_str) = loc.to_str() {
                                             if !loc_str.is_empty() {
                                                 let mut headers = HashMap::new();
-                                                headers.insert("User-Agent".to_string(), BAIDU_DLINK_USER_AGENT.to_string());
-                                                headers.insert("Cookie".to_string(), cookie_header.clone());
+                                                headers.insert(
+                                                    "User-Agent".to_string(),
+                                                    BAIDU_DLINK_USER_AGENT.to_string(),
+                                                );
+                                                headers.insert(
+                                                    "Cookie".to_string(),
+                                                    cookie_header.clone(),
+                                                );
                                                 return Ok(BaiduDirectUrlResult {
                                                     url: loc_str.to_string(),
                                                     headers,
@@ -815,17 +929,30 @@ pub async fn resolve_baidu_file(
 
                     return Err(format!("文件已成功转存至网盘（fs_id: {}），但提取直链地址失败，请检查账号状态或稍后重试", target_fs_id));
                 } else {
-                    let err_msg = json.get("show_msg").or_else(|| json.get("errmsg")).and_then(|v| v.as_str()).unwrap_or("转存失败");
-                    return Err(format!("百度网盘转存文件失败 (错误码 {}): {}", errno, err_msg));
+                    let err_msg = json
+                        .get("show_msg")
+                        .or_else(|| json.get("errmsg"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("转存失败");
+                    return Err(format!(
+                        "百度网盘转存文件失败 (错误码 {}): {}",
+                        errno, err_msg
+                    ));
                 }
             }
         }
     }
 
     if !cookie_header.contains("BDUSS") {
-        Err("该百度网盘文件需要登录凭证，请在设置中添加或在浏览器中登录百度网盘并同步 Cookie".to_string())
+        Err(
+            "该百度网盘文件需要登录凭证，请在设置中添加或在浏览器中登录百度网盘并同步 Cookie"
+                .to_string(),
+        )
     } else {
-        Err("获取百度网盘下载直链失败，请确认提取码是否正确或刷新浏览器中的百度网盘登录态后重试".to_string())
+        Err(
+            "获取百度网盘下载直链失败，请确认提取码是否正确或刷新浏览器中的百度网盘登录态后重试"
+                .to_string(),
+        )
     }
 }
 
@@ -857,7 +984,9 @@ mod tests {
         assert_eq!(p2.surl, "abcdefg");
         assert_eq!(p2.pass_code.as_deref(), Some("1234"));
 
-        let res3 = parse_baidu_url("链接: https://pan.baidu.com/s/1xyz789 提取码: abcd 复制这段内容后打开百度网盘手机App");
+        let res3 = parse_baidu_url(
+            "链接: https://pan.baidu.com/s/1xyz789 提取码: abcd 复制这段内容后打开百度网盘手机App",
+        );
         assert!(res3.is_some());
         let p3 = res3.unwrap();
         assert_eq!(p3.surl, "xyz789");
@@ -891,40 +1020,66 @@ mod tests {
                 .ok()?;
             if data_dir.join("lumaget.db").exists() {
                 if let Ok(store) = crate::store::Store::open(data_dir) {
-                    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().ok()?;
+                    let rt = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                        .ok()?;
                     return rt.block_on(async move {
                         if let Ok(tasks) = store.list_tasks().await {
                             for t in tasks.iter().rev().take(5) {
-                                println!(">>> [DB TASK] id={}, name={}, status={:?}, error={:?}, url={}, headers={:?}",
-                                    t.id, t.file_name, t.status, t.error, t.url, t.headers);
+                                println!(
+                                    ">>> [DB TASK] id={}, name={}, status={:?}",
+                                    t.id, t.file_name, t.status
+                                );
                             }
                         }
-                        store.media_credential_get_matching("pan.baidu.com").await.ok().flatten().map(|c| c.cookie)
+                        store
+                            .media_credential_get_matching("pan.baidu.com")
+                            .await
+                            .ok()
+                            .flatten()
+                            .map(|c| c.cookie)
                     });
                 }
             }
             None
-        }).await.ok().flatten();
+        })
+        .await
+        .ok()
+        .flatten();
 
         if let Some(ref c) = real_cookie {
-            println!(">>> 成功从本地数据库加载 pan.baidu.com Cookie, 长度: {}", c.len());
-            let u_resp = get_http_client().get("https://pan.baidu.com/api/user/getinfo?need_sub_user=1")
+            println!(
+                ">>> 成功从本地数据库加载 pan.baidu.com Cookie, 长度: {}",
+                c.len()
+            );
+            let u_resp = get_http_client()
+                .get("https://pan.baidu.com/api/user/getinfo?need_sub_user=1")
                 .header("Cookie", c)
                 .header("User-Agent", BAIDU_USER_AGENT)
-                .send().await;
+                .send()
+                .await;
             if let Ok(ur) = u_resp {
                 if let Ok(t) = ur.text().await {
-                    println!(">>> [百度用户信息查询回执] {}", t);
+                    println!(">>> [百度用户信息查询回执] is_ok, 长度={}", t.len());
                 }
             }
         }
 
         match inspect_baidu_share(url, None, real_cookie.as_deref()).await {
             Ok(info) => {
-                println!(">>> 成功解析分享信息: surl={}, share_id={:?}, uk={:?}, randsk_len={}",
-                    info.surl, info.share_id, info.uk, info.randsk.as_ref().map(|r| r.len()).unwrap_or(0));
+                println!(
+                    ">>> 成功解析分享信息: surl={}, share_id={:?}, uk={:?}, randsk_len={}",
+                    info.surl,
+                    info.share_id,
+                    info.uk,
+                    info.randsk.as_ref().map(|r| r.len()).unwrap_or(0)
+                );
                 if let Some(file) = info.files.iter().find(|f| f.kind == "drive#file") {
-                    println!(">>> 目标文件: id={}, name={}, size={}", file.id, file.name, file.size);
+                    println!(
+                        ">>> 目标文件: id={}, name={}, size={}",
+                        file.id, file.name, file.size
+                    );
                     let dlink_res = resolve_baidu_file(
                         &info.surl,
                         &file.id,
@@ -935,14 +1090,19 @@ mod tests {
                         info.seckey.as_deref(),
                         info.randsk.as_deref(),
                         real_cookie.as_deref(),
-                    ).await;
-                    println!(">>> 真实直链获取结果: {:?}", dlink_res);
+                    )
+                    .await;
+                    println!(">>> 真实直链获取结果: is_ok={}", dlink_res.is_ok());
                     assert!(dlink_res.is_ok(), "必须成功获取直链");
                     let res = dlink_res.unwrap();
-                    println!(">>> [直链 URL] {}", res.url);
-                    println!(">>> [直链 Headers] {:?}", res.headers);
+                    // 直链 URL 含临时签名、headers 含 Cookie，严禁打印完整值
+                    println!(">>> [直链 URL 长度] {}", res.url.len());
+                    println!(
+                        ">>> [直链 Headers 键] {:?}",
+                        res.headers.keys().collect::<Vec<_>>()
+                    );
                     let client = reqwest::Client::new();
-                    
+
                     let mut handles = Vec::new();
                     for i in 0..4u64 {
                         let client = client.clone();
@@ -951,7 +1111,9 @@ mod tests {
                         let start = i * 1024 * 1024;
                         let end = (i + 1) * 1024 * 1024 - 1;
                         handles.push(tokio::spawn(async move {
-                            let mut req = client.get(&url).header("Range", format!("bytes={}-{}", start, end));
+                            let mut req = client
+                                .get(&url)
+                                .header("Range", format!("bytes={}-{}", start, end));
                             for (k, v) in &headers {
                                 req = req.header(k, v);
                             }
@@ -964,7 +1126,10 @@ mod tests {
                                 0
                             };
                             let elapsed = send_start.elapsed().as_millis();
-                            println!(">>> [并发分片 #{}] status={}, bytes={}, 耗时={}ms", i, status, body_bytes, elapsed);
+                            println!(
+                                ">>> [并发分片 #{}] status={}, bytes={}, 耗时={}ms",
+                                i, status, body_bytes, elapsed
+                            );
                             (status, body_bytes)
                         }));
                     }

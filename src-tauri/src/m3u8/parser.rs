@@ -135,7 +135,10 @@ pub fn select_best_variant(variants: &[MasterVariant]) -> Option<String> {
     variants
         .iter()
         .max_by_key(|v| {
-            let res_score = v.resolution.map(|(w, h)| (w as u64) * (h as u64)).unwrap_or(0);
+            let res_score = v
+                .resolution
+                .map(|(w, h)| (w as u64) * (h as u64))
+                .unwrap_or(0);
             let bw_score = v.bandwidth.unwrap_or(0);
             (res_score, bw_score)
         })
@@ -195,7 +198,9 @@ pub fn parse_media_playlist(content: &str, base_url: &str) -> Result<MediaPlayli
             let attrs = parse_attributes(&line["#EXT-X-MAP:".len()..]);
             if let Some(uri_raw) = attrs.get("URI") {
                 let init_url = resolve_url(base_url, uri_raw)?;
-                let byte_range = attrs.get("BYTERANGE").and_then(|br_str| parse_byte_range(br_str));
+                let byte_range = attrs
+                    .get("BYTERANGE")
+                    .and_then(|br_str| parse_byte_range(br_str));
                 init_segment = Some(MediaSegment {
                     index: 0,
                     sequence: media_sequence,
@@ -327,7 +332,8 @@ pub fn resolve_url(base: &str, relative_or_abs: &str) -> Result<String, String> 
 /// 解析 16 字节 Hex IV 字符串（如 `0x1234...`）
 pub fn parse_hex_iv(iv_str: &str) -> Option<[u8; 16]> {
     let raw = iv_str.trim();
-    let hex_part = if let Some(stripped) = raw.strip_prefix("0x").or_else(|| raw.strip_prefix("0X")) {
+    let hex_part = if let Some(stripped) = raw.strip_prefix("0x").or_else(|| raw.strip_prefix("0X"))
+    {
         stripped
     } else {
         raw

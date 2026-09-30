@@ -960,14 +960,30 @@ pub struct ShortcutKeys {
     pub delete_file: String,
 }
 
-fn default_key_new_task() -> String { "Ctrl+N".into() }
-fn default_key_select_all() -> String { "Ctrl+A".into() }
-fn default_key_copy_url() -> String { "Ctrl+C".into() }
-fn default_key_open_folder() -> String { "Ctrl+O".into() }
-fn default_key_toggle_pause() -> String { "Space".into() }
-fn default_key_rename_task() -> String { "F2".into() }
-fn default_key_delete_task() -> String { "Delete".into() }
-fn default_key_delete_file() -> String { "Ctrl+D".into() }
+fn default_key_new_task() -> String {
+    "Ctrl+N".into()
+}
+fn default_key_select_all() -> String {
+    "Ctrl+A".into()
+}
+fn default_key_copy_url() -> String {
+    "Ctrl+C".into()
+}
+fn default_key_open_folder() -> String {
+    "Ctrl+O".into()
+}
+fn default_key_toggle_pause() -> String {
+    "Space".into()
+}
+fn default_key_rename_task() -> String {
+    "F2".into()
+}
+fn default_key_delete_task() -> String {
+    "Delete".into()
+}
+fn default_key_delete_file() -> String {
+    "Ctrl+D".into()
+}
 
 impl Default for ShortcutKeys {
     fn default() -> Self {

@@ -56,7 +56,13 @@ pub struct WindowTransferHandle {
 }
 
 impl WindowTransferHandle {
-    pub fn new(window_id: u64, segment_index: u8, start_byte: u64, end_byte: u64, existing_bytes: u64) -> Self {
+    pub fn new(
+        window_id: u64,
+        segment_index: u8,
+        start_byte: u64,
+        end_byte: u64,
+        existing_bytes: u64,
+    ) -> Self {
         Self {
             window_id,
             segment_index,
@@ -119,10 +125,20 @@ impl WorkStealingCoordinator {
         let mut state = self.state.lock().await;
 
         // 1. 优先领取 Pending 窗口（自动过滤并标记已写满的无效窗口）
-        while let Some(pos) = state.windows.iter().position(|w| w.status == WindowStatus::Pending) {
-            let window_len = state.windows[pos].end_byte.saturating_sub(state.windows[pos].start_byte).saturating_add(1);
+        while let Some(pos) = state
+            .windows
+            .iter()
+            .position(|w| w.status == WindowStatus::Pending)
+        {
+            let window_len = state.windows[pos]
+                .end_byte
+                .saturating_sub(state.windows[pos].start_byte)
+                .saturating_add(1);
             if state.windows[pos].existing_bytes >= window_len
-                || state.windows[pos].start_byte.saturating_add(state.windows[pos].existing_bytes) > state.windows[pos].end_byte
+                || state.windows[pos]
+                    .start_byte
+                    .saturating_add(state.windows[pos].existing_bytes)
+                    > state.windows[pos].end_byte
             {
                 state.windows[pos].status = WindowStatus::Completed;
                 continue;
@@ -159,7 +175,11 @@ impl WorkStealingCoordinator {
             if downloaded < 512 * 1024 {
                 continue;
             }
-            let sub_count = state.windows.iter().filter(|w| w.segment_index == handle.segment_index).count();
+            let sub_count = state
+                .windows
+                .iter()
+                .filter(|w| w.segment_index == handle.segment_index)
+                .count();
             if sub_count >= 4 {
                 continue;
             }
@@ -173,16 +193,32 @@ impl WorkStealingCoordinator {
                 if remaining >= MIN_STEAL_REMAINING_BYTES {
                     if let Some((_, _, _, max_rem, _, _)) = best_target {
                         if remaining > max_rem {
-                            best_target = Some((window_id, current_cursor, current_end, remaining, handle.segment_index, 0));
+                            best_target = Some((
+                                window_id,
+                                current_cursor,
+                                current_end,
+                                remaining,
+                                handle.segment_index,
+                                0,
+                            ));
                         }
                     } else {
-                        best_target = Some((window_id, current_cursor, current_end, remaining, handle.segment_index, 0));
+                        best_target = Some((
+                            window_id,
+                            current_cursor,
+                            current_end,
+                            remaining,
+                            handle.segment_index,
+                            0,
+                        ));
                     }
                 }
             }
         }
 
-        if let Some((victim_id, current_cursor, current_end, remaining, segment_index, _)) = best_target {
+        if let Some((victim_id, current_cursor, current_end, remaining, segment_index, _)) =
+            best_target
+        {
             // 计算切分点：在当前游标与结束边界之间二分切分
             // 确保切出的两半均有合理大小
             let split_length = remaining / 2;
@@ -191,7 +227,9 @@ impl WorkStealingCoordinator {
             if split_point > current_cursor && split_point < current_end {
                 // 1. 原子缩减被窃取窗口的结束边界
                 if let Some(victim_handle) = state.active_transfers.get(&victim_id) {
-                    victim_handle.effective_end_byte.store(split_point, Ordering::SeqCst);
+                    victim_handle
+                        .effective_end_byte
+                        .store(split_point, Ordering::SeqCst);
                 }
                 if let Some(victim_window) = state.windows.iter_mut().find(|w| w.id == victim_id) {
                     victim_window.end_byte = split_point;
@@ -248,7 +286,10 @@ impl WorkStealingCoordinator {
         }
         if let Some(window) = state.windows.iter_mut().find(|w| w.id == window_id) {
             window.existing_bytes = downloaded_bytes;
-            let window_len = window.end_byte.saturating_sub(window.start_byte).saturating_add(1);
+            let window_len = window
+                .end_byte
+                .saturating_sub(window.start_byte)
+                .saturating_add(1);
             if success && window.existing_bytes >= window_len {
                 window.status = WindowStatus::Completed;
             } else {
@@ -263,7 +304,10 @@ impl WorkStealingCoordinator {
         let state = self.state.lock().await;
         state.active_transfers.is_empty()
             && !state.windows.is_empty()
-            && state.windows.iter().all(|w| w.status == WindowStatus::Completed)
+            && state
+                .windows
+                .iter()
+                .all(|w| w.status == WindowStatus::Completed)
     }
 
     /// 获取当前活跃传输的窗口数
@@ -333,13 +377,19 @@ mod tests {
         let coordinator = WorkStealingCoordinator::new(temp, initial);
 
         // Worker 1 认领窗口 1
-        let (w1, h1) = coordinator.claim_or_steal_work().await.expect("should claim w1");
+        let (w1, h1) = coordinator
+            .claim_or_steal_work()
+            .await
+            .expect("should claim w1");
         assert_eq!(w1.id, 1);
         assert_eq!(h1.start_byte, 0);
         assert_eq!(h1.current_end(), 10_000_000);
 
         // Worker 2 认领窗口 2
-        let (w2, h2) = coordinator.claim_or_steal_work().await.expect("should claim w2");
+        let (w2, h2) = coordinator
+            .claim_or_steal_work()
+            .await
+            .expect("should claim w2");
         assert_eq!(w2.id, 2);
         assert_eq!(h2.start_byte, 10_000_001);
 
@@ -351,7 +401,10 @@ mod tests {
         h1.downloaded_bytes.store(1_000_000, Ordering::Relaxed);
 
         // Worker 2 再次请求工作，应成功从窗口 1 窃取后半段！
-        let (w3, h3) = coordinator.claim_or_steal_work().await.expect("should steal from w1");
+        let (w3, h3) = coordinator
+            .claim_or_steal_work()
+            .await
+            .expect("should steal from w1");
         assert_eq!(w3.segment_index, 0);
         // 原窗口 1 游标在 1_000_000，剩余 9_000_000，切分点在 1_000_000 + 4_500_000 = 5_500_000
         assert_eq!(h1.current_end(), 5_500_000);
@@ -428,7 +481,9 @@ mod tests {
         assert_eq!(h1_retry.current_downloaded(), 3_000_000);
 
         // 完成剩余 7MB
-        coordinator.finish_window(w1_retry.id, true, 10_000_001).await;
+        coordinator
+            .finish_window(w1_retry.id, true, 10_000_001)
+            .await;
         assert!(coordinator.is_all_completed().await);
     }
 

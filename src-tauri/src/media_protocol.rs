@@ -115,9 +115,17 @@ pub fn decode_local_file_path(uri_raw: &str) -> Option<PathBuf> {
     }
 
     // 剥离 localhost/ 或 asset.localhost/
-    if clean_path.to_ascii_lowercase().starts_with("localhost/") || clean_path.to_ascii_lowercase().starts_with("localhost\\") {
+    if clean_path.to_ascii_lowercase().starts_with("localhost/")
+        || clean_path.to_ascii_lowercase().starts_with("localhost\\")
+    {
         clean_path = &clean_path[10..];
-    } else if clean_path.to_ascii_lowercase().starts_with("asset.localhost/") || clean_path.to_ascii_lowercase().starts_with("asset.localhost\\") {
+    } else if clean_path
+        .to_ascii_lowercase()
+        .starts_with("asset.localhost/")
+        || clean_path
+            .to_ascii_lowercase()
+            .starts_with("asset.localhost\\")
+    {
         clean_path = &clean_path[16..];
     }
 
@@ -125,8 +133,9 @@ pub fn decode_local_file_path(uri_raw: &str) -> Option<PathBuf> {
     while clean_path.starts_with('/') || clean_path.starts_with('\\') {
         if clean_path.len() >= 3 {
             let bytes = clean_path.as_bytes();
-            if (bytes[1].is_ascii_alphabetic() && bytes[2] == b':') ||
-               (bytes[0] == b'\\' && bytes[1] == b'\\') {
+            if (bytes[1].is_ascii_alphabetic() && bytes[2] == b':')
+                || (bytes[0] == b'\\' && bytes[1] == b'\\')
+            {
                 if bytes[1].is_ascii_alphabetic() && bytes[2] == b':' {
                     clean_path = &clean_path[1..];
                 }
@@ -159,10 +168,7 @@ fn urlencoding_decode(input: &str) -> String {
             let h1 = chars.next();
             let h2 = chars.next();
             if let (Some(h1), Some(h2)) = (h1, h2) {
-                if let Ok(val) = u8::from_str_radix(
-                    &format!("{}{}", h1 as char, h2 as char),
-                    16,
-                ) {
+                if let Ok(val) = u8::from_str_radix(&format!("{}{}", h1 as char, h2 as char), 16) {
                     bytes.push(val);
                     continue;
                 }
@@ -177,10 +183,7 @@ fn urlencoding_decode(input: &str) -> String {
 const MAX_CHUNK_READ: u64 = 16 * 1024 * 1024;
 
 /// 处理流协议请求并生成对应的 HTTP 响应。
-pub async fn handle_media_request(
-    uri_path: &str,
-    range_header: Option<&str>,
-) -> Response<Vec<u8>> {
+pub async fn handle_media_request(uri_path: &str, range_header: Option<&str>) -> Response<Vec<u8>> {
     let file_path = match decode_local_file_path(uri_path) {
         Some(p) => p,
         None => {
@@ -204,10 +207,7 @@ pub async fn handle_media_request(
     };
 
     let total_size = metadata.len();
-    let ext = file_path
-        .extension()
-        .and_then(|s| s.to_str())
-        .unwrap_or("");
+    let ext = file_path.extension().and_then(|s| s.to_str()).unwrap_or("");
     let mime = mime_type_from_ext(ext);
 
     use tokio::io::{AsyncReadExt, AsyncSeekExt, SeekFrom};
@@ -331,30 +331,15 @@ mod tests {
 
     #[test]
     fn test_parse_range_header_standard() {
-        assert_eq!(
-            parse_range_header("bytes=0-499", 1000),
-            Some((0, 499))
-        );
-        assert_eq!(
-            parse_range_header("bytes=500-999", 1000),
-            Some((500, 999))
-        );
-        assert_eq!(
-            parse_range_header("bytes=500-", 1000),
-            Some((500, 999))
-        );
+        assert_eq!(parse_range_header("bytes=0-499", 1000), Some((0, 499)));
+        assert_eq!(parse_range_header("bytes=500-999", 1000), Some((500, 999)));
+        assert_eq!(parse_range_header("bytes=500-", 1000), Some((500, 999)));
     }
 
     #[test]
     fn test_parse_range_header_suffix() {
-        assert_eq!(
-            parse_range_header("bytes=-500", 1000),
-            Some((500, 999))
-        );
-        assert_eq!(
-            parse_range_header("bytes=-2000", 1000),
-            Some((0, 999))
-        );
+        assert_eq!(parse_range_header("bytes=-500", 1000), Some((500, 999)));
+        assert_eq!(parse_range_header("bytes=-2000", 1000), Some((0, 999)));
     }
 
     #[test]

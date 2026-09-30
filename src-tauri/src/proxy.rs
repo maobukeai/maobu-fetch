@@ -27,11 +27,15 @@ pub fn detect_windows_system_proxy() -> Option<String> {
     use std::ffi::OsStr;
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::System::Registry::{
-        RegCloseKey, RegOpenKeyExW, RegQueryValueExW, HKEY_CURRENT_USER, KEY_READ, REG_DWORD, REG_SZ,
+        RegCloseKey, RegOpenKeyExW, RegQueryValueExW, HKEY_CURRENT_USER, KEY_READ, REG_DWORD,
+        REG_SZ,
     };
 
     fn to_wide(s: &str) -> Vec<u16> {
-        OsStr::new(s).encode_wide().chain(std::iter::once(0)).collect()
+        OsStr::new(s)
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect()
     }
 
     unsafe {
@@ -426,7 +430,9 @@ pub fn validate_proxy_url(url: &str) -> Result<(), String> {
     let prefix = allowed
         .iter()
         .find(|p| lower.starts_with(*p))
-        .ok_or_else(|| "代理地址必须以 http://、https://、socks5:// 或 socks5h:// 开头".to_string())?;
+        .ok_or_else(|| {
+            "代理地址必须以 http://、https://、socks5:// 或 socks5h:// 开头".to_string()
+        })?;
     // 显式校验 authority 段：`scheme://` 之后必须紧跟非空主机（不允许直接出现 `/`、`?`、`#` 或结束）。
     // 这样可以拦截 `http://` 和 `http:///path`（authority 为空），
     // 弥补 `url::Url::parse` 对这类输入的解析差异。
@@ -1085,14 +1091,26 @@ mod tests {
     #[test]
     fn test_is_private_or_tailscale_url() {
         assert!(is_private_or_tailscale_url("http://localhost:8080/sync"));
-        assert!(is_private_or_tailscale_url("http://desktop-pc:8000/download"));
+        assert!(is_private_or_tailscale_url(
+            "http://desktop-pc:8000/download"
+        ));
         assert!(is_private_or_tailscale_url("http://127.0.0.1:8080/sync"));
-        assert!(is_private_or_tailscale_url("http://192.168.1.50:9000/stream"));
-        assert!(is_private_or_tailscale_url("http://100.100.100.100:8000/download"));
-        assert!(is_private_or_tailscale_url("http://my-peer.ts.net:3000/file.bin"));
+        assert!(is_private_or_tailscale_url(
+            "http://192.168.1.50:9000/stream"
+        ));
+        assert!(is_private_or_tailscale_url(
+            "http://100.100.100.100:8000/download"
+        ));
+        assert!(is_private_or_tailscale_url(
+            "http://my-peer.ts.net:3000/file.bin"
+        ));
         assert!(is_private_or_tailscale_url("http://[::1]:8080/file"));
-        assert!(is_private_or_tailscale_url("http://[fd7a:115c:a1e0::1]:8080/file"));
-        assert!(is_private_or_tailscale_url("http://[::ffff:192.168.1.1]:8080/file"));
+        assert!(is_private_or_tailscale_url(
+            "http://[fd7a:115c:a1e0::1]:8080/file"
+        ));
+        assert!(is_private_or_tailscale_url(
+            "http://[::ffff:192.168.1.1]:8080/file"
+        ));
 
         // Bare host without scheme
         assert!(is_private_or_tailscale_url("100.100.100.100:8000/download"));

@@ -57,8 +57,8 @@ pub fn is_autostart_flag(arg: &str) -> bool {
 pub fn is_media_file_path(path: &str) -> bool {
     let lower = path.to_ascii_lowercase();
     const MEDIA_EXTS: &[&str] = &[
-        ".mp4", ".webm", ".mkv", ".mov", ".avi", ".flv", ".ts", ".wmv", ".m4v",
-        ".mp3", ".flac", ".wav", ".aac", ".m4a", ".ogg",
+        ".mp4", ".webm", ".mkv", ".mov", ".avi", ".flv", ".ts", ".wmv", ".m4v", ".mp3", ".flac",
+        ".wav", ".aac", ".m4a", ".ogg",
     ];
     MEDIA_EXTS.iter().any(|ext| lower.ends_with(ext))
 }

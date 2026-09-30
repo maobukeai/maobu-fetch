@@ -39,11 +39,7 @@ mod win_impl {
             ppszPath: *mut *mut u16,
         ) -> i32;
         fn CoTaskMemFree(pv: *mut std::ffi::c_void);
-        fn ExpandEnvironmentStringsW(
-            lpSrc: *const u16,
-            lpDst: *mut u16,
-            nSize: u32,
-        ) -> u32;
+        fn ExpandEnvironmentStringsW(lpSrc: *const u16, lpDst: *mut u16, nSize: u32) -> u32;
     }
 
     /// 通过 Win32 SHGetKnownFolderPath API 获取系统 KnownFolder Downloads。
@@ -51,12 +47,8 @@ mod win_impl {
     pub fn get_known_folder_downloads() -> Option<PathBuf> {
         unsafe {
             let mut path_ptr: *mut u16 = std::ptr::null_mut();
-            let hr = SHGetKnownFolderPath(
-                &FOLDERID_DOWNLOADS,
-                0,
-                std::ptr::null_mut(),
-                &mut path_ptr,
-            );
+            let hr =
+                SHGetKnownFolderPath(&FOLDERID_DOWNLOADS, 0, std::ptr::null_mut(), &mut path_ptr);
             if hr == 0 && !path_ptr.is_null() {
                 let mut len = 0;
                 while *path_ptr.add(len) != 0 {
@@ -91,8 +83,14 @@ mod win_impl {
                 let written = ExpandEnvironmentStringsW(wide.as_ptr(), buf.as_mut_ptr(), needed);
                 if written > 0 {
                     // 去除末尾 null
-                    let len = if buf.ends_with(&[0]) { buf.len() - 1 } else { buf.len() };
-                    return OsString::from_wide(&buf[..len]).to_string_lossy().to_string();
+                    let len = if buf.ends_with(&[0]) {
+                        buf.len() - 1
+                    } else {
+                        buf.len()
+                    };
+                    return OsString::from_wide(&buf[..len])
+                        .to_string_lossy()
+                        .to_string();
                 }
             }
         }
@@ -103,7 +101,9 @@ mod win_impl {
     pub fn get_registry_downloads() -> Option<PathBuf> {
         let hkcu = RegKey::predef(HKEY_CURRENT_USER);
         // 1. 优先读取 User Shell Folders（存储重定向/移动后的实际路径）
-        if let Ok(key) = hkcu.open_subkey("Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\User Shell Folders") {
+        if let Ok(key) = hkcu.open_subkey(
+            "Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\User Shell Folders",
+        ) {
             // FOLDERID_Downloads GUID
             if let Ok(val) = key.get_value::<String, _>("{374DE290-123F-4565-9164-39C4925E467B}") {
                 let expanded = expand_env_string(&val);
@@ -128,7 +128,9 @@ mod win_impl {
         }
 
         // 2. 备用读取 Shell Folders
-        if let Ok(key) = hkcu.open_subkey("Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Shell Folders") {
+        if let Ok(key) = hkcu
+            .open_subkey("Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Shell Folders")
+        {
             if let Ok(val) = key.get_value::<String, _>("{374DE290-123F-4565-9164-39C4925E467B}") {
                 let expanded = expand_env_string(&val);
                 if !expanded.trim().is_empty() {
@@ -189,7 +191,9 @@ pub fn system_download_dir() -> PathBuf {
                 for line in content.lines() {
                     let trimmed = line.trim();
                     if trimmed.starts_with("XDG_DOWNLOAD_DIR=") {
-                        let raw = trimmed.trim_start_matches("XDG_DOWNLOAD_DIR=").trim_matches('"');
+                        let raw = trimmed
+                            .trim_start_matches("XDG_DOWNLOAD_DIR=")
+                            .trim_matches('"');
                         let expanded = raw.replace("$HOME", &home.to_string_lossy());
                         return PathBuf::from(expanded);
                     }
@@ -271,8 +275,14 @@ mod tests {
 
     #[test]
     fn test_paths_equal() {
-        assert!(paths_equal(Path::new("C:\\Users\\Test\\Downloads"), Path::new("c:/users/test/downloads/")));
-        assert!(!paths_equal(Path::new("C:\\Users\\Test\\Downloads"), Path::new("D:\\Downloads")));
+        assert!(paths_equal(
+            Path::new("C:\\Users\\Test\\Downloads"),
+            Path::new("c:/users/test/downloads/")
+        ));
+        assert!(!paths_equal(
+            Path::new("C:\\Users\\Test\\Downloads"),
+            Path::new("D:\\Downloads")
+        ));
     }
 
     #[test]

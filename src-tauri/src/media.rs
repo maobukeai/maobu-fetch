@@ -7,9 +7,9 @@ use crate::{
     media_platforms::{
         convert_douyin_aweme_to_yt_dlp_json, convert_douyin_live_to_yt_dlp_json, detect_platform,
         expand_short_url, extract_douyin_aweme_id, extract_douyin_live_room_id,
-        extract_url_from_share_text, fetch_douyin_aweme_detail_with_credentials,
-        fetch_douyin_live_detail, fetch_douyin_live_detail_with_credentials, is_douyin_gallery, is_douyin_live, is_tiktok_gallery,
-        is_twitter_space, is_weibo_gallery, strip_tracking_params, MediaPlatform,
+        extract_url_from_share_text, fetch_douyin_aweme_detail_with_credentials, is_douyin_gallery,
+        is_douyin_live, is_tiktok_gallery, is_twitter_space, is_weibo_gallery,
+        strip_tracking_params, MediaPlatform,
     },
     media_tools::{create_hidden_tokio_command, resolve_ffmpeg, resolve_yt_dlp},
     models::AppSettings,
@@ -91,7 +91,11 @@ async fn attach_auth_args(
 /// android_vr 的限制："Made for Kids" 视频不可用（这类视频需要登录态）。
 ///
 /// 参考：https://github.com/yt-dlp/yt-dlp/wiki/PO-Token-Guide
-pub(crate) fn apply_youtube_extractor_args(command: &mut Command, po_token: &str, has_cookie: bool) {
+pub(crate) fn apply_youtube_extractor_args(
+    command: &mut Command,
+    po_token: &str,
+    has_cookie: bool,
+) {
     let extractor_arg = build_youtube_extractor_arg(po_token, has_cookie);
     command.args(["--extractor-args", &extractor_arg]);
 }
@@ -120,15 +124,20 @@ pub(crate) async fn attach_auth_args_in_dir(
     referer: Option<&str>,
     user_agent: Option<&str>,
 ) -> Result<CookieFileGuard, String> {
-    let is_douyin = detect_platform(url) == MediaPlatform::Douyin || url.contains("douyin.com") || url.contains("douyincdn.com") || url.contains("iesdouyin.com");
+    let is_douyin = detect_platform(url) == MediaPlatform::Douyin
+        || url.contains("douyin.com")
+        || url.contains("douyincdn.com")
+        || url.contains("iesdouyin.com");
 
-    let effective_referer = referer.filter(|value| !value.trim().is_empty()).or_else(|| {
-        if is_douyin {
-            Some("https://live.douyin.com/")
-        } else {
-            None
-        }
-    });
+    let effective_referer = referer
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| {
+            if is_douyin {
+                Some("https://live.douyin.com/")
+            } else {
+                None
+            }
+        });
 
     let effective_ua = user_agent.filter(|value| !value.trim().is_empty()).or_else(|| {
         Some("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
@@ -197,7 +206,11 @@ pub async fn probe(
         // 优先检查抖音直播 URL
         if is_douyin_live(&effective_url) {
             if let Some(room_id) = extract_douyin_live_room_id(&effective_url) {
-                match crate::media_platforms::fetch_douyin_live_detail_with_credentials(&room_id, cookie, referer, user_agent).await {
+                match crate::media_platforms::fetch_douyin_live_detail_with_credentials(
+                    &room_id, cookie, referer, user_agent,
+                )
+                .await
+                {
                     Ok(detail) => {
                         let mut json = convert_douyin_live_to_yt_dlp_json(&detail);
                         json["webpage_url"] = Value::String(effective_url.clone());
@@ -238,7 +251,8 @@ pub async fn probe(
                 .await?
             }
         } else if let Some(id) = extract_douyin_aweme_id(&effective_url) {
-            match fetch_douyin_aweme_detail_with_credentials(&id, cookie, referer, user_agent).await {
+            match fetch_douyin_aweme_detail_with_credentials(&id, cookie, referer, user_agent).await
+            {
                 Ok(detail) => {
                     let mut json = convert_douyin_aweme_to_yt_dlp_json(&detail);
                     // 保留原始 URL 给后续命名模板与下载流程使用
@@ -285,9 +299,14 @@ pub async fn probe(
         }
     } else if platform == MediaPlatform::Twitter && !is_twitter_space(&effective_url) {
         if let Some(tweet_id) = crate::media_platforms::extract_twitter_status_id(&effective_url) {
-            match crate::media_platforms::fetch_twitter_tweet_detail_with_credentials(&tweet_id, cookie, referer, user_agent).await {
+            match crate::media_platforms::fetch_twitter_tweet_detail_with_credentials(
+                &tweet_id, cookie, referer, user_agent,
+            )
+            .await
+            {
                 Ok(detail) => {
-                    let mut json = crate::media_platforms::convert_twitter_tweet_to_yt_dlp_json(&detail);
+                    let mut json =
+                        crate::media_platforms::convert_twitter_tweet_to_yt_dlp_json(&detail);
                     json["webpage_url"] = Value::String(effective_url.clone());
                     tracing::info!(
                         tweet_id = %tweet_id,
@@ -328,17 +347,28 @@ pub async fn probe(
     } else if platform == MediaPlatform::PikPak {
         if let Some(parsed_pikpak) = crate::pikpak::parse_pikpak_url(&effective_url) {
             let device_id = hex::encode(rand::random::<[u8; 16]>());
-            let share_info = crate::pikpak::inspect_pikpak_share(&effective_url, parsed_pikpak.pass_code.clone(), &device_id)
-                .await
-                .map_err(|e| format!("PikPak 解析失败: {e}"))?;
+            let share_info = crate::pikpak::inspect_pikpak_share(
+                &effective_url,
+                parsed_pikpak.pass_code.clone(),
+                &device_id,
+            )
+            .await
+            .map_err(|e| format!("PikPak 解析失败: {e}"))?;
 
-            if let Some(first_file) = share_info.files.iter().find(|f| f.kind == "drive#file" || !f.id.is_empty()).cloned() {
+            if let Some(first_file) = share_info
+                .files
+                .iter()
+                .find(|f| f.kind == "drive#file" || !f.id.is_empty())
+                .cloned()
+            {
                 let direct = match crate::pikpak::resolve_pikpak_file(
                     &parsed_pikpak.share_id,
                     &first_file.id,
                     share_info.pass_code_token.as_deref(),
                     &device_id,
-                ).await {
+                )
+                .await
+                {
                     Ok(res) => res.url,
                     Err(_) => first_file.web_content_link.unwrap_or_default(),
                 };
@@ -349,7 +379,10 @@ pub async fn probe(
                     formats_list.push(MediaFormat {
                         id: "original".into(),
                         label: format!("原画 1080P/4K ({:.1} MB)", size_mb),
-                        extension: first_file.file_extension.clone().or_else(|| Some("mp4".into())),
+                        extension: first_file
+                            .file_extension
+                            .clone()
+                            .or_else(|| Some("mp4".into())),
                         width: Some(1920),
                         height: Some(1080),
                         file_size: Some(first_file.size),
@@ -362,7 +395,11 @@ pub async fn probe(
                 }
 
                 return Ok(MediaProbeResult {
-                    title: if first_file.name.is_empty() { share_info.title } else { first_file.name },
+                    title: if first_file.name.is_empty() {
+                        share_info.title
+                    } else {
+                        first_file.name
+                    },
                     thumbnail: first_file.thumbnail_url,
                     extractor: Some("pikpak".into()),
                     duration: None,
@@ -561,7 +598,9 @@ async fn probe_via_yt_dlp(
     let yt = resolve_yt_dlp(app, settings)
         .ok_or("MEDIA_YT_DLP_MISSING: 分析媒体需要先安装 yt-dlp 基础组件")?;
     let mut command = create_hidden_tokio_command(yt);
-    command.env("PYTHONIOENCODING", "utf-8").env("PYTHONUTF8", "1");
+    command
+        .env("PYTHONIOENCODING", "utf-8")
+        .env("PYTHONUTF8", "1");
     command.args([
         "--dump-single-json",
         "--no-playlist",
@@ -585,7 +624,11 @@ async fn probe_via_yt_dlp(
     )
     .await?;
     if platform == MediaPlatform::YouTube {
-        apply_youtube_extractor_args(&mut command, &settings.youtube_po_token, cookie_guard.path().is_some());
+        apply_youtube_extractor_args(
+            &mut command,
+            &settings.youtube_po_token,
+            cookie_guard.path().is_some(),
+        );
     }
     command.arg(effective_url);
     let output = command.output().await.map_err(|e| e.to_string())?;
@@ -630,9 +673,7 @@ pub async fn download(
     // `best` 选择最高码率的 progressive 流（音视频合一的单文件），无需合并，
     // 下载速度快、兼容性好。Twitter/X 场景下为 http-2176（720p MP4）。
     // 用户如需更高画质（HLS 原始流合并），需主动点击"解析媒体"选择合并格式。
-    let format = media
-        .format_id
-        .unwrap_or_else(|| "best".into());
+    let format = media.format_id.unwrap_or_else(|| "best".into());
     let requires_ffmpeg = media.requires_ffmpeg || format.contains('+');
     // 合并格式（如 bestvideo*+bestaudio/best）：yt-dlp 输出视频和音频两个独立文件。
     // FFmpeg 可用时由 yt-dlp 调用 FFmpeg 合并；FFmpeg 不可用时由内置 media_muxer 合并
@@ -651,10 +692,7 @@ pub async fn download(
         .to_path_buf();
     let before_files: Vec<std::path::PathBuf> = if use_internal_muxer {
         match std::fs::read_dir(&output_dir) {
-            Ok(entries) => entries
-                .filter_map(|e| e.ok())
-                .map(|e| e.path())
-                .collect(),
+            Ok(entries) => entries.filter_map(|e| e.ok()).map(|e| e.path()).collect(),
             Err(_) => Vec::new(),
         }
     } else {
@@ -663,7 +701,9 @@ pub async fn download(
     // 从 task.headers 中分离认证头，避免通过 --add-header 传递 Cookie
     let (cookie, referer, user_agent, safe_headers) = split_auth_headers(&task.headers);
     let mut command = create_hidden_tokio_command(yt);
-    command.env("PYTHONIOENCODING", "utf-8").env("PYTHONUTF8", "1");
+    command
+        .env("PYTHONIOENCODING", "utf-8")
+        .env("PYTHONUTF8", "1");
     command.args(media_arguments(&format, &template, ffmpeg.is_some()));
     if let Some(path) = ffmpeg {
         command.arg("--ffmpeg-location").arg(path);
@@ -679,11 +719,21 @@ pub async fn download(
     if speed_limit > 0 {
         command.arg("--limit-rate").arg(format!("{speed_limit}"));
     }
-    let target_conn = if task.connection_count > 1 { task.connection_count } else { settings.connections_per_download.max(8) };
-    let conn_count = if task.total_bytes == 0 { 1 } else { target_conn };
+    let target_conn = if task.connection_count > 1 {
+        task.connection_count
+    } else {
+        settings.connections_per_download.max(8)
+    };
+    let conn_count = if task.total_bytes == 0 {
+        1
+    } else {
+        target_conn
+    };
     task.connection_count = conn_count;
     task.active_connections = conn_count;
-    command.arg("--concurrent-fragments").arg(format!("{conn_count}"));
+    command
+        .arg("--concurrent-fragments")
+        .arg(format!("{conn_count}"));
     for (name, value) in &safe_headers {
         command.arg("--add-header").arg(format!("{name}:{value}"));
     }
@@ -700,7 +750,11 @@ pub async fn download(
     .await?;
     let download_platform = detect_platform(&task.url);
     if download_platform == MediaPlatform::YouTube {
-        apply_youtube_extractor_args(&mut command, &settings.youtube_po_token, cookie_guard.path().is_some());
+        apply_youtube_extractor_args(
+            &mut command,
+            &settings.youtube_po_token,
+            cookie_guard.path().is_some(),
+        );
     }
     for language in media.subtitles {
         command.args(["--write-subs", "--sub-langs", &language]);
@@ -901,11 +955,12 @@ pub async fn download(
 }
 
 fn media_arguments(format: &str, template: &str, has_ffmpeg: bool) -> Vec<String> {
-    let effective_format = if format == "live-hls" || format == "live-flv" || format.starts_with("live-") {
-        "b/best"
-    } else {
-        format
-    };
+    let effective_format =
+        if format == "live-hls" || format == "live-flv" || format.starts_with("live-") {
+            "b/best"
+        } else {
+            format
+        };
     let mut arguments = vec![
         "--newline".into(),
         "--no-colors".into(),
@@ -939,8 +994,8 @@ async fn merge_split_tracks(
     output: &Path,
 ) -> Result<(), String> {
     // 扫描下载后的目录文件
-    let after_entries = std::fs::read_dir(output_dir)
-        .map_err(|e| format!("读取输出目录失败：{e}"))?;
+    let after_entries =
+        std::fs::read_dir(output_dir).map_err(|e| format!("读取输出目录失败：{e}"))?;
     let after_files: Vec<std::path::PathBuf> = after_entries
         .filter_map(|e| e.ok())
         .map(|e| e.path())
@@ -1086,7 +1141,9 @@ pub(crate) async fn apply_platform_naming_template(
         Err(_) => target_url.to_string(),
     };
     let mut command = create_hidden_tokio_command(yt);
-    command.env("PYTHONIOENCODING", "utf-8").env("PYTHONUTF8", "1");
+    command
+        .env("PYTHONIOENCODING", "utf-8")
+        .env("PYTHONUTF8", "1");
     command.args([
         "--dump-single-json",
         "--no-playlist",
@@ -1105,7 +1162,11 @@ pub(crate) async fn apply_platform_naming_template(
     )
     .await?;
     if platform == MediaPlatform::YouTube {
-        apply_youtube_extractor_args(&mut command, &settings.youtube_po_token, cookie_guard.path().is_some());
+        apply_youtube_extractor_args(
+            &mut command,
+            &settings.youtube_po_token,
+            cookie_guard.path().is_some(),
+        );
     }
     command.arg(&effective_url);
     let output = command.output().await.map_err(|e| e.to_string())?;
@@ -1301,14 +1362,13 @@ fn parse_single_format(item: &Value) -> Option<MediaFormat> {
             Some("jpg") | Some("jpeg") | Some("png") | Some("webp") | Some("gif") | Some("bmp")
         );
     // has_video: 明确有编解码，或有画面尺寸（排除图片）
-    let has_video = !is_image
-        && ((!vcodec_is_explicit_none && !vcodec_is_unknown) || has_dimensions);
+    let has_video =
+        !is_image && ((!vcodec_is_explicit_none && !vcodec_is_unknown) || has_dimensions);
     // has_audio: 明确有编解码；或编解码未知但视频也未知（progressive 流）；
     // 或编解码未知且无视频（纯音频流，acodec 可能为 null）
     let has_audio = !is_image
         && ((!acodec_is_explicit_none && !acodec_is_unknown)
-            || (acodec_is_unknown && vcodec_is_unknown)
-            || (acodec_is_unknown && !has_video));
+            || acodec_is_unknown && (vcodec_is_unknown || !has_video));
     let label = if is_image {
         match (width, height) {
             (Some(w), Some(h)) => format!("图片 {w}×{h}"),
@@ -1390,10 +1450,7 @@ async fn update_live_progress(
     last_file_size: &mut u64,
     last_speed_tick: &mut std::time::Instant,
 ) {
-    let stem = output
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("");
+    let stem = output.file_stem().and_then(|s| s.to_str()).unwrap_or("");
     if stem.is_empty() {
         return;
     }
@@ -1428,7 +1485,10 @@ async fn update_live_progress(
 /// 查找策略：
 /// 1. 优先匹配以 stem 开头的文件（最可靠）
 /// 2. 如果 stem 匹配不到，回退到目录中最大的非 cookie 临时文件
-pub async fn find_live_output_file(output_dir: &Path, raw_stem_or_filename: &str) -> Option<PathBuf> {
+pub async fn find_live_output_file(
+    output_dir: &Path,
+    raw_stem_or_filename: &str,
+) -> Option<PathBuf> {
     let clean_stem = std::path::Path::new(raw_stem_or_filename)
         .file_stem()
         .and_then(|s| s.to_str())
@@ -1461,9 +1521,7 @@ pub async fn find_live_output_file(output_dir: &Path, raw_stem_or_filename: &str
             }
         }
     }
-    stem_match
-        .or(fallback)
-        .map(|(p, _)| p)
+    stem_match.or(fallback).map(|(p, _)| p)
 }
 
 fn parse_yt_dlp_progress(line: &str) -> Option<(f64, u64, u64, u64)> {
@@ -1493,7 +1551,9 @@ fn parse_yt_dlp_progress(line: &str) -> Option<(f64, u64, u64, u64)> {
         };
         let total_bytes = parse_size_to_bytes(size_str)?;
 
-        let speed = parts.iter().position(|p| *p == "at")
+        let speed = parts
+            .iter()
+            .position(|p| *p == "at")
             .and_then(|at_idx| parts.get(at_idx + 1))
             .and_then(|s| parse_speed_to_bytes(s))
             .unwrap_or(0);
@@ -1504,7 +1564,10 @@ fn parse_yt_dlp_progress(line: &str) -> Option<(f64, u64, u64, u64)> {
     if let Some(at_idx) = parts.iter().position(|p| *p == "at") {
         if at_idx >= 2 {
             let downloaded = parse_size_to_bytes(parts[at_idx - 1])?;
-            let speed = parts.get(at_idx + 1).and_then(|s| parse_speed_to_bytes(s)).unwrap_or(0);
+            let speed = parts
+                .get(at_idx + 1)
+                .and_then(|s| parse_speed_to_bytes(s))
+                .unwrap_or(0);
             return Some((0.0, downloaded, 0, speed));
         }
     }
@@ -1513,14 +1576,41 @@ fn parse_yt_dlp_progress(line: &str) -> Option<(f64, u64, u64, u64)> {
 
 fn parse_size_to_bytes(s: &str) -> Option<u64> {
     let clean = s.trim_start_matches('~');
-    let (num_part, unit) = if clean.ends_with("KiB") || clean.ends_with("KIB") || clean.ends_with("kb") || clean.ends_with("KB") {
-        (clean.get(..clean.len()-3).or_else(|| clean.get(..clean.len()-2))?, 1024_f64)
-    } else if clean.ends_with("MiB") || clean.ends_with("MIB") || clean.ends_with("mb") || clean.ends_with("MB") {
-        (clean.get(..clean.len()-3).or_else(|| clean.get(..clean.len()-2))?, 1024.0 * 1024.0)
-    } else if clean.ends_with("GiB") || clean.ends_with("GIB") || clean.ends_with("gb") || clean.ends_with("GB") {
-        (clean.get(..clean.len()-3).or_else(|| clean.get(..clean.len()-2))?, 1024.0 * 1024.0 * 1024.0)
+    let (num_part, unit) = if clean.ends_with("KiB")
+        || clean.ends_with("KIB")
+        || clean.ends_with("kb")
+        || clean.ends_with("KB")
+    {
+        (
+            clean
+                .get(..clean.len() - 3)
+                .or_else(|| clean.get(..clean.len() - 2))?,
+            1024_f64,
+        )
+    } else if clean.ends_with("MiB")
+        || clean.ends_with("MIB")
+        || clean.ends_with("mb")
+        || clean.ends_with("MB")
+    {
+        (
+            clean
+                .get(..clean.len() - 3)
+                .or_else(|| clean.get(..clean.len() - 2))?,
+            1024.0 * 1024.0,
+        )
+    } else if clean.ends_with("GiB")
+        || clean.ends_with("GIB")
+        || clean.ends_with("gb")
+        || clean.ends_with("GB")
+    {
+        (
+            clean
+                .get(..clean.len() - 3)
+                .or_else(|| clean.get(..clean.len() - 2))?,
+            1024.0 * 1024.0 * 1024.0,
+        )
     } else if clean.ends_with("B") {
-        (clean.get(..clean.len()-1)?, 1.0)
+        (clean.get(..clean.len() - 1)?, 1.0)
     } else {
         (clean, 1.0)
     };
@@ -1575,13 +1665,21 @@ mod tests {
     #[test]
     fn youtube_extractor_args_includes_po_token_when_provided() {
         let arg = build_youtube_extractor_arg("my-po-token", false);
-        assert!(arg.contains("po_token=my-po-token"), "po_token must be in args. Got: {}", arg);
+        assert!(
+            arg.contains("po_token=my-po-token"),
+            "po_token must be in args. Got: {}",
+            arg
+        );
     }
 
     #[test]
     fn youtube_extractor_args_omits_po_token_when_empty() {
         let arg = build_youtube_extractor_arg("", true);
-        assert!(!arg.contains("po_token="), "po_token must NOT be in args when empty. Got: {}", arg);
+        assert!(
+            !arg.contains("po_token="),
+            "po_token must NOT be in args when empty. Got: {}",
+            arg
+        );
     }
 
     #[test]
@@ -1589,11 +1687,19 @@ mod tests {
         // 有 Cookie 时优先用 web 系客户端（带登录态），android_vr 作为回退
         let arg = build_youtube_extractor_arg("", true);
         let clients_part = arg.split(';').next().unwrap_or("");
-        assert!(clients_part.contains("web"), "web client must be first when has_cookie. Got: {}", arg);
+        assert!(
+            clients_part.contains("web"),
+            "web client must be first when has_cookie. Got: {}",
+            arg
+        );
         // android_vr 应该在 web 系之后
         let web_pos = clients_part.find("web").unwrap();
         let vr_pos = clients_part.find("android_vr").unwrap();
-        assert!(vr_pos > web_pos, "android_vr must come after web clients. Got: {}", arg);
+        assert!(
+            vr_pos > web_pos,
+            "android_vr must come after web clients. Got: {}",
+            arg
+        );
     }
 
     #[test]
@@ -1615,6 +1721,7 @@ mod tests {
         let (pct, downloaded, total, speed) = res_est.unwrap();
         assert!((pct - 50.2).abs() < 1e-6);
         assert_eq!(total, 100 * 1024 * 1024);
+        assert_eq!(downloaded, ((50.2 / 100.0) * (total as f64)) as u64);
         assert_eq!(speed, (1.5 * 1024.0 * 1024.0) as u64);
 
         // Test case 3: Unknown total size progress (DASH/HLS stream)
@@ -2199,7 +2306,10 @@ mod tests {
         assert!(!formats[0].has_audio, "hls 视频轨应无音频");
         // hls-audio-128000: 纯音频（acodec=null 应被推断为有音频）
         assert!(!formats[1].has_video, "hls 音频轨应无视频");
-        assert!(formats[1].has_audio, "hls 音频轨应有音频（acodec=null 推断为纯音频）");
+        assert!(
+            formats[1].has_audio,
+            "hls 音频轨应有音频（acodec=null 推断为纯音频）"
+        );
     }
     /// 合成格式（bestvideo*+bestaudio/best）应携带最高视频流的 height，
     /// 便于前端按高度排序正确选中默认格式。Twitter 场景：hls-1570 (720p) + hls-audio。
@@ -2261,7 +2371,11 @@ mod tests {
         );
         // 合成格式应在第一位，且 height=720（最高视频流）
         assert_eq!(formats[0].id, "bestvideo*+bestaudio/best");
-        assert_eq!(formats[0].height, Some(720), "合成格式应携带最高视频流的 height");
+        assert_eq!(
+            formats[0].height,
+            Some(720),
+            "合成格式应携带最高视频流的 height"
+        );
         assert_eq!(formats[0].width, Some(1280));
         assert!(formats[0].has_video);
         assert!(formats[0].has_audio);

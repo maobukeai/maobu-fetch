@@ -69,8 +69,8 @@ segment101.ts
             assert_eq!(key0.method, EncryptionMethod::Aes128);
             assert_eq!(key0.uri, "https://priv.example.com/key.bin");
             let expected_iv = [
-                0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef,
-                0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef,
+                0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab,
+                0xcd, 0xef,
             ];
             assert_eq!(key0.iv, Some(expected_iv));
 
@@ -110,14 +110,15 @@ fn test_derive_iv_from_sequence() {
 #[test]
 fn test_aes_128_cbc_round_trip() {
     use aes::Aes128;
+    use cbc::cipher::{block_padding::Pkcs7, BlockEncryptMut, KeyIvInit};
     use cbc::Encryptor;
-    use cbc::cipher::{BlockEncryptMut, KeyIvInit, block_padding::Pkcs7};
 
     type Aes128CbcEnc = Encryptor<Aes128>;
 
     let key = [0x42u8; 16];
     let iv = [0x24u8; 16];
-    let plaintext = b"Hello, this is a test segment payload for HLS AES-128 decryption verification!";
+    let plaintext =
+        b"Hello, this is a test segment payload for HLS AES-128 decryption verification!";
 
     // 加密
     let mut enc_buf = vec![0u8; plaintext.len() + 16];

@@ -91,9 +91,11 @@ pub async fn inspect_pan123_share(
     share_url: &str,
     pass_code: Option<&str>,
 ) -> Result<Pan123ShareInfo, String> {
-    let parsed = parse_pan123_url(share_url)
-        .ok_or_else(|| "无法识别的 123云盘分享链接".to_string())?;
-    let effective_pwd = pass_code.map(|s| s.to_string()).or(parsed.pass_code.clone());
+    let parsed =
+        parse_pan123_url(share_url).ok_or_else(|| "无法识别的 123云盘分享链接".to_string())?;
+    let effective_pwd = pass_code
+        .map(|s| s.to_string())
+        .or(parsed.pass_code.clone());
 
     let client = reqwest::Client::builder()
         .user_agent(PAN123_USER_AGENT)
@@ -137,7 +139,13 @@ pub async fn inspect_pan123_share(
             .map_err(|_| format!("123云盘接口回执异常：{json_text}"))?;
 
         let code = json_val.get("code").and_then(|v| v.as_i64()).unwrap_or(-1);
-        if code == 5103 || code == 50001 || code == 50002 || code == 401 || json_text.contains("提取码") || json_text.contains("密码") {
+        if code == 5103
+            || code == 50001
+            || code == 50002
+            || code == 401
+            || json_text.contains("提取码")
+            || json_text.contains("密码")
+        {
             return Ok(Pan123ShareInfo {
                 share_key: parsed.share_key.clone(),
                 share_url: share_url.to_string(),
@@ -149,7 +157,10 @@ pub async fn inspect_pan123_share(
         }
 
         if code != 0 {
-            let msg = json_val.get("message").and_then(|v| v.as_str()).unwrap_or("未知错误");
+            let msg = json_val
+                .get("message")
+                .and_then(|v| v.as_str())
+                .unwrap_or("未知错误");
             return Err(format!("123云盘解析失败：{msg}"));
         }
 
@@ -157,10 +168,22 @@ pub async fn inspect_pan123_share(
             if let Some(list) = data.get("InfoList").and_then(|v| v.as_array()) {
                 for item in list {
                     let file_id = item.get("FileId").and_then(|v| v.as_i64()).unwrap_or(0);
-                    let name = item.get("FileName").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    let name = item
+                        .get("FileName")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
                     let size = item.get("Size").and_then(|v| v.as_u64()).unwrap_or(0);
-                    let etag = item.get("Etag").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                    let s3_key_flag = item.get("S3KeyFlag").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    let etag = item
+                        .get("Etag")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let s3_key_flag = item
+                        .get("S3KeyFlag")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
                     let f_type = item.get("Type").and_then(|v| v.as_i64()).unwrap_or(0);
 
                     if f_type == 1 {
@@ -272,7 +295,10 @@ pub async fn resolve_pan123_file(
     }
 
     if code != 0 {
-        let msg = json_val.get("message").and_then(|v| v.as_str()).unwrap_or("未知错误");
+        let msg = json_val
+            .get("message")
+            .and_then(|v| v.as_str())
+            .unwrap_or("未知错误");
         return Err(format!("123云盘获取直链失败：{msg}"));
     }
 
@@ -318,7 +344,8 @@ mod tests {
         assert_eq!(p1.host, "www.123pan.com");
         assert_eq!(p1.share_key, "Abcd-Efgh");
 
-        let p2 = parse_pan123_url("https://1683912.share.123pan.cn/123pan/z3h9-rtFzh?notoken=1").unwrap();
+        let p2 = parse_pan123_url("https://1683912.share.123pan.cn/123pan/z3h9-rtFzh?notoken=1")
+            .unwrap();
         assert_eq!(p2.host, "1683912.share.123pan.cn");
         assert_eq!(p2.share_key, "z3h9-rtFzh");
     }

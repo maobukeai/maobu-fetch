@@ -98,16 +98,34 @@ impl MediaPlatform {
     /// 之间自动互查，保证短链和替代域名能命中主域名的凭证。
     pub fn candidate_domains(&self) -> &'static [&'static str] {
         match self {
-            Self::Douyin => &["douyin.com", "iesdouyin.com", "douyinvod.com", "v.douyin.com", "amemv.com"],
+            Self::Douyin => &[
+                "douyin.com",
+                "iesdouyin.com",
+                "douyinvod.com",
+                "v.douyin.com",
+                "amemv.com",
+            ],
             Self::TikTok => &["tiktok.com", "vm.tiktok.com", "vt.tiktok.com"],
             Self::Twitter => &["twitter.com", "x.com", "t.co", "mobile.twitter.com"],
-            Self::YouTube => &["youtube.com", "youtu.be", "m.youtube.com", "music.youtube.com"],
+            Self::YouTube => &[
+                "youtube.com",
+                "youtu.be",
+                "m.youtube.com",
+                "music.youtube.com",
+            ],
             Self::Bilibili => &["bilibili.com", "b23.tv", "m.bilibili.com", "t.bilibili.com"],
             Self::Weibo => &["weibo.com", "weibo.cn", "m.weibo.cn", "t.cn"],
             Self::PikPak => &["mypikpak.com", "mypikpak.net"],
             Self::Quark => &["pan.quark.cn", "drive.quark.cn", "quark.cn"],
             Self::BaiduPan => &["pan.baidu.com", "yun.baidu.com", "baidu.com"],
-            Self::Lanzou => &["lanzoux.com", "lanzoui.com", "lanzouy.com", "lanzouv.com", "lanzoup.com", "lanzou.com"],
+            Self::Lanzou => &[
+                "lanzoux.com",
+                "lanzoui.com",
+                "lanzouy.com",
+                "lanzouv.com",
+                "lanzoup.com",
+                "lanzou.com",
+            ],
             Self::Pan123 => &["123pan.com", "123pan.cn", "123684.com"],
             Self::Unknown => &[],
         }
@@ -576,7 +594,9 @@ pub async fn fetch_douyin_live_detail_with_credentials(
         } else {
             initial_cookie.clone()
         };
-        if let Ok(webcast_val) = fetch_douyin_webcast_room_enter(&client, room_id, ua, ref_hdr, &webcast_cookie).await {
+        if let Ok(webcast_val) =
+            fetch_douyin_webcast_room_enter(&client, room_id, ua, ref_hdr, &webcast_cookie).await
+        {
             if let Some(f_url) = webcast_val.get("flv_url").and_then(|v| v.as_str()) {
                 flv_url = Some(f_url.to_string());
             }
@@ -584,13 +604,22 @@ pub async fn fetch_douyin_live_detail_with_credentials(
                 hls_url = Some(h_url.to_string());
             }
             if title.is_none() {
-                title = webcast_val.get("title").and_then(|v| v.as_str()).map(|s| s.to_string());
+                title = webcast_val
+                    .get("title")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
             }
             if nickname.is_none() {
-                nickname = webcast_val.get("nickname").and_then(|v| v.as_str()).map(|s| s.to_string());
+                nickname = webcast_val
+                    .get("nickname")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
             }
             if status.is_none() {
-                status = webcast_val.get("status").and_then(|v| v.as_u64()).map(|u| u as u32);
+                status = webcast_val
+                    .get("status")
+                    .and_then(|v| v.as_u64())
+                    .map(|u| u as u32);
             }
         }
     }
@@ -647,7 +676,10 @@ async fn fetch_douyin_webcast_room_enter(
         .ok_or_else(|| "Webcast API 未返回有效房间数据".to_string())?;
 
     let title = room_data.get("title").and_then(|v| v.as_str());
-    let status = room_data.get("status").and_then(|v| v.as_u64()).map(|u| u as u32);
+    let status = room_data
+        .get("status")
+        .and_then(|v| v.as_u64())
+        .map(|u| u as u32);
     let nickname = room_data
         .get("owner")
         .and_then(|o| o.get("nickname"))
@@ -665,10 +697,20 @@ async fn fetch_douyin_webcast_room_enter(
     if let Some(stream_data_str) = stream_url_obj.and_then(|v| v.as_str()) {
         if let Ok(parsed_stream) = serde_json::from_str::<serde_json::Value>(stream_data_str) {
             if let Some(data_node) = parsed_stream.get("data") {
-                if let Some(hd) = data_node.get("hd").or_else(|| data_node.get("origin")).or_else(|| data_node.get("sd")) {
+                if let Some(hd) = data_node
+                    .get("hd")
+                    .or_else(|| data_node.get("origin"))
+                    .or_else(|| data_node.get("sd"))
+                {
                     if let Some(main) = hd.get("main") {
-                        flv_url = main.get("flv").and_then(|v| v.as_str()).map(|s| s.to_string());
-                        hls_url = main.get("hls").and_then(|v| v.as_str()).map(|s| s.to_string());
+                        flv_url = main
+                            .get("flv")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string());
+                        hls_url = main
+                            .get("hls")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string());
                     }
                 }
             }
@@ -689,23 +731,18 @@ async fn fetch_douyin_webcast_room_enter(
 /// `field` 参数为 `"flv_pull_url"` 或 `"hls_pull_url_map"`。
 /// 优先提取 `FULL_HD1` 画质，回退到第一个可用画质。
 fn extract_stream_url_from_html(unescaped: &str, field: &str) -> Option<String> {
-    let pattern = format!(
-        r#""{}"\s*:\s*\{{([^}}]+)\}}"#,
-        regex::escape(field)
-    );
+    let pattern = format!(r#""{}"\s*:\s*\{{([^}}]+)\}}"#, regex::escape(field));
     let re = regex::Regex::new(&pattern).ok()?;
     // 取最后一个匹配（跳过模板/预渲染数据，实际数据通常在末尾）
     let last_match = re.find_iter(unescaped).last()?;
     let block = last_match.as_str();
     // 优先提取 FULL_HD1
-    let full_hd_re =
-        regex::Regex::new(r#""FULL_HD1"\s*:\s*"(https?://[^"]+)""#).ok()?;
+    let full_hd_re = regex::Regex::new(r#""FULL_HD1"\s*:\s*"(https?://[^"]+)""#).ok()?;
     if let Some(caps) = full_hd_re.captures(block) {
         return Some(caps.get(1)?.as_str().to_string());
     }
     // 回退到 ORIGIN
-    let origin_re =
-        regex::Regex::new(r#""ORIGIN"\s*:\s*"(https?://[^"]+)""#).ok()?;
+    let origin_re = regex::Regex::new(r#""ORIGIN"\s*:\s*"(https?://[^"]+)""#).ok()?;
     if let Some(caps) = origin_re.captures(block) {
         return Some(caps.get(1)?.as_str().to_string());
     }
@@ -739,11 +776,32 @@ fn extract_live_title_near_stream_url(unescaped: &str) -> Option<String> {
 /// 判断标题是否为页面模板标题（非直播间标题）。
 fn is_template_title(title: &str) -> bool {
     const TEMPLATE_PREFIXES: &[&str] = &[
-        "广告投放", "用户服务", "隐私政策", "账号找回", "联系我们", "加入我们",
-        "营业执照", "友情链接", "站点地图", "下载抖音", "抖音电商", "网络谣言",
-        "网上有害", "违法和不良", "算法推荐", "体育饭圈", "京ICP", "京公网",
-        "广播电视", "增值电信", "网络文化", "互联网", "药品医疗", "PC ",
-        "Scan QR", "抖音直播电脑版",
+        "广告投放",
+        "用户服务",
+        "隐私政策",
+        "账号找回",
+        "联系我们",
+        "加入我们",
+        "营业执照",
+        "友情链接",
+        "站点地图",
+        "下载抖音",
+        "抖音电商",
+        "网络谣言",
+        "网上有害",
+        "违法和不良",
+        "算法推荐",
+        "体育饭圈",
+        "京ICP",
+        "京公网",
+        "广播电视",
+        "增值电信",
+        "网络文化",
+        "互联网",
+        "药品医疗",
+        "PC ",
+        "Scan QR",
+        "抖音直播电脑版",
     ];
     TEMPLATE_PREFIXES
         .iter()
@@ -776,10 +834,7 @@ fn extract_live_status(unescaped: &str) -> Option<u32> {
     let status_re = regex::Regex::new(r#""status"\s*:\s*(\d+)"#).ok()?;
     let candidates: Vec<u32> = status_re
         .captures_iter(unescaped)
-        .filter_map(|caps| {
-            caps.get(1)
-                .and_then(|m| m.as_str().parse::<u32>().ok())
-        })
+        .filter_map(|caps| caps.get(1).and_then(|m| m.as_str().parse::<u32>().ok()))
         .collect();
     if candidates.is_empty() {
         return None;
@@ -993,8 +1048,12 @@ pub async fn fetch_douyin_aweme_detail_with_credentials(
         .build()
         .map_err(|e| format!("抖音解析客户端构建失败：{e}"))?;
 
-    let effective_ua = user_agent.filter(|u| !u.trim().is_empty()).unwrap_or(DOUYIN_BROWSER_UA);
-    let effective_ref = referer.filter(|r| !r.trim().is_empty()).unwrap_or("https://www.douyin.com/");
+    let effective_ua = user_agent
+        .filter(|u| !u.trim().is_empty())
+        .unwrap_or(DOUYIN_BROWSER_UA);
+    let effective_ref = referer
+        .filter(|r| !r.trim().is_empty())
+        .unwrap_or("https://www.douyin.com/");
     let effective_cookie = match cookie.filter(|c| !c.trim().is_empty()) {
         Some(c) => {
             if c.contains("ttwid=") {
@@ -1028,8 +1087,8 @@ pub async fn fetch_douyin_aweme_detail_with_credentials(
     if body.is_empty() {
         return Err("抖音解析失败：服务端返回空响应（ttwid 可能已失效）".into());
     }
-    let value: serde_json::Value = serde_json::from_slice(&body)
-        .map_err(|e| format!("抖音解析 JSON 解析失败：{e}"))?;
+    let value: serde_json::Value =
+        serde_json::from_slice(&body).map_err(|e| format!("抖音解析 JSON 解析失败：{e}"))?;
     // 抖音 API 错误响应：{"status_code": 11110, "status_msg": "encrypt_data_miss"}
     let status_code = value
         .get("status_code")
@@ -1068,11 +1127,12 @@ pub async fn fetch_douyin_aweme_detail_with_credentials(
 /// - 图集 ext 优先 `jpeg` 而非 `webp`（兼容性更好，前端预览与下载均支持）
 ///   实际 URL 中 `:q75.webp` 后缀由抖音 CDN 处理，扩展名仅作格式识别用
 pub fn convert_douyin_aweme_to_yt_dlp_json(detail: &serde_json::Value) -> serde_json::Value {
-    let aweme = detail
-        .get("aweme_detail")
-        .unwrap_or(detail); // 容错：直接传入 aweme_detail 子对象也支持
+    let aweme = detail.get("aweme_detail").unwrap_or(detail); // 容错：直接传入 aweme_detail 子对象也支持
 
-    let desc = aweme.get("desc").and_then(serde_json::Value::as_str).unwrap_or("");
+    let desc = aweme
+        .get("desc")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("");
     let author = aweme.get("author");
     let nickname = author
         .and_then(|a| a.get("nickname"))
@@ -1100,7 +1160,11 @@ pub fn convert_douyin_aweme_to_yt_dlp_json(detail: &serde_json::Value) -> serde_
         .and_then(|v| v.get("duration"))
         .and_then(serde_json::Value::as_u64)
         .unwrap_or(0);
-    let duration_sec = if duration_ms > 0 { duration_ms as f64 / 1000.0 } else { 0.0 };
+    let duration_sec = if duration_ms > 0 {
+        duration_ms as f64 / 1000.0
+    } else {
+        0.0
+    };
 
     // 图集：images[] 数组
     let images: Vec<&serde_json::Value> = aweme
@@ -1161,12 +1225,8 @@ pub fn convert_douyin_aweme_to_yt_dlp_json(detail: &serde_json::Value) -> serde_
             .and_then(serde_json::Value::as_str)
             .unwrap_or("");
         if !video_url.is_empty() && duration_sec > 0.0 {
-            let width = video_obj
-                .get("width")
-                .and_then(serde_json::Value::as_u64);
-            let height = video_obj
-                .get("height")
-                .and_then(serde_json::Value::as_u64);
+            let width = video_obj.get("width").and_then(serde_json::Value::as_u64);
+            let height = video_obj.get("height").and_then(serde_json::Value::as_u64);
             formats.push(serde_json::json!({
                 "format_id": "play-0",
                 "format_note": "原片",
@@ -1363,13 +1423,19 @@ pub async fn fetch_twitter_tweet_detail_with_credentials(
         .header(reqwest::header::USER_AGENT, effective_ua)
         .header(reqwest::header::REFERER, effective_ref)
         .header(reqwest::header::ACCEPT, "application/json, text/plain, */*")
-        .header(reqwest::header::ACCEPT_LANGUAGE, "en-US,en;q=0.9,zh-CN;q=0.8");
+        .header(
+            reqwest::header::ACCEPT_LANGUAGE,
+            "en-US,en;q=0.9,zh-CN;q=0.8",
+        );
 
     if let Some(c) = cookie.filter(|c| !c.trim().is_empty()) {
         req = req.header(reqwest::header::COOKIE, c);
     }
 
-    let response = req.send().await.map_err(|e| format!("Twitter API 请求失败：{e}"))?;
+    let response = req
+        .send()
+        .await
+        .map_err(|e| format!("Twitter API 请求失败：{e}"))?;
     let status = response.status();
     if status == reqwest::StatusCode::NOT_FOUND {
         return Err("Twitter/X 推文不存在或已被删除".into());
@@ -1377,12 +1443,19 @@ pub async fn fetch_twitter_tweet_detail_with_credentials(
     if !status.is_success() {
         return Err(format!("Twitter API 响应失败：HTTP {status}"));
     }
-    let body = response.bytes().await.map_err(|e| format!("Twitter API 读取响应失败：{e}"))?;
+    let body = response
+        .bytes()
+        .await
+        .map_err(|e| format!("Twitter API 读取响应失败：{e}"))?;
     if body.is_empty() {
         return Err("Twitter API 返回空响应".into());
     }
-    let value: serde_json::Value = serde_json::from_slice(&body).map_err(|e| format!("Twitter API JSON 解析失败：{e}"))?;
-    if value.get("text").is_none() && value.get("mediaDetails").is_none() && value.get("video").is_none() {
+    let value: serde_json::Value =
+        serde_json::from_slice(&body).map_err(|e| format!("Twitter API JSON 解析失败：{e}"))?;
+    if value.get("text").is_none()
+        && value.get("mediaDetails").is_none()
+        && value.get("video").is_none()
+    {
         return Err("Twitter API 响应缺少推文核心字段".into());
     }
     Ok(value)
@@ -1433,11 +1506,14 @@ pub fn convert_twitter_tweet_to_yt_dlp_json(detail: &serde_json::Value) -> serde
                 if let Some(variants) = video_info.get("variants").and_then(Value::as_array) {
                     let mut mp4_list: Vec<&Value> = variants
                         .iter()
-                        .filter(|v| v.get("content_type").and_then(Value::as_str) == Some("video/mp4"))
+                        .filter(|v| {
+                            v.get("content_type").and_then(Value::as_str) == Some("video/mp4")
+                        })
                         .collect();
 
                     static RES_RE: OnceLock<Regex> = OnceLock::new();
-                    let res_re = RES_RE.get_or_init(|| Regex::new(r"/(\d{3,4})x(\d{3,4})/").unwrap());
+                    let res_re =
+                        RES_RE.get_or_init(|| Regex::new(r"/(\d{3,4})x(\d{3,4})/").unwrap());
 
                     mp4_list.sort_by(|a, b| {
                         let br_a = a.get("bitrate").and_then(Value::as_u64).unwrap_or(0);
@@ -1481,9 +1557,15 @@ pub fn convert_twitter_tweet_to_yt_dlp_json(detail: &serde_json::Value) -> serde
                             "format_note": format_note,
                             "protocol": "https"
                         });
-                        if let Some(w) = width { fmt["width"] = serde_json::Value::from(w); }
-                        if let Some(h) = height { fmt["height"] = serde_json::Value::from(h); }
-                        if let Some(b) = bitrate { fmt["tbr"] = serde_json::Value::from(b / 1000); }
+                        if let Some(w) = width {
+                            fmt["width"] = serde_json::Value::from(w);
+                        }
+                        if let Some(h) = height {
+                            fmt["height"] = serde_json::Value::from(h);
+                        }
+                        if let Some(b) = bitrate {
+                            fmt["tbr"] = serde_json::Value::from(b / 1000);
+                        }
 
                         formats.push(fmt);
                     }
@@ -1496,12 +1578,22 @@ pub fn convert_twitter_tweet_to_yt_dlp_json(detail: &serde_json::Value) -> serde
                 let width = media
                     .get("original_info")
                     .and_then(|info| info.get("width"))
-                    .or_else(|| media.get("sizes").and_then(|s| s.get("large")).and_then(|l| l.get("w")))
+                    .or_else(|| {
+                        media
+                            .get("sizes")
+                            .and_then(|s| s.get("large"))
+                            .and_then(|l| l.get("w"))
+                    })
                     .and_then(Value::as_u64);
                 let height = media
                     .get("original_info")
                     .and_then(|info| info.get("height"))
-                    .or_else(|| media.get("sizes").and_then(|s| s.get("large")).and_then(|l| l.get("h")))
+                    .or_else(|| {
+                        media
+                            .get("sizes")
+                            .and_then(|s| s.get("large"))
+                            .and_then(|l| l.get("h"))
+                    })
                     .and_then(Value::as_u64);
 
                 let ext = if orig_url.contains("format=png") || media_url.ends_with(".png") {
@@ -1525,8 +1617,12 @@ pub fn convert_twitter_tweet_to_yt_dlp_json(detail: &serde_json::Value) -> serde
                     "vcodec": "none",
                     "acodec": "none"
                 });
-                if let Some(w) = width { fmt["width"] = serde_json::Value::from(w); }
-                if let Some(h) = height { fmt["height"] = serde_json::Value::from(h); }
+                if let Some(w) = width {
+                    fmt["width"] = serde_json::Value::from(w);
+                }
+                if let Some(h) = height {
+                    fmt["height"] = serde_json::Value::from(h);
+                }
                 formats.push(fmt);
             }
         }
@@ -1564,8 +1660,12 @@ pub fn convert_twitter_tweet_to_yt_dlp_json(detail: &serde_json::Value) -> serde
                     "vcodec": "none",
                     "acodec": "none"
                 });
-                if let Some(w) = width { fmt["width"] = serde_json::Value::from(w); }
-                if let Some(h) = height { fmt["height"] = serde_json::Value::from(h); }
+                if let Some(w) = width {
+                    fmt["width"] = serde_json::Value::from(w);
+                }
+                if let Some(h) = height {
+                    fmt["height"] = serde_json::Value::from(h);
+                }
                 formats.push(fmt);
             }
         }
@@ -1585,8 +1685,6 @@ pub fn convert_twitter_tweet_to_yt_dlp_json(detail: &serde_json::Value) -> serde
         "_is_twitter_gallery": is_gallery,
     })
 }
-
-
 
 /// 检测 URL 是否为 Twitter Spaces 音频（Task 39.1 / 39.4）。
 ///
@@ -2275,16 +2373,30 @@ pub async fn check_media_credential(
     }
 
     let default_ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
-    let effective_ua = if !ua_clean.is_empty() { ua_clean } else { default_ua };
+    let effective_ua = if !ua_clean.is_empty() {
+        ua_clean
+    } else {
+        default_ua
+    };
 
     let platform = detect_platform(&format!("https://{}", domain_clean));
 
     match platform {
-        MediaPlatform::Bilibili => check_bilibili_credential(domain, cookie_clean, referer_clean, effective_ua, now).await,
-        MediaPlatform::Douyin => check_douyin_credential(domain, cookie_clean, referer_clean, effective_ua, now).await,
-        MediaPlatform::Twitter => check_twitter_credential(domain, cookie_clean, referer_clean, effective_ua, now).await,
-        MediaPlatform::YouTube => check_youtube_credential(domain, cookie_clean, referer_clean, effective_ua, now).await,
-        MediaPlatform::BaiduPan => check_baidupan_credential(domain, cookie_clean, referer_clean, effective_ua, now).await,
+        MediaPlatform::Bilibili => {
+            check_bilibili_credential(domain, cookie_clean, referer_clean, effective_ua, now).await
+        }
+        MediaPlatform::Douyin => {
+            check_douyin_credential(domain, cookie_clean, referer_clean, effective_ua, now).await
+        }
+        MediaPlatform::Twitter => {
+            check_twitter_credential(domain, cookie_clean, referer_clean, effective_ua, now).await
+        }
+        MediaPlatform::YouTube => {
+            check_youtube_credential(domain, cookie_clean, referer_clean, effective_ua, now).await
+        }
+        MediaPlatform::BaiduPan => {
+            check_baidupan_credential(domain, cookie_clean, referer_clean, effective_ua, now).await
+        }
         _ => check_generic_credential(domain, cookie_clean, referer_clean, effective_ua, now).await,
     }
 }
@@ -2383,7 +2495,11 @@ async fn check_baidupan_credential(
         let total_gb = total as f64 / 1024.0 / 1024.0 / 1024.0;
         let used_gb = used as f64 / 1024.0 / 1024.0 / 1024.0;
 
-        let vip_label = if is_vip { " (VIP/SVIP 用户)" } else { " (普通用户)" };
+        let vip_label = if is_vip {
+            " (VIP/SVIP 用户)"
+        } else {
+            " (普通用户)"
+        };
 
         Ok(MediaCredentialCheckResult {
             domain: domain.to_string(),
@@ -2421,19 +2537,27 @@ async fn check_bilibili_credential(
     let url = "https://api.bilibili.com/x/web-interface/nav";
     let client = match reqwest::Client::builder()
         .timeout(Duration::from_secs(10))
-        .build() {
-            Ok(c) => c,
-            Err(e) => return Ok(MediaCredentialCheckResult {
+        .build()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            return Ok(MediaCredentialCheckResult {
                 domain: domain.to_string(),
                 valid: false,
                 message: format!("构建客户端失败：{e}"),
                 tested_at: now,
-            }),
-        };
+            })
+        }
+    };
 
-    let effective_ref = if !referer.is_empty() { referer } else { "https://www.bilibili.com/" };
+    let effective_ref = if !referer.is_empty() {
+        referer
+    } else {
+        "https://www.bilibili.com/"
+    };
 
-    let mut req = client.get(url)
+    let mut req = client
+        .get(url)
         .header(reqwest::header::USER_AGENT, ua)
         .header(reqwest::header::REFERER, effective_ref);
 
@@ -2443,12 +2567,14 @@ async fn check_bilibili_credential(
 
     let res = match req.send().await {
         Ok(r) => r,
-        Err(e) => return Ok(MediaCredentialCheckResult {
-            domain: domain.to_string(),
-            valid: false,
-            message: format!("连接 Bilibili 接口失败：{e}"),
-            tested_at: now,
-        }),
+        Err(e) => {
+            return Ok(MediaCredentialCheckResult {
+                domain: domain.to_string(),
+                valid: false,
+                message: format!("连接 Bilibili 接口失败：{e}"),
+                tested_at: now,
+            })
+        }
     };
 
     if !res.status().is_success() {
@@ -2462,27 +2588,34 @@ async fn check_bilibili_credential(
 
     let bytes = match res.bytes().await {
         Ok(b) => b,
-        Err(_) => return Ok(MediaCredentialCheckResult {
-            domain: domain.to_string(),
-            valid: false,
-            message: "读取 Bilibili 响应内容失败".to_string(),
-            tested_at: now,
-        }),
+        Err(_) => {
+            return Ok(MediaCredentialCheckResult {
+                domain: domain.to_string(),
+                valid: false,
+                message: "读取 Bilibili 响应内容失败".to_string(),
+                tested_at: now,
+            })
+        }
     };
 
     let json: serde_json::Value = match serde_json::from_slice(&bytes) {
         Ok(j) => j,
-        Err(_) => return Ok(MediaCredentialCheckResult {
-            domain: domain.to_string(),
-            valid: false,
-            message: "Bilibili 响应格式非 JSON".to_string(),
-            tested_at: now,
-        }),
+        Err(_) => {
+            return Ok(MediaCredentialCheckResult {
+                domain: domain.to_string(),
+                valid: false,
+                message: "Bilibili 响应格式非 JSON".to_string(),
+                tested_at: now,
+            })
+        }
     };
 
     let code = json.get("code").and_then(|v| v.as_i64()).unwrap_or(-1);
     if code != 0 {
-        let msg = json.get("message").and_then(|v| v.as_str()).unwrap_or("校验未通过");
+        let msg = json
+            .get("message")
+            .and_then(|v| v.as_str())
+            .unwrap_or("校验未通过");
         return Ok(MediaCredentialCheckResult {
             domain: domain.to_string(),
             valid: false,
@@ -2491,10 +2624,19 @@ async fn check_bilibili_credential(
         });
     }
 
-    let is_login = json.pointer("/data/isLogin").and_then(|v| v.as_bool()).unwrap_or(false);
+    let is_login = json
+        .pointer("/data/isLogin")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     if is_login {
-        let uname = json.pointer("/data/uname").and_then(|v| v.as_str()).unwrap_or("用户");
-        let vip_status = json.pointer("/data/vipStatus").and_then(|v| v.as_i64()).unwrap_or(0);
+        let uname = json
+            .pointer("/data/uname")
+            .and_then(|v| v.as_str())
+            .unwrap_or("用户");
+        let vip_status = json
+            .pointer("/data/vipStatus")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0);
         let is_vip = vip_status == 1;
 
         let msg = if is_vip {
@@ -2529,19 +2671,27 @@ async fn check_douyin_credential(
     let client = match reqwest::Client::builder()
         .timeout(Duration::from_secs(10))
         .redirect(reqwest::redirect::Policy::none())
-        .build() {
-            Ok(c) => c,
-            Err(e) => return Ok(MediaCredentialCheckResult {
+        .build()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            return Ok(MediaCredentialCheckResult {
                 domain: domain.to_string(),
                 valid: false,
                 message: format!("构建客户端失败：{e}"),
                 tested_at: now,
-            }),
-        };
+            })
+        }
+    };
 
-    let effective_ref = if !referer.is_empty() { referer } else { "https://www.douyin.com/" };
+    let effective_ref = if !referer.is_empty() {
+        referer
+    } else {
+        "https://www.douyin.com/"
+    };
 
-    let mut req = client.get("https://www.douyin.com/passport/web/user/info/")
+    let mut req = client
+        .get("https://www.douyin.com/passport/web/user/info/")
         .header(reqwest::header::USER_AGENT, ua)
         .header(reqwest::header::REFERER, effective_ref)
         .header(reqwest::header::ACCEPT, "application/json, text/plain, */*");
@@ -2555,7 +2705,8 @@ async fn check_douyin_credential(
             if let Ok(bytes) = res.bytes().await {
                 if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&bytes) {
                     if let Some(data) = json.get("data") {
-                        let nickname = data.get("nickname")
+                        let nickname = data
+                            .get("nickname")
                             .or_else(|| data.get("screen_name"))
                             .and_then(|v| v.as_str());
                         if let Some(nick) = nickname {
@@ -2574,7 +2725,9 @@ async fn check_douyin_credential(
         }
     }
 
-    let has_session = cookie.contains("sessionid") || cookie.contains("passport_csrf_token") || cookie.contains("ttwid");
+    let has_session = cookie.contains("sessionid")
+        || cookie.contains("passport_csrf_token")
+        || cookie.contains("ttwid");
     if has_session {
         Ok(MediaCredentialCheckResult {
             domain: domain.to_string(),
@@ -2601,17 +2754,24 @@ async fn check_twitter_credential(
 ) -> Result<MediaCredentialCheckResult, String> {
     let client = match reqwest::Client::builder()
         .timeout(Duration::from_secs(10))
-        .build() {
-            Ok(c) => c,
-            Err(e) => return Ok(MediaCredentialCheckResult {
+        .build()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            return Ok(MediaCredentialCheckResult {
                 domain: domain.to_string(),
                 valid: false,
                 message: format!("构建客户端失败：{e}"),
                 tested_at: now,
-            }),
-        };
+            })
+        }
+    };
 
-    let effective_ref = if !referer.is_empty() { referer } else { "https://x.com/" };
+    let effective_ref = if !referer.is_empty() {
+        referer
+    } else {
+        "https://x.com/"
+    };
 
     let ct0 = crate::media_cookies::parse_cookie_header(cookie)
         .into_iter()
@@ -2621,7 +2781,8 @@ async fn check_twitter_credential(
     let url = "https://x.com/i/api/1.1/account/verify_credentials.json";
     let bearer = "Bearer AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA";
 
-    let mut req = client.get(url)
+    let mut req = client
+        .get(url)
         .header(reqwest::header::USER_AGENT, ua)
         .header(reqwest::header::REFERER, effective_ref)
         .header(reqwest::header::AUTHORIZATION, bearer);
@@ -2638,12 +2799,18 @@ async fn check_twitter_credential(
             if res.status().is_success() {
                 if let Ok(bytes) = res.bytes().await {
                     if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&bytes) {
-                        if let Some(screen_name) = json.get("screen_name").and_then(|v| v.as_str()) {
-                            let name = json.get("name").and_then(|v| v.as_str()).unwrap_or(screen_name);
+                        if let Some(screen_name) = json.get("screen_name").and_then(|v| v.as_str())
+                        {
+                            let name = json
+                                .get("name")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or(screen_name);
                             return Ok(MediaCredentialCheckResult {
                                 domain: domain.to_string(),
                                 valid: true,
-                                message: format!("凭证有效：已登录 Twitter/X 账号 @{screen_name} ({name})"),
+                                message: format!(
+                                    "凭证有效：已登录 Twitter/X 账号 @{screen_name} ({name})"
+                                ),
                                 tested_at: now,
                             });
                         }
@@ -2675,7 +2842,9 @@ async fn check_twitter_credential(
                     Ok(MediaCredentialCheckResult {
                         domain: domain.to_string(),
                         valid: false,
-                        message: format!("Twitter/X 凭证校验失败：HTTP {status} (auth_token 可能失效)"),
+                        message: format!(
+                            "Twitter/X 凭证校验失败：HTTP {status} (auth_token 可能失效)"
+                        ),
                         tested_at: now,
                     })
                 }
@@ -2699,19 +2868,27 @@ async fn check_youtube_credential(
 ) -> Result<MediaCredentialCheckResult, String> {
     let client = match reqwest::Client::builder()
         .timeout(Duration::from_secs(10))
-        .build() {
-            Ok(c) => c,
-            Err(e) => return Ok(MediaCredentialCheckResult {
+        .build()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            return Ok(MediaCredentialCheckResult {
                 domain: domain.to_string(),
                 valid: false,
                 message: format!("构建客户端失败：{e}"),
                 tested_at: now,
-            }),
-        };
+            })
+        }
+    };
 
-    let effective_ref = if !referer.is_empty() { referer } else { "https://www.youtube.com/" };
+    let effective_ref = if !referer.is_empty() {
+        referer
+    } else {
+        "https://www.youtube.com/"
+    };
 
-    let mut req = client.get("https://www.youtube.com/")
+    let mut req = client
+        .get("https://www.youtube.com/")
         .header(reqwest::header::USER_AGENT, ua)
         .header(reqwest::header::REFERER, effective_ref);
 
@@ -2730,7 +2907,10 @@ async fn check_youtube_credential(
                         message: "凭证有效：已检测到 YouTube 登录会话".to_string(),
                         tested_at: now,
                     })
-                } else if cookie.contains("LOGIN_INFO") || cookie.contains("SID") || cookie.contains("SAPISID") {
+                } else if cookie.contains("LOGIN_INFO")
+                    || cookie.contains("SID")
+                    || cookie.contains("SAPISID")
+                {
                     Ok(MediaCredentialCheckResult {
                         domain: domain.to_string(),
                         valid: true,
@@ -2741,7 +2921,8 @@ async fn check_youtube_credential(
                     Ok(MediaCredentialCheckResult {
                         domain: domain.to_string(),
                         valid: false,
-                        message: "YouTube 未识别到登录账号 (Cookie 中缺少 LOGIN_INFO / SID)".to_string(),
+                        message: "YouTube 未识别到登录账号 (Cookie 中缺少 LOGIN_INFO / SID)"
+                            .to_string(),
                         tested_at: now,
                     })
                 }
@@ -2772,15 +2953,18 @@ async fn check_generic_credential(
 ) -> Result<MediaCredentialCheckResult, String> {
     let client = match reqwest::Client::builder()
         .timeout(Duration::from_secs(10))
-        .build() {
-            Ok(c) => c,
-            Err(e) => return Ok(MediaCredentialCheckResult {
+        .build()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            return Ok(MediaCredentialCheckResult {
                 domain: domain.to_string(),
                 valid: false,
                 message: format!("构建客户端失败：{e}"),
                 tested_at: now,
-            }),
-        };
+            })
+        }
+    };
 
     let target_url = if !referer.is_empty() {
         referer.to_string()
@@ -2788,7 +2972,9 @@ async fn check_generic_credential(
         format!("https://{domain}/")
     };
 
-    let mut req = client.get(&target_url).header(reqwest::header::USER_AGENT, ua);
+    let mut req = client
+        .get(&target_url)
+        .header(reqwest::header::USER_AGENT, ua);
     if !cookie.is_empty() {
         req = req.header(reqwest::header::COOKIE, cookie);
     }
@@ -2924,7 +3110,10 @@ mod tests {
     #[test]
     fn extract_douyin_aweme_id_rejects_short_id() {
         // 少于 10 位数字不匹配（避免误识别普通路径段）
-        assert_eq!(extract_douyin_aweme_id("https://www.douyin.com/note/12345"), None);
+        assert_eq!(
+            extract_douyin_aweme_id("https://www.douyin.com/note/12345"),
+            None
+        );
     }
 
     #[test]
@@ -2993,7 +3182,10 @@ mod tests {
             json.get("extractor_key").and_then(Value::as_str),
             Some("Douyin")
         );
-        assert_eq!(json.get("extractor").and_then(Value::as_str), Some("douyin"));
+        assert_eq!(
+            json.get("extractor").and_then(Value::as_str),
+            Some("douyin")
+        );
         // 作者信息（命名模板 {author}_{title}_{date} 用到）
         assert_eq!(
             json.get("uploader").and_then(Value::as_str),
@@ -3020,7 +3212,11 @@ mod tests {
             .get("formats")
             .and_then(Value::as_array)
             .expect("formats 必须存在");
-        assert_eq!(formats.len(), 2, "图集应生成 2 个图片格式项，不包含 BGM 视频项");
+        assert_eq!(
+            formats.len(),
+            2,
+            "图集应生成 2 个图片格式项，不包含 BGM 视频项"
+        );
         assert_eq!(
             formats[0].get("format_id").and_then(Value::as_str),
             Some("image-0")
@@ -3038,19 +3234,13 @@ mod tests {
             formats[0].get("url").and_then(Value::as_str),
             Some("https://p3-pc-sign.douyinpic.com/img0.webp")
         );
-        assert_eq!(
-            formats[0].get("width").and_then(Value::as_u64),
-            Some(1080)
-        );
-        assert_eq!(
-            formats[0].get("height").and_then(Value::as_u64),
-            Some(1440)
-        );
+        assert_eq!(formats[0].get("width").and_then(Value::as_u64), Some(1080));
+        assert_eq!(formats[0].get("height").and_then(Value::as_u64), Some(1440));
         // 视频项不应出现（图集 BGM 时长为 0，跳过视频格式）
         assert!(
-            !formats.iter().any(|f| {
-                f.get("format_id").and_then(Value::as_str) == Some("play-0")
-            }),
+            !formats
+                .iter()
+                .any(|f| { f.get("format_id").and_then(Value::as_str) == Some("play-0") }),
             "图集 BGM（duration=0）不应生成视频格式项"
         );
     }
@@ -3101,18 +3291,9 @@ mod tests {
         // 字段缺失时使用安全默认值，不 panic（AGENTS.md §7）
         let detail = serde_json::json!({ "aweme_detail": {} });
         let json = convert_douyin_aweme_to_yt_dlp_json(&detail);
-        assert_eq!(
-            json.get("title").and_then(Value::as_str),
-            Some("抖音媒体")
-        );
-        assert_eq!(
-            json.get("uploader").and_then(Value::as_str),
-            Some("")
-        );
-        assert_eq!(
-            json.get("upload_date").and_then(Value::as_str),
-            Some("")
-        );
+        assert_eq!(json.get("title").and_then(Value::as_str), Some("抖音媒体"));
+        assert_eq!(json.get("uploader").and_then(Value::as_str), Some(""));
+        assert_eq!(json.get("upload_date").and_then(Value::as_str), Some(""));
         assert_eq!(json.get("duration").and_then(Value::as_f64), Some(0.0));
         assert!(json
             .get("formats")
@@ -3145,10 +3326,7 @@ mod tests {
             "author": { "nickname": "作者" }
         });
         let json = convert_douyin_aweme_to_yt_dlp_json(&aweme);
-        assert_eq!(
-            json.get("title").and_then(Value::as_str),
-            Some("容错测试")
-        );
+        assert_eq!(json.get("title").and_then(Value::as_str), Some("容错测试"));
     }
 
     // ---- days_to_ymd：unix 天数转年月日 ----
@@ -3464,11 +3642,16 @@ mod tests {
             json.get("live_status").and_then(serde_json::Value::as_str),
             Some("is_live")
         );
-        let formats = json.get("formats").and_then(serde_json::Value::as_array).unwrap();
+        let formats = json
+            .get("formats")
+            .and_then(serde_json::Value::as_array)
+            .unwrap();
         assert_eq!(formats.len(), 2);
         // FLV 优先（零依赖直连 HTTP 流）
         assert_eq!(
-            formats[0].get("format_id").and_then(serde_json::Value::as_str),
+            formats[0]
+                .get("format_id")
+                .and_then(serde_json::Value::as_str),
             Some("live-flv")
         );
         assert_eq!(
@@ -3496,7 +3679,10 @@ mod tests {
             json.get("live_status").and_then(serde_json::Value::as_str),
             Some("was_live")
         );
-        let formats = json.get("formats").and_then(serde_json::Value::as_array).unwrap();
+        let formats = json
+            .get("formats")
+            .and_then(serde_json::Value::as_array)
+            .unwrap();
         assert_eq!(formats.len(), 0);
     }
 
@@ -3511,10 +3697,15 @@ mod tests {
             "room_id": "456",
         });
         let json = convert_douyin_live_to_yt_dlp_json(&detail);
-        let formats = json.get("formats").and_then(serde_json::Value::as_array).unwrap();
+        let formats = json
+            .get("formats")
+            .and_then(serde_json::Value::as_array)
+            .unwrap();
         assert_eq!(formats.len(), 1);
         assert_eq!(
-            formats[0].get("format_id").and_then(serde_json::Value::as_str),
+            formats[0]
+                .get("format_id")
+                .and_then(serde_json::Value::as_str),
             Some("live-hls")
         );
     }
@@ -3535,10 +3726,7 @@ mod tests {
     fn extract_stream_url_from_html_fallback_to_origin() {
         let html = r#"{"stream_url":{"flv_pull_url":{"ORIGIN":"http://example.com/origin.flv"}}}"#;
         let url = extract_stream_url_from_html(html, "flv_pull_url");
-        assert_eq!(
-            url,
-            Some("http://example.com/origin.flv".to_string())
-        );
+        assert_eq!(url, Some("http://example.com/origin.flv".to_string()));
     }
 
     #[test]
@@ -3607,7 +3795,10 @@ mod tests {
     fn unescape_douyin_html_json_decodes_common_sequences() {
         let input = r#"http://example.com/live.flv?expire=abc\u0026sign=def\u0026t=x"#;
         let result = unescape_douyin_html_json(input);
-        assert_eq!(result, "http://example.com/live.flv?expire=abc&sign=def&t=x");
+        assert_eq!(
+            result,
+            "http://example.com/live.flv?expire=abc&sign=def&t=x"
+        );
     }
 
     // ---- format_douyin_filename：正常 ----
@@ -5110,10 +5301,14 @@ mod tests {
             Some("987654321")
         );
         assert_eq!(
-            extract_twitter_status_id("https://mobile.twitter.com/abc/status/1122334455").as_deref(),
+            extract_twitter_status_id("https://mobile.twitter.com/abc/status/1122334455")
+                .as_deref(),
             Some("1122334455")
         );
-        assert_eq!(extract_twitter_status_id("https://example.com/user/status/123"), None);
+        assert_eq!(
+            extract_twitter_status_id("https://example.com/user/status/123"),
+            None
+        );
     }
 
     #[test]
@@ -5138,7 +5333,10 @@ mod tests {
         assert_eq!(formats.len(), 2);
         // 应该按 bitrate 降序排列，首个为 1280x720 2176000
         assert_eq!(formats[0]["format_id"], "http-720");
-        assert_eq!(formats[0]["url"], "https://video.twimg.com/vid/avc1/1280x720/high.mp4");
+        assert_eq!(
+            formats[0]["url"],
+            "https://video.twimg.com/vid/avc1/1280x720/high.mp4"
+        );
         assert_eq!(formats[0]["width"], 1280);
         assert_eq!(formats[0]["height"], 720);
     }
@@ -5167,10 +5365,16 @@ mod tests {
         let formats = converted["formats"].as_array().unwrap();
         assert_eq!(formats.len(), 2);
         assert_eq!(formats[0]["format_id"], "image-1");
-        assert_eq!(formats[0]["url"], "https://pbs.twimg.com/media/F123456789.jpg?name=orig");
+        assert_eq!(
+            formats[0]["url"],
+            "https://pbs.twimg.com/media/F123456789.jpg?name=orig"
+        );
         assert_eq!(formats[0]["width"], 1920);
         assert_eq!(formats[0]["height"], 1080);
         assert_eq!(formats[1]["format_id"], "image-2");
-        assert_eq!(formats[1]["url"], "https://pbs.twimg.com/media/F987654321.jpg?name=orig");
+        assert_eq!(
+            formats[1]["url"],
+            "https://pbs.twimg.com/media/F987654321.jpg?name=orig"
+        );
     }
 }

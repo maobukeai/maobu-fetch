@@ -473,7 +473,10 @@ mod tests {
     #[test]
     fn local_minute_of_day_is_within_valid_range() {
         if let Some(minute) = local_minute_of_day() {
-            assert!(minute <= 1439, "minute-of-day must be 0..=1439, got {minute}");
+            assert!(
+                minute <= 1439,
+                "minute-of-day must be 0..=1439, got {minute}"
+            );
         }
     }
 

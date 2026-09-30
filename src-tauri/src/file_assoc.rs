@@ -148,8 +148,8 @@ pub fn set_file_associations(exts: Vec<String>, enable: bool) -> Result<(), Stri
         use winreg::enums::*;
         use winreg::RegKey;
 
-        let current_exe = std::env::current_exe()
-            .map_err(|e| format!("无法获取当前程序路径: {e}"))?;
+        let current_exe =
+            std::env::current_exe().map_err(|e| format!("无法获取当前程序路径: {e}"))?;
         let exe_path_str = current_exe.to_string_lossy();
 
         let hkcu = RegKey::predef(HKEY_CURRENT_USER);
@@ -241,7 +241,9 @@ pub fn set_file_associations(exts: Vec<String>, enable: bool) -> Result<(), Stri
                 }
 
                 // 同步写入 Explorer 缓存以加速 Windows 建议应用识别
-                if let Ok(explorer_exts) = hkcu.open_subkey("Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\FileExts") {
+                if let Ok(explorer_exts) = hkcu
+                    .open_subkey("Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\FileExts")
+                {
                     if let Ok((fext_key, _)) = explorer_exts.create_subkey(&dot_ext) {
                         if let Ok((f_ow, _)) = fext_key.create_subkey("OpenWithProgids") {
                             let _ = f_ow.set_value(target_prog_id, &"");
@@ -283,24 +285,38 @@ pub fn set_file_associations(exts: Vec<String>, enable: bool) -> Result<(), Stri
                 };
 
                 if let Ok(ext_key) = classes.open_subkey_with_flags(&dot_ext, KEY_WRITE) {
-                    if let Ok(open_with) = ext_key.open_subkey_with_flags("OpenWithProgids", KEY_WRITE) {
+                    if let Ok(open_with) =
+                        ext_key.open_subkey_with_flags("OpenWithProgids", KEY_WRITE)
+                    {
                         let _ = open_with.delete_value(target_prog_id);
                     }
                 }
 
-                if let Ok(explorer_exts) = hkcu.open_subkey_with_flags("Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\FileExts", KEY_WRITE) {
-                    if let Ok(fext_key) = explorer_exts.open_subkey_with_flags(&dot_ext, KEY_WRITE) {
-                        if let Ok(f_ow) = fext_key.open_subkey_with_flags("OpenWithProgids", KEY_WRITE) {
+                if let Ok(explorer_exts) = hkcu.open_subkey_with_flags(
+                    "Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\FileExts",
+                    KEY_WRITE,
+                ) {
+                    if let Ok(fext_key) = explorer_exts.open_subkey_with_flags(&dot_ext, KEY_WRITE)
+                    {
+                        if let Ok(f_ow) =
+                            fext_key.open_subkey_with_flags("OpenWithProgids", KEY_WRITE)
+                        {
                             let _ = f_ow.delete_value(target_prog_id);
                         }
                     }
                 }
 
-                if let Ok(caps_assoc) = hkcu.open_subkey_with_flags("Software\\MaobuFetch\\Capabilities\\FileAssociations", KEY_WRITE) {
+                if let Ok(caps_assoc) = hkcu.open_subkey_with_flags(
+                    "Software\\MaobuFetch\\Capabilities\\FileAssociations",
+                    KEY_WRITE,
+                ) {
                     let _ = caps_assoc.delete_value(&dot_ext);
                 }
 
-                if let Ok(supp_types) = classes.open_subkey_with_flags("Applications\\maobu-fetch.exe\\SupportedTypes", KEY_WRITE) {
+                if let Ok(supp_types) = classes.open_subkey_with_flags(
+                    "Applications\\maobu-fetch.exe\\SupportedTypes",
+                    KEY_WRITE,
+                ) {
                     let _ = supp_types.delete_value(&dot_ext);
                 }
             }
@@ -338,7 +354,12 @@ fn notify_shell_assoc_changed() {
     const SHCNE_ASSOCCHANGED: i32 = 0x08000000;
     const SHCNF_IDLIST: u32 = 0x0000;
     unsafe {
-        SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, std::ptr::null(), std::ptr::null());
+        SHChangeNotify(
+            SHCNE_ASSOCCHANGED,
+            SHCNF_IDLIST,
+            std::ptr::null(),
+            std::ptr::null(),
+        );
     }
 }
 
@@ -349,8 +370,8 @@ pub fn ensure_registered_applications() -> Result<(), String> {
         use winreg::enums::*;
         use winreg::RegKey;
 
-        let current_exe = std::env::current_exe()
-            .map_err(|e| format!("无法获取当前程序路径: {e}"))?;
+        let current_exe =
+            std::env::current_exe().map_err(|e| format!("无法获取当前程序路径: {e}"))?;
         let exe_path_str = current_exe.to_string_lossy();
 
         let hkcu = RegKey::predef(HKEY_CURRENT_USER);
@@ -368,7 +389,10 @@ pub fn ensure_registered_applications() -> Result<(), String> {
                 let _ = shell_cmd.set_value("", &format!("\"{exe_path_str}\" \"%1\""));
             }
             if let Ok((supp_types, _)) = app_key.create_subkey("SupportedTypes") {
-                for ext in SUPPORTED_IMAGE_EXTS.iter().chain(SUPPORTED_VIDEO_EXTS.iter()) {
+                for ext in SUPPORTED_IMAGE_EXTS
+                    .iter()
+                    .chain(SUPPORTED_VIDEO_EXTS.iter())
+                {
                     let _ = supp_types.set_value(&format!(".{ext}"), &"");
                 }
             }

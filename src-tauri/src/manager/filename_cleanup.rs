@@ -82,8 +82,14 @@ mod tests {
     #[test]
     fn default_rule_remove_hash_tags_strips_topics() {
         let rule = make_rule("remove-hash-tags", r"#[^\s#.]+", "", true, 35);
-        let cleaned = apply_filename_cleanup("大疆 P4P vs 影石 Luna 两周使用，我更推荐谁？ #pocket4pro #lunaultra.mp4", &[rule]);
-        assert_eq!(cleaned, "大疆 P4P vs 影石 Luna 两周使用，我更推荐谁？  .mp4");
+        let cleaned = apply_filename_cleanup(
+            "大疆 P4P vs 影石 Luna 两周使用，我更推荐谁？ #pocket4pro #lunaultra.mp4",
+            &[rule],
+        );
+        assert_eq!(
+            cleaned,
+            "大疆 P4P vs 影石 Luna 两周使用，我更推荐谁？  .mp4"
+        );
     }
 
     #[test]
@@ -131,7 +137,13 @@ mod tests {
 
     #[test]
     fn default_rule_remove_chinese_bracket_site_strips_mark() {
-        let rule = make_rule("remove-chinese-bracket-site", r"【(www\.)?[\w.-]+】", "", true, 11);
+        let rule = make_rule(
+            "remove-chinese-bracket-site",
+            r"【(www\.)?[\w.-]+】",
+            "",
+            true,
+            11,
+        );
         let cleaned = apply_filename_cleanup("video【www.example.com】.mp4", &[rule]);
         assert_eq!(cleaned, "video.mp4");
     }
@@ -151,7 +163,13 @@ mod tests {
 
     #[test]
     fn default_rule_remove_square_bracket_quality_strips_mark() {
-        let rule = make_rule("remove-square-bracket-quality", r"\[\d{3,4}[pP]\]", "", true, 21);
+        let rule = make_rule(
+            "remove-square-bracket-quality",
+            r"\[\d{3,4}[pP]\]",
+            "",
+            true,
+            21,
+        );
         let cleaned = apply_filename_cleanup("video [1080p].mp4", &[rule]);
         assert_eq!(cleaned, "video .mp4");
     }
@@ -171,14 +189,26 @@ mod tests {
 
     #[test]
     fn default_rule_remove_copy_suffix_strips_mark() {
-        let rule = make_rule("remove-copy-suffix", r"\s*-\s*副本|\s*-\s*Copy", "", true, 38);
+        let rule = make_rule(
+            "remove-copy-suffix",
+            r"\s*-\s*副本|\s*-\s*Copy",
+            "",
+            true,
+            38,
+        );
         let cleaned = apply_filename_cleanup("video - 副本 - Copy.mp4", &[rule]);
         assert_eq!(cleaned, "video.mp4");
     }
 
     #[test]
     fn default_rule_strip_trailing_spaces_strips_space() {
-        let rule = make_rule("strip-trailing-spaces", r"\s+(\.[a-zA-Z0-9]+)$", "$1", true, 45);
+        let rule = make_rule(
+            "strip-trailing-spaces",
+            r"\s+(\.[a-zA-Z0-9]+)$",
+            "$1",
+            true,
+            45,
+        );
         let cleaned = apply_filename_cleanup("video .mp4", &[rule]);
         assert_eq!(cleaned, "video.mp4");
     }

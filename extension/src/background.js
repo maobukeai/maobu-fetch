@@ -1,5 +1,5 @@
 import { signedFetch, signedGet, compatFetch, focusDesktop, PROBE_TIMEOUT_MS } from "./protocol.js";
-import { interceptBrowserDownload, evaluateDownload, skipUnpairedDownload, notifyThrottled, recoverStuckTakeovers, recordIgnored } from "./interceptor.js";
+import { interceptBrowserDownload, evaluateDownload, skipUnpairedDownload, notifyThrottled, recoverStuckTakeovers, recordIgnored, markPendingTakeover, clearPendingTakeover } from "./interceptor.js";
 import { bridgeMediaTask, selectBridgeMediaFormat } from "./media-selection.js";
 import { requestPageWithTrackingFallback } from "./rules.js";
 import { buildCookieHeader } from "./auth-download.js";
@@ -445,8 +445,15 @@ chrome.downloads.onCreated.addListener(async (item) => {
     try { await chrome.downloads.resume(item.id); } catch {}
     return;
   }
-  // 满足接管条件且已配对：立即暂停原生下载，防止在浮层倒计时（1.5s）期间浏览器高速跑满带宽或提前下完
-  try { await chrome.downloads.pause(item.id); } catch {}
+  // 满足接管条件且已配对：先持久化接管恢复记录（phase=confirming），再暂停
+  // 原生下载。顺序强约束（P0-4 修复）：此前 pause 先于 pendingTakeover 记录
+  // 发生，若 MV3 SW 在浮层确认期（ask 最长 20 秒）被回收或扩展重载，下载会
+  // 永久停留在暂停态且无恢复记录，看门狗无从恢复。记录失败时放弃暂停——
+  // 宁可让下载在浮层期间继续跑，也不留下无法恢复的暂停态。
+  const recorded = await markPendingTakeover(item.id, { url: item.finalUrl || item.url, phase: "confirming" });
+  if (recorded) {
+    try { await chrome.downloads.pause(item.id); } catch {}
+  }
   let proceed = false;
   let tab;
   try {
@@ -457,7 +464,9 @@ chrome.downloads.onCreated.addListener(async (item) => {
   }
   if (!proceed) {
     resolveDetermining(item.id);
+    // 用户取消 / 浮层超时放行：恢复下载并清除接管记录，避免看门狗之后误处理。
     try { await chrome.downloads.resume(item.id); } catch {}
+    await clearPendingTakeover(item.id);
     return;
   }
   const handled = await interceptBrowserDownload(item, {
@@ -473,6 +482,9 @@ chrome.downloads.onCreated.addListener(async (item) => {
   resolveDetermining(item.id);
   if (!handled) {
     try { await chrome.downloads.resume(item.id); } catch {}
+    // 兜底清除接管记录：interceptBrowserDownload 的预检失败路径在写入流程记录前
+    // 返回，background 写入的 confirming 记录需在此清除，避免悬挂。
+    await clearPendingTakeover(item.id);
   }
 });
 

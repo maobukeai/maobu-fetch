@@ -54,9 +54,9 @@ pub(crate) fn is_netscape_format(cookie: &str) -> bool {
         return true;
     }
     // 检查是否有 TAB 分隔的至少 7 列的行（Netscape 格式特征）
-    trimmed.lines().any(|line| {
-        !line.starts_with('#') && line.split('\t').count() >= 7
-    })
+    trimmed
+        .lines()
+        .any(|line| !line.starts_with('#') && line.split('\t').count() >= 7)
 }
 
 /// 判断是否应跳过扩展自动同步对已存在凭证的覆盖。
@@ -456,13 +456,17 @@ mod tests {
 
     #[test]
     fn is_netscape_format_detects_netscape_header() {
-        assert!(is_netscape_format("# Netscape HTTP Cookie File\n.youtube.com\tTRUE\t/\tTRUE\t0\tsid\txyz"));
+        assert!(is_netscape_format(
+            "# Netscape HTTP Cookie File\n.youtube.com\tTRUE\t/\tTRUE\t0\tsid\txyz"
+        ));
     }
 
     #[test]
     fn is_netscape_format_detects_tab_separated_lines_without_header() {
         // 没有 # Netscape 头但有 TAB 分隔 7 列的行也算
-        assert!(is_netscape_format(".youtube.com\tTRUE\t/\tTRUE\t0\tsid\txyz"));
+        assert!(is_netscape_format(
+            ".youtube.com\tTRUE\t/\tTRUE\t0\tsid\txyz"
+        ));
     }
 
     #[test]

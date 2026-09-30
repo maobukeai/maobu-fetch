@@ -81,11 +81,8 @@ impl DownloadManager {
         } else {
             PRECHECK_OVERALL_TIMEOUT_SECS
         };
-        match tokio::time::timeout(
-            Duration::from_secs(timeout_secs),
-            self.do_precheck(request),
-        )
-        .await
+        match tokio::time::timeout(Duration::from_secs(timeout_secs), self.do_precheck(request))
+            .await
         {
             Ok(res) => res,
             Err(_) => Err(format!(
@@ -108,15 +105,27 @@ impl DownloadManager {
             return Err("仅支持 http/https 协议".to_string());
         }
 
-        let is_douyin = crate::media_platforms::detect_platform(&request.url) == crate::media_platforms::MediaPlatform::Douyin
+        let is_douyin = crate::media_platforms::detect_platform(&request.url)
+            == crate::media_platforms::MediaPlatform::Douyin
             || request.url.contains("douyin.com")
             || request.url.contains("iesdouyin.com");
 
-        if !request.headers.keys().any(|k| k.eq_ignore_ascii_case("user-agent")) {
+        if !request
+            .headers
+            .keys()
+            .any(|k| k.eq_ignore_ascii_case("user-agent"))
+        {
             request.headers.insert("User-Agent".to_string(), "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36".to_string());
         }
-        if is_douyin && !request.headers.keys().any(|k| k.eq_ignore_ascii_case("referer")) {
-            request.headers.insert("Referer".to_string(), "https://www.douyin.com/".to_string());
+        if is_douyin
+            && !request
+                .headers
+                .keys()
+                .any(|k| k.eq_ignore_ascii_case("referer"))
+        {
+            request
+                .headers
+                .insert("Referer".to_string(), "https://www.douyin.com/".to_string());
         }
 
         let settings = self.settings.read().await.clone();
@@ -127,7 +136,8 @@ impl DownloadManager {
             .filter(|dir| !dir.trim().is_empty())
             .unwrap_or_else(|| settings.download_dir.clone());
 
-        let is_media_url = crate::media_platforms::detect_platform(&request.url) != crate::media_platforms::MediaPlatform::Unknown
+        let is_media_url = crate::media_platforms::detect_platform(&request.url)
+            != crate::media_platforms::MediaPlatform::Unknown
             || request.url.contains("douyin.com")
             || request.url.contains("iesdouyin.com");
 
@@ -206,9 +216,11 @@ impl DownloadManager {
             match probe_result {
                 Ok(probe_res) if !probe_res.title.trim().is_empty() => {
                     let raw_title = probe_res.title.clone();
-                    let cleaned = crate::manager::naming_template::sanitize_filename(&regex::Regex::new(r"#[^\s#.]+")
-                        .map(|re| re.replace_all(&raw_title, "").to_string())
-                        .unwrap_or_else(|_| raw_title.clone()));
+                    let cleaned = crate::manager::naming_template::sanitize_filename(
+                        &regex::Regex::new(r"#[^\s#.]+")
+                            .map(|re| re.replace_all(&raw_title, "").to_string())
+                            .unwrap_or_else(|_| raw_title.clone()),
+                    );
                     if !cleaned.trim().is_empty() {
                         file_name = format!("{}.mp4", cleaned.trim());
                     }
@@ -227,15 +239,22 @@ impl DownloadManager {
 
         let is_hls_m3u8 = request.url.contains(".m3u8")
             || request.url.contains("pull-hls-")
-            || probe.content_type.as_deref().map(|ct| ct.contains("mpegurl") || ct.contains("m3u8")).unwrap_or(false);
+            || probe
+                .content_type
+                .as_deref()
+                .map(|ct| ct.contains("mpegurl") || ct.contains("m3u8"))
+                .unwrap_or(false);
 
-        if is_hls_m3u8 && (file_name.ends_with(".m3u8") || file_name == "download" || file_name.is_empty()) {
+        if is_hls_m3u8
+            && (file_name.ends_with(".m3u8") || file_name == "download" || file_name.is_empty())
+        {
             let stem = file_name.strip_suffix(".m3u8").unwrap_or(&file_name);
-            let stem_clean = if stem == "download" || stem == "index" || stem == "playlist" || stem.is_empty() {
-                "video"
-            } else {
-                stem
-            };
+            let stem_clean =
+                if stem == "download" || stem == "index" || stem == "playlist" || stem.is_empty() {
+                    "video"
+                } else {
+                    stem
+                };
             file_name = format!("{}.mp4", stem_clean);
         }
 
@@ -406,8 +425,7 @@ fn build_precheck_client(
                 builder = builder.no_proxy();
             } else if settings.proxy_mode == "manual" && !settings.proxy_url.is_empty() {
                 let normalized = crate::proxy::normalize_proxy_scheme(&settings.proxy_url);
-                let mut proxy =
-                    reqwest::Proxy::all(&normalized).map_err(|e| e.to_string())?;
+                let mut proxy = reqwest::Proxy::all(&normalized).map_err(|e| e.to_string())?;
                 if !settings.proxy_username.is_empty() {
                     proxy = proxy.basic_auth(&settings.proxy_username, &settings.proxy_password);
                 }
@@ -496,7 +514,8 @@ async fn probe_endpoint(
                 } else {
                     // HEAD 返回 405/403/404 或其他非 2xx/3xx 状态：回退到 GET Range: bytes=0-0
                     if let Ok(get_resp) =
-                        send_get_range_probe(active_client, &current_url, &headers, default_ua).await
+                        send_get_range_probe(active_client, &current_url, &headers, default_ua)
+                            .await
                     {
                         (get_resp, true)
                     } else {
@@ -740,7 +759,8 @@ fn determine_filename(
         }
     }
 
-    let is_media = crate::media_platforms::detect_platform(final_url) != crate::media_platforms::MediaPlatform::Unknown
+    let is_media = crate::media_platforms::detect_platform(final_url)
+        != crate::media_platforms::MediaPlatform::Unknown
         || final_url.contains("douyinvod.com")
         || final_url.contains("douyin.com")
         || final_url.contains("iesdouyin.com");
@@ -757,7 +777,9 @@ fn extract_filename_from_url(url: &str) -> Option<String> {
     let parsed = Url::parse(url).ok()?;
 
     // 1. 优先检查 ChatGPT estuary 图片参数（/estuary/content?id=file_xxx）
-    if parsed.path().contains("/backend-api/estuary/content") || parsed.path().contains("/estuary/content") {
+    if parsed.path().contains("/backend-api/estuary/content")
+        || parsed.path().contains("/estuary/content")
+    {
         if let Some((_, id_val)) = parsed.query_pairs().find(|(k, _)| k == "id") {
             let sanitized = sanitize_filename(&id_val);
             if !sanitized.is_empty() {
@@ -776,7 +798,10 @@ fn extract_filename_from_url(url: &str) -> Option<String> {
     }
 
     // 2. 检查常见下载链接中的 filename/file_name query 参数
-    if let Some((_, val)) = parsed.query_pairs().find(|(k, _)| k == "filename" || k == "file_name") {
+    if let Some((_, val)) = parsed
+        .query_pairs()
+        .find(|(k, _)| k == "filename" || k == "file_name")
+    {
         let decoded = percent_decode_str(&val);
         let sanitized = sanitize_filename(&decoded);
         if !sanitized.is_empty() {
@@ -913,7 +938,7 @@ pub(crate) fn suggest_connections(file_size: Option<u64>, accepts_ranges: bool) 
         4
     } else if size < 200 * PRECHECK_ONE_MB {
         8
-    } else if size < 1 * PRECHECK_ONE_GB {
+    } else if size < PRECHECK_ONE_GB {
         16
     } else {
         32
@@ -1118,21 +1143,39 @@ mod tests {
     fn media_url_youtube_is_detected_for_media_precheck() {
         // YouTube 各种 URL 形式都应识别为媒体平台，触发 60 秒超时与跳过 HEAD
         assert!(is_media_url_for_precheck("https://youtu.be/vrY1THC_NQE"));
-        assert!(is_media_url_for_precheck("https://www.youtube.com/watch?v=vrY1THC_NQE"));
-        assert!(is_media_url_for_precheck("https://m.youtube.com/watch?v=vrY1THC_NQE"));
-        assert!(is_media_url_for_precheck("https://music.youtube.com/watch?v=abc"));
-        assert!(is_media_url_for_precheck("https://www.youtube.com/shorts/abc"));
+        assert!(is_media_url_for_precheck(
+            "https://www.youtube.com/watch?v=vrY1THC_NQE"
+        ));
+        assert!(is_media_url_for_precheck(
+            "https://m.youtube.com/watch?v=vrY1THC_NQE"
+        ));
+        assert!(is_media_url_for_precheck(
+            "https://music.youtube.com/watch?v=abc"
+        ));
+        assert!(is_media_url_for_precheck(
+            "https://www.youtube.com/shorts/abc"
+        ));
     }
 
     #[test]
     fn media_url_other_platforms_are_detected_for_media_precheck() {
         // 抖音 / TikTok / Twitter / B 站 / 微博 都应识别为媒体平台
-        assert!(is_media_url_for_precheck("https://www.douyin.com/video/123"));
-        assert!(is_media_url_for_precheck("https://www.iesdouyin.com/share/video/123"));
-        assert!(is_media_url_for_precheck("https://www.tiktok.com/@user/video/123"));
+        assert!(is_media_url_for_precheck(
+            "https://www.douyin.com/video/123"
+        ));
+        assert!(is_media_url_for_precheck(
+            "https://www.iesdouyin.com/share/video/123"
+        ));
+        assert!(is_media_url_for_precheck(
+            "https://www.tiktok.com/@user/video/123"
+        ));
         assert!(is_media_url_for_precheck("https://x.com/user/status/123"));
-        assert!(is_media_url_for_precheck("https://twitter.com/user/status/123"));
-        assert!(is_media_url_for_precheck("https://www.bilibili.com/video/BV123"));
+        assert!(is_media_url_for_precheck(
+            "https://twitter.com/user/status/123"
+        ));
+        assert!(is_media_url_for_precheck(
+            "https://www.bilibili.com/video/BV123"
+        ));
         assert!(is_media_url_for_precheck("https://weibo.com/123/abc"));
     }
 
@@ -1143,7 +1186,9 @@ mod tests {
         assert!(!is_media_url_for_precheck(
             "https://github.com/user/repo/releases/download/v1/file.zip"
         ));
-        assert!(!is_media_url_for_precheck("https://cdn.example.com/video.mp4"));
+        assert!(!is_media_url_for_precheck(
+            "https://cdn.example.com/video.mp4"
+        ));
     }
 
     #[test]
@@ -1196,10 +1241,7 @@ mod tests {
 
     #[test]
     fn suggest_connections_just_under_1gb_returns_sixteen() {
-        assert_eq!(
-            suggest_connections(Some(1 * PRECHECK_ONE_GB - 1), true),
-            16
-        );
+        assert_eq!(suggest_connections(Some(PRECHECK_ONE_GB - 1), true), 16);
     }
 
     #[test]
@@ -1514,10 +1556,10 @@ mod tests {
             retry_policy_override: None,
             proxy_override: None,
             proxy_auth: None,
-        task_kind: Default::default(),
-        bt_meta: None,
-        bt_runtime: None,
-        cloud_refresh: None,
+            task_kind: Default::default(),
+            bt_meta: None,
+            bt_runtime: None,
+            cloud_refresh: None,
         };
         let _ = &mut task; // silence unused mut warning if any
         task
@@ -1883,9 +1925,7 @@ mod tests {
     #[test]
     fn cdn_cap_github_com() {
         assert_eq!(
-            cdn_connection_cap(
-                "https://github.com/owner/repo/releases/download/v1.0/file.zip"
-            ),
+            cdn_connection_cap("https://github.com/owner/repo/releases/download/v1.0/file.zip"),
             2
         );
     }

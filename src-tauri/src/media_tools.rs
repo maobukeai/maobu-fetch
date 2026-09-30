@@ -1,4 +1,6 @@
-use crate::models::{AppSettings, DetectedMediaTools, ToolComponent, ToolPhase, ToolStatus, YtDlpUpdateInfo};
+use crate::models::{
+    AppSettings, DetectedMediaTools, ToolComponent, ToolPhase, ToolStatus, YtDlpUpdateInfo,
+};
 use crate::updater::version_compare;
 use futures_util::StreamExt;
 use sha2::{Digest, Sha256};
@@ -34,8 +36,7 @@ const FF_INSTALL_BYTES: u64 = 199 * 1024 * 1024;
 const ARIA2_VERSION: &str = "1.37.0";
 const ARIA2_URL: &str =
     "https://github.com/aria2/aria2/releases/download/release-1.37.0/aria2-1.37.0-win-64bit-build1.zip";
-const ARIA2_HASH: &str =
-    "67d015301eef0b612191212d564c5bb0a14b5b9c4796b76454276a4d28d9b288";
+const ARIA2_HASH: &str = "67d015301eef0b612191212d564c5bb0a14b5b9c4796b76454276a4d28d9b288";
 const ARIA2_DOWNLOAD_BYTES: u64 = 2_475_379;
 const ARIA2_INSTALL_BYTES: u64 = 5_649_408 + 32 * 1024; // aria2c.exe + 许可证与源码链接文本
 /// GPLv2 源码获取链接（§6：必须随附源码获取方式）。
@@ -78,11 +79,12 @@ pub struct MediaTools {
     cancellation: Arc<Mutex<Option<CancellationToken>>>,
 }
 
-pub fn create_hidden_tokio_command<P: AsRef<std::ffi::OsStr>>(program: P) -> tokio::process::Command {
+pub fn create_hidden_tokio_command<P: AsRef<std::ffi::OsStr>>(
+    program: P,
+) -> tokio::process::Command {
     let mut cmd = tokio::process::Command::new(program);
     #[cfg(target_os = "windows")]
     {
-        use std::os::windows::process::CommandExt;
         cmd.creation_flags(0x08000000);
     }
     cmd
@@ -146,11 +148,12 @@ impl MediaTools {
     ) -> Result<YtDlpUpdateInfo, String> {
         let spec = fetch_latest_yt_dlp_spec(settings).await?;
         let installed_version = installed_yt_dlp_version(app, settings);
-        let has_update =
-            version_compare(&spec.version, &installed_version) == Ordering::Greater;
+        let has_update = version_compare(&spec.version, &installed_version) == Ordering::Greater;
         // 先构造 release_url 再移动 spec.version（tag 与版本号一致，可能带 v 前缀）。
-        let release_url =
-            format!("https://github.com/yt-dlp/yt-dlp/releases/tag/{version}", version = spec.version);
+        let release_url = format!(
+            "https://github.com/yt-dlp/yt-dlp/releases/tag/{version}",
+            version = spec.version
+        );
         Ok(YtDlpUpdateInfo {
             installed_version,
             latest_version: spec.version,
@@ -199,22 +202,25 @@ impl MediaTools {
                 ensure_space(&app, component)?;
             }
             ToolComponent::Aria2 => {
-                ensure_space_bytes(
-                    &app,
-                    ARIA2_DOWNLOAD_BYTES,
-                    ARIA2_INSTALL_BYTES,
-                    " aria2 ",
-                )?;
+                ensure_space_bytes(&app, ARIA2_DOWNLOAD_BYTES, ARIA2_INSTALL_BYTES, " aria2 ")?;
             }
         }
         let token = CancellationToken::new();
         *cancellation = Some(token.clone());
         drop(cancellation);
-        self.set_operation(&app, &settings, component, ToolPhase::Downloading, 0, yt_spec
+        self.set_operation(
+            &app,
+            &settings,
+            component,
+            ToolPhase::Downloading,
+            0,
+            yt_spec
                 .as_ref()
                 .map(|spec| spec.bytes)
-                .unwrap_or_else(|| component_download_bytes(component)), None)
-            .await;
+                .unwrap_or_else(|| component_download_bytes(component)),
+            None,
+        )
+        .await;
         let this = self.clone();
         tauri::async_runtime::spawn(async move {
             let result = this
@@ -306,18 +312,24 @@ impl MediaTools {
         let archive = staging.join("aria2.zip.download");
         let client = client(settings)?;
         let result = async {
-            download_with_fallback(&client, ARIA2_URL, &archive, &token, |received| async move {
-                self.set_operation(
-                    app,
-                    settings,
-                    ToolComponent::Aria2,
-                    ToolPhase::Downloading,
-                    received,
-                    ARIA2_DOWNLOAD_BYTES,
-                    None,
-                )
-                .await;
-            })
+            download_with_fallback(
+                &client,
+                ARIA2_URL,
+                &archive,
+                &token,
+                |received| async move {
+                    self.set_operation(
+                        app,
+                        settings,
+                        ToolComponent::Aria2,
+                        ToolPhase::Downloading,
+                        received,
+                        ARIA2_DOWNLOAD_BYTES,
+                        None,
+                    )
+                    .await;
+                },
+            )
             .await?;
             self.set_operation(
                 app,
@@ -424,17 +436,14 @@ impl MediaTools {
             replace_file(download_path, target_file.clone()).await?;
             // 记录已安装版本，供状态展示与后续更新对比；失败不影响已完成的
             // 程序替换，但必须明确告知用户（AGENTS.md §7 不吞错）。
-            tokio::fs::write(
-                target_file.with_file_name(YT_VERSION_MARKER),
-                &spec.version,
-            )
-            .await
-            .map_err(|error| {
-                format!(
-                    "MEDIA_TOOLS_MARKER: yt-dlp 已更新到 {}，但写入版本记录失败：{error}",
-                    spec.version
-                )
-            })
+            tokio::fs::write(target_file.with_file_name(YT_VERSION_MARKER), &spec.version)
+                .await
+                .map_err(|error| {
+                    format!(
+                        "MEDIA_TOOLS_MARKER: yt-dlp 已更新到 {}，但写入版本记录失败：{error}",
+                        spec.version
+                    )
+                })
         }
         .await;
         handle_staging_result(&staging, &result).await;
@@ -647,7 +656,12 @@ fn system_tool_directories() -> Vec<PathBuf> {
                 .join("Packages"),
             &mut directories,
         );
-        for sub in ["ffmpeg/bin", "ffmpeg", "Programs/ffmpeg/bin", "Programs/ffmpeg"] {
+        for sub in [
+            "ffmpeg/bin",
+            "ffmpeg",
+            "Programs/ffmpeg/bin",
+            "Programs/ffmpeg",
+        ] {
             add_directory(&mut directories, local_app_data.join(sub));
         }
     }
@@ -1423,7 +1437,11 @@ fn write_aria2_source_link(directory: &Path) -> Result<(), String> {
         .map_err(|error| format!("MEDIA_TOOLS_MARKER: 写入 aria2 源码链接失败：{error}"))
 }
 
-pub async fn remux_flv_to_mp4_if_needed(app: &AppHandle, settings: &AppSettings, file_path: &Path) -> PathBuf {
+pub async fn remux_flv_to_mp4_if_needed(
+    app: &AppHandle,
+    settings: &AppSettings,
+    file_path: &Path,
+) -> PathBuf {
     if !file_path.exists() {
         return file_path.to_path_buf();
     }
@@ -1659,15 +1677,24 @@ mod tests {
         let file = File::create(&archive).unwrap();
         let mut writer = zip::ZipWriter::new(file);
         writer
-            .start_file("aria2-1.37.0-win-64bit-build1/aria2c.exe", SimpleFileOptions::default())
+            .start_file(
+                "aria2-1.37.0-win-64bit-build1/aria2c.exe",
+                SimpleFileOptions::default(),
+            )
             .unwrap();
         writer.write_all(b"aria2c").unwrap();
         writer
-            .start_file("aria2-1.37.0-win-64bit-build1/COPYING", SimpleFileOptions::default())
+            .start_file(
+                "aria2-1.37.0-win-64bit-build1/COPYING",
+                SimpleFileOptions::default(),
+            )
             .unwrap();
         writer.write_all(b"GPLv2 text").unwrap();
         writer
-            .start_file("aria2-1.37.0-win-64bit-build1/README.html", SimpleFileOptions::default())
+            .start_file(
+                "aria2-1.37.0-win-64bit-build1/README.html",
+                SimpleFileOptions::default(),
+            )
             .unwrap();
         writer.write_all(b"ignore").unwrap();
         writer.finish().unwrap();
@@ -1684,7 +1711,8 @@ mod tests {
         assert!(!directory.path().join("README.html").exists());
 
         write_aria2_source_link(directory.path()).unwrap();
-        let source_note = std::fs::read_to_string(directory.path().join("aria2-SOURCE.txt")).unwrap();
+        let source_note =
+            std::fs::read_to_string(directory.path().join("aria2-SOURCE.txt")).unwrap();
         assert!(source_note.contains("GNU General Public License v2"));
         assert!(source_note.contains(ARIA2_SOURCE_URL));
     }
@@ -1791,10 +1819,7 @@ mod tests {
         let url = "https://github.com/yt-dlp/yt-dlp/releases/download/2026.09.06/yt-dlp.exe";
         // 无 digest 字段：安全默认，拒绝而不是降级放行。
         let mut json = yt_dlp_release_json("2026.09.06", VALID_DIGEST, url);
-        json["assets"][1]
-            .as_object_mut()
-            .unwrap()
-            .remove("digest");
+        json["assets"][1].as_object_mut().unwrap().remove("digest");
         assert!(parse_yt_dlp_release(&json).is_none());
         // 非十六进制 / 长度错误 / 非 sha256 前缀。
         for digest in [
@@ -1852,11 +1877,7 @@ mod tests {
         // 无记录文件 → None（调用方回退内置版本）。
         assert_eq!(read_version_marker(&executable), None);
         // 正常版本（带换行）→ 剥离空白后返回。
-        std::fs::write(
-            directory.path().join(YT_VERSION_MARKER),
-            b"2026.09.06\n",
-        )
-        .unwrap();
+        std::fs::write(directory.path().join(YT_VERSION_MARKER), b"2026.09.06\n").unwrap();
         assert_eq!(
             read_version_marker(&executable),
             Some("2026.09.06".to_string())
@@ -1874,10 +1895,7 @@ mod tests {
             version_compare("2026.09.06", "2026.07.04"),
             Ordering::Greater
         );
-        assert_eq!(
-            version_compare("2026.07.04", "2026.07.04"),
-            Ordering::Equal
-        );
+        assert_eq!(version_compare("2026.07.04", "2026.07.04"), Ordering::Equal);
         assert_eq!(version_compare("2026.07.04", "2026.09.06"), Ordering::Less);
         // 跨年。
         assert_eq!(

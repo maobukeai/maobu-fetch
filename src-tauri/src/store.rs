@@ -17,7 +17,9 @@ pub struct Store {
 impl Store {
     pub fn open(data_dir: PathBuf) -> Result<Self, String> {
         std::fs::create_dir_all(&data_dir).map_err(|e| e.to_string())?;
-        let connection =
+        // §2 迁移原子性：SCHEMA、逐列迁移与内置数据种子整体包裹在单个事务中，
+        // 任一步失败（磁盘满/锁竞争/权限变化）都完整回滚，不会留下半迁移数据库。
+        let mut connection =
             Connection::open(data_dir.join("lumaget.db")).map_err(|e| e.to_string())?;
         connection
             .pragma_update(None, "journal_mode", "WAL")
@@ -25,50 +27,46 @@ impl Store {
         connection
             .pragma_update(None, "foreign_keys", "ON")
             .map_err(|e| e.to_string())?;
-        connection
-            .execute_batch(SCHEMA)
-            .map_err(|e| e.to_string())?;
+        let migration = connection.transaction().map_err(|e| e.to_string())?;
+        migration.execute_batch(SCHEMA).map_err(|e| e.to_string())?;
+        ensure_task_column(&migration, "connection_count", "INTEGER NOT NULL DEFAULT 8")?;
+        ensure_task_column(&migration, "segments_json", "TEXT NOT NULL DEFAULT '[]'")?;
         ensure_task_column(
-            &connection,
-            "connection_count",
-            "INTEGER NOT NULL DEFAULT 8",
-        )?;
-        ensure_task_column(&connection, "segments_json", "TEXT NOT NULL DEFAULT '[]'")?;
-        ensure_task_column(
-            &connection,
+            &migration,
             "completion_action",
             "TEXT NOT NULL DEFAULT '\"none\"'",
         )?;
-        ensure_task_column(&connection, "final_url", "TEXT")?;
-        ensure_task_column(&connection, "response_status", "INTEGER")?;
-        ensure_task_column(&connection, "content_type", "TEXT")?;
-        ensure_task_column(&connection, "accepts_ranges", "INTEGER")?;
+        ensure_task_column(&migration, "final_url", "TEXT")?;
+        ensure_task_column(&migration, "response_status", "INTEGER")?;
+        ensure_task_column(&migration, "content_type", "TEXT")?;
+        ensure_task_column(&migration, "accepts_ranges", "INTEGER")?;
         // Task 14: 任务级重试策略覆盖。NULL 表示使用全局默认。
         // 旧数据库迁移后所有现有任务的该字段均为 NULL，反序列化为 None。
-        ensure_task_column(&connection, "retry_policy_override", "TEXT")?;
+        ensure_task_column(&migration, "retry_policy_override", "TEXT")?;
         // Task 31: 任务级代理覆盖与代理认证。
         // proxy_override: NULL 表示使用全局；空字符串表示显式禁用代理。
         // proxy_auth_json: JSON 字符串，含 username 和 DPAPI 加密的 password。
         // 旧数据库迁移后所有现有任务的这两个字段均为 NULL，反序列化为 None。
-        ensure_task_column(&connection, "proxy_override", "TEXT")?;
-        ensure_task_column(&connection, "proxy_auth_json", "TEXT")?;
+        ensure_task_column(&migration, "proxy_override", "TEXT")?;
+        ensure_task_column(&migration, "proxy_auth_json", "TEXT")?;
         // 2026-08-16 BT/磁力：任务内核类型（旧库迁移后全部回填 'http'）与
         // BT 元数据 JSON（旧库迁移后为 NULL，反序列化为 None）。
-        ensure_task_column(&connection, "task_kind", "TEXT NOT NULL DEFAULT 'http'")?;
-        ensure_task_column(&connection, "bt_meta_json", "TEXT")?;
+        ensure_task_column(&migration, "task_kind", "TEXT NOT NULL DEFAULT 'http'")?;
+        ensure_task_column(&migration, "bt_meta_json", "TEXT")?;
         // 2026-08-21 云盘直链自动刷新元数据（PikPak 等）。旧库迁移后为 NULL，
         // 反序列化为 None：普通直链任务不自动刷新，行为与旧版一致。
-        ensure_task_column(&connection, "cloud_refresh_json", "TEXT")?;
-        seed_builtin_download_presets(&connection)?;
+        ensure_task_column(&migration, "cloud_refresh_json", "TEXT")?;
+        seed_builtin_download_presets(&migration)?;
         // Task 20: 文件名清理规则。新表通过 SCHEMA 中 CREATE TABLE IF NOT EXISTS 创建；
         // 此处仅插入内置默认规则（INSERT OR IGNORE 不覆盖用户改动）。
-        seed_builtin_filename_cleanup_rules(&connection)?;
+        seed_builtin_filename_cleanup_rules(&migration)?;
         // Task 43: 平台命名模板。表通过 SCHEMA 中 CREATE TABLE IF NOT EXISTS 创建；
         // 此处仅插入内置默认模板（INSERT OR IGNORE 不覆盖用户改动）。
-        seed_builtin_platform_naming_templates(&connection)?;
+        seed_builtin_platform_naming_templates(&migration)?;
         // Task 44: 平台兼容性矩阵。表通过 SCHEMA 中 CREATE TABLE IF NOT EXISTS 创建；
         // 此处仅插入内置 6 条默认记录（INSERT OR IGNORE 不覆盖用户改动）。
-        seed_builtin_platform_compatibility(&connection)?;
+        seed_builtin_platform_compatibility(&migration)?;
+        migration.commit().map_err(|e| e.to_string())?;
         let store = Self {
             connection: Mutex::new(connection),
             data_dir,
@@ -235,13 +233,13 @@ impl Store {
                     serde_json::to_string(&task.segments).unwrap_or_else(|_| "[]".into()),
                     serde_json::to_string(&task.completion_action)
                         .unwrap_or_else(|_| "\"none\"".into()),
-                    task.retry_policy_override.as_ref().and_then(|policy| {
-                        serde_json::to_string(policy).ok()
-                    }),
+                    task.retry_policy_override
+                        .as_ref()
+                        .and_then(|policy| { serde_json::to_string(policy).ok() }),
                     task.proxy_override.as_deref(),
-                    task.proxy_auth.as_ref().and_then(|auth| {
-                        serde_json::to_string(auth).ok()
-                    }),
+                    task.proxy_auth
+                        .as_ref()
+                        .and_then(|auth| { serde_json::to_string(auth).ok() }),
                     task.task_kind.as_str(),
                     task.bt_meta
                         .as_ref()
@@ -314,7 +312,9 @@ impl Store {
         // 自动迁移旧版硬编码下载目录：
         // 若当前保存的路径为空，或是旧版硬编码的 USERPROFILE\Downloads（但在本机系统已被重定向到如 D:\Downloads），
         // 自动平滑迁移为系统真实的下载目录并落库，避免在 C 盘强行创建无效目录。
-        if let Some(new_dir) = crate::system_dirs::migrate_download_dir_if_needed(&settings.download_dir) {
+        if let Some(new_dir) =
+            crate::system_dirs::migrate_download_dir_if_needed(&settings.download_dir)
+        {
             tracing::info!(
                 old_dir = %settings.download_dir,
                 new_dir = %new_dir,
@@ -341,9 +341,11 @@ impl Store {
         // 用户下次保存仍会重试）。
         let mut clone = settings.clone();
         if !clone.proxy_password.is_empty() {
-            if let Ok(cipher) = encrypt_password(&clone.proxy_password) {
-                clone.proxy_password = cipher;
-            }
+            // §7：DPAPI 加密失败必须使保存失败，严禁把明文密码静默写入数据库。
+            let cipher = encrypt_password(&clone.proxy_password).map_err(|e| {
+                format!("无法使用 Windows DPAPI 加密代理密码，已取消保存以避免明文落库：{e}")
+            })?;
+            clone.proxy_password = cipher;
         }
         let json = serde_json::to_string(&clone).map_err(|e| e.to_string())?;
         self.connection.lock().await.execute("INSERT INTO app_state(key,value) VALUES('settings',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [json]).map_err(|e| e.to_string())?;
@@ -575,10 +577,7 @@ impl Store {
 
     /// 更新下载预设。`is_builtin` 以数据库中既有值为准，由调用方在传入前保证逻辑正确。
     /// 不存在的预设会返回中文错误。
-    pub async fn download_preset_update(
-        &self,
-        preset: DownloadPreset,
-    ) -> Result<(), String> {
+    pub async fn download_preset_update(&self, preset: DownloadPreset) -> Result<(), String> {
         let connection = self.connection.lock().await;
         let affected = connection
             .execute(
@@ -592,7 +591,8 @@ impl Store {
                     preset
                         .completion_action
                         .as_ref()
-                        .map(|action| serde_json::to_string(action).unwrap_or_else(|_| "\"none\"".into())),
+                        .map(|action| serde_json::to_string(action)
+                            .unwrap_or_else(|_| "\"none\"".into())),
                     i64::from(preset.verify_checksum as i32),
                     preset.scheduled_at,
                     i64::from(preset.is_builtin as i32),
@@ -635,10 +635,7 @@ impl Store {
     }
 
     /// 按 id 查询单个预设。
-    pub async fn download_preset_get(
-        &self,
-        id: &str,
-    ) -> Result<Option<DownloadPreset>, String> {
+    pub async fn download_preset_get(&self, id: &str) -> Result<Option<DownloadPreset>, String> {
         let connection = self.connection.lock().await;
         connection
             .query_row(
@@ -685,7 +682,9 @@ impl Store {
              )",
             max = Self::URL_HISTORY_MAX
         );
-        transaction.execute_batch(&overflow_sql).map_err(|e| e.to_string())?;
+        transaction
+            .execute_batch(&overflow_sql)
+            .map_err(|e| e.to_string())?;
         transaction.commit().map_err(|e| e.to_string())
     }
 
@@ -752,7 +751,8 @@ impl Store {
                 })
             })
             .map_err(|e| e.to_string())?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())
     }
 
     /// 新增或更新快捷视图（按 id upsert）。
@@ -880,20 +880,11 @@ impl Store {
 
     /// Task 25: 替换任务的全部标签关联。先删除现有关联，再批量插入新关联。
     /// 在事务中执行以保证原子性。`tag_ids` 中不存在的 tag_id 会因外键约束失败。
-    pub async fn task_tags_set(
-        &self,
-        task_id: &str,
-        tag_ids: Vec<String>,
-    ) -> Result<(), String> {
+    pub async fn task_tags_set(&self, task_id: &str, tag_ids: Vec<String>) -> Result<(), String> {
         let mut connection = self.connection.lock().await;
-        let tx = connection
-            .transaction()
+        let tx = connection.transaction().map_err(|e| e.to_string())?;
+        tx.execute("DELETE FROM task_tags WHERE task_id=?1", [task_id])
             .map_err(|e| e.to_string())?;
-        tx.execute(
-            "DELETE FROM task_tags WHERE task_id=?1",
-            [task_id],
-        )
-        .map_err(|e| e.to_string())?;
         for tag_id in &tag_ids {
             tx.execute(
                 "INSERT INTO task_tags(task_id,tag_id) VALUES(?1,?2)",
@@ -941,12 +932,7 @@ impl Store {
             )
             .map_err(|e| e.to_string())?;
         let rows = stmt
-            .query_map([], |row| {
-                Ok((
-                    row.get::<_, String>(3)?,
-                    tag_from_row(row)?,
-                ))
-            })
+            .query_map([], |row| Ok((row.get::<_, String>(3)?, tag_from_row(row)?)))
             .map_err(|e| e.to_string())?;
         let mut map: HashMap<String, Vec<Tag>> = HashMap::new();
         for row in rows {
@@ -960,10 +946,7 @@ impl Store {
 
     /// Task 36: 新增任务模板。
     /// `domain_pattern` 非空校验由 manager 层负责；此处仅做持久化。
-    pub async fn task_template_add(
-        &self,
-        template: TaskTemplate,
-    ) -> Result<TaskTemplate, String> {
+    pub async fn task_template_add(&self, template: TaskTemplate) -> Result<TaskTemplate, String> {
         let connection = self.connection.lock().await;
         connection
             .execute(
@@ -1098,7 +1081,7 @@ impl Store {
     /// 返回的 `MediaCredential.cookie` 为解密后的明文。
     /// 解密失败（换机器/密文损坏）时返回中文错误，调用方应提示用户重新录入。
     /// 不存在时返回 `None`，不视为错误。
-  pub async fn media_credential_get(
+    pub async fn media_credential_get(
         &self,
         domain: &str,
     ) -> Result<Option<MediaCredential>, String> {
@@ -1234,9 +1217,7 @@ impl Store {
     /// =Experimental）在打开数据库时通过 `INSERT OR IGNORE` 写入，用户对内置
     /// 记录的修改（同 platform）不会被覆盖。`known_issues_json` 反序列化失败时
     /// 视为空数组，保证损坏数据不阻塞列表返回。
-    pub async fn platform_compatibility_list(
-        &self,
-    ) -> Result<Vec<PlatformCompatibility>, String> {
+    pub async fn platform_compatibility_list(&self) -> Result<Vec<PlatformCompatibility>, String> {
         let connection = self.connection.lock().await;
         let mut stmt = connection
             .prepare(
@@ -1434,9 +1415,11 @@ impl Store {
         if let Some(ref settings) = bundle.settings {
             let mut clone = settings.clone();
             if !clone.proxy_password.is_empty() {
-                if let Ok(cipher) = encrypt_password(&clone.proxy_password) {
-                    clone.proxy_password = cipher;
-                }
+                // §7：无法加密时必须使恢复失败，禁止明文密码随备份写入数据库。
+                let cipher = encrypt_password(&clone.proxy_password).map_err(|e| {
+                    format!("无法加密备份中的代理密码，已取消本次恢复（未写入任何数据，避免明文落库）：{e}")
+                })?;
+                clone.proxy_password = cipher;
             }
             let json = serde_json::to_string(&clone).map_err(|e| e.to_string())?;
             tx.execute(
@@ -1538,12 +1521,30 @@ impl Store {
             if exists {
                 stats.skipped_tasks += 1;
             } else {
-                let headers_json = serde_json::to_string(&task.headers).map_err(|e| e.to_string())?;
-                let media_json = task.media.as_ref().map(serde_json::to_string).transpose().map_err(|e| e.to_string())?;
-                let segments_json = serde_json::to_string(&task.segments).map_err(|e| e.to_string())?;
-                let completion_action_json = serde_json::to_string(&task.completion_action).map_err(|e| e.to_string())?;
-                let retry_policy_json = task.retry_policy_override.as_ref().map(serde_json::to_string).transpose().map_err(|e| e.to_string())?;
-                let proxy_auth_json = task.proxy_auth.as_ref().map(serde_json::to_string).transpose().map_err(|e| e.to_string())?;
+                let headers_json =
+                    serde_json::to_string(&task.headers).map_err(|e| e.to_string())?;
+                let media_json = task
+                    .media
+                    .as_ref()
+                    .map(serde_json::to_string)
+                    .transpose()
+                    .map_err(|e| e.to_string())?;
+                let segments_json =
+                    serde_json::to_string(&task.segments).map_err(|e| e.to_string())?;
+                let completion_action_json =
+                    serde_json::to_string(&task.completion_action).map_err(|e| e.to_string())?;
+                let retry_policy_json = task
+                    .retry_policy_override
+                    .as_ref()
+                    .map(serde_json::to_string)
+                    .transpose()
+                    .map_err(|e| e.to_string())?;
+                let proxy_auth_json = task
+                    .proxy_auth
+                    .as_ref()
+                    .map(serde_json::to_string)
+                    .transpose()
+                    .map_err(|e| e.to_string())?;
 
                 tx.execute(
                     UPSERT_TASK,
@@ -1578,7 +1579,8 @@ impl Store {
                         headers_json,
                         media_json,
                         task.per_task_speed_limit as i64,
-                        serde_json::to_string(&task.collision_policy).unwrap_or_else(|_| "\"rename\"".into()),
+                        serde_json::to_string(&task.collision_policy)
+                            .unwrap_or_else(|_| "\"rename\"".into()),
                         task.connection_count as i64,
                         segments_json,
                         completion_action_json,
@@ -1599,7 +1601,6 @@ impl Store {
         Ok((stats, restored_tasks))
     }
 }
-
 
 fn url_history_from_row(row: &Row<'_>) -> rusqlite::Result<UrlHistoryEntry> {
     Ok(UrlHistoryEntry {
@@ -1804,12 +1805,24 @@ fn seed_builtin_platform_naming_templates(connection: &Connection) -> Result<(),
 
     // 升级已存在但未被用户定制过的内置模板
     let migrations = [
-        ("douyin-default", "{author}_{title}_{date}", "{title}_{date}"),
-        ("tiktok-default", "{author}_{title}_{date}", "{title}_{date}"),
+        (
+            "douyin-default",
+            "{author}_{title}_{date}",
+            "{title}_{date}",
+        ),
+        (
+            "tiktok-default",
+            "{author}_{title}_{date}",
+            "{title}_{date}",
+        ),
         ("twitter-default", "{author}_{id}_{date}", "{id}_{date}"),
         ("twitter-default", "{id}_{date}", "{title}_{id}"),
         ("youtube-default", "{channel}_{title}_{id}", "{title}_{id}"),
-        ("bilibili-default", "{author}_{title}_{bvid}", "{title}_{bvid}"),
+        (
+            "bilibili-default",
+            "{author}_{title}_{bvid}",
+            "{title}_{bvid}",
+        ),
         ("weibo-default", "{author}_{title}_{date}", "{title}_{date}"),
     ];
     for (id, old_val, new_val) in migrations {
@@ -2200,7 +2213,8 @@ mod tests {
         let store = Store::open(directory.path().to_path_buf()).unwrap();
         let runtime = tokio::runtime::Runtime::new().unwrap();
         runtime.block_on(async {
-            if let Some(legacy_c_dir) = crate::system_dirs::legacy_hardcoded_userprofile_downloads() {
+            if let Some(legacy_c_dir) = crate::system_dirs::legacy_hardcoded_userprofile_downloads()
+            {
                 let sys_dir = crate::system_dirs::system_download_dir();
                 // 模拟旧版本将 USERPROFILE\Downloads 硬编码写入数据库
                 let mut old_settings = AppSettings::default();
@@ -2213,7 +2227,10 @@ mod tests {
                 if !crate::system_dirs::paths_equal(&legacy_c_dir, &sys_dir) {
                     assert_eq!(loaded.download_dir, sys_dir.to_string_lossy().to_string());
                 } else {
-                    assert_eq!(loaded.download_dir, legacy_c_dir.to_string_lossy().to_string());
+                    assert_eq!(
+                        loaded.download_dir,
+                        legacy_c_dir.to_string_lossy().to_string()
+                    );
                 }
             }
         });
@@ -2324,7 +2341,10 @@ mod tests {
             assert_eq!(meta.selected_files, vec![1, 2, 5]);
             assert_eq!(meta.display_name.as_deref(), Some("ubuntu"));
             assert!(meta.metadata_ready);
-            assert_eq!(meta.torrent_data_base64.as_deref(), Some("ZDRpbmZvAAAAAAAA"));
+            assert_eq!(
+                meta.torrent_data_base64.as_deref(),
+                Some("ZDRpbmZvAAAAAAAA")
+            );
             // 运行时状态不持久化。
             assert!(restored.bt_runtime.is_none());
             // 旧任务不受影响。
@@ -2343,8 +2363,17 @@ mod tests {
         runtime.block_on(async {
             let presets = store.download_preset_list().await.unwrap();
             let ids: Vec<&str> = presets.iter().map(|p| p.id.as_str()).collect();
-            for expected in ["default", "lightweight", "large-file", "background", "night"] {
-                assert!(ids.contains(&expected), "missing built-in preset {expected}");
+            for expected in [
+                "default",
+                "lightweight",
+                "large-file",
+                "background",
+                "night",
+            ] {
+                assert!(
+                    ids.contains(&expected),
+                    "missing built-in preset {expected}"
+                );
             }
             let night = store.download_preset_get("night").await.unwrap().unwrap();
             assert!(night.is_builtin);
@@ -2354,11 +2383,19 @@ mod tests {
             assert!(!night.verify_checksum);
             assert!(night.speed_limit.is_none());
 
-            let bg = store.download_preset_get("background").await.unwrap().unwrap();
+            let bg = store
+                .download_preset_get("background")
+                .await
+                .unwrap()
+                .unwrap();
             assert_eq!(bg.speed_limit, Some(1_000_000));
             assert_eq!(bg.connections, 4);
 
-            let large = store.download_preset_get("large-file").await.unwrap().unwrap();
+            let large = store
+                .download_preset_get("large-file")
+                .await
+                .unwrap()
+                .unwrap();
             assert!(large.verify_checksum);
             assert_eq!(large.connections, 16);
         });
@@ -2401,19 +2438,31 @@ mod tests {
                 is_builtin: false,
             };
             store.download_preset_add(preset.clone()).await.unwrap();
-            let restored = store.download_preset_get("custom-1").await.unwrap().unwrap();
+            let restored = store
+                .download_preset_get("custom-1")
+                .await
+                .unwrap()
+                .unwrap();
             assert_eq!(restored, preset);
 
             let mut updated = restored.clone();
             updated.connections = 8;
             updated.name = "我的预设（已修改）".into();
             store.download_preset_update(updated.clone()).await.unwrap();
-            let restored = store.download_preset_get("custom-1").await.unwrap().unwrap();
+            let restored = store
+                .download_preset_get("custom-1")
+                .await
+                .unwrap()
+                .unwrap();
             assert_eq!(restored.connections, 8);
             assert_eq!(restored.name, "我的预设（已修改）");
 
             store.download_preset_delete("custom-1").await.unwrap();
-            assert!(store.download_preset_get("custom-1").await.unwrap().is_none());
+            assert!(store
+                .download_preset_get("custom-1")
+                .await
+                .unwrap()
+                .is_none());
         });
     }
 
@@ -2477,9 +2526,18 @@ mod tests {
         let runtime = tokio::runtime::Runtime::new().unwrap();
         runtime.block_on(async {
             // 故意按 3/1/2 顺序插入
-            store.category_rule_add(sample_rule("r3", 30, true)).await.unwrap();
-            store.category_rule_add(sample_rule("r1", 10, true)).await.unwrap();
-            store.category_rule_add(sample_rule("r2", 20, true)).await.unwrap();
+            store
+                .category_rule_add(sample_rule("r3", 30, true))
+                .await
+                .unwrap();
+            store
+                .category_rule_add(sample_rule("r1", 10, true))
+                .await
+                .unwrap();
+            store
+                .category_rule_add(sample_rule("r2", 20, true))
+                .await
+                .unwrap();
 
             let list = store.category_rule_list().await.unwrap();
             assert_eq!(list.len(), 3);
@@ -2495,7 +2553,9 @@ mod tests {
         let store = Store::open(directory.path().to_path_buf()).unwrap();
         let runtime = tokio::runtime::Runtime::new().unwrap();
         runtime.block_on(async {
-            let result = store.category_rule_update(sample_rule("ghost", 0, true)).await;
+            let result = store
+                .category_rule_update(sample_rule("ghost", 0, true))
+                .await;
             assert!(result.is_err());
             assert!(result.unwrap_err().contains("不存在"));
         });
@@ -2798,8 +2858,14 @@ mod tests {
         let store = Store::open(directory.path().to_path_buf()).unwrap();
         let runtime = tokio::runtime::Runtime::new().unwrap();
         runtime.block_on(async {
-            store.saved_view_upsert(&sample_saved_view("v1", "下载中")).await.unwrap();
-            store.saved_view_upsert(&sample_saved_view("v2", "来自扩展")).await.unwrap();
+            store
+                .saved_view_upsert(&sample_saved_view("v1", "下载中"))
+                .await
+                .unwrap();
+            store
+                .saved_view_upsert(&sample_saved_view("v2", "来自扩展"))
+                .await
+                .unwrap();
             let list = store.saved_view_list().await.unwrap();
             assert_eq!(list.len(), 2);
             assert_eq!(list[0].id, "v1");
@@ -2824,7 +2890,10 @@ mod tests {
         let store = Store::open(directory.path().to_path_buf()).unwrap();
         let runtime = tokio::runtime::Runtime::new().unwrap();
         runtime.block_on(async {
-            store.saved_view_upsert(&sample_saved_view("v1", "一")).await.unwrap();
+            store
+                .saved_view_upsert(&sample_saved_view("v1", "一"))
+                .await
+                .unwrap();
             store.saved_view_delete("v1").await.unwrap();
             // 再删一次不报错（幂等）
             store.saved_view_delete("v1").await.unwrap();
@@ -2854,11 +2923,19 @@ mod tests {
         let store = Store::open(directory.path().to_path_buf()).unwrap();
         let runtime = tokio::runtime::Runtime::new().unwrap();
         runtime.block_on(async {
-            let empty_name = SavedView { id: "v1".into(), name: "  ".into(), filter: serde_json::json!({}) };
+            let empty_name = SavedView {
+                id: "v1".into(),
+                name: "  ".into(),
+                filter: serde_json::json!({}),
+            };
             let err = store.saved_view_upsert(&empty_name).await.unwrap_err();
             assert!(err.contains("名称"));
 
-            let bad_filter = SavedView { id: "v2".into(), name: "好名".into(), filter: serde_json::json!("not-an-object") };
+            let bad_filter = SavedView {
+                id: "v2".into(),
+                name: "好名".into(),
+                filter: serde_json::json!("not-an-object"),
+            };
             let err = store.saved_view_upsert(&bad_filter).await.unwrap_err();
             assert!(err.contains("JSON"));
 
@@ -2971,9 +3048,15 @@ mod tests {
             let bracket = list.iter().find(|r| r.id == "remove-bracket-site").unwrap();
             assert_eq!(bracket.priority, 10);
             assert!(bracket.enabled);
-            let paren = list.iter().find(|r| r.id == "remove-paren-quality").unwrap();
+            let paren = list
+                .iter()
+                .find(|r| r.id == "remove-paren-quality")
+                .unwrap();
             assert_eq!(paren.priority, 20);
-            let underscore = list.iter().find(|r| r.id == "remove-underscore-site").unwrap();
+            let underscore = list
+                .iter()
+                .find(|r| r.id == "remove-underscore-site")
+                .unwrap();
             assert_eq!(underscore.priority, 30);
             let collapse = list.iter().find(|r| r.id == "collapse-spaces").unwrap();
             assert_eq!(collapse.priority, 40);
@@ -3023,10 +3106,7 @@ mod tests {
         runtime.block_on(async {
             // 新增
             let rule = sample_cleanup_rule("custom-1", 100, true);
-            store
-                .filename_cleanup_rule_add(rule.clone())
-                .await
-                .unwrap();
+            store.filename_cleanup_rule_add(rule.clone()).await.unwrap();
 
             // 读取校验（含 4 个内置规则，共 5 条）
             let list = store.filename_cleanup_rule_list().await.unwrap();
@@ -3164,7 +3244,10 @@ mod tests {
                     |r| r.get(0),
                 )
                 .unwrap();
-            assert!(!has_table, "测试前提：旧数据库不应有 filename_cleanup_rules 表");
+            assert!(
+                !has_table,
+                "测试前提：旧数据库不应有 filename_cleanup_rules 表"
+            );
         }
 
         // 用新版 Store::open 升级数据库
@@ -3194,7 +3277,11 @@ mod tests {
             // 内置规则不应被重复插入
             let builtin_count = list
                 .iter()
-                .filter(|r| r.id.starts_with("remove-") || r.id == "collapse-spaces" || r.id == "strip-trailing-spaces")
+                .filter(|r| {
+                    r.id.starts_with("remove-")
+                        || r.id == "collapse-spaces"
+                        || r.id == "strip-trailing-spaces"
+                })
                 .count();
             assert_eq!(builtin_count, 11);
         });
@@ -3208,10 +3295,7 @@ mod tests {
         let runtime = tokio::runtime::Runtime::new().unwrap();
         runtime.block_on(async {
             let mut rule = sample_cleanup_rule("disabled-1", 100, false);
-            store
-                .filename_cleanup_rule_add(rule.clone())
-                .await
-                .unwrap();
+            store.filename_cleanup_rule_add(rule.clone()).await.unwrap();
             let restored = store
                 .filename_cleanup_rule_list()
                 .await
@@ -3221,10 +3305,7 @@ mod tests {
                 .unwrap();
             assert!(!restored.enabled);
             rule.enabled = true;
-            store
-                .filename_cleanup_rule_update(rule)
-                .await
-                .unwrap();
+            store.filename_cleanup_rule_update(rule).await.unwrap();
             let restored = store
                 .filename_cleanup_rule_list()
                 .await
@@ -3340,9 +3421,7 @@ mod tests {
                 .await
                 .unwrap();
             // 尝试把 t2 改名为已存在的 "工作"
-            let result = store
-                .tag_update(sample_tag("t2", "工作", "#10B981"))
-                .await;
+            let result = store.tag_update(sample_tag("t2", "工作", "#10B981")).await;
             assert!(result.is_err());
             assert!(result.unwrap_err().contains("已存在"));
         });
@@ -3760,7 +3839,12 @@ mod tests {
         let runtime = tokio::runtime::Runtime::new().unwrap();
         runtime.block_on(async {
             let list = store.platform_compatibility_list().await.unwrap();
-            assert_eq!(list.len(), 11, "expected 11 builtin records, got {}", list.len());
+            assert_eq!(
+                list.len(),
+                11,
+                "expected 11 builtin records, got {}",
+                list.len()
+            );
             // 包含所有内置平台
             let platforms: Vec<&str> = list.iter().map(|item| item.platform.as_str()).collect();
             assert!(platforms.contains(&"baidupan"));
@@ -3829,7 +3913,10 @@ mod tests {
         let store = Store::open(directory.path().to_path_buf()).unwrap();
         let runtime = tokio::runtime::Runtime::new().unwrap();
         runtime.block_on(async {
-            let result = store.platform_compatibility_get("nonexistent").await.unwrap();
+            let result = store
+                .platform_compatibility_get("nonexistent")
+                .await
+                .unwrap();
             assert!(result.is_none());
         });
     }
@@ -4027,7 +4114,10 @@ mod tests {
         let runtime = tokio::runtime::Runtime::new().unwrap();
         runtime.block_on(async {
             store
-                .media_credential_upsert(sample_credential("youtube.com", "LOGIN_INFO=yt_test_cookie"))
+                .media_credential_upsert(sample_credential(
+                    "youtube.com",
+                    "LOGIN_INFO=yt_test_cookie",
+                ))
                 .await
                 .unwrap();
             let matched = store

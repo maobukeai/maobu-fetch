@@ -136,29 +136,40 @@ pub fn parse_pikpak_direct_link_meta(raw_url: &str) -> Option<PikPakDirectLinkMe
     let url = url::Url::parse(raw_url.trim()).ok()?;
     let host = url.host_str()?;
     // 必须匹配 dl-*.mypikpak.com 或 dl-*.mypikpak.net
-    if !host.starts_with("dl-") || !(host.ends_with(".mypikpak.com") || host.ends_with(".mypikpak.net")) {
+    if !host.starts_with("dl-")
+        || !(host.ends_with(".mypikpak.com") || host.ends_with(".mypikpak.net"))
+    {
         return None;
     }
     if !url.path().starts_with("/download") {
         return None;
     }
-    let file_id = url.query_pairs()
+    let file_id = url
+        .query_pairs()
         .find(|(k, _)| k == "fileid")
         .map(|(_, v)| v.to_string())
         .filter(|v| !v.is_empty())?;
-    let file_size = url.query_pairs()
+    let file_size = url
+        .query_pairs()
         .find(|(k, _)| k == "f")
         .and_then(|(_, v)| v.parse::<u64>().ok())
         .unwrap_or(0);
-    let expire = url.query_pairs()
+    let expire = url
+        .query_pairs()
         .find(|(k, _)| k == "expire")
         .and_then(|(_, v)| v.parse::<u64>().ok())
         .unwrap_or(0);
-    let user_id = url.query_pairs()
+    let user_id = url
+        .query_pairs()
         .find(|(k, _)| k == "userid")
         .map(|(_, v)| v.to_string())
         .unwrap_or_default();
-    Some(PikPakDirectLinkMeta { file_id, file_size, expire, user_id })
+    Some(PikPakDirectLinkMeta {
+        file_id,
+        file_size,
+        expire,
+        user_id,
+    })
 }
 
 /// 判断 URL 是否为 PikPak 裸直链。
@@ -177,7 +188,12 @@ pub async fn get_captcha_and_sign(device_id: &str) -> Result<(String, String), S
     let salt = "l-sark";
     let raw_sign = format!(
         "{}{}{}{}{}{}",
-        PIKPAK_CLIENT_ID, PIKPAK_CLIENT_VERSION, PIKPAK_PACKAGE_NAME, device_id, timestamp_str, salt
+        PIKPAK_CLIENT_ID,
+        PIKPAK_CLIENT_VERSION,
+        PIKPAK_PACKAGE_NAME,
+        device_id,
+        timestamp_str,
+        salt
     );
 
     let mut hasher = Md5::new();
@@ -260,7 +276,10 @@ async fn fetch_directory_tree(
 
         let mut page_token: Option<String> = None;
         loop {
-            let mut query = vec![("share_id", share_id.to_string()), ("limit", "100".to_string())];
+            let mut query = vec![
+                ("share_id", share_id.to_string()),
+                ("limit", "100".to_string()),
+            ];
             if !parent_id.is_empty() {
                 query.push(("parent_id", parent_id.clone()));
             }
@@ -310,11 +329,18 @@ async fn fetch_directory_tree(
 
             let json: serde_json::Value = serde_json::from_str(&text).unwrap_or_default();
 
-            let share_status = json.get("share_status").and_then(|v| v.as_str()).unwrap_or("");
-            if share_status == "PASS_CODE_EMPTY" || json.get("error").and_then(|v| v.as_str()) == Some("need_pass_code") {
+            let share_status = json
+                .get("share_status")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            if share_status == "PASS_CODE_EMPTY"
+                || json.get("error").and_then(|v| v.as_str()) == Some("need_pass_code")
+            {
                 return Err("NEED_PASS_CODE".into());
             }
-            if share_status == "PASS_CODE_ERROR" || json.get("error").and_then(|v| v.as_str()) == Some("invalid_pass_code") {
+            if share_status == "PASS_CODE_ERROR"
+                || json.get("error").and_then(|v| v.as_str()) == Some("invalid_pass_code")
+            {
                 return Err("提取码错误，请重新输入".into());
             }
 
@@ -345,14 +371,43 @@ async fn fetch_directory_tree(
                 .unwrap_or_default();
 
             for item in files {
-                let id = item.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                let name = item.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                let kind = item.get("kind").and_then(|v| v.as_str()).unwrap_or("drive#file").to_string();
-                let size = item.get("size").and_then(|v| v.as_str()).and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
-                let mime_type = item.get("mime_type").and_then(|v| v.as_str()).map(|s| s.to_string());
-                let file_extension = item.get("file_extension").and_then(|v| v.as_str()).map(|s| s.to_string());
-                let thumbnail_url = item.get("thumbnail_link").or_else(|| item.get("icon_link")).and_then(|v| v.as_str()).map(|s| s.to_string());
-                let web_content_link = item.get("web_content_link").and_then(|v| v.as_str()).map(|s| s.to_string());
+                let id = item
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let name = item
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let kind = item
+                    .get("kind")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("drive#file")
+                    .to_string();
+                let size = item
+                    .get("size")
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| s.parse::<u64>().ok())
+                    .unwrap_or(0);
+                let mime_type = item
+                    .get("mime_type")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                let file_extension = item
+                    .get("file_extension")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                let thumbnail_url = item
+                    .get("thumbnail_link")
+                    .or_else(|| item.get("icon_link"))
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                let web_content_link = item
+                    .get("web_content_link")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
 
                 let item_path = if current_path.is_empty() {
                     name.clone()
@@ -380,7 +435,11 @@ async fn fetch_directory_tree(
                     });
                 }
 
-                if is_folder && !visited_folders.contains(&id) && id != parent_id && file_count < MAX_FILES {
+                if is_folder
+                    && !visited_folders.contains(&id)
+                    && id != parent_id
+                    && file_count < MAX_FILES
+                {
                     // DFS 深度优先：插入队列前端，优先拉取下层真实文件
                     queue.push_front((id, item_path));
                 }
@@ -480,7 +539,10 @@ pub async fn inspect_pikpak_share(
                 .count();
 
             // 优先使用首个顶层文件夹名或首个文件名作为标题
-            let title = if let Some(top_folder) = all_items.iter().find(|i| i.kind == "drive#folder" && !i.path.contains('/')) {
+            let title = if let Some(top_folder) = all_items
+                .iter()
+                .find(|i| i.kind == "drive#folder" && !i.path.contains('/'))
+            {
                 top_folder.name.clone()
             } else if let Some(first) = all_items.iter().find(|i| i.kind == "drive#file") {
                 first.name.clone()
@@ -561,8 +623,8 @@ pub async fn resolve_pikpak_file(
         .await
         .map_err(|e| format!("读取直链响应失败: {}", e))?;
 
-    let json: serde_json::Value = serde_json::from_str(&text)
-        .map_err(|e| format!("解析直链响应失败: {}", e))?;
+    let json: serde_json::Value =
+        serde_json::from_str(&text).map_err(|e| format!("解析直链响应失败: {}", e))?;
 
     let file_info = json.get("file_info").or_else(|| json.get("file"));
 
@@ -618,7 +680,9 @@ mod tests {
         assert!(parse_pikpak_direct_link_meta("https://example.com/download").is_none());
         assert!(parse_pikpak_direct_link_meta("https://mypikpak.com/s/abc123").is_none());
         // 缺少 fileid
-        assert!(parse_pikpak_direct_link_meta("https://dl-a10b.mypikpak.com/download/?f=100").is_none());
+        assert!(
+            parse_pikpak_direct_link_meta("https://dl-a10b.mypikpak.com/download/?f=100").is_none()
+        );
     }
 
     #[tokio::test]
@@ -629,7 +693,13 @@ mod tests {
         println!("inspect_pikpak_share result: {:?}", res);
         if let Ok(info) = &res {
             if let Some(first) = info.files.first() {
-                let direct = resolve_pikpak_file(&info.share_id, &first.id, info.pass_code_token.as_deref(), &device_id).await;
+                let direct = resolve_pikpak_file(
+                    &info.share_id,
+                    &first.id,
+                    info.pass_code_token.as_deref(),
+                    &device_id,
+                )
+                .await;
                 println!("resolve_pikpak_file result: {:?}", direct);
             }
         }
@@ -638,10 +708,15 @@ mod tests {
     #[tokio::test]
     #[ignore]
     async fn test_inspect_subpath_fallback() {
-        let url = "https://mypikpak.com/s/VNRmoFmoroRROhEkho_8kY_1o1/AAAAxJpd7I7-5c9AQu-d5mNlo1_VNR";
+        let url =
+            "https://mypikpak.com/s/VNRmoFmoroRROhEkho_8kY_1o1/AAAAxJpd7I7-5c9AQu-d5mNlo1_VNR";
         let device_id = hex::encode(rand::random::<[u8; 16]>());
         let res = inspect_pikpak_share(url, None, &device_id).await;
-        assert!(res.is_ok(), "子目录失效时必须自动回退根目录并成功解析: {:?}", res);
+        assert!(
+            res.is_ok(),
+            "子目录失效时必须自动回退根目录并成功解析: {:?}",
+            res
+        );
         let info = res.unwrap();
         assert!(!info.files.is_empty(), "必须拉取到文件");
     }
@@ -665,7 +740,10 @@ mod tests {
             return;
         }
         let res_no_pwd = res_no_pwd.unwrap();
-        assert!(res_no_pwd.pass_code_required, "未提供密码时必须要求输入提取码");
+        assert!(
+            res_no_pwd.pass_code_required,
+            "未提供密码时必须要求输入提取码"
+        );
 
         // 2. 错误密码时必须返回报错
         let res_wrong_pwd = inspect_pikpak_share(url, Some("wrong".into()), &device_id).await;
@@ -683,7 +761,11 @@ mod tests {
         }
         assert!(res_ok.is_ok(), "正确密码必须成功解析: {:?}", res_ok);
         let info = res_ok.unwrap();
-        println!(">>> PikPak 解析成功！总文件数: {}, 总大小: {} MB", info.file_count, info.total_size / 1024 / 1024);
+        println!(
+            ">>> PikPak 解析成功！总文件数: {}, 总大小: {} MB",
+            info.file_count,
+            info.total_size / 1024 / 1024
+        );
         for f in &info.files {
             println!("  - [{}] {} ({})", f.kind, f.path, f.size);
         }
@@ -702,7 +784,10 @@ mod tests {
         .await
         .unwrap();
         assert!(!direct_res.url.is_empty(), "直链 URL 不能为空");
-        assert!(direct_res.url.starts_with("http"), "直链必须是 http/https 协议");
+        assert!(
+            direct_res.url.starts_with("http"),
+            "直链必须是 http/https 协议"
+        );
     }
 
     /// 实机验证：PikPak 直链下载停滞熔断 + 自动刷新 + 断点续传（2026-08-21 修复）。
@@ -782,9 +867,7 @@ mod tests {
                 .await;
                 match round {
                     Ok(()) => break Ok(()),
-                    Err(e)
-                        if e.starts_with(LINK_DEAD_PREFIX) && refreshes < MAX_LINK_REFRESHES =>
-                    {
+                    Err(e) if e.starts_with(LINK_DEAD_PREFIX) && refreshes < MAX_LINK_REFRESHES => {
                         refreshes += 1;
                         println!(
                             ">>> [第 {refreshes} 次刷新] 直链失效哨兵触发：{e}（已耗时 {:.0}s）",
@@ -857,9 +940,7 @@ mod tests {
         // 回归（三轮文件逐字节一致）。真实配额场景由
         // test_real_user_pikpak_link_live_download（已确认配额的用户直链）
         // 验证检测半链路。
-        println!(
-            ">>> 配额触发情况：本轮实测自动刷新 {refreshes} 次（0 = 测试链接未触发配额）"
-        );
+        println!(">>> 配额触发情况：本轮实测自动刷新 {refreshes} 次（0 = 测试链接未触发配额）");
 
         // MD5 完整性：与服务器 Content-Md5（base64）比对
         if let Some(expected_b64) = content_md5.as_deref() {
@@ -895,7 +976,8 @@ mod tests {
                 .map(|p| format!("首个差异 @ 偏移 {p}"))
                 .unwrap_or_else(|| "无差异".into());
             assert_eq!(
-                first, other,
+                first,
+                other,
                 "第 {} 轮文件必须与第 1 轮逐字节一致（{mismatch}）",
                 idx + 1
             );
@@ -955,9 +1037,7 @@ mod tests {
         stall_recovery_bytes: u64,
         link_dead_prefix: &str,
     ) -> Result<(), String> {
-        use crate::manager::work_stealing::{
-            RangeWindow, WindowStatus, WorkStealingCoordinator,
-        };
+        use crate::manager::work_stealing::{RangeWindow, WindowStatus, WorkStealingCoordinator};
 
         let chunk = total / connections as u64;
         let mut windows = Vec::new();
@@ -1012,8 +1092,13 @@ mod tests {
                 let speed = cur.saturating_sub(last);
                 last = cur;
                 let pct = (cur as f64 / total as f64) * 100.0;
-                println!(">>> 进度: {:.1}% ({}/{} MB), 速度: {:.2} MB/s",
-                    pct, cur / 1024 / 1024, total / 1024 / 1024, speed as f64 / 1024.0 / 1024.0);
+                println!(
+                    ">>> 进度: {:.1}% ({}/{} MB), 速度: {:.2} MB/s",
+                    pct,
+                    cur / 1024 / 1024,
+                    total / 1024 / 1024,
+                    speed as f64 / 1024.0 / 1024.0
+                );
                 if cur >= total || mon_coordinator.is_all_completed().await {
                     break;
                 }
@@ -1264,7 +1349,9 @@ mod tests {
                 Ok(Err(e)) => {
                     let is_link_dead = e.starts_with(link_dead_prefix.as_str());
                     match &worker_error {
-                        Some(prev) if !prev.starts_with(link_dead_prefix.as_str()) && is_link_dead => {
+                        Some(prev)
+                            if !prev.starts_with(link_dead_prefix.as_str()) && is_link_dead =>
+                        {
                             worker_error = Some(e);
                         }
                         None => worker_error = Some(e),
