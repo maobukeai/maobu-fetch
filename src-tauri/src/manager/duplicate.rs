@@ -510,6 +510,8 @@ mod tests {
             bt_meta: None,
             bt_runtime: None,
             cloud_refresh: None,
+            method: None,
+            body: None,
         }
     }
 

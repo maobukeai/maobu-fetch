@@ -43,6 +43,8 @@ fn test_task(directory: &Path, file_name: &str, policy: CollisionPolicy) -> Down
         bt_meta: None,
         bt_runtime: None,
         cloud_refresh: None,
+        method: None,
+        body: None,
     }
 }
 #[test]
@@ -603,6 +605,8 @@ fn selfcheck_task(
         bt_meta: None,
         bt_runtime: None,
         cloud_refresh: None,
+        method: None,
+        body: None,
     }
 }
 

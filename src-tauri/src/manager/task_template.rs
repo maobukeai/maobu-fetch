@@ -206,6 +206,8 @@ mod tests {
             start_paused: false,
             user_edited_file_name: false,
             cloud_refresh: None,
+            method: None,
+            body: None,
         }
     }
 

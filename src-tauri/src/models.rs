@@ -165,6 +165,12 @@ pub struct DownloadTask {
     /// 旧数据库/旧 JSON 缺失时安全默认 `None`。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cloud_refresh: Option<CloudRefreshMeta>,
+    /// HTTP 请求方法（"GET" / "POST"）。旧任务安全默认 None（等同 GET）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub method: Option<String>,
+    /// HTTP 请求体（针对 POST 打包下载等场景）。旧任务安全默认 None。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body: Option<String>,
 }
 
 /// 云盘直链刷新元数据：由创建任务的前端随直链一并提交，
@@ -695,6 +701,12 @@ pub struct NewTaskRequest {
     /// 旧版本 JSON/扩展请求未包含此字段时默认 `None`（不自动刷新）。
     #[serde(default)]
     pub cloud_refresh: Option<CloudRefreshMeta>,
+    /// HTTP 请求方法（"GET" / "POST"）。默认为 None（等同 GET）。
+    #[serde(default)]
+    pub method: Option<String>,
+    /// HTTP 请求体（针对 POST 打包下载等场景）。默认为 None。
+    #[serde(default)]
+    pub body: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -2973,6 +2985,8 @@ mod tests {
             bt_meta: None,
             bt_runtime: None,
             cloud_refresh: None,
+            method: None,
+            body: None,
         };
         let json = serde_json::to_string(&task).unwrap();
         let restored: DownloadTask = serde_json::from_str(&json).unwrap();

@@ -850,7 +850,12 @@ pub(crate) fn parse_content_disposition_filename(header: &str) -> Option<String>
         {
             let value = rest.trim().trim_matches('"');
             if !value.is_empty() {
-                return Some(sanitize_filename(value));
+                let decoded = if value.contains('%') {
+                    percent_decode_str(value)
+                } else {
+                    value.to_string()
+                };
+                return Some(sanitize_filename(&decoded));
             }
         }
     }
@@ -1560,6 +1565,8 @@ mod tests {
             bt_meta: None,
             bt_runtime: None,
             cloud_refresh: None,
+            method: None,
+            body: None,
         };
         let _ = &mut task; // silence unused mut warning if any
         task

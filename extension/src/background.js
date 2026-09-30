@@ -77,6 +77,8 @@ async function sendTask(url, fileName, extra = {}) {
     url, file_name: fileName || undefined, headers: extra.headers || {}, priority: 0,
     per_task_speed_limit: 0, collision_policy: "rename", source: "browser", media: extra.media,
     connection_count: extra.connection_count || extra.connectionCount || undefined,
+    method: extra.method || undefined,
+    body: extra.body || undefined,
   });
   if (!response.ok) throw new Error(await response.text() || `HTTP ${response.status}`);
   return response.json();
@@ -114,7 +116,7 @@ async function openResourceGrabberForTab(tab) {
   } catch {
     try {
       if (chrome.scripting?.executeScript) {
-        await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["src/content-ui.js", "src/pikpak-adapter.js", "src/content.js"] });
+        await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["src/content-ui.js", "src/pikpak-adapter.js", "src/landisk-adapter.js", "src/content.js"] });
         const res = await chrome.tabs.sendMessage(tab.id, { type: "grab-page-resources" });
         if (res?.items) items = res.items;
       }
@@ -540,7 +542,7 @@ export async function confirmTakeoverWithOverlay(item, settings, deps = {}) {
   } catch {
     try {
       if (chrome.scripting?.executeScript) {
-        await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["src/content-ui.js", "src/pikpak-adapter.js", "src/content.js"] });
+        await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["src/content-ui.js", "src/pikpak-adapter.js", "src/landisk-adapter.js", "src/content.js"] });
         response = await askOverlay();
       }
     } catch {}
@@ -679,6 +681,58 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
         notify("猫步下载器", `已添加 PikPak 任务 (${connectionCount} 线程)：${message.fileName || "文件"}`);
         void focusDesktop();
         return { ok: true, item: task };
+      } catch (error) {
+        const friendly = friendlyBridgeError(error);
+        notify("猫步下载器发送失败", friendly);
+        return { ok: false, error: friendly };
+      }
+    }
+    // 局域网互联2 (LanDisk) 打包下载接管：接管网页端的 POST /api/download/batch 流式 ZIP 下载
+    if (message.type === "send-landisk-batch-task") {
+      try {
+        let headers = {
+          "Content-Type": message.contentType || "application/x-www-form-urlencoded",
+          ...(message.headers || {}),
+        };
+        if (sender.tab) {
+          const tabHeaders = await getTabDownloadHeaders(sender.tab, message.url);
+          headers = { ...tabHeaders, ...headers };
+        }
+        const task = await sendTask(message.url, message.fileName, {
+          headers,
+          method: "POST",
+          body: message.body,
+          connection_count: 1,
+        });
+        notify("猫步下载器", `已接管局域网互联打包下载：${message.fileName || "文件"}`);
+        void focusDesktop();
+        return { ok: true, item: task };
+      } catch (error) {
+        const friendly = friendlyBridgeError(error);
+        notify("猫步下载器发送失败", friendly);
+        return { ok: false, error: friendly };
+      }
+    }
+    // 局域网互联2 (LanDisk) 极速并发下载：用户勾选多文件时，通过多任务独立 HTTP Range（各 16 线程）绕过服务端单线程打包瓶颈
+    if (message.type === "send-landisk-concurrent-files") {
+      try {
+        const items = Array.isArray(message.items) ? message.items : [];
+        let addedCount = 0;
+        for (const item of items) {
+          let headers = message.headers || {};
+          if (sender.tab) {
+            const tabHeaders = await getTabDownloadHeaders(sender.tab, item.url);
+            headers = { ...tabHeaders, ...headers };
+          }
+          await sendTask(item.url, item.fileName, {
+            headers,
+            connection_count: 16,
+          });
+          addedCount++;
+        }
+        notify("猫步下载器", `已添加 ${addedCount} 个并发极速任务 (每个 16 线程)：正在满速下载`);
+        void focusDesktop();
+        return { ok: true, count: addedCount };
       } catch (error) {
         const friendly = friendlyBridgeError(error);
         notify("猫步下载器发送失败", friendly);

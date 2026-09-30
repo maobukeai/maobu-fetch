@@ -418,6 +418,8 @@ impl DownloadManager {
             bt_meta: None,
             bt_runtime: None,
             cloud_refresh: request.cloud_refresh,
+            method: request.method,
+            body: request.body,
         };
 
         // PikPak 裸直链自动注入 Referer 和元数据
@@ -472,6 +474,8 @@ impl DownloadManager {
                     start_paused: false,
                     user_edited_file_name: false,
                     cloud_refresh: None,
+                    method: None,
+                    body: None,
                 })
                 .await?;
             tasks.push(task);
@@ -778,6 +782,8 @@ impl DownloadManager {
             bt_meta: Some(meta),
             bt_runtime: None,
             cloud_refresh: None,
+            method: None,
+            body: None,
         };
         self.store.upsert_task(&task).await?;
         self.register_power_action_target(&task.id).await;
@@ -2003,6 +2009,8 @@ impl DownloadManager {
                             start_paused: false,
                             user_edited_file_name: true,
                             cloud_refresh: None,
+                            method: None,
+                            body: None,
                         };
                         let _ = sub_manager.add(req).await;
                     }
@@ -2083,6 +2091,8 @@ impl DownloadManager {
                             start_paused: false,
                             user_edited_file_name: true,
                             cloud_refresh: None,
+                            method: None,
+                            body: None,
                         };
                         let _ = sub_manager.add(req).await;
                     }
@@ -2188,6 +2198,8 @@ impl DownloadManager {
                             start_paused: false,
                             user_edited_file_name: true,
                             cloud_refresh: None,
+                            method: None,
+                            body: None,
                         };
                         let _ = sub_manager.add(req).await;
                     }
@@ -2338,6 +2350,8 @@ impl DownloadManager {
                                 // 跳过自动文件名清理规则（已显式指定）
                                 user_edited_file_name: true,
                                 cloud_refresh: None,
+                                method: None,
+                                body: None,
                             };
                             if let Err(e) = self.add(new_req).await {
                                 tracing::warn!(error = %e, "创建图集子任务失败");
@@ -2565,8 +2579,11 @@ impl DownloadManager {
             } else {
                 settings.connections_per_download.max(8)
             };
-            if is_task_lan_or_tailscale(&task) {
+            let is_local_lan = is_task_local_lan(&task);
+            if is_local_lan {
                 target_conn = target_conn.min(4);
+            } else if is_task_tailscale(&task) && target_conn < 16 {
+                target_conn = 16;
             }
             let conn_count = if task.total_bytes > 0 && task.total_bytes < 10 * 1024 * 1024 {
                 1
@@ -2734,8 +2751,11 @@ impl DownloadManager {
             } else {
                 settings.connections_per_download.max(8)
             };
-            if crate::proxy::is_private_or_tailscale_url(&task.url) {
+            let is_local_lan = crate::proxy::is_local_lan_url(&task.url);
+            if is_local_lan {
                 target_conn = target_conn.min(4);
+            } else if crate::proxy::is_tailscale_url(&task.url) && target_conn < 16 {
+                target_conn = 16;
             }
             let conn_count = if task.total_bytes > 0 && task.total_bytes < 10 * 1024 * 1024 {
                 1
@@ -2869,44 +2889,192 @@ impl DownloadManager {
         };
         inject_media_credentials(&mut task, &self.store).await;
 
-        // 零成本探针（Zero-Cost Probe）：
-        // 消除会消耗并作废一次性/限时防盗链签名 Token 的独立冗余 HEAD 请求。
-        // 直接使用 GET Range: bytes=0-0 一次性探测：
-        // 1. 若服务端支持 Range：返回 206 Partial Content，Content-Range 给出精确总长度，
-        //    只传输 1 字节探针体，且无需后续重复 Range 验证请求；
-        // 2. 若服务端不支持 Range（或 CDN 忽略 Range 头部）：返回 200 OK，Content-Length 给出总长度，
-        //    此时该响应已是自字节 0 起的有效下载流！直接无缝将该响应交由单连接流式下载消费，
-        //    实现单请求 100% 成功下载，彻底解决一次性 Token / 签名直链二次请求被拒问题。
-        let mut probe_req = client
-            .get(&task.url)
-            .header(ACCEPT_ENCODING, "identity")
-            .header(RANGE, "bytes=0-0");
-        for (name, value) in &task.headers {
-            probe_req = probe_req.header(name, value);
-        }
-        let initial_probe = match probe_req.send().await {
-            Ok(resp) => resp,
-            Err(err) => {
-                tracing::error!(task_id = %task.id, error = ?err, "探测 GET Range 失败");
-                return Err(friendly_reqwest(err));
+        let is_post = task
+            .method
+            .as_deref()
+            .map(|m| m.eq_ignore_ascii_case("post"))
+            .unwrap_or(false);
+
+        let initial_probe = if is_post {
+            let mut req = client.post(&task.url).header(ACCEPT_ENCODING, "identity");
+            let has_content_type = task
+                .headers
+                .keys()
+                .any(|k| k.eq_ignore_ascii_case("Content-Type"));
+            if !has_content_type {
+                if let Some(b) = &task.body {
+                    if b.trim_start().starts_with('{') {
+                        req = req.header(CONTENT_TYPE, "application/json");
+                    } else {
+                        req = req.header(CONTENT_TYPE, "application/x-www-form-urlencoded");
+                    }
+                }
+            }
+            if let Some(b) = &task.body {
+                req = req.body(b.clone());
+            }
+            for (name, value) in &task.headers {
+                req = req.header(name, value);
+            }
+            match req.send().await {
+                Ok(resp) => resp,
+                Err(err) => {
+                    tracing::error!(task_id = %task.id, error = ?err, "探测 POST 请求失败");
+                    return Err(friendly_reqwest(err));
+                }
+            }
+        } else {
+            let mut probe_req = client
+                .get(&task.url)
+                .header(ACCEPT_ENCODING, "identity")
+                .header(RANGE, "bytes=0-0");
+            for (name, value) in &task.headers {
+                probe_req = probe_req.header(name, value);
+            }
+            let initial_probe = match probe_req.send().await {
+                Ok(resp) => resp,
+                Err(err) => {
+                    tracing::error!(task_id = %task.id, error = ?err, "探测 GET Range 失败");
+                    return Err(friendly_reqwest(err));
+                }
+            };
+
+            // 对 Range 头部返回非成功状态（如 400/403/405/416/501 等）：回退为标准 GET 探测
+            if !initial_probe.status().is_success()
+                && initial_probe.status() != reqwest::StatusCode::PARTIAL_CONTENT
+            {
+                let mut fallback_req = client.get(&task.url).header(ACCEPT_ENCODING, "identity");
+                for (name, value) in &task.headers {
+                    fallback_req = fallback_req.header(name, value);
+                }
+                match fallback_req.send().await {
+                    Ok(resp) if resp.status().is_success() => resp,
+                    _ => initial_probe,
+                }
+            } else {
+                initial_probe
             }
         };
 
-        // 对 Range 头部返回非成功状态（如 400/403/405/416/501 等）：回退为标准 GET 探测
-        let probe = if !initial_probe.status().is_success()
-            && initial_probe.status() != reqwest::StatusCode::PARTIAL_CONTENT
+        let mut probe = initial_probe;
+
+        // 针对局域网互联2 (LanDisk) 目录打包自适应：
+        // 场景 1：如果 GET 请求 /api/download?path=... 收到 400（"不能直接下载整个目录，请使用打包下载功能"），
+        // 自动将任务升级为 POST /api/download/batch，并构建包含该目录的 JSON 请求体。
+        // 场景 2：如果任务 URL 包含 /api/download/batch 且方法为 GET，
+        // 自动将请求转换为 POST，并提取 URL 中的 files/path 查询参数填入请求体。
+        if (!probe.status().is_success() && probe.status() != reqwest::StatusCode::PARTIAL_CONTENT)
+            || task.url.contains("/api/download/batch")
         {
-            let mut fallback_req = client.get(&task.url).header(ACCEPT_ENCODING, "identity");
-            for (name, value) in &task.headers {
-                fallback_req = fallback_req.header(name, value);
+            if let Ok(parsed_url) = Url::parse(&task.url) {
+                let path_str = parsed_url.path();
+                if path_str.ends_with("/api/download") && probe.status() == reqwest::StatusCode::BAD_REQUEST {
+                    let path_param = parsed_url
+                        .query_pairs()
+                        .find(|(k, _)| k == "path")
+                        .map(|(_, v)| v.to_string());
+                    if let Some(target_dir) = path_param {
+                        let pin_param = parsed_url
+                            .query_pairs()
+                            .find(|(k, _)| k == "pin")
+                            .map(|(_, v)| v.to_string());
+                        let mut batch_url = parsed_url.clone();
+                        batch_url.set_path(&path_str.replace("/api/download", "/api/download/batch"));
+                        batch_url.set_query(None);
+                        if let Some(pin) = &pin_param {
+                            batch_url.query_pairs_mut().append_pair("pin", pin);
+                        }
+                        let folder_name = std::path::Path::new(&target_dir)
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .filter(|s| !s.is_empty())
+                            .unwrap_or("folder_download")
+                            .to_string();
+                        let body_json = serde_json::json!({
+                            "files": [target_dir],
+                            "folderName": folder_name
+                        })
+                        .to_string();
+                        task.url = batch_url.to_string();
+                        task.method = Some("POST".into());
+                        task.body = Some(body_json.clone());
+                        task.headers.insert("Content-Type".into(), "application/json".into());
+                        task.file_name = format!("{folder_name}.zip");
+                        task.category = "zip".into();
+
+                        tracing::info!(
+                            task_id = %task.id,
+                            new_url = %task.url,
+                            "局域网互联目录打包自适应：400 目录下载已自动升级为 POST /api/download/batch"
+                        );
+
+                        let mut post_req = client
+                            .post(&task.url)
+                            .header(ACCEPT_ENCODING, "identity")
+                            .header(CONTENT_TYPE, "application/json")
+                            .body(body_json);
+                        for (name, value) in &task.headers {
+                            post_req = post_req.header(name, value);
+                        }
+                        if let Ok(new_resp) = post_req.send().await {
+                            probe = new_resp;
+                        }
+                    }
+                } else if path_str.ends_with("/api/download/batch") && !is_post {
+                    let files_param = parsed_url
+                        .query_pairs()
+                        .filter(|(k, _)| k == "files" || k == "files[]" || k == "path")
+                        .map(|(_, v)| v.to_string())
+                        .collect::<Vec<_>>();
+                    let folder_name = parsed_url
+                        .query_pairs()
+                        .find(|(k, _)| k == "folderName")
+                        .map(|(_, v)| v.to_string())
+                        .unwrap_or_else(|| "batch_download".to_string());
+                    let pin_param = parsed_url
+                        .query_pairs()
+                        .find(|(k, _)| k == "pin")
+                        .map(|(_, v)| v.to_string());
+
+                    if !files_param.is_empty() {
+                        let mut clean_url = parsed_url.clone();
+                        clean_url.set_query(None);
+                        if let Some(pin) = &pin_param {
+                            clean_url.query_pairs_mut().append_pair("pin", pin);
+                        }
+                        let body_json = serde_json::json!({
+                            "files": files_param,
+                            "folderName": folder_name
+                        })
+                        .to_string();
+                        task.url = clean_url.to_string();
+                        task.method = Some("POST".into());
+                        task.body = Some(body_json.clone());
+                        task.headers.insert("Content-Type".into(), "application/json".into());
+                        task.file_name = format!("{folder_name}.zip");
+                        task.category = "zip".into();
+
+                        tracing::info!(
+                            task_id = %task.id,
+                            new_url = %task.url,
+                            "局域网互联批量打包自适应：GET /api/download/batch 已自动转为带参数的 POST"
+                        );
+
+                        let mut post_req = client
+                            .post(&task.url)
+                            .header(ACCEPT_ENCODING, "identity")
+                            .header(CONTENT_TYPE, "application/json")
+                            .body(body_json);
+                        for (name, value) in &task.headers {
+                            post_req = post_req.header(name, value);
+                        }
+                        if let Ok(new_resp) = post_req.send().await {
+                            probe = new_resp;
+                        }
+                    }
+                }
             }
-            match fallback_req.send().await {
-                Ok(resp) if resp.status().is_success() => resp,
-                _ => initial_probe,
-            }
-        } else {
-            initial_probe
-        };
+        }
 
         let probe_url = diagnostic_url(probe.url());
         let probe_status = probe.status();
@@ -3095,8 +3263,9 @@ impl DownloadManager {
                 && task.connection_count == settings.connections_per_download
             {
                 let mut suggested = precheck::suggest_connections(Some(total), supports_range);
-                let is_lan_or_tailscale = is_task_lan_or_tailscale(&task);
-                if is_lan_or_tailscale {
+                let is_local_lan = is_task_local_lan(&task);
+                let is_tailscale = is_task_tailscale(&task);
+                if is_local_lan {
                     suggested = suggested.min(4);
                 }
                 let is_baidu_task =
@@ -3107,8 +3276,18 @@ impl DownloadManager {
                     || task.url.contains("lanzou")
                     || task.url.contains("123pan")
                     || task.url.contains("123684");
-                let target_count = if is_lan_or_tailscale {
+                let target_count = if is_local_lan {
                     suggested.min(4)
+                } else if is_tailscale {
+                    // Tailscale 跨广域虚拟网 (WAN/DERP)，延迟较高且有丢包抖动，
+                    // 提升并发 HTTP Range 连接数至 16（大文件）或 8（中文件），以打满带宽时延积 (BDP)。
+                    if total >= 10 * 1024 * 1024 {
+                        16
+                    } else if total >= 4 * 1024 * 1024 {
+                        8
+                    } else {
+                        suggested
+                    }
                 } else if is_baidu_task && total >= 10 * 1024 * 1024 {
                     16
                 } else if is_fast_cloud_task && total >= 10 * 1024 * 1024 {
@@ -3145,10 +3324,11 @@ impl DownloadManager {
             }
         }
 
-        // 局域网 / Tailscale 直连感知：对局域网与 Tailscale 对等传输服务，动态并发连接数上限压制至最高 4（如 2-4 连接），
-        // 避免过多并发 Range 连接打垮对方轻量级内存互传服务或造成并发写锁竞争。
-        let is_lan_or_tailscale = is_task_lan_or_tailscale(&task);
-        if is_lan_or_tailscale
+        // 本地局域网直连感知：对本地局域网（192.168.x.x / 10.x.x.x 等近场直连），动态并发连接数上限压制至最高 4（如 2-4 连接），
+        // 避免过多并发 Range 连接打垮轻量服务。
+        // 注意：Tailscale 异地连接因跨广域网，不应套用此 4 连接压制，允许以 16 连接加速传输。
+        let is_local_lan = is_task_local_lan(&task);
+        if is_local_lan
             && !is_user_explicit
             && task.downloaded_bytes == 0
             && task.segments.is_empty()
@@ -3159,7 +3339,7 @@ impl DownloadManager {
                     task_id = %task.id,
                     capped_connections = lan_cap,
                     original_connections = connections,
-                    "局域网/Tailscale 对等连接感知：自动将连接数从 {} 限制为 {} 以保护轻量互传服务",
+                    "本地局域网对等连接感知：自动将连接数从 {} 限制为 {} 以保护轻量互传服务",
                     connections,
                     lan_cap
                 );
@@ -3298,7 +3478,20 @@ impl DownloadManager {
             tracing::info!(task_id = %task.id, "复用零成本探针已打开的流式响应，避免二次请求作废一次性直链");
             initial_response.unwrap()
         } else {
-            let mut request = client.get(&task.url).header(ACCEPT_ENCODING, "identity");
+            let is_post = task
+                .method
+                .as_deref()
+                .map(|m| m.eq_ignore_ascii_case("POST"))
+                .unwrap_or(false);
+            let mut request = if is_post {
+                let mut req = client.post(&task.url).header(ACCEPT_ENCODING, "identity");
+                if let Some(body) = &task.body {
+                    req = req.body(body.clone());
+                }
+                req
+            } else {
+                client.get(&task.url).header(ACCEPT_ENCODING, "identity")
+            };
             for (name, value) in &task.headers {
                 request = request.header(name, value);
             }
@@ -6392,6 +6585,24 @@ pub fn is_task_lan_or_tailscale(task: &DownloadTask) -> bool {
             .map_or(false, crate::proxy::is_private_or_tailscale_url)
 }
 
+/// 判断任务的目标 URL 是否属于 Tailscale 虚拟局域网。
+pub fn is_task_tailscale(task: &DownloadTask) -> bool {
+    crate::proxy::is_tailscale_url(&task.url)
+        || task
+            .final_url
+            .as_deref()
+            .map_or(false, crate::proxy::is_tailscale_url)
+}
+
+/// 判断任务的目标 URL 是否属于本地局域网（排除 Tailscale 远程 VPN）。
+pub fn is_task_local_lan(task: &DownloadTask) -> bool {
+    crate::proxy::is_local_lan_url(&task.url)
+        || task
+            .final_url
+            .as_deref()
+            .map_or(false, crate::proxy::is_local_lan_url)
+}
+
 /// Task 31：根据任务级 `proxy_override` 构造 reqwest 客户端。
 ///
 /// 优先级：
@@ -6402,7 +6613,11 @@ pub fn is_task_lan_or_tailscale(task: &DownloadTask) -> bool {
 ///   - 若任务 URL 或最终重定向 URL 指向局域网或 Tailscale 私网地址，自动绕过代理（`no_proxy`）。
 ///   - 否则回退到全局设置（manual / none / system）。
 fn build_task_client(s: &AppSettings, task: &DownloadTask) -> Result<reqwest::Client, String> {
-    let connection_timeout_secs = s.default_retry_policy.connection_timeout_secs.max(1);
+    let mut connection_timeout_secs = s.default_retry_policy.connection_timeout_secs.max(1);
+    if is_task_tailscale(task) {
+        // Tailscale 跨公网握手或 DERP 中继穿透需要足够时间，防止过早超时
+        connection_timeout_secs = connection_timeout_secs.max(15);
+    }
     let mut builder = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::limited(10))
         .user_agent(&s.user_agent)

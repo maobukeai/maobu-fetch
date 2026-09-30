@@ -1008,6 +1008,8 @@ mod tests {
             }),
             bt_runtime: None,
             cloud_refresh: None,
+            method: None,
+            body: None,
         }
     }
 }

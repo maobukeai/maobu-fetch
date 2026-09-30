@@ -16,6 +16,7 @@ releases/*.zip
 releases_out/
 
 # 临时元数据与工具缓存
+.mission/
 .mission_ledger.json
 .superpowers/
 .trae/

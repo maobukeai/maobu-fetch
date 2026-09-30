@@ -2420,6 +2420,8 @@ async fn cli_add(
         bt_meta: None,
         bt_runtime: None,
         cloud_refresh: None,
+        method: None,
+        body: None,
     };
 
     store.upsert_task(&task).await?;
@@ -2775,6 +2777,8 @@ async fn run_forwarded_command(manager: &SharedManager, command: CliCommand) -> 
                 start_paused: false,
                 user_edited_file_name: false,
                 cloud_refresh: None,
+                method: None,
+                body: None,
             };
             let task = manager.add(request).await?;
             println!("Task created: {}", task.id);

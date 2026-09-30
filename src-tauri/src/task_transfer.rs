@@ -126,6 +126,8 @@ fn import_request(item: TaskExportItem, destination: &Path) -> Result<NewTaskReq
         // 导出文件出于安全不包含云盘刷新凭据（pass_code_token 等），
         // 导入的任务链接失效时需用户手动重建。
         cloud_refresh: None,
+        method: None,
+        body: None,
     })
 }
 
@@ -765,6 +767,8 @@ mod tests {
             bt_meta: None,
             bt_runtime: None,
             cloud_refresh: None,
+            method: None,
+            body: None,
         }
     }
 

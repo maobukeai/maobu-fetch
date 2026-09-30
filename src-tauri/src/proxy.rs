@@ -373,6 +373,86 @@ pub fn is_private_or_tailscale_url(url_str: &str) -> bool {
     false
 }
 
+/// 判断主机名或 IP 是否属于 Tailscale 虚拟局域网（100.64.0.0/10、*.ts.net、*.tailscale.net、fd7a:115c:a1e0::/48）。
+pub fn is_tailscale_host(host: &str) -> bool {
+    let host = host.trim();
+    if host.is_empty() {
+        return false;
+    }
+    let host_cleaned = if host.starts_with('[') {
+        if let Some(close_bracket) = host.find(']') {
+            &host[1..close_bracket]
+        } else {
+            host.trim_matches(['[', ']'])
+        }
+    } else if let Some(colon_idx) = host.rfind(':') {
+        if host.find(':') == Some(colon_idx) {
+            &host[..colon_idx]
+        } else {
+            host
+        }
+    } else {
+        host
+    };
+    let host_cleaned = host_cleaned.trim();
+    if host_cleaned.is_empty() {
+        return false;
+    }
+    let host_lower = host_cleaned.to_ascii_lowercase();
+    let host_norm = host_lower.trim_end_matches('.');
+    if host_norm.is_empty() {
+        return false;
+    }
+    if let Ok(ip) = host_norm.parse::<std::net::IpAddr>() {
+        match ip {
+            std::net::IpAddr::V4(ipv4) => {
+                let octets = ipv4.octets();
+                return octets[0] == 100 && (64..=127).contains(&octets[1]);
+            }
+            std::net::IpAddr::V6(ipv6) => {
+                if let Some(v4) = ipv6.to_ipv4() {
+                    let octets = v4.octets();
+                    return octets[0] == 100 && (64..=127).contains(&octets[1]);
+                }
+                let segments = ipv6.segments();
+                return segments[0] == 0xfd7a && segments[1] == 0x115c && segments[2] == 0xa1e0;
+            }
+        }
+    }
+    host_norm == "ts.net"
+        || host_norm.ends_with(".ts.net")
+        || host_norm == "tailscale.net"
+        || host_norm.ends_with(".tailscale.net")
+}
+
+/// 判断 URL 是否指向 Tailscale 虚拟局域网。
+pub fn is_tailscale_url(url_str: &str) -> bool {
+    let trimmed = url_str.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    if let Ok(parsed) = url::Url::parse(trimmed) {
+        if let Some(host) = parsed.host_str() {
+            return is_tailscale_host(host);
+        }
+    } else if let Ok(parsed) = url::Url::parse(&format!("http://{trimmed}")) {
+        if let Some(host) = parsed.host_str() {
+            return is_tailscale_host(host);
+        }
+    }
+    false
+}
+
+/// 判断主机名或 IP 是否属于局域网本地网络（排除 Tailscale 远程 VPN）。
+pub fn is_local_lan_host(host: &str) -> bool {
+    is_private_or_tailscale_host(host) && !is_tailscale_host(host)
+}
+
+/// 判断 URL 是否属于局域网本地网络（排除 Tailscale 远程 VPN）。
+pub fn is_local_lan_url(url_str: &str) -> bool {
+    is_private_or_tailscale_url(url_str) && !is_tailscale_url(url_str)
+}
+
 /// 解析任务实际使用的代理 URL。
 ///
 /// 优先级（高 → 低）：
@@ -706,6 +786,8 @@ mod tests {
             bt_meta: None,
             bt_runtime: None,
             cloud_refresh: None,
+            method: None,
+            body: None,
             final_url: None,
             response_status: None,
             content_type: None,
@@ -1166,5 +1248,49 @@ mod tests {
             resolve_proxy(&settings, &task).as_deref(),
             Some("http://corp-proxy:1080")
         );
+    }
+
+    #[test]
+    fn test_tailscale_vs_local_lan_differentiation() {
+        // Tailscale IPv4 CGNAT
+        assert!(is_tailscale_host("100.64.0.1"));
+        assert!(is_tailscale_host("100.100.50.25"));
+        assert!(is_tailscale_host("100.127.255.254"));
+        assert!(!is_local_lan_host("100.64.0.1"));
+
+        // Tailscale IPv6
+        assert!(is_tailscale_host("fd7a:115c:a1e0::1"));
+        assert!(!is_local_lan_host("fd7a:115c:a1e0::1"));
+
+        // Tailscale domains
+        assert!(is_tailscale_host("my-node.ts.net"));
+        assert!(is_tailscale_host("device.sub.tailscale.net"));
+        assert!(!is_local_lan_host("my-node.ts.net"));
+
+        // Tailscale URLs
+        assert!(is_tailscale_url("http://100.100.1.2:3000/api/download/batch"));
+        assert!(!is_local_lan_url("http://100.100.1.2:3000/api/download/batch"));
+        assert!(is_private_or_tailscale_url("http://100.100.1.2:3000/api/download/batch"));
+
+        // Local LAN
+        assert!(is_local_lan_host("127.0.0.1"));
+        assert!(is_local_lan_host("localhost"));
+        assert!(is_local_lan_host("192.168.1.100"));
+        assert!(is_local_lan_host("10.0.0.5"));
+        assert!(is_local_lan_host("172.20.0.2"));
+        assert!(is_local_lan_host("my-nas.local"));
+        assert!(is_local_lan_host("router.lan"));
+        assert!(!is_tailscale_host("192.168.1.100"));
+        assert!(!is_tailscale_host("127.0.0.1"));
+
+        // Local LAN URLs
+        assert!(is_local_lan_url("http://192.168.1.100:3000/api/download"));
+        assert!(!is_tailscale_url("http://192.168.1.100:3000/api/download"));
+        assert!(is_private_or_tailscale_url("http://192.168.1.100:3000/api/download"));
+
+        // Public WAN
+        assert!(!is_tailscale_host("8.8.8.8"));
+        assert!(!is_local_lan_host("8.8.8.8"));
+        assert!(!is_private_or_tailscale_url("https://example.com/file.zip"));
     }
 }
