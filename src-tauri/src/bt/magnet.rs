@@ -157,12 +157,6 @@ fn hex_val(byte: Option<u8>) -> Option<u8> {
     }
 }
 
-/// tracker 列表转 aria2 addUri 的多 URI 参数（磁力 URI + tr 追加形式）。
-/// aria2 原生支持在 magnet URI 后追加 &tr=，此函数保留原磁力字符串由调用方
-/// 传入，tracker 仅用于展示与去重统计，故此处返回用于展示的 join 结果。
-pub fn trackers_summary(info: &MagnetInfo) -> String {
-    format!("{} 个 tracker", info.trackers.len())
-}
 
 #[cfg(test)]
 mod tests {

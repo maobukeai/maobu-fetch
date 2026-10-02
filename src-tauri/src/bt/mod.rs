@@ -8,10 +8,6 @@
 pub mod magnet;
 pub mod status;
 
-pub mod process {
-    pub use super::{validate_torrent_bytes, validate_torrent_file};
-}
-
 use crate::manager::{safe_name, SharedManager};
 use crate::models::{AppSettings, BtFileEntry, BtRuntimeStatus, DownloadTask, TaskStatus};
 use librqbit::{
@@ -74,6 +70,8 @@ pub struct BtEngine {
     session: Mutex<Option<Arc<Session>>>,
     bindings: Mutex<HashMap<String, Arc<ManagedTorrent>>>,
     speed_samples: Mutex<HashMap<String, SpeedSample>>,
+    data_dir: std::sync::RwLock<Option<PathBuf>>,
+    last_settings: Mutex<Option<AppSettings>>,
 }
 
 struct SpeedSample {
@@ -86,7 +84,113 @@ struct SpeedSample {
 
 impl BtEngine {
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            session: Mutex::new(None),
+            bindings: Mutex::new(HashMap::new()),
+            speed_samples: Mutex::new(HashMap::new()),
+            data_dir: std::sync::RwLock::new(None),
+            last_settings: Mutex::new(None),
+        }
+    }
+
+    pub fn with_data_dir(data_dir: PathBuf) -> Self {
+        Self {
+            session: Mutex::new(None),
+            bindings: Mutex::new(HashMap::new()),
+            speed_samples: Mutex::new(HashMap::new()),
+            data_dir: std::sync::RwLock::new(Some(data_dir)),
+            last_settings: Mutex::new(None),
+        }
+    }
+
+    pub fn set_data_dir(&self, dir: PathBuf) {
+        if let Ok(mut guard) = self.data_dir.write() {
+            *guard = Some(dir);
+        }
+    }
+
+    pub fn resolve_data_dir(&self) -> PathBuf {
+        if let Ok(guard) = self.data_dir.read() {
+            if let Some(dir) = guard.as_ref() {
+                return dir.clone();
+            }
+        }
+        if let Some(env_dir) = std::env::var_os("MAOBU_FETCH_DATA_DIR")
+            .or_else(|| std::env::var_os("LUMAGET_DATA_DIR"))
+            .map(PathBuf::from)
+        {
+            return env_dir.join("session");
+        }
+        #[cfg(windows)]
+        if let Some(appdata) = std::env::var_os("APPDATA") {
+            return PathBuf::from(appdata).join("maobu-fetch").join("session");
+        }
+        std::env::temp_dir().join("maobu-fetch-session")
+    }
+
+    /// 应用全局限速到 librqbit 会话。
+    pub fn apply_ratelimits(session: &Session, settings: &AppSettings) {
+        let dl_bps = if settings.speed_limit_kbps > 0 {
+            let bytes_per_sec = settings.speed_limit_kbps.saturating_mul(1024);
+            std::num::NonZeroU32::new(bytes_per_sec.min(u32::MAX as u64) as u32)
+        } else {
+            None
+        };
+        let ul_bps = if settings.bt_upload_limit_kbps > 0 {
+            let bytes_per_sec = settings.bt_upload_limit_kbps.saturating_mul(1024);
+            std::num::NonZeroU32::new(bytes_per_sec.min(u32::MAX as u64) as u32)
+        } else {
+            None
+        };
+        session.ratelimits.set_download_bps(dl_bps);
+        session.ratelimits.set_upload_bps(ul_bps);
+    }
+
+    /// 获取或初始化全局 Session，并在初始化后应用最新的限速设置。
+    async fn get_or_init_session(
+        &self,
+        settings_override: Option<&AppSettings>,
+    ) -> Result<Arc<Session>, String> {
+        let settings_to_apply = if let Some(settings) = settings_override {
+            let mut last_settings = self.last_settings.lock().await;
+            *last_settings = Some(settings.clone());
+            Some(settings.clone())
+        } else {
+            let last_settings = self.last_settings.lock().await;
+            last_settings.clone()
+        };
+
+        let mut guard = self.session.lock().await;
+        if let Some(session) = guard.as_ref() {
+            if let Some(settings) = settings_to_apply.as_ref() {
+                Self::apply_ratelimits(session, settings);
+            }
+            return Ok(session.clone());
+        }
+
+        let default_dir = self.resolve_data_dir();
+        std::fs::create_dir_all(&default_dir).ok();
+        let dht_opts = librqbit::DhtSessionConfig {
+            persistence: Some(librqbit::dht::DhtPersistenceConfig {
+                config_filename: Some(default_dir.join("dht.json")),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let opts = SessionOptions {
+            dht: Some(dht_opts),
+            fastresume: true,
+            ..Default::default()
+        };
+        let session = Session::new_with_opts(default_dir, opts)
+            .await
+            .map_err(|e| format!("初始化纯 Rust BT 引擎失败: {e}"))?;
+        if let Some(settings) = settings_to_apply.as_ref() {
+            Self::apply_ratelimits(&session, settings);
+        }
+        *guard = Some(session.clone());
+        tracing::info!("纯 Rust BT 引擎 (librqbit) 初始化成功");
+        Ok(session)
     }
 
     /// 确保 librqbit 会话已初始化并就绪。
@@ -95,22 +199,7 @@ impl BtEngine {
         _app: &tauri::AppHandle,
         settings: &AppSettings,
     ) -> Result<Arc<Session>, String> {
-        let mut guard = self.session.lock().await;
-        if let Some(session) = guard.as_ref() {
-            return Ok(session.clone());
-        }
-        let default_dir = PathBuf::from(&settings.download_dir);
-        let opts = SessionOptions {
-            dht: Some(Default::default()),
-            fastresume: true,
-            ..Default::default()
-        };
-        let session = Session::new_with_opts(default_dir, opts)
-            .await
-            .map_err(|e| format!("初始化纯 Rust BT 引擎失败: {e}"))?;
-        *guard = Some(session.clone());
-        tracing::info!("纯 Rust BT 引擎 (librqbit) 初始化成功");
-        Ok(session)
+        self.get_or_init_session(Some(settings)).await
     }
 
     pub async fn is_running(&self) -> bool {
@@ -432,7 +521,15 @@ impl BtEngine {
     }
 
     /// 设置变更时同步限速与做种策略。
-    pub async fn apply_settings(&self, _settings: &AppSettings) -> Result<(), String> {
+    pub async fn apply_settings(&self, settings: &AppSettings) -> Result<(), String> {
+        {
+            let mut last_settings = self.last_settings.lock().await;
+            *last_settings = Some(settings.clone());
+        }
+        let guard = self.session.lock().await;
+        if let Some(session) = guard.as_ref() {
+            Self::apply_ratelimits(session, settings);
+        }
         Ok(())
     }
 
@@ -442,23 +539,7 @@ impl BtEngine {
         magnet_url: &str,
         timeout_secs: u64,
     ) -> Result<crate::models::BtTorrentInspectResult, String> {
-        let mut guard = self.session.lock().await;
-        let session = if let Some(s) = guard.as_ref() {
-            s.clone()
-        } else {
-            let default_dir = std::env::temp_dir();
-            let opts = SessionOptions {
-                dht: Some(Default::default()),
-                fastresume: true,
-                ..Default::default()
-            };
-            let s = Session::new_with_opts(default_dir, opts)
-                .await
-                .map_err(|e| format!("初始化 BT 引擎失败: {e}"))?;
-            *guard = Some(s.clone());
-            s
-        };
-        drop(guard);
+        let session = self.get_or_init_session(None).await?;
 
         let mut magnet_with_trackers = magnet_url.to_string();
         for tr in DEFAULT_PUBLIC_TRACKERS {
@@ -819,60 +900,7 @@ pub async fn delete_task_files(task: &DownloadTask) -> Vec<String> {
     deleted
 }
 
-/// 格式化限速（KB/s 转字符串格式）。
-pub fn format_limit(kbps: u64) -> String {
-    if kbps == 0 {
-        "0".into()
-    } else {
-        format!("{kbps}K")
-    }
-}
 
-/// 做种时长（小时）。0 = 完成即停（默认）。
-pub fn seed_time_hours(settings: &AppSettings) -> u32 {
-    if settings.bt_seed_enabled {
-        9999
-    } else {
-        0
-    }
-}
-
-/// 构建添加任务时的下载选项。
-pub fn build_add_options(settings: &AppSettings, task: &DownloadTask) -> serde_json::Value {
-    let mut options = serde_json::json!({
-        "dir": task.destination,
-        "seed-time": seed_time_hours(settings).to_string(),
-        "seed-ratio": format!("{:.2}", settings.bt_seed_ratio.max(0.0)),
-    });
-    if let Some(meta) = task.bt_meta.as_ref() {
-        if meta.metadata_ready && !meta.selected_files.is_empty() {
-            options["select-file"] = serde_json::Value::String(
-                meta.selected_files
-                    .iter()
-                    .map(|index| index.to_string())
-                    .collect::<Vec<_>>()
-                    .join(","),
-            );
-        }
-        if meta.streaming_priority {
-            options["bt-prioritize-piece"] = serde_json::Value::String("head=16M,tail=16M".into());
-        }
-    }
-    let trackers = tracker_list_csv(&settings.bt_extra_trackers);
-    if !trackers.is_empty() {
-        options["bt-tracker"] = serde_json::Value::String(trackers);
-    }
-    options
-}
-
-/// 把多行 Tracker 文本解析为逗号连接列表。
-pub fn tracker_list_csv(raw: &str) -> String {
-    raw.lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty() && !line.starts_with('#'))
-        .collect::<Vec<_>>()
-        .join(",")
-}
 
 #[cfg(test)]
 mod tests {
@@ -957,6 +985,177 @@ mod tests {
         assert!(validate_torrent_bytes(b"d").is_err());
     }
 
+    #[test]
+    fn ratelimits_conversion_works() {
+        let mut settings = AppSettings::default();
+        settings.speed_limit_kbps = 1000;
+        settings.bt_upload_limit_kbps = 500;
+        let dl_bps = std::num::NonZeroU32::new(
+            (settings.speed_limit_kbps.saturating_mul(1024)).min(u32::MAX as u64) as u32,
+        );
+        let ul_bps = std::num::NonZeroU32::new(
+            (settings.bt_upload_limit_kbps.saturating_mul(1024)).min(u32::MAX as u64) as u32,
+        );
+        assert_eq!(dl_bps.unwrap().get(), 1000 * 1024);
+        assert_eq!(ul_bps.unwrap().get(), 500 * 1024);
+
+        settings.speed_limit_kbps = 0;
+        settings.bt_upload_limit_kbps = 0;
+        let dl_zero = if settings.speed_limit_kbps > 0 {
+            std::num::NonZeroU32::new(
+                (settings.speed_limit_kbps.saturating_mul(1024)).min(u32::MAX as u64) as u32,
+            )
+        } else {
+            None
+        };
+        assert!(dl_zero.is_none());
+    }
+
+    #[test]
+    fn engine_with_data_dir_stores_correctly() {
+        let dir = PathBuf::from("test/data/dir");
+        let engine = BtEngine::with_data_dir(dir.clone());
+        assert_eq!(engine.resolve_data_dir(), dir);
+    }
+
+    #[tokio::test]
+    async fn engine_apply_settings_with_no_session_succeeds() {
+        let engine = BtEngine::new();
+        let mut settings = AppSettings::default();
+        settings.speed_limit_kbps = 500;
+        settings.bt_upload_limit_kbps = 200;
+        assert!(engine.apply_settings(&settings).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn engine_preserves_settings_applied_before_session() {
+        let tmp = tempfile::tempdir().unwrap();
+        let engine = BtEngine::with_data_dir(tmp.path().to_path_buf());
+        let mut settings = AppSettings::default();
+        settings.speed_limit_kbps = 800;
+        settings.bt_upload_limit_kbps = 400;
+        assert!(engine.apply_settings(&settings).await.is_ok());
+        assert_eq!(
+            engine
+                .last_settings
+                .lock()
+                .await
+                .as_ref()
+                .unwrap()
+                .speed_limit_kbps,
+            800
+        );
+        assert_eq!(
+            engine
+                .last_settings
+                .lock()
+                .await
+                .as_ref()
+                .unwrap()
+                .bt_upload_limit_kbps,
+            400
+        );
+    }
+
+    #[tokio::test]
+    async fn engine_inspect_magnet_respects_settings_applied_before() {
+        let tmp = tempfile::tempdir().unwrap();
+        let engine = BtEngine::with_data_dir(tmp.path().to_path_buf());
+        let mut settings = AppSettings::default();
+        settings.speed_limit_kbps = 600;
+        settings.bt_upload_limit_kbps = 300;
+        assert!(engine.apply_settings(&settings).await.is_ok());
+        assert_eq!(
+            engine
+                .last_settings
+                .lock()
+                .await
+                .as_ref()
+                .unwrap()
+                .speed_limit_kbps,
+            600
+        );
+        assert_eq!(
+            engine
+                .last_settings
+                .lock()
+                .await
+                .as_ref()
+                .unwrap()
+                .bt_upload_limit_kbps,
+            300
+        );
+    }
+
+    #[tokio::test]
+    async fn engine_apply_settings_updates_live_session_ratelimits() {
+        let tmp = tempfile::tempdir().unwrap();
+        let engine = BtEngine::with_data_dir(tmp.path().to_path_buf());
+        let session = engine.get_or_init_session(None).await.unwrap();
+
+        // 初始状态（无设置）未限速
+        assert_eq!(session.ratelimits.get_download_bps(), None);
+        assert_eq!(session.ratelimits.get_upload_bps(), None);
+
+        // 应用限速设置
+        let mut settings = AppSettings::default();
+        settings.speed_limit_kbps = 1500;
+        settings.bt_upload_limit_kbps = 750;
+        engine.apply_settings(&settings).await.unwrap();
+
+        // 验证 live session 的 ratelimits 真实生效
+        assert_eq!(
+            session.ratelimits.get_download_bps().map(|v| v.get()),
+            Some(1500 * 1024)
+        );
+        assert_eq!(
+            session.ratelimits.get_upload_bps().map(|v| v.get()),
+            Some(750 * 1024)
+        );
+
+        // 验证将限速设置为 0 时取消限速 (None)
+        settings.speed_limit_kbps = 0;
+        settings.bt_upload_limit_kbps = 0;
+        engine.apply_settings(&settings).await.unwrap();
+
+        assert_eq!(session.ratelimits.get_download_bps(), None);
+        assert_eq!(session.ratelimits.get_upload_bps(), None);
+    }
+
+    #[tokio::test]
+    async fn engine_ensure_started_updates_existing_session_ratelimits() {
+        let tmp = tempfile::tempdir().unwrap();
+        let engine = BtEngine::with_data_dir(tmp.path().to_path_buf());
+        let mut settings = AppSettings::default();
+        settings.speed_limit_kbps = 500;
+        settings.bt_upload_limit_kbps = 250;
+        let session1 = engine.get_or_init_session(Some(&settings)).await.unwrap();
+
+        assert_eq!(
+            session1.ratelimits.get_download_bps().map(|v| v.get()),
+            Some(500 * 1024)
+        );
+        assert_eq!(
+            session1.ratelimits.get_upload_bps().map(|v| v.get()),
+            Some(250 * 1024)
+        );
+
+        // 重新调用带有新设置的 session 获取
+        settings.speed_limit_kbps = 2000;
+        settings.bt_upload_limit_kbps = 1000;
+        let session2 = engine.get_or_init_session(Some(&settings)).await.unwrap();
+
+        assert!(Arc::ptr_eq(&session1, &session2));
+        assert_eq!(
+            session2.ratelimits.get_download_bps().map(|v| v.get()),
+            Some(2000 * 1024)
+        );
+        assert_eq!(
+            session2.ratelimits.get_upload_bps().map(|v| v.get()),
+            Some(1000 * 1024)
+        );
+    }
+
     fn bt_task_for_test() -> DownloadTask {
         DownloadTask {
             id: "t1".into(),
@@ -1010,6 +1209,7 @@ mod tests {
             cloud_refresh: None,
             method: None,
             body: None,
+            batch_id: None,
         }
     }
 }

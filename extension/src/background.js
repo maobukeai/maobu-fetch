@@ -25,13 +25,7 @@ const defaults = {
 };
 const config = async () => {
   const stored = await chrome.storage.local.get(Object.keys(defaults));
-  const cfg = { ...defaults, ...stored };
-  // 迁移旧版默认值：若 minSizeMb 为 1（旧版硬编码默认值导致 <1MB 正常下载如 zip/exe 被跳过），自动升级为 0（不限大小）
-  if (cfg.minSizeMb === 1) {
-    cfg.minSizeMb = 0;
-    try { await chrome.storage.local.set({ minSizeMb: 0 }); } catch {}
-  }
-  return cfg;
+  return { ...defaults, ...stored };
 };
 
 /// 长操作期间保活：MV3 SW 空闲约 30 秒即被回收；周期性自调用重置空闲计时器，
@@ -58,7 +52,7 @@ async function fetchDesktopGate() {
     desktopGateCache = {
       at: current,
       enabled: data.takeover_enabled !== false,
-      minSizeMb: data.min_file_size_mb === 1 ? 0 : Number(data.min_file_size_mb || 0),
+      minSizeMb: Number(data.min_file_size_mb || 0),
       btMagnetEnabled: data.bt_magnet_enabled !== false,
     };
     return desktopGateCache;
@@ -72,13 +66,29 @@ export function resetDesktopGateCacheForTest() {
   desktopGateCache = null;
 }
 
+function formatBytes(value) {
+  if (!value || value <= 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  const index = Math.min(Math.floor(Math.log(value) / Math.log(1024)), units.length - 1);
+  return `${(value / 1024 ** index).toFixed(index ? 1 : 0)} ${units[index]}`;
+}
+
 async function sendTask(url, fileName, extra = {}) {
   const response = await signedFetch("/v1/tasks", {
-    url, file_name: fileName || undefined, headers: extra.headers || {}, priority: 0,
-    per_task_speed_limit: 0, collision_policy: "rename", source: "browser", media: extra.media,
+    url,
+    file_name: fileName || undefined,
+    headers: extra.headers || {},
+    priority: 0,
+    per_task_speed_limit: 0,
+    collision_policy: "rename",
+    source: extra.source || "browser",
+    media: extra.media,
     connection_count: extra.connection_count || extra.connectionCount || undefined,
     method: extra.method || undefined,
     body: extra.body || undefined,
+    destination: extra.destination || undefined,
+    total_bytes: typeof extra.total_bytes === "number" ? extra.total_bytes : (typeof extra.totalBytes === "number" ? extra.totalBytes : undefined),
+    batch_id: extra.batch_id || extra.batchId || undefined,
   });
   if (!response.ok) throw new Error(await response.text() || `HTTP ${response.status}`);
   return response.json();
@@ -422,7 +432,7 @@ chrome.downloads.onCreated.addListener(async (item) => {
   const desktopGate = await fetchDesktopGate();
   if (desktopGate) {
     settings.desktopTakeoverEnabled = desktopGate.enabled;
-    const gateMinSize = desktopGate.minSizeMb === 1 ? 0 : Number(desktopGate.minSizeMb || 0);
+    const gateMinSize = Number(desktopGate.minSizeMb || 0);
     if (gateMinSize > 0) {
       settings.minSizeMb = Math.max(Number(settings.minSizeMb || 0), gateMinSize);
     }
@@ -733,6 +743,76 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
         notify("猫步下载器", `已添加 ${addedCount} 个并发极速任务 (每个 16 线程)：正在满速下载`);
         void focusDesktop();
         return { ok: true, count: addedCount };
+      } catch (error) {
+        const friendly = friendlyBridgeError(error);
+        notify("猫步下载器发送失败", friendly);
+        return { ok: false, error: friendly };
+      }
+    }
+    // 局域网互联2 (LanDisk) 纯客户端解构批量任务：将目录与文件树解构后批量原子添加，各 16 线程且保留子目录结构
+    if (message.type === "send-landisk-deconstructed-tasks") {
+      try {
+        const rawTasks = Array.isArray(message.tasks) ? message.tasks : [];
+        if (rawTasks.length === 0) {
+          return { ok: false, error: "任务列表为空" };
+        }
+        const tasks = [];
+        let totalBatchBytes = 0;
+        const batchId = message.folderName || message.batch_id || undefined;
+        for (const item of rawTasks) {
+          let headers = message.headers || {};
+          if (sender.tab) {
+            const tabHeaders = await getTabDownloadHeaders(sender.tab, item.url);
+            headers = { ...tabHeaders, ...headers };
+          }
+          const itemSize = typeof item.total_bytes === "number" ? item.total_bytes : (typeof item.size === "number" ? item.size : undefined);
+          if (typeof itemSize === "number" && itemSize > 0) {
+            totalBatchBytes += itemSize;
+          }
+          tasks.push({
+            url: item.url,
+            file_name: item.fileName || undefined,
+            destination: item.destination || undefined,
+            headers,
+            priority: 0,
+            per_task_speed_limit: 0,
+            collision_policy: "rename",
+            source: "landisk_deconstructed",
+            connection_count: item.connection_count || 16,
+            total_bytes: itemSize,
+            batch_id: batchId,
+          });
+        }
+
+        let batchOk = false;
+        try {
+          const resp = await signedFetch("/v1/tasks/batch", { tasks, batch_id: batchId });
+          if (resp.ok) {
+            batchOk = true;
+          }
+        } catch (e) {
+          if (isDesktopOfflineError(e)) {
+            throw e;
+          }
+        }
+
+        if (!batchOk) {
+          for (const t of tasks) {
+            await sendTask(t.url, t.file_name, {
+              headers: t.headers,
+              destination: t.destination,
+              connection_count: t.connection_count,
+              source: t.source,
+              total_bytes: t.total_bytes,
+              batch_id: t.batch_id,
+            });
+          }
+        }
+
+        const sizeStr = totalBatchBytes > 0 ? `，总计 ${formatBytes(totalBatchBytes)}` : "";
+        notify("猫步下载器", `已解构并添加 ${tasks.length} 个 16 线程极速任务${sizeStr}：正在极速并发下载`);
+        void focusDesktop();
+        return { ok: true, count: tasks.length };
       } catch (error) {
         const friendly = friendlyBridgeError(error);
         notify("猫步下载器发送失败", friendly);

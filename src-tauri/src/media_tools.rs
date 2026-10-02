@@ -31,16 +31,6 @@ const YT_DOWNLOAD_BYTES: u64 = 18_226_085;
 const FF_DOWNLOAD_BYTES: u64 = 109_728_040;
 const YT_INSTALL_BYTES: u64 = 18_226_085;
 const FF_INSTALL_BYTES: u64 = 199 * 1024 * 1024;
-/// 2026-08-16 BT 批准：aria2 固定版本安装规格（AGENTS.md §6）。
-/// 官方未修改构建（GPLv2），随附 COPYING 许可证文本与源码链接文件。
-const ARIA2_VERSION: &str = "1.37.0";
-const ARIA2_URL: &str =
-    "https://github.com/aria2/aria2/releases/download/release-1.37.0/aria2-1.37.0-win-64bit-build1.zip";
-const ARIA2_HASH: &str = "67d015301eef0b612191212d564c5bb0a14b5b9c4796b76454276a4d28d9b288";
-const ARIA2_DOWNLOAD_BYTES: u64 = 2_475_379;
-const ARIA2_INSTALL_BYTES: u64 = 5_649_408 + 32 * 1024; // aria2c.exe + 许可证与源码链接文本
-/// GPLv2 源码获取链接（§6：必须随附源码获取方式）。
-const ARIA2_SOURCE_URL: &str = "https://github.com/aria2/aria2/tree/release-1.37.0";
 /// GitHub Releases API（yt-dlp 官方仓库最新 release）。
 const YT_RELEASES_LATEST_API: &str = "https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest";
 /// 官方 release 资产下载地址必须以此前缀开头，防止解析被劫持的响应。
@@ -131,7 +121,8 @@ impl MediaTools {
         // 已安装组件的更新/重装由 update_yt_dlp_latest 走在线最新版本。
         let yt_spec = match component {
             ToolComponent::YtDlp => Some(pinned_yt_dlp_spec()),
-            ToolComponent::Ffmpeg | ToolComponent::Aria2 => None,
+            ToolComponent::Ffmpeg => None,
+            ToolComponent::Aria2 => return Ok(()),
         };
         self.spawn_install(app, settings, component, yt_spec).await
     }
@@ -186,6 +177,9 @@ impl MediaTools {
         component: ToolComponent,
         yt_spec: Option<YtDlpInstallSpec>,
     ) -> Result<(), String> {
+        if component == ToolComponent::Aria2 {
+            return Ok(());
+        }
         let mut cancellation = self.cancellation.lock().await;
         if cancellation.is_some() {
             return Err("另一个媒体组件正在安装".into());
@@ -201,9 +195,7 @@ impl MediaTools {
             ToolComponent::Ffmpeg => {
                 ensure_space(&app, component)?;
             }
-            ToolComponent::Aria2 => {
-                ensure_space_bytes(&app, ARIA2_DOWNLOAD_BYTES, ARIA2_INSTALL_BYTES, " aria2 ")?;
-            }
+            ToolComponent::Aria2 => {}
         }
         let token = CancellationToken::new();
         *cancellation = Some(token.clone());
@@ -292,89 +284,8 @@ impl MediaTools {
                 self.install_yt_dlp(app, settings, token, &spec).await
             }
             ToolComponent::Ffmpeg => self.install_ffmpeg(app, settings, token).await,
-            ToolComponent::Aria2 => self.install_aria2(app, settings, token).await,
+            ToolComponent::Aria2 => Ok(()),
         }
-    }
-
-    /// aria2 按需安装（BT-01）：下载官方 zip → SHA-256 校验 → 仅提取
-    /// `aria2c.exe` 与 `COPYING`（GPLv2 许可证）→ 写入源码链接文件。
-    /// 任何一步失败都不落盘为可用版本（§6）。
-    async fn install_aria2(
-        &self,
-        app: &AppHandle,
-        settings: &AppSettings,
-        token: CancellationToken,
-    ) -> Result<(), String> {
-        let staging = staging_directory(app, ToolComponent::Aria2)?;
-        tokio::fs::create_dir_all(&staging)
-            .await
-            .map_err(|error| error.to_string())?;
-        let archive = staging.join("aria2.zip.download");
-        let client = client(settings)?;
-        let result = async {
-            download_with_fallback(
-                &client,
-                ARIA2_URL,
-                &archive,
-                &token,
-                |received| async move {
-                    self.set_operation(
-                        app,
-                        settings,
-                        ToolComponent::Aria2,
-                        ToolPhase::Downloading,
-                        received,
-                        ARIA2_DOWNLOAD_BYTES,
-                        None,
-                    )
-                    .await;
-                },
-            )
-            .await?;
-            self.set_operation(
-                app,
-                settings,
-                ToolComponent::Aria2,
-                ToolPhase::Verifying,
-                ARIA2_DOWNLOAD_BYTES,
-                ARIA2_DOWNLOAD_BYTES,
-                None,
-            )
-            .await;
-            verify(&archive, ARIA2_HASH).await?;
-            check_cancelled(&token)?;
-            self.set_operation(
-                app,
-                settings,
-                ToolComponent::Aria2,
-                ToolPhase::Extracting,
-                ARIA2_DOWNLOAD_BYTES,
-                ARIA2_DOWNLOAD_BYTES,
-                None,
-            )
-            .await;
-            let archive_copy = archive.clone();
-            let staging_copy = staging.clone();
-            tokio::task::spawn_blocking(move || extract_aria2(&archive_copy, &staging_copy))
-                .await
-                .map_err(|error| error.to_string())??;
-            check_cancelled(&token)?;
-            let directory = tools_directory(app)?;
-            tokio::fs::create_dir_all(&directory)
-                .await
-                .map_err(|error| error.to_string())?;
-            // GPLv2 合规三件套：可执行文件 + 许可证文本 + 源码链接（§6）。
-            write_aria2_source_link(&directory)?;
-            replace_file(staging.join("aria2c.exe"), directory.join("aria2c.exe")).await?;
-            replace_file(
-                staging.join("aria2-COPYING.txt"),
-                directory.join("aria2-COPYING.txt"),
-            )
-            .await
-        }
-        .await;
-        handle_staging_result(&staging, &result).await;
-        result
     }
 
     async fn install_yt_dlp(
@@ -888,7 +799,7 @@ fn status_from_disk(app: &AppHandle, settings: &AppSettings) -> ToolStatus {
         ffmpeg_resolved_path: None,
         aria2_available: false,
         aria2_version: String::new(),
-        aria2_download_bytes: ARIA2_DOWNLOAD_BYTES,
+        aria2_download_bytes: 0,
         aria2_installed_bytes: 0,
         aria2_source: "missing".into(),
         aria2_resolved_path: None,
@@ -961,7 +872,7 @@ fn component_download_bytes(component: ToolComponent) -> u64 {
     match component {
         ToolComponent::YtDlp => YT_DOWNLOAD_BYTES,
         ToolComponent::Ffmpeg => FF_DOWNLOAD_BYTES,
-        ToolComponent::Aria2 => ARIA2_DOWNLOAD_BYTES,
+        ToolComponent::Aria2 => 0,
     }
 }
 
@@ -969,24 +880,15 @@ fn component_files(component: ToolComponent) -> &'static [&'static str] {
     match component {
         ToolComponent::YtDlp => &["yt-dlp.exe"],
         ToolComponent::Ffmpeg => &["ffmpeg.exe", "ffprobe.exe"],
-        ToolComponent::Aria2 => &["aria2c.exe", "aria2-COPYING.txt", "aria2-SOURCE.txt"],
+        ToolComponent::Aria2 => &[],
     }
-}
-
-/// 解析 aria2 可执行文件路径。
-///
-/// 与 yt-dlp/FFmpeg 不同，aria2 仅使用本应用按需安装的固定版本，
-/// 不做系统 PATH / 自定义路径回退：BT 内核行为（分片校验、参数兼容性）
-/// 必须与已验证的固定版本绑定（§6 固定版本约束）。
-pub fn resolve_aria2(app: &AppHandle) -> Option<PathBuf> {
-    bundled_tool_path(app, "aria2c.exe")
 }
 
 fn ensure_space(app: &AppHandle, component: ToolComponent) -> Result<(), String> {
     let (download_bytes, install_bytes, label) = match component {
         ToolComponent::YtDlp => (YT_DOWNLOAD_BYTES, YT_INSTALL_BYTES, " yt-dlp "),
         ToolComponent::Ffmpeg => (FF_DOWNLOAD_BYTES, FF_INSTALL_BYTES, " FFmpeg "),
-        ToolComponent::Aria2 => (ARIA2_DOWNLOAD_BYTES, ARIA2_INSTALL_BYTES, " aria2 "),
+        ToolComponent::Aria2 => (0, 0, " aria2 "),
     };
     ensure_space_bytes(app, download_bytes, install_bytes, label)
 }
@@ -1386,57 +1288,6 @@ fn extract_ffmpeg(archive: &Path, target: &Path) -> Result<(), String> {
     }
 }
 
-/// aria2 压缩包提取（§6）：只允许 `aria2c.exe` 与 `COPYING`（许可证），
-/// COPYING 落盘为 `aria2-COPYING.txt`；阻止绝对路径与 `..` 路径穿越。
-fn extract_aria2(archive: &Path, target: &Path) -> Result<(), String> {
-    let file = File::open(archive).map_err(|error| error.to_string())?;
-    let mut zip =
-        zip::ZipArchive::new(file).map_err(|error| format!("MEDIA_TOOLS_ARCHIVE: {error}"))?;
-    let mut found_exe = false;
-    let mut found_license = false;
-    for index in 0..zip.len() {
-        let mut entry = zip.by_index(index).map_err(|error| error.to_string())?;
-        let Some(enclosed) = entry.enclosed_name() else {
-            return Err("MEDIA_TOOLS_ARCHIVE: 非法压缩路径".into());
-        };
-        let Some(name) = enclosed.file_name().and_then(|value| value.to_str()) else {
-            continue;
-        };
-        let output_name = match name {
-            "aria2c.exe" => {
-                found_exe = true;
-                name
-            }
-            "COPYING" => {
-                found_license = true;
-                "aria2-COPYING.txt"
-            }
-            _ => continue,
-        };
-        let mut output =
-            File::create(target.join(output_name)).map_err(|error| error.to_string())?;
-        std::io::copy(&mut entry, &mut output).map_err(|error| error.to_string())?;
-        output.flush().map_err(|error| error.to_string())?;
-    }
-    if found_exe && found_license {
-        Ok(())
-    } else {
-        Err("MEDIA_TOOLS_ARCHIVE: aria2 压缩包缺少可执行文件或许可证文本".into())
-    }
-}
-
-/// 写入 GPLv2 源码获取链接文件（§6 合规要求，随二进制一起分发）。
-fn write_aria2_source_link(directory: &Path) -> Result<(), String> {
-    let content = format!(
-        "aria2 {ARIA2_VERSION}（win-64bit-build1 官方未修改构建）\n\
-         许可证：GNU General Public License v2（见 aria2-COPYING.txt）\n\
-         源码获取：{ARIA2_SOURCE_URL}\n\
-         发布归档：{ARIA2_URL}\n"
-    );
-    std::fs::write(directory.join("aria2-SOURCE.txt"), content)
-        .map_err(|error| format!("MEDIA_TOOLS_MARKER: 写入 aria2 源码链接失败：{error}"))
-}
-
 pub async fn remux_flv_to_mp4_if_needed(
     app: &AppHandle,
     settings: &AppSettings,
@@ -1668,78 +1519,6 @@ mod tests {
             b"ffprobe"
         );
         assert!(!directory.path().join("readme.txt").exists());
-    }
-
-    #[test]
-    fn extracts_aria2_exe_and_license_only() {
-        let directory = tempfile::tempdir().unwrap();
-        let archive = directory.path().join("aria2.zip");
-        let file = File::create(&archive).unwrap();
-        let mut writer = zip::ZipWriter::new(file);
-        writer
-            .start_file(
-                "aria2-1.37.0-win-64bit-build1/aria2c.exe",
-                SimpleFileOptions::default(),
-            )
-            .unwrap();
-        writer.write_all(b"aria2c").unwrap();
-        writer
-            .start_file(
-                "aria2-1.37.0-win-64bit-build1/COPYING",
-                SimpleFileOptions::default(),
-            )
-            .unwrap();
-        writer.write_all(b"GPLv2 text").unwrap();
-        writer
-            .start_file(
-                "aria2-1.37.0-win-64bit-build1/README.html",
-                SimpleFileOptions::default(),
-            )
-            .unwrap();
-        writer.write_all(b"ignore").unwrap();
-        writer.finish().unwrap();
-
-        extract_aria2(&archive, directory.path()).unwrap();
-        assert_eq!(
-            std::fs::read(directory.path().join("aria2c.exe")).unwrap(),
-            b"aria2c"
-        );
-        assert_eq!(
-            std::fs::read(directory.path().join("aria2-COPYING.txt")).unwrap(),
-            b"GPLv2 text"
-        );
-        assert!(!directory.path().join("README.html").exists());
-
-        write_aria2_source_link(directory.path()).unwrap();
-        let source_note =
-            std::fs::read_to_string(directory.path().join("aria2-SOURCE.txt")).unwrap();
-        assert!(source_note.contains("GNU General Public License v2"));
-        assert!(source_note.contains(ARIA2_SOURCE_URL));
-    }
-
-    #[test]
-    fn aria2_extraction_requires_both_exe_and_license() {
-        let directory = tempfile::tempdir().unwrap();
-        let archive = directory.path().join("aria2.zip");
-        let file = File::create(&archive).unwrap();
-        let mut writer = zip::ZipWriter::new(file);
-        writer
-            .start_file("aria2/aria2c.exe", SimpleFileOptions::default())
-            .unwrap();
-        writer.write_all(b"exe").unwrap();
-        writer.finish().unwrap();
-        // 缺少 COPYING → 必须失败（不得落盘为可用版本）。
-        assert!(extract_aria2(&archive, directory.path()).is_err());
-    }
-
-    #[test]
-    fn aria2_component_files_cover_gpl_compliance() {
-        let files = component_files(ToolComponent::Aria2);
-        assert!(files.contains(&"aria2c.exe"));
-        assert!(files.contains(&"aria2-COPYING.txt"));
-        assert!(files.contains(&"aria2-SOURCE.txt"));
-        // aria2 下载体量应显著小于 FFmpeg（§6 基础包体量约束的旁证）。
-        assert!(component_download_bytes(ToolComponent::Aria2) < 5 * 1024 * 1024);
     }
 
     #[test]

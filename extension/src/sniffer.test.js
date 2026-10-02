@@ -51,6 +51,11 @@ test("hostMatchesList: 精确与子域命中，后缀相似不误判", () => {
   assert.equal(hostMatchesList("example.com", ["example.com"]), true);
   assert.equal(hostMatchesList("notexample.com", ["example.com"]), false);
   assert.equal(hostMatchesList("", ["example.com"]), false);
+  const shortDomains = ["douyin.com", "bilibili.com", "tiktok.com", "kuaishou.com"];
+  assert.equal(hostMatchesList("www.bilibili.com", shortDomains), true);
+  assert.equal(hostMatchesList("live.douyin.com", shortDomains), true);
+  assert.equal(hostMatchesList("evil-douyin.com", shortDomains), false);
+  assert.equal(hostMatchesList("fakebilibili.com", shortDomains), false);
 });
 
 test("toggleSniffHost: 开启去重追加；关闭移除自身与覆盖它的父域规则", () => {
@@ -62,7 +67,7 @@ test("toggleSniffHost: 开启去重追加；关闭移除自身与覆盖它的父
 
 // ---- FAB 直连目标挑选（纯函数）----
 
-test("pickFabTarget: 只直连 video/audio；stream 类不作为直连目标", () => {
+test("pickFabTarget: 优先直连 video/audio；无 video/audio 时支持 m3u8 直连，忽略单个 ts 分片", () => {
   assert.equal(pickFabTarget([
     { kind: "audio", url: "a.mp3" },
     { kind: "stream", url: "s.m3u8" },
@@ -70,9 +75,37 @@ test("pickFabTarget: 只直连 video/audio；stream 类不作为直连目标", (
     { kind: "video", url: "v2.mp4" },
   ]), "v2.mp4");
   assert.equal(pickFabTarget([{ kind: "audio", url: "a.mp3" }, { kind: "stream", url: "s.m3u8" }]), "a.mp3");
-  // 仅有流地址时返回空（调用方退回 page 模式走媒体解析）。
-  assert.equal(pickFabTarget([{ kind: "stream", url: "s.m3u8" }, { kind: "stream", url: "seg-1.ts" }]), "");
+  // 仅有 stream 时：支持 m3u8，但排除 ts 等单个分片
+  assert.equal(pickFabTarget([{ kind: "stream", url: "seg-1.ts" }, { kind: "stream", url: "s.m3u8" }]), "s.m3u8");
+  assert.equal(pickFabTarget([{ kind: "stream", url: "https://example.com/live.m3u8?token=xyz" }]), "https://example.com/live.m3u8?token=xyz");
+  assert.equal(pickFabTarget([{ kind: "stream", url: "https://example.com/live.m3u8#hash" }]), "https://example.com/live.m3u8#hash");
+  assert.equal(pickFabTarget([{ kind: "stream", url: "https://example.com/live.m3u8?a=1#hash" }]), "https://example.com/live.m3u8?a=1#hash");
+  assert.equal(pickFabTarget([{ kind: "stream", url: "seg-1.ts" }]), "");
   assert.equal(pickFabTarget([]), "");
+});
+
+test("shortVideoDomains: 精确命中与合法子域识别，防范前缀与恶意后门伪造", () => {
+  const SHORT_VIDEO_DOMAINS = ["douyin.com", "bilibili.com", "tiktok.com", "kuaishou.com"];
+  const isMatch = (host) => {
+    const h = (host || "").toLowerCase();
+    return SHORT_VIDEO_DOMAINS.some((d) => h === d || h.endsWith("." + d));
+  };
+  assert.equal(isMatch("douyin.com"), true);
+  assert.equal(isMatch("www.douyin.com"), true);
+  assert.equal(isMatch("live.douyin.com"), true);
+  assert.equal(isMatch("bilibili.com"), true);
+  assert.equal(isMatch("api.bilibili.com"), true);
+  assert.equal(isMatch("tiktok.com"), true);
+  assert.equal(isMatch("m.tiktok.com"), true);
+  assert.equal(isMatch("kuaishou.com"), true);
+  assert.equal(isMatch("live.kuaishou.com"), true);
+
+  // 恶意伪造或非短视频域名
+  assert.equal(isMatch("evil-douyin.com"), false);
+  assert.equal(isMatch("douyin.com.attacker.com"), false);
+  assert.equal(isMatch("fakebilibili.com"), false);
+  assert.equal(isMatch("github.com"), false);
+  assert.equal(isMatch(""), false);
 });
 
 // ---- SW 接线（模拟 Chrome API）----

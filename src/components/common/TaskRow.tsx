@@ -1,4 +1,4 @@
-import { type CSSProperties, type MouseEvent } from "react";
+import React, { type CSSProperties, type MouseEvent } from "react";
 import { Film, Image as ImageIcon, MoreHorizontal, Pause, Play, RefreshCw, Zap } from "lucide-react";
 import { api } from "../../api";
 import { t, useLocale } from "../../i18n";
@@ -69,7 +69,21 @@ export function taskSpeedCellText(task: DownloadTask): string {
   return down || up || "—";
 }
 
-export function TaskRow({
+export interface TaskRowProps {
+  task: DownloadTask;
+  selected: boolean;
+  showCompletedAt: boolean;
+  taskTagList: Tag[];
+  notify: (text: string, kind?: "ok" | "error") => void;
+  onSelect: (taskId: string) => void;
+  onOpen: (task: DownloadTask) => void;
+  onContext: (task: DownloadTask, event: MouseEvent) => void;
+  onMouseDown: (task: DownloadTask, event: React.MouseEvent) => void;
+  onCheckboxMouseDown: (taskId: string, isChecked: boolean, event: React.MouseEvent) => void;
+  onCheckboxMouseEnter: (taskId: string) => void;
+}
+
+export const TaskRow = React.memo(function TaskRow({
   task,
   selected,
   showCompletedAt,
@@ -81,19 +95,7 @@ export function TaskRow({
   onMouseDown,
   onCheckboxMouseDown,
   onCheckboxMouseEnter,
-}: {
-  task: DownloadTask;
-  selected: boolean;
-  showCompletedAt: boolean;
-  taskTagList: Tag[];
-  notify: (text: string, kind?: "ok" | "error") => void;
-  onSelect: () => void;
-  onOpen: () => void;
-  onContext: (event: MouseEvent) => void;
-  onMouseDown: (task: DownloadTask, event: React.MouseEvent) => void;
-  onCheckboxMouseDown: (event: React.MouseEvent) => void;
-  onCheckboxMouseEnter: () => void;
-}) {
+}: TaskRowProps) {
   useLocale();
   const statusText = getStatusText();
   const progress = task.total_bytes
@@ -137,17 +139,17 @@ export function TaskRow({
     <div
       className={selected ? "task-row selected" : "task-row"}
       data-task-id={task.id}
-      onDoubleClick={onOpen}
-      onContextMenu={onContext}
+      onDoubleClick={() => onOpen(task)}
+      onContextMenu={(event) => onContext(task, event)}
       onMouseDown={(e) => onMouseDown(task, e)}
     >
       <label
         onMouseDown={(e) => {
           e.preventDefault();
           e.stopPropagation();
-          onCheckboxMouseDown(e);
+          onCheckboxMouseDown(task.id, selected, e);
         }}
-        onMouseEnter={onCheckboxMouseEnter}
+        onMouseEnter={() => onCheckboxMouseEnter(task.id)}
         style={{ cursor: "pointer" }}
       >
         <input
@@ -157,7 +159,7 @@ export function TaskRow({
           readOnly
         />
       </label>
-      <div className="name-cell" onClick={onSelect}>
+      <div className="name-cell" onClick={() => onSelect(task.id)}>
         <FileIcon category={task.category} fileName={task.file_name} />
         <div style={{ minWidth: 0, flex: 1 }}>
           <div className="name-title-row">
@@ -399,7 +401,7 @@ export function TaskRow({
           className="row-menu"
           onClick={(event) => {
             event.stopPropagation();
-            onContext(event);
+            onContext(task, event);
           }}
         >
           <MoreHorizontal size={15} />
@@ -407,4 +409,4 @@ export function TaskRow({
       </div>
     </div>
   );
-}
+});

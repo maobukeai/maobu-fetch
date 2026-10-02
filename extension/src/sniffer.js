@@ -74,15 +74,20 @@ export function hostMatchesList(hostname, hosts) {
   });
 }
 
-/// FAB 直连目标挑选：仅使用可被 HTTP 内核直接下载的 video/audio 文件直链
-/// （mp4/webm/mp3 等）。stream 类（m3u8/mpd/ts 分片）不走直连——桌面端只对
-/// 已知媒体平台的 URL 走 yt-dlp 管道，裸 m3u8 直连会被当成文本文件下载；
-/// 流地址应由 popup 的"解析下载"交给 /v1/media/probe（yt-dlp 原生支持 HLS）。
+/// FAB 直连目标挑选：优先使用可被 HTTP 内核直接下载的 video/audio 文件直链
+/// （mp4/webm/mp3 等）。若无 video/audio，由于桌面端已原生支持 M3U8 下载，
+/// 允许挑选 .m3u8 播放列表直链（仍排除 .ts / .m4s 等单个分片）。
 export function pickFabTarget(items) {
   const list = Array.isArray(items) ? items : [];
   for (const kind of ["video", "audio"]) {
     for (let i = list.length - 1; i >= 0; i -= 1) {
       if (list[i]?.kind === kind) return list[i].url;
+    }
+  }
+  for (let i = list.length - 1; i >= 0; i -= 1) {
+    const url = list[i]?.url || "";
+    if (list[i]?.kind === "stream" && /\.m3u8(?:$|[?#])/i.test(url)) {
+      return url;
     }
   }
   return "";

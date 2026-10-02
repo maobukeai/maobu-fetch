@@ -1,6 +1,6 @@
 [package]
 name = "maobu-fetch"
-version = "0.10.5"
+version = "0.10.6"
 description = "A clean-room open-source download manager"
 authors = ["Maobu Fetch contributors"]
 license = "MIT"
@@ -78,6 +78,7 @@ winreg = "0.52"
 # 原生 Windows Toast 激活回调：点击通知时在同进程内直接触发 on_activated，
 # 无需 COM Activator 注册。是 notify_rust 的间接依赖，固定同版本避免重复编译。
 tauri-winrt-notification = "0.7"
+windows = { version = "0.61", features = ["Networking_Connectivity"] }
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
     "Win32_Security",

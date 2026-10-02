@@ -173,6 +173,7 @@ pub async fn run(manager: SharedManager, pairing: PairingService, app: AppHandle
         .route("/v1/health", get(health))
         .route("/v1/pair", post(pair))
         .route("/v1/tasks", post(add_task))
+        .route("/v1/tasks/batch", post(add_tasks_batch))
         .route("/v1/tasks/recent", get(recent_tasks))
         .route("/v1/tasks/{id}/action", post(task_action))
         .route("/v1/media/probe", post(probe_media))
@@ -277,9 +278,53 @@ async fn add_task(
     Ok((StatusCode::CREATED, Json(task)))
 }
 
+#[derive(Deserialize)]
+struct BatchTasksPayload {
+    tasks: Vec<NewTaskRequest>,
+}
+
+async fn add_tasks_batch(
+    State(state): State<BridgeState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    authorize(&state, &headers, &body).await?;
+    let payload: BatchTasksPayload = serde_json::from_slice(&body)
+        .map_err(|_| (StatusCode::BAD_REQUEST, "任务列表参数无效".into()))?;
+    if payload.tasks.is_empty() {
+        return Err((StatusCode::BAD_REQUEST, "任务列表不能为空".into()));
+    }
+    if payload.tasks.len() > 1000 {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "批量任务数超出上限 (最大 1000)".into(),
+        ));
+    }
+    let mut added_tasks = Vec::new();
+    for mut request in payload.tasks {
+        if request.source.is_none() {
+            request.source = Some("browser".into());
+        }
+        let task = state
+            .manager
+            .add(request)
+            .await
+            .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+        added_tasks.push(task);
+    }
+    Ok((
+        StatusCode::CREATED,
+        Json(serde_json::json!({
+            "success": true,
+            "count": added_tasks.len(),
+            "tasks": added_tasks,
+        })),
+    ))
+}
+
 /// `GET /v1/tasks/recent`（SubTask 13.1）。
 ///
-/// 返回最近 5 条由扩展发送的任务（`source == "browser"`，与 `add_task` 设置一致）。
+/// 返回最近 5 条由扩展发送的任务（`source == "browser"` 或 `"landisk_deconstructed"`）。
 /// 走完整 HMAC + 时间戳 + Origin 校验；额外应用每秒 5 次的专用速率限制。
 /// 排序：按 `created_at` 倒序取前 5 条。
 async fn recent_tasks(
@@ -292,8 +337,12 @@ async fn recent_tasks(
     let all = state.manager.list().await.map_err(internal)?;
     let mut extension_tasks: Vec<_> = all;
     extension_tasks.sort_by(|a, b| {
-        let a_browser = a.source == "browser";
-        let b_browser = b.source == "browser";
+        let a_browser = a.source == "browser"
+            || a.source == "landisk_deconstructed"
+            || a.source == "landisk_zip";
+        let b_browser = b.source == "browser"
+            || b.source == "landisk_deconstructed"
+            || b.source == "landisk_zip";
         if a_browser != b_browser {
             b_browser.cmp(&a_browser)
         } else {
@@ -944,5 +993,31 @@ mod tests {
         headers.clear();
         headers.insert("USER-AGENT".to_string(), "TestBrowser/1.0".to_string());
         assert!(has_auth_headers(&headers));
+    }
+
+    #[test]
+    fn batch_tasks_payload_deserialization_round_trips() {
+        let body = serde_json::json!({
+            "tasks": [
+                {
+                    "url": "http://100.100.1.5:8080/api/download?path=D%3A%5CA.jpg",
+                    "file_name": "A.jpg",
+                    "destination": "MyFolder",
+                    "connection_count": 16
+                },
+                {
+                    "url": "http://100.100.1.5:8080/api/download?path=D%3A%5CB.jpg",
+                    "file_name": "B.jpg",
+                    "destination": "MyFolder/Sub",
+                    "connection_count": 16
+                }
+            ]
+        });
+        let payload: BatchTasksPayload = serde_json::from_value(body).unwrap();
+        assert_eq!(payload.tasks.len(), 2);
+        assert_eq!(payload.tasks[0].file_name.as_deref(), Some("A.jpg"));
+        assert_eq!(payload.tasks[0].destination.as_deref(), Some("MyFolder"));
+        assert_eq!(payload.tasks[0].connection_count, Some(16));
+        assert_eq!(payload.tasks[1].destination.as_deref(), Some("MyFolder/Sub"));
     }
 }

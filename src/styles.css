@@ -4369,7 +4369,7 @@ svg { flex: 0 0 auto; }
 .bt-files-hint, .bt-files-error, .bt-privacy-note { font-size: 11px; color: var(--text-secondary, #777); margin: 0; }
 .bt-files-error { color: var(--danger, #c0392b); }
 
-/* BT 做种中徽章：仅当 aria2 报告 seeder 时由前端渲染（§3 真实状态） */
+/* BT 做种中徽章：仅当 BT 引擎报告 seeder 时由前端渲染（§3 真实状态） */
 .bt-seed-badge {
   display: inline-block;
   margin-left: 5px;
@@ -4807,4 +4807,169 @@ svg { flex: 0 0 auto; }
   margin-top: 16px;
   padding-top: 14px;
   border-top: 1px solid var(--line);
+}
+
+/* ---- 批量任务宏观进度摘要栏 (BatchSummaryBar) ---- */
+.batch-summary-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 12px;
+  background: var(--surface-secondary, rgba(255, 255, 255, 0.04));
+  border-bottom: 1px solid var(--line, rgba(255, 255, 255, 0.08));
+  font-size: 12px;
+  line-height: 1.4;
+  user-select: none;
+  flex-shrink: 0;
+}
+
+.batch-summary-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex-shrink: 1;
+}
+
+.batch-icon-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 4px;
+  background: var(--control, rgba(255, 255, 255, 0.06));
+  color: var(--accent);
+  flex-shrink: 0;
+}
+
+.batch-title {
+  font-weight: 600;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 200px;
+}
+
+.batch-badge-count {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 6px;
+  border-radius: 10px;
+  background: var(--control, rgba(255, 255, 255, 0.08));
+  color: var(--muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.batch-summary-middle {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1;
+  min-width: 0;
+  justify-content: center;
+}
+
+.batch-progress-wrapper {
+  width: 120px;
+  height: 4px;
+  background: var(--control, rgba(255, 255, 255, 0.1));
+  border-radius: 2px;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.batch-progress-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 2px;
+  transition: width 0.2s ease;
+}
+
+.batch-progress-fill.completed {
+  background: var(--success, #10b981);
+}
+
+.batch-bytes-text {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  font-size: 11.5px;
+}
+
+.batch-speed-text {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  font-size: 11.5px;
+}
+
+.batch-zap-icon {
+  color: var(--accent);
+}
+
+.batch-eta-text {
+  color: var(--muted);
+  margin-left: 2px;
+}
+
+.batch-status-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 11px;
+}
+
+.batch-status-badge.completed {
+  background: rgba(16, 185, 129, 0.15);
+  color: #10b981;
+}
+
+.batch-status-badge.paused {
+  background: rgba(234, 179, 8, 0.15);
+  color: #eab308;
+}
+
+.batch-summary-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.batch-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  height: 24px;
+  padding: 0 6px;
+  border-radius: 4px;
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.12));
+  background: var(--control, rgba(255, 255, 255, 0.05));
+  color: var(--text);
+  font-size: 11.5px;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.batch-btn:hover {
+  background: var(--surface-hover, rgba(255, 255, 255, 0.1));
+  border-color: var(--border-strong, rgba(255, 255, 255, 0.2));
+}
+
+.batch-btn-icon {
+  width: 24px;
+  padding: 0;
+}
+
+.batch-btn-close:hover {
+  color: var(--danger, #ef4444);
 }

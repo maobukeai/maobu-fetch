@@ -1,6 +1,7 @@
 import { useMemo, type ReactNode } from "react";
 import {
   AlertCircle,
+  Archive,
   ChevronDown,
   ChevronUp,
   ChevronsDown,
@@ -24,12 +25,14 @@ import { t, useLocale } from "../../i18n";
 import type { CompletionAction, DownloadTask } from "../../types";
 import {
   clampPriority,
+  formatBytes,
   MIN_PRIORITY,
   MAX_PRIORITY,
   PRIORITY_STEP,
 } from "../../formatters";
 import { inferCategory } from "./EmptyState";
 import { isImageFile, isMediaTask, isVideoFile } from "./TaskRow";
+import { isLanDiskUrl } from "../../services/landisk";
 
 export function ContextMenu({
   x,
@@ -37,6 +40,7 @@ export function ContextMenu({
   task,
   selectedTaskIds,
   allTasks = [],
+  downloadDir,
   close,
   notify,
   onSetSpeedLimit,
@@ -49,6 +53,7 @@ export function ContextMenu({
   task: DownloadTask;
   selectedTaskIds?: Set<string>;
   allTasks?: DownloadTask[];
+  downloadDir?: string;
   close: () => void;
   notify: (text: string, kind?: "ok" | "error") => void;
   onSetSpeedLimit: (task: DownloadTask) => void;
@@ -71,6 +76,51 @@ export function ContextMenu({
   const targetTasks = useMemo(() => {
     return allTasks.filter((t) => targetTaskIds.has(t.id));
   }, [allTasks, targetTaskIds]);
+
+  const isLanDiskTask =
+    task.source === "landisk_deconstructed" ||
+    task.source === "landisk_zip" ||
+    isLanDiskUrl(task.url);
+
+  const lanDiskDirectoryToPack = useMemo(() => {
+    if (!isLanDiskTask) return null;
+    const normDest = task.destination.replace(/\\/g, "/").replace(/\/+$/, "");
+    if (!normDest || normDest === "/" || /^[a-zA-Z]:$/.test(normDest)) {
+      return null;
+    }
+    const normBase = downloadDir
+      ? downloadDir.replace(/\\/g, "/").replace(/\/+$/, "")
+      : "";
+
+    // 若任务目标目录等于全局下载根目录，说明是平铺在根目录的单文件，无独立任务子目录
+    if (normBase && normDest.toLowerCase() === normBase.toLowerCase()) {
+      return null;
+    }
+
+    // 若位于全局下载根目录下，提取其顶层子目录（即该批次/目录任务的根目录）
+    if (normBase && normDest.toLowerCase().startsWith(normBase.toLowerCase() + "/")) {
+      const rel = normDest.slice(normBase.length + 1);
+      const topFolder = rel.split("/")[0];
+      if (!topFolder) return null;
+      return {
+        dirPath: `${normBase}/${topFolder}`,
+        folderName: topFolder,
+        parentDir: normBase,
+      };
+    }
+
+    // 自定义下载目录（非全局下载目录且非盘符根目录）
+    const lastSlash = normDest.lastIndexOf("/");
+    if (lastSlash <= 0) return null;
+    const parent = normDest.slice(0, lastSlash);
+    const folder = normDest.slice(lastSlash + 1);
+    if (!folder) return null;
+    return {
+      dirPath: normDest,
+      folderName: folder,
+      parentDir: parent,
+    };
+  }, [isLanDiskTask, task.destination, downloadDir]);
 
   const countTag =
     targetTaskIds.size > 1
@@ -373,6 +423,58 @@ export function ContextMenu({
           >
             <ShieldCheck size={13} />
             {t("contextMenu.verifySha256")}
+          </button>
+        );
+      }
+      if (lanDiskDirectoryToPack) {
+        sections.push(
+          <button
+            key="pack-landisk-zip"
+            onClick={async () => {
+              try {
+                // 检查该目录下是否有同批次任务仍在下载或处理中
+                const normDirPath = lanDiskDirectoryToPack.dirPath.toLowerCase();
+                const hasActiveSiblings = allTasks.some((t) => {
+                  if (t.id === task.id) return false;
+                  const tNorm = t.destination.replace(/\\/g, "/").toLowerCase();
+                  const isInDir =
+                    tNorm === normDirPath || tNorm.startsWith(normDirPath + "/");
+                  const isActive =
+                    t.status === "downloading" ||
+                    t.status === "queued" ||
+                    t.status === "waiting-network" ||
+                    t.status === "verifying";
+                  return isInDir && isActive;
+                });
+
+                if (hasActiveSiblings) {
+                  notify(
+                    "该目录下仍有文件正在下载中，请等待全部完成后再打包",
+                    "error"
+                  );
+                  return;
+                }
+
+                const sep = task.destination.includes("\\") ? "\\" : "/";
+                const nativeDirPath = lanDiskDirectoryToPack.dirPath.replace(/\//g, sep);
+                const nativeParentDir = lanDiskDirectoryToPack.parentDir.replace(/\//g, sep);
+                const zipPath = `${nativeParentDir}${sep}${lanDiskDirectoryToPack.folderName}.zip`;
+
+                notify(`正在将目录 ${lanDiskDirectoryToPack.folderName} 打包为 ZIP...`);
+                const size = await api.landiskPackZip(nativeDirPath, zipPath);
+                notify(
+                  `已成功打包为 ZIP：${lanDiskDirectoryToPack.folderName}.zip (${formatBytes(size)})`,
+                  "ok"
+                );
+              } catch (error) {
+                notify(`打包 ZIP 失败：${String(error)}`, "error");
+              } finally {
+                close();
+              }
+            }}
+          >
+            <Archive size={13} style={{ color: "#10b981" }} />
+            {"打包任务目录为 ZIP"}
           </button>
         );
       }

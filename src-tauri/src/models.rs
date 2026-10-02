@@ -171,6 +171,10 @@ pub struct DownloadTask {
     /// HTTP 请求体（针对 POST 打包下载等场景）。旧任务安全默认 None。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub body: Option<String>,
+    /// 任务所属批次标识（例如 LanDisk 目录名或批量添加批次 ID）。
+    /// 旧数据库/旧 JSON 缺失时安全默认 None。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub batch_id: Option<String>,
 }
 
 /// 云盘直链刷新元数据：由创建任务的前端随直链一并提交，
@@ -217,7 +221,7 @@ pub struct DownloadSegment {
 /// 任务内核类型（2026-08-16 BT 经负责人批准纳入，AGENTS.md §3）。
 ///
 /// - `Http`：并发 HTTP Range 内核（§3 HTTP 约束）。
-/// - `Bt`：aria2 BT/磁力内核（§3 BT/磁力内核约束）。
+/// - `Bt`：BT/磁力内核（纯 Rust librqbit 原生内置，§3 BT/磁力内核约束）。
 ///
 /// 旧数据库与旧 JSON 缺失该字段时默认 `Http`，保证向后兼容（§2）。
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -250,10 +254,10 @@ impl TaskKind {
 #[derive(Clone, Debug, Serialize, Deserialize, Default, PartialEq)]
 pub struct BtTaskMeta {
     /// 40 位十六进制小写 infohash。磁力任务创建时即可从 `xt` 解析；
-    /// .torrent 任务在 aria2 接受添加后回填。
+    /// .torrent 任务在 BT 引擎接受添加后回填。
     #[serde(default)]
     pub info_hash: String,
-    /// 用户勾选的文件索引（aria2 `select-file` 1 基索引）。空 = 下载全部文件。
+    /// 用户勾选的文件索引（1 基索引）。空 = 下载全部文件。
     #[serde(default)]
     pub selected_files: Vec<u32>,
     /// 元数据获取后的显示名（磁力 `dn` 参数或种子 name）。
@@ -263,12 +267,11 @@ pub struct BtTaskMeta {
     /// 磁力元数据是否已获取（.torrent 任务创建即为 true）。
     #[serde(default)]
     pub metadata_ready: bool,
-    /// 拖放创建的 .torrent 内容（STANDARD base64）。aria2 接受添加并落盘
+    /// 拖放创建的 .torrent 内容（STANDARD base64）。BT 引擎接受添加并落盘
     /// 会话后即不再依赖；保留用于暂停任务的后续恢复添加。旧数据缺失为 None。
     #[serde(default)]
     pub torrent_data_base64: Option<String>,
-    /// 边下边看（2026-08-17）：优先下载每个文件的首尾分片
-    /// （aria2 `bt-prioritize-piece=head=16M,tail=16M`），便于预览播放。
+    /// 边下边看（2026-08-17）：优先下载每个文件的首尾分片，便于预览播放。
     /// 旧数据缺失时默认 false。
     #[serde(default)]
     pub streaming_priority: bool,
@@ -307,7 +310,7 @@ pub struct BtRuntimeStatus {
     /// 累计上传字节（分享率 = uploaded / total）。旧事件缺省 0。
     #[serde(default)]
     pub uploaded_bytes: u64,
-    /// aria2 报告本机正在做种上传。旧事件缺省 false。
+    /// BT 引擎报告本机正在做种上传。旧事件缺省 false。
     #[serde(default)]
     pub seeding: bool,
 }
@@ -707,6 +710,13 @@ pub struct NewTaskRequest {
     /// HTTP 请求体（针对 POST 打包下载等场景）。默认为 None。
     #[serde(default)]
     pub body: Option<String>,
+    /// 预估/已知文件总字节数（如 LanDisk 探测、网盘元数据等已知大小）。
+    /// 传入后排队中 (Queued) 的任务即可直接呈现真实体积，避免显示破折号。
+    #[serde(default)]
+    pub total_bytes: Option<u64>,
+    /// 批次标识（用于批次聚合看板、一键批量操作等）。
+    #[serde(default)]
+    pub batch_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -725,6 +735,8 @@ pub struct BatchTaskRequest {
     #[serde(default)]
     pub completion_action: CompletionAction,
     pub connection_count: Option<u8>,
+    #[serde(default)]
+    pub batch_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -882,8 +894,7 @@ pub struct AppSettings {
     /// 扩展/剪贴板是否接管 magnet: 链接。默认 true（可关闭，§5 不得静默接管）。
     #[serde(default = "default_bt_intercept_magnet")]
     pub bt_intercept_magnet: bool,
-    /// BT 额外 Tracker 列表（2026-08-17）：每行一个 URL，追加到 aria2
-    /// `--bt-tracker` 全局选项，加快磁力元数据获取（纯 DHT 冷启动慢）。
+    /// BT 额外 Tracker 列表（2026-08-17）：每行一个 URL，追加到 BT 引擎，加快磁力元数据获取（纯 DHT 冷启动慢）。
     /// 空 = 不追加。旧 JSON 缺失时默认空。
     #[serde(default)]
     pub bt_extra_trackers: String,
@@ -1261,7 +1272,7 @@ pub enum ToolPhase {
 pub enum ToolComponent {
     YtDlp,
     Ffmpeg,
-    /// 2026-08-16 BT 批准：aria2 按需安装组件（§6，仅提取 aria2c.exe 与许可证文本）。
+    /// 历史兼容保留字段（BT 现已全面内置纯 Rust librqbit 引擎，开箱即用）。
     Aria2,
 }
 
@@ -1286,7 +1297,7 @@ pub struct ToolStatus {
     pub ffmpeg_source: String,
     pub yt_dlp_resolved_path: Option<String>,
     pub ffmpeg_resolved_path: Option<String>,
-    /// aria2 组件可用性（BT 功能前置条件）。独立于 `state` 字段：
+    /// BT 引擎可用性（历史兼容字段）。独立于 `state` 字段：
     /// `state` 仍描述媒体下载组件（yt-dlp + FFmpeg）的就绪状态。
     #[serde(default)]
     pub aria2_available: bool,
@@ -2987,6 +2998,7 @@ mod tests {
             cloud_refresh: None,
             method: None,
             body: None,
+            batch_id: None,
         };
         let json = serde_json::to_string(&task).unwrap();
         let restored: DownloadTask = serde_json::from_str(&json).unwrap();
