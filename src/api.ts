@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { AppInfo, AppSettings, BtFileEntry, BtNewTaskRequest, BtTorrentInspectResult, CacheClearResult, CacheInspectResult, CategoryRule, CategoryRuleTestResult, CompletionAction, DeepLinkReceivedPayload, DetectedMediaTools, DownloadPreset, DownloadTask, DuplicateCheckResult, ErrorDiagnosis, ExtensionCompatibilityResult, ExtensionUpdateResult, FileAssocInfo, FilenameCleanupRule, ImageFileInfo, ImageItem, LanDiskInspectionResult, LanzouDirectUrlResult, LanzouShareInfo, MediaCredential, MediaCredentialCheckResult, MediaPlatform, MediaProbeResult, MeteredNetworkDetectedPayload, NewTaskRequest, PairingInfo, Pan123DirectUrlResult, Pan123ShareInfo, PlatformCompatibility, PlatformNamingTemplate, PlaylistItem, PowerAction, PowerActionState, PrecheckRequest, PrecheckResult, ProxyAuth, ProxyTestResult, QuickView, RestorePreview, RestoreStats, RetryPolicy, SelfcheckReport, SubtitleItem, Tag, TaskEvent, TaskNotificationPayload, TaskTagsMap, TaskTemplate, TaskTemplateTestResult, ToolComponent, ToolStatus, UpdateCheckResult, UpdateDownloadResult, UpdateProgressPayload, UrlHistoryEntry, WaitReason, YtDlpUpdateInfo } from "./types";
+import type { AppInfo, AppSettings, BtFileEntry, BtNewTaskRequest, BtTorrentInspectResult, CacheClearResult, CacheInspectResult, CategoryRule, CategoryRuleTestResult, CompletionAction, DeepLinkReceivedPayload, DetectedMediaTools, DownloadPreset, DownloadTask, DuplicateCheckResult, ErrorDiagnosis, ExtensionCompatibilityResult, ExtensionUpdateResult, FileAssocInfo, FilenameCleanupRule, ImageFileInfo, ImageItem, LanzouDirectUrlResult, LanzouShareInfo, MediaCredential, MediaCredentialCheckResult, MediaPlatform, MediaProbeResult, MeteredNetworkDetectedPayload, NewTaskRequest, PairingInfo, Pan123DirectUrlResult, Pan123ShareInfo, PlatformCompatibility, PlatformNamingTemplate, PlaylistItem, PowerAction, PowerActionState, PrecheckRequest, PrecheckResult, ProxyAuth, ProxyTestResult, QuickView, RestorePreview, RestoreStats, RetryPolicy, SelfcheckReport, SubtitleItem, Tag, TaskEvent, TaskNotificationPayload, TaskTagsMap, TaskTemplate, TaskTemplateTestResult, ToolComponent, ToolStatus, UpdateCheckResult, UpdateDownloadResult, UpdateProgressPayload, UrlHistoryEntry, WaitReason, YtDlpUpdateInfo } from "./types";
 
 export const isDesktop = () => "__TAURI_INTERNALS__" in window;
 const call = <T>(command: string, args?: Record<string, unknown>): Promise<T> => isDesktop() ? invoke<T>(command, args) : Promise.reject(new Error("请运行猫步下载器桌面应用"));
@@ -24,7 +24,7 @@ export const api = {
   btTaskFiles: (id: string) => call<BtFileEntry[]>("bt_task_files", { id }),
   /** 勾选/取消勾选 BT 任务内文件（1 基索引，至少保留一个）。 */
   btSelectFiles: (id: string, indices: number[]) => call<void>("bt_select_files", { id, indices }),
-  addBatch: (urls: string[], template: Omit<NewTaskRequest, "url">) => call<DownloadTask[]>("tasks_add_batch", { request: { urls, destination: template.destination, headers: template.headers, scheduled_at: template.scheduled_at, priority: template.priority, per_task_speed_limit: template.per_task_speed_limit, collision_policy: template.collision_policy, completion_action: template.completion_action, connection_count: template.connection_count, total_bytes: template.total_bytes, batch_id: template.batch_id } }),
+  addBatch: (urls: string[], template: Omit<NewTaskRequest, "url">) => call<DownloadTask[]>("tasks_add_batch", { request: { urls, destination: template.destination, headers: template.headers, scheduled_at: template.scheduled_at, priority: template.priority, per_task_speed_limit: template.per_task_speed_limit, collision_policy: template.collision_policy, completion_action: template.completion_action, connection_count: template.connection_count } }),
   exportTasks: (path: string) => call<number>("tasks_export", { path }),
   importTasks: (path: string, destination: string) => call<DownloadTask[]>("tasks_import", { path, destination }),
   action: (id: string, action: string) => call<void>("task_action", { id, action }),
@@ -540,20 +540,6 @@ export const api = {
           filePath,
         })
       : Promise.resolve({ path: filePath, name: "", size_bytes: 0, ext: "", modified_ms: 0 }),
-  /** 探测局域网互联 (LanDisk) 共享目录并解构文件树。 */
-  landiskInspect: (url: string, pin?: string) =>
-    call<LanDiskInspectionResult>("landisk_inspect", { url, pin }),
-  /** 批量解构局域网互联所选文件或子目录。 */
-  landiskDeconstructBatch: (baseUrl: string, files: string[], folderName?: string, pin?: string) =>
-    call<LanDiskInspectionResult>("landisk_deconstruct_batch", {
-      baseUrl,
-      files,
-      folderName,
-      pin,
-    }),
-  /** 将下载完成的目录原子打包为标准 ZIP 归档。 */
-  landiskPackZip: (dirPath: string, zipPath: string) =>
-    call<number>("landisk_pack_zip", { dirPath, zipPath }),
   subscribe: async (handler: (event: TaskEvent | { removed: string }) => void): Promise<UnlistenFn[]> => {
     if (!isDesktop()) return [];
     return Promise.all([

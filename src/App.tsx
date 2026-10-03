@@ -89,11 +89,6 @@ import { Modal } from "./components/common/Modal";
 import { TaskRow, isVideoFile, isImageFile } from "./components/common/TaskRow";
 import { BulkActionBar } from "./components/common/BulkActionBar";
 import {
-  BatchSummaryBar,
-  computeBatchSummaries,
-  type BatchSummary,
-} from "./components/common/BatchSummaryBar";
-import {
   applyWindowAppearance,
   Titlebar,
   usesDarkTheme,
@@ -120,8 +115,6 @@ import {
   MAX_DROPPED_TORRENT_BYTES,
 } from "./drag-drop";
 import { reorderTaskIdsWithinPriority } from "./priority";
-
-const EMPTY_TAG_LIST: Tag[] = [];
 
 const defaults: AppSettings = {
   download_dir: "",
@@ -298,7 +291,6 @@ export default function App() {
   const [newOpen, setNewOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [categoriesExpanded, setCategoriesExpanded] = useState(true);
-  const [dismissedBatchIds, setDismissedBatchIds] = useState<Set<string>>(new Set());
   const [showCloseConfirm, setShowCloseConfirm] = useState(false);
   const [deleteConfirm, setDeleteConfirm] =
     useState<DeleteConfirmRequest | null>(null);
@@ -381,30 +373,27 @@ export default function App() {
     };
   }, []);
 
-  const handleCheckboxMouseDown = useCallback(
-    (
-      taskId: string,
-      isChecked: boolean,
-      event: React.MouseEvent
-    ) => {
-      if (event.button !== 0) return;
-      isDraggingSelection.current = true;
-      targetCheckedState.current = !isChecked;
-      setPrimaryTaskId(taskId);
-      setSelected((current) => {
-        const next = new Set(current);
-        if (targetCheckedState.current) {
-          next.add(taskId);
-        } else {
-          next.delete(taskId);
-        }
-        return next;
-      });
-    },
-    []
-  );
+  const handleCheckboxMouseDown = (
+    taskId: string,
+    isChecked: boolean,
+    event: React.MouseEvent
+  ) => {
+    if (event.button !== 0) return;
+    isDraggingSelection.current = true;
+    targetCheckedState.current = !isChecked;
+    setPrimaryTaskId(taskId);
+    setSelected((current) => {
+      const next = new Set(current);
+      if (targetCheckedState.current) {
+        next.add(taskId);
+      } else {
+        next.delete(taskId);
+      }
+      return next;
+    });
+  };
 
-  const handleCheckboxMouseEnter = useCallback((taskId: string) => {
+  const handleCheckboxMouseEnter = (taskId: string) => {
     if (!isDraggingSelection.current) return;
     setSelected((current) => {
       const next = new Set(current);
@@ -415,7 +404,7 @@ export default function App() {
       }
       return next;
     });
-  }, []);
+  };
 
   const taskEventSeq = useRef(0);
   const refresh = async () => {
@@ -1180,9 +1169,8 @@ export default function App() {
 
   const active = tasks.filter((task) => task.status === "downloading");
   const totalSpeed = active.reduce((sum, task) => sum + task.speed, 0);
-  const notify = useCallback((text: string, kind: "ok" | "error" = "ok") => {
+  const notify = (text: string, kind: "ok" | "error" = "ok") =>
     setToast({ text, kind });
-  }, []);
   notifyRef.current = notify;
   refreshRef.current = refresh;
 
@@ -1237,74 +1225,6 @@ export default function App() {
       notify(String(error), "error");
     }
   };
-
-  const batchSummaries = useMemo(() => {
-    if (view !== "main") return [];
-    return computeBatchSummaries(tasks, dismissedBatchIds);
-  }, [tasks, dismissedBatchIds, view]);
-
-  const handleBatchPauseAll = useCallback(
-    (summary: BatchSummary) => {
-      const activeIds = summary.tasks
-        .filter(
-          (t) =>
-            t.status === "downloading" ||
-            t.status === "queued" ||
-            t.status === "verifying" ||
-            t.status === "waiting-network"
-        )
-        .map((t) => t.id);
-      if (activeIds.length > 0) {
-        void api
-          .bulkAction(activeIds, "pause")
-          .then(() => notify(t("batch.allPaused")))
-          .catch((err) => {
-            notify(String(err), "error");
-          });
-      }
-    },
-    [notify]
-  );
-
-  const handleBatchResumeAll = useCallback(
-    (summary: BatchSummary) => {
-      const pausedIds = summary.tasks
-        .filter(
-          (t) =>
-            t.status === "paused" ||
-            t.status === "failed" ||
-            t.status === "cancelled" ||
-            t.status === "interrupted" ||
-            t.status === "paused-by-low-disk" ||
-            t.status === "paused-by-metered"
-        )
-        .map((t) => t.id);
-      if (pausedIds.length > 0) {
-        void api
-          .bulkAction(pausedIds, "resume")
-          .then(() => notify("任务已加入队列"))
-          .catch((err) => {
-            notify(String(err), "error");
-          });
-      }
-    },
-    [notify]
-  );
-
-  const handleBatchOpenFolder = useCallback(
-    (summary: BatchSummary) => {
-      if (summary.tasks.length > 0) {
-        void api.openFolder(summary.tasks[0].id).catch((err) => {
-          notify(String(err), "error");
-        });
-      }
-    },
-    [notify]
-  );
-
-  const handleBatchDismiss = useCallback((summary: BatchSummary) => {
-    setDismissedBatchIds((prev) => new Set(prev).add(summary.batchId));
-  }, []);
 
   /** 打开删除确认对话框；实际删除在用户确认后交由 handleDeleteTasks 执行。 */
   const requestDeleteConfirmation = (
@@ -1408,84 +1328,6 @@ export default function App() {
       window.addEventListener("mouseup", handleMouseUp, true);
     },
     []
-  );
-
-  const handleSelectTask = useCallback((taskId: string) => {
-    setPrimaryTaskId(taskId);
-    setSelected((current) => {
-      const next = new Set(current);
-      if (next.has(taskId)) {
-        next.delete(taskId);
-      } else {
-        next.add(taskId);
-      }
-      return next;
-    });
-  }, []);
-
-  const handleOpenTask = useCallback(
-    (task: DownloadTask) => {
-      if (
-        task.status === "completed" ||
-        (task.task_kind === "bt" && task.downloaded_bytes > 0)
-      ) {
-        const sep =
-          task.destination.endsWith("\\") || task.destination.endsWith("/")
-            ? ""
-            : "\\";
-        const fullPath = `${task.destination}${sep}${task.file_name}`;
-        const useBuiltin = settings.open_file_action !== "system";
-        if (useBuiltin && isVideoFile(task.file_name)) {
-          void api
-            .openMediaPlayer(fullPath, task.file_name)
-            .catch(() =>
-              api
-                .openFile(task.id)
-                .catch((error) => notify(String(error), "error"))
-            );
-        } else if (useBuiltin && isImageFile(task.file_name)) {
-          void api
-            .openImageViewer(fullPath, task.file_name)
-            .catch(() =>
-              api
-                .openFile(task.id)
-                .catch((error) => notify(String(error), "error"))
-            );
-        } else {
-          void api
-            .openFile(task.id)
-            .catch((error) => notify(String(error), "error"));
-        }
-      }
-    },
-    [settings.open_file_action, notify]
-  );
-
-  const handleContextTask = useCallback(
-    (task: DownloadTask, event: MouseEvent) => {
-      event.preventDefault();
-      setPrimaryTaskId(task.id);
-      setContext({
-        x: event.clientX,
-        y: event.clientY,
-        id: task.id,
-      });
-      setSelected((current) => {
-        if (!current.has(task.id)) {
-          return new Set([task.id]);
-        }
-        return current;
-      });
-    },
-    []
-  );
-
-  const handleTaskMouseDownCallback = useCallback(
-    (taskItem: DownloadTask, evt: React.MouseEvent) => {
-      setPrimaryTaskId(taskItem.id);
-      handleTaskMouseDown(taskItem, evt);
-    },
-    [handleTaskMouseDown]
   );
 
   const beginResize = (key: string, event: MouseEvent) => {
@@ -2316,16 +2158,6 @@ export default function App() {
                 ) as CSSProperties
               }
             >
-              {batchSummaries.map((summary) => (
-                <BatchSummaryBar
-                  key={summary.batchId}
-                  summary={summary}
-                  onPauseAll={handleBatchPauseAll}
-                  onResumeAll={handleBatchResumeAll}
-                  onOpenFolder={handleBatchOpenFolder}
-                  onDismiss={handleBatchDismiss}
-                />
-              ))}
               <div className="task-grid">
                 <div className="table-header">
                   <label>
@@ -2407,15 +2239,78 @@ export default function App() {
                         key={task.id}
                         task={task}
                         showCompletedAt={showCompletedAt}
-                        taskTagList={taskTags[task.id] ?? EMPTY_TAG_LIST}
+                        taskTagList={taskTags[task.id] ?? []}
                         selected={selected.has(task.id)}
                         notify={notify}
-                        onSelect={handleSelectTask}
-                        onOpen={handleOpenTask}
-                        onContext={handleContextTask}
-                        onMouseDown={handleTaskMouseDownCallback}
-                        onCheckboxMouseDown={handleCheckboxMouseDown}
-                        onCheckboxMouseEnter={handleCheckboxMouseEnter}
+                        onSelect={() => {
+                          setPrimaryTaskId(task.id);
+                          setSelected((current) => {
+                            const next = new Set(current);
+                            next.has(task.id)
+                              ? next.delete(task.id)
+                              : next.add(task.id);
+                            return next;
+                          });
+                        }}
+                        onOpen={() => {
+                          if (
+                            task.status === "completed" ||
+                            (task.task_kind === "bt" && task.downloaded_bytes > 0)
+                          ) {
+                            const sep =
+                              task.destination.endsWith("\\") || task.destination.endsWith("/")
+                                ? ""
+                                : "\\";
+                            const fullPath = `${task.destination}${sep}${task.file_name}`;
+                            const useBuiltin = settings.open_file_action !== "system";
+                            if (useBuiltin && isVideoFile(task.file_name)) {
+                              void api
+                                .openMediaPlayer(fullPath, task.file_name)
+                                .catch(() =>
+                                  api
+                                    .openFile(task.id)
+                                    .catch((error) => notify(String(error), "error"))
+                                );
+                            } else if (useBuiltin && isImageFile(task.file_name)) {
+                              void api
+                                .openImageViewer(fullPath, task.file_name)
+                                .catch(() =>
+                                  api
+                                    .openFile(task.id)
+                                    .catch((error) => notify(String(error), "error"))
+                                );
+                            } else {
+                              void api
+                                .openFile(task.id)
+                                .catch((error) => notify(String(error), "error"));
+                            }
+                          }
+                        }}
+                        onContext={(event) => {
+                          event.preventDefault();
+                          setPrimaryTaskId(task.id);
+                          setContext({
+                            x: event.clientX,
+                            y: event.clientY,
+                            id: task.id,
+                          });
+                          if (!selected.has(task.id))
+                            setSelected(new Set([task.id]));
+                        }}
+                        onMouseDown={(taskItem, evt) => {
+                          setPrimaryTaskId(taskItem.id);
+                          handleTaskMouseDown(taskItem, evt);
+                        }}
+                        onCheckboxMouseDown={(evt) =>
+                          handleCheckboxMouseDown(
+                            task.id,
+                            selected.has(task.id),
+                            evt
+                          )
+                        }
+                        onCheckboxMouseEnter={() =>
+                          handleCheckboxMouseEnter(task.id)
+                        }
                       />
                     ))
                   )}
@@ -2512,7 +2407,6 @@ export default function App() {
               task={contextTask}
               selectedTaskIds={visibleSelection.ids}
               allTasks={tasks}
-              downloadDir={settings.download_dir}
               close={() => setContext(undefined)}
               notify={notify}
               onSetSpeedLimit={setSpeedLimitTarget}

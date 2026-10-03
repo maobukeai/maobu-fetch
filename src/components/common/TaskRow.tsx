@@ -1,4 +1,4 @@
-import React, { type CSSProperties, type MouseEvent } from "react";
+import { type CSSProperties, type MouseEvent } from "react";
 import { Film, Image as ImageIcon, MoreHorizontal, Pause, Play, RefreshCw, Zap } from "lucide-react";
 import { api } from "../../api";
 import { t, useLocale } from "../../i18n";
@@ -69,21 +69,7 @@ export function taskSpeedCellText(task: DownloadTask): string {
   return down || up || "—";
 }
 
-export interface TaskRowProps {
-  task: DownloadTask;
-  selected: boolean;
-  showCompletedAt: boolean;
-  taskTagList: Tag[];
-  notify: (text: string, kind?: "ok" | "error") => void;
-  onSelect: (taskId: string) => void;
-  onOpen: (task: DownloadTask) => void;
-  onContext: (task: DownloadTask, event: MouseEvent) => void;
-  onMouseDown: (task: DownloadTask, event: React.MouseEvent) => void;
-  onCheckboxMouseDown: (taskId: string, isChecked: boolean, event: React.MouseEvent) => void;
-  onCheckboxMouseEnter: (taskId: string) => void;
-}
-
-export const TaskRow = React.memo(function TaskRow({
+export function TaskRow({
   task,
   selected,
   showCompletedAt,
@@ -95,7 +81,19 @@ export const TaskRow = React.memo(function TaskRow({
   onMouseDown,
   onCheckboxMouseDown,
   onCheckboxMouseEnter,
-}: TaskRowProps) {
+}: {
+  task: DownloadTask;
+  selected: boolean;
+  showCompletedAt: boolean;
+  taskTagList: Tag[];
+  notify: (text: string, kind?: "ok" | "error") => void;
+  onSelect: () => void;
+  onOpen: () => void;
+  onContext: (event: MouseEvent) => void;
+  onMouseDown: (task: DownloadTask, event: React.MouseEvent) => void;
+  onCheckboxMouseDown: (event: React.MouseEvent) => void;
+  onCheckboxMouseEnter: () => void;
+}) {
   useLocale();
   const statusText = getStatusText();
   const progress = task.total_bytes
@@ -139,17 +137,17 @@ export const TaskRow = React.memo(function TaskRow({
     <div
       className={selected ? "task-row selected" : "task-row"}
       data-task-id={task.id}
-      onDoubleClick={() => onOpen(task)}
-      onContextMenu={(event) => onContext(task, event)}
+      onDoubleClick={onOpen}
+      onContextMenu={onContext}
       onMouseDown={(e) => onMouseDown(task, e)}
     >
       <label
         onMouseDown={(e) => {
           e.preventDefault();
           e.stopPropagation();
-          onCheckboxMouseDown(task.id, selected, e);
+          onCheckboxMouseDown(e);
         }}
-        onMouseEnter={() => onCheckboxMouseEnter(task.id)}
+        onMouseEnter={onCheckboxMouseEnter}
         style={{ cursor: "pointer" }}
       >
         <input
@@ -159,7 +157,7 @@ export const TaskRow = React.memo(function TaskRow({
           readOnly
         />
       </label>
-      <div className="name-cell" onClick={() => onSelect(task.id)}>
+      <div className="name-cell" onClick={onSelect}>
         <FileIcon category={task.category} fileName={task.file_name} />
         <div style={{ minWidth: 0, flex: 1 }}>
           <div className="name-title-row">
@@ -401,7 +399,7 @@ export const TaskRow = React.memo(function TaskRow({
           className="row-menu"
           onClick={(event) => {
             event.stopPropagation();
-            onContext(task, event);
+            onContext(event);
           }}
         >
           <MoreHorizontal size={15} />
@@ -409,4 +407,4 @@ export const TaskRow = React.memo(function TaskRow({
       </div>
     </div>
   );
-});
+}

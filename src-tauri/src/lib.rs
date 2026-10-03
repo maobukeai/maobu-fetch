@@ -21,7 +21,7 @@ mod media_muxer;
 // 提供 detect_platform / expand_short_url / classify_platform_error /
 // is_twitter_space / format_twitter_filename 等函数。
 mod lanzou;
-pub mod landisk;
+pub mod landisk_zip;
 mod media_platforms;
 mod media_tools;
 mod models;
@@ -2423,7 +2423,6 @@ async fn cli_add(
         cloud_refresh: None,
         method: None,
         body: None,
-        batch_id: None,
     };
 
     store.upsert_task(&task).await?;
@@ -2781,8 +2780,6 @@ async fn run_forwarded_command(manager: &SharedManager, command: CliCommand) -> 
                 cloud_refresh: None,
                 method: None,
                 body: None,
-                total_bytes: None,
-                batch_id: None,
             };
             let task = manager.add(request).await?;
             println!("Task created: {}", task.id);
@@ -3107,69 +3104,6 @@ async fn pan123_resolve_file(
         token_str,
     )
     .await
-}
-
-#[tauri::command]
-#[allow(non_snake_case)]
-async fn landisk_inspect(
-    url: String,
-    pin: Option<String>,
-    manager: State<'_, SharedManager>,
-) -> Result<crate::landisk::LanDiskInspectionResult, String> {
-    let params = crate::landisk::parse_landisk_url(&url)
-        .ok_or_else(|| "无法从 URL 中识别有效的局域网互联路径或文件列表".to_string())?;
-    let parsed_base = url::Url::parse(&params.base_url)
-        .map_err(|e| format!("解析 Base URL 失败: {e}"))?;
-
-    let effective_pin = pin.as_deref().or(params.pin.as_deref());
-    let client = manager.http_client().await;
-
-    if !params.files.is_empty() {
-        let folder = params.folder_name.as_deref().unwrap_or("batch_download");
-        crate::landisk::deconstruct_landisk_batch(&client, &parsed_base, folder, &params.files, effective_pin).await
-    } else if let Some(target) = params.target_path.as_deref() {
-        crate::landisk::deconstruct_landisk_path(&client, &parsed_base, target, effective_pin).await
-    } else {
-        Err("URL 中未指定任何待下载的路径或文件".into())
-    }
-}
-
-#[tauri::command]
-#[allow(non_snake_case)]
-async fn landisk_deconstruct_batch(
-    baseUrl: Option<String>,
-    base_url: Option<String>,
-    files: Vec<String>,
-    folderName: Option<String>,
-    folder_name: Option<String>,
-    pin: Option<String>,
-    manager: State<'_, SharedManager>,
-) -> Result<crate::landisk::LanDiskInspectionResult, String> {
-    let raw_base = baseUrl.or(base_url).unwrap_or_default();
-    let parsed_base = url::Url::parse(&raw_base)
-        .map_err(|e| format!("解析 Base URL 失败: {e}"))?;
-    let client = manager.http_client().await;
-    let folder = folderName.or(folder_name).unwrap_or_else(|| "batch_download".to_string());
-    crate::landisk::deconstruct_landisk_batch(&client, &parsed_base, &folder, &files, pin.as_deref()).await
-}
-
-#[tauri::command]
-#[allow(non_snake_case)]
-async fn landisk_pack_zip(
-    dirPath: Option<String>,
-    dir_path: Option<String>,
-    zipPath: Option<String>,
-    zip_path: Option<String>,
-) -> Result<u64, String> {
-    let src_str = dirPath.or(dir_path).unwrap_or_default();
-    let dest_str = zipPath.or(zip_path).unwrap_or_default();
-    let src = std::path::PathBuf::from(src_str);
-    let dest = std::path::PathBuf::from(dest_str);
-    tokio::task::spawn_blocking(move || {
-        crate::landisk::pack_directory_to_zip(&src, &dest)
-    })
-    .await
-    .map_err(|e| e.to_string())?
 }
 
 fn urlencoding_encode(input: &str) -> String {
@@ -4562,9 +4496,6 @@ pub fn run() {
             lanzou_resolve_file,
             pan123_inspect_share,
             pan123_resolve_file,
-            landisk_inspect,
-            landisk_deconstruct_batch,
-            landisk_pack_zip,
             open_media_player,
             open_image_viewer,
             image_viewer_get_current_file,
@@ -4596,7 +4527,7 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building Maobu Fetch")
         .run(|app_handle, event| {
-            // 程序退出前优雅关闭 BT 引擎：保存会话与状态，重启后可恢复
+            // 程序退出前优雅关闭 aria2：保存会话与控制文件，重启后可恢复
             // （AGENTS.md §3 BT/磁力内核：暂停/退出必须保持可恢复状态）。
             if let tauri::RunEvent::Exit = event {
                 if let Some(manager) = app_handle.try_state::<SharedManager>() {

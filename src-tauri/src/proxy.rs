@@ -792,7 +792,6 @@ mod tests {
             response_status: None,
             content_type: None,
             accepts_ranges: None,
-            batch_id: None,
         }
     }
 

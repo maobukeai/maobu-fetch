@@ -45,7 +45,6 @@ fn test_task(directory: &Path, file_name: &str, policy: CollisionPolicy) -> Down
         cloud_refresh: None,
         method: None,
         body: None,
-        batch_id: None,
     }
 }
 #[test]
@@ -82,65 +81,6 @@ fn rename_validation_rejects_empty_invalid_and_traversal() {
     assert!(validate_rename_filename(&long).is_err());
     let max = "a".repeat(255);
     assert!(validate_rename_filename(&max).is_ok());
-}
-#[test]
-fn sanitize_relative_destination_prevents_directory_traversal() {
-    let base = if cfg!(windows) { "C:\\Downloads" } else { "/Downloads" };
-
-    // 简单相对子目录正常拼接
-    let res = sanitize_relative_destination(base, "sub/folder");
-    assert!(res.contains("Downloads"));
-    assert!(res.contains("sub"));
-    assert!(res.contains("folder"));
-
-    // 路径遍历模式已被彻底净化，无法逃逸出 base
-    let res_escape = sanitize_relative_destination(base, "../../escape");
-    let norm_base = base.replace('\\', "/");
-    let norm_escape = res_escape.replace('\\', "/");
-    assert!(norm_escape.starts_with(&norm_base));
-    assert!(norm_escape.ends_with("/escape"));
-
-    // 混淆穿透模式 ....// 不会突破 base
-    let res_bypass = sanitize_relative_destination(base, "....//sub");
-    let norm_bypass = res_bypass.replace('\\', "/");
-    assert!(norm_bypass.starts_with(&norm_base));
-
-    // Windows 反斜杠遍历模式已被彻底净化
-    let res_win_escape = sanitize_relative_destination(base, r"..\..\escape");
-    let norm_win_escape = res_win_escape.replace('\\', "/");
-    assert!(norm_win_escape.starts_with(&norm_base));
-    assert!(norm_win_escape.ends_with("/escape"));
-
-    // 混合斜杠与多层逃逸
-    let res_mixed = sanitize_relative_destination(base, r"sub/..\..\escape");
-    let norm_mixed = res_mixed.replace('\\', "/");
-    assert!(norm_mixed.starts_with(&norm_base));
-    assert!(norm_mixed.ends_with("/escape"));
-
-    // 相对路径带前导斜杠不会变为根路径逃逸
-    let res_lead_slash = sanitize_relative_destination(base, "/escape");
-    let norm_lead_slash = res_lead_slash.replace('\\', "/");
-    assert!(norm_lead_slash.starts_with(&norm_base));
-    assert!(norm_lead_slash.ends_with("/escape"));
-
-    let res_lead_bslash = sanitize_relative_destination(base, r"\escape");
-    let norm_lead_bslash = res_lead_bslash.replace('\\', "/");
-    assert!(norm_lead_bslash.starts_with(&norm_base));
-    assert!(norm_lead_bslash.ends_with("/escape"));
-
-    // 纯 .. 过滤后退化为 base
-    let res_dots = sanitize_relative_destination(base, "..");
-    assert_eq!(res_dots.replace('\\', "/").trim_end_matches('/'), norm_base.trim_end_matches('/'));
-
-    let res_dots2 = sanitize_relative_destination(base, "../../..");
-    assert_eq!(res_dots2.replace('\\', "/").trim_end_matches('/'), norm_base.trim_end_matches('/'));
-
-    // 空串与当前目录 .
-    let res_empty = sanitize_relative_destination(base, "");
-    assert_eq!(res_empty.replace('\\', "/").trim_end_matches('/'), norm_base.trim_end_matches('/'));
-
-    let res_dot = sanitize_relative_destination(base, ".");
-    assert_eq!(res_dot.replace('\\', "/").trim_end_matches('/'), norm_base.trim_end_matches('/'));
 }
 #[test]
 fn classifies_files() {
@@ -667,7 +607,6 @@ fn selfcheck_task(
         cloud_refresh: None,
         method: None,
         body: None,
-        batch_id: None,
     }
 }
 

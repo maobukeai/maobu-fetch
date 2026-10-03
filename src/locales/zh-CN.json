@@ -705,7 +705,7 @@
     "uploadSpeedLabel": "上传速度",
     "downloadSpeedLabel": "下载速度",
     "uploadedLabel": "累计上传",
-    "statsStale": "任务未在运行，以上为最后一次 BT 状态快照。",
+    "statsStale": "任务未在运行，以上为最后一次 aria2 状态快照。",
     "keepOneFile": "至少需要保留一个勾选的文件",
     "metadataPending": "待获取",
     "metadataPendingFilesHint": "磁力元数据获取完成后才能查看与勾选文件",
@@ -778,19 +778,5 @@
     "interrupted": "任务已中断，可继续",
     "remoteChanged": "远端资源已变化",
     "unknown": "未知状态"
-  },
-  "batch": {
-    "title": "批量任务",
-    "itemsProgress": "已完成 {done}/{total} 项",
-    "bytesProgress": "已传输 {downloaded} / 共 {total}",
-    "bytesProgressNoTotal": "已传输 {downloaded}",
-    "speed": "极速传输中",
-    "eta": "剩余 {eta}",
-    "allCompleted": "全部完成",
-    "allPaused": "已全部暂停",
-    "pauseAll": "全部暂停",
-    "resumeAll": "全部继续",
-    "openFolder": "打开文件夹",
-    "dismiss": "关闭摘要栏"
   }
 }

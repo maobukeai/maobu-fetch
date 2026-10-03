@@ -208,8 +208,6 @@ mod tests {
             cloud_refresh: None,
             method: None,
             body: None,
-            total_bytes: None,
-            batch_id: None,
         }
     }
 

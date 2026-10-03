@@ -38,7 +38,7 @@ use tokio_util::sync::CancellationToken;
 use url::Url;
 use uuid::Uuid;
 
-mod bandwidth;
+pub(crate) mod bandwidth;
 pub mod category_rules;
 pub mod completion_action;
 pub mod diagnose;
@@ -114,25 +114,8 @@ pub struct DownloadManager {
     dispatcher: Notify,
     pub(crate) app: AppHandle,
     pub(crate) bandwidth_scheduler: BandwidthScheduler,
-    /// BT/磁力引擎（纯 Rust librqbit 会话）。2026-08-16 批准纳入。
+    /// BT/磁力引擎（aria2 子进程 + gid 绑定）。2026-08-16 批准纳入。
     pub bt: crate::bt::BtEngine,
-}
-
-pub fn sanitize_relative_destination(default_download_dir: &str, dir: &str) -> String {
-    let normalized = dir.replace('\\', "/");
-    let clean_rel = std::path::Path::new(&normalized)
-        .components()
-        .filter_map(|c| match c {
-            std::path::Component::Normal(p) => Some(p.to_string_lossy()),
-            _ => None,
-        })
-        .collect::<Vec<_>>()
-        .join(std::path::MAIN_SEPARATOR_STR);
-    normalize_directory(
-        &std::path::Path::new(default_download_dir)
-            .join(clean_rel)
-            .to_string_lossy(),
-    )
 }
 
 impl DownloadManager {
@@ -141,8 +124,9 @@ impl DownloadManager {
         let bandwidth_limit = settings.speed_limit_kbps * 1024;
         let client = build_client(&settings)?;
         let auto_start = settings.auto_start;
+        let bt_data_dir = store.data_dir().join("session");
         let manager = Arc::new(Self {
-            store: store.clone(),
+            store,
             settings: RwLock::new(settings),
             client: RwLock::new(client),
             controls: Mutex::new(HashMap::new()),
@@ -152,7 +136,7 @@ impl DownloadManager {
             dispatcher: Notify::new(),
             app,
             bandwidth_scheduler: BandwidthScheduler::new(bandwidth_limit),
-            bt: crate::bt::BtEngine::with_data_dir(store.data_dir().join("session")),
+            bt: crate::bt::BtEngine::with_data_dir(bt_data_dir),
         });
         // Mark every Downloading task as Interrupted and validate shard files
         // before the scheduler starts. recover_interrupted still handles the
@@ -165,14 +149,6 @@ impl DownloadManager {
         // 分时段限速轮询（2026-08-17）：窗口切换时重算生效限速。
         let limiter = manager.clone();
         tauri::async_runtime::spawn(async move { limiter.scheduled_limit_loop().await });
-        let mut initial_bt_settings = manager.settings().await;
-        let effective = bandwidth::effective_global_limit_kbps(
-            initial_bt_settings.speed_limit_kbps,
-            initial_bt_settings.scheduled_limit.as_ref(),
-            bandwidth::local_minute_of_day(),
-        );
-        initial_bt_settings.speed_limit_kbps = effective;
-        let _ = manager.bt.apply_settings(&initial_bt_settings).await;
         Ok(manager)
     }
 
@@ -222,7 +198,7 @@ impl DownloadManager {
         *self.client.write().await = new_client;
         *self.settings.write().await = settings.clone();
         // 分时段限速（2026-08-17）：立即按当前本地时间应用生效限速，
-        // 而不是等下一次窗口轮询；BT 引擎同步也使用同一生效值。
+        // 而不是等下一次窗口轮询；aria2 同步也使用同一生效值。
         // 非 Windows 环境 local_minute_of_day 返回 None，保持基础限速。
         let effective = bandwidth::effective_global_limit_kbps(
             settings.speed_limit_kbps,
@@ -231,25 +207,22 @@ impl DownloadManager {
         );
         self.bandwidth_scheduler.set_limit(effective * 1024);
         let _ = crate::autostart::sync_autostart(settings.auto_start);
-        // BT 引擎：全局限速/做种策略即时同步。失败仅记录，不阻断设置保存。
-        let mut bt_settings = settings.clone();
-        bt_settings.speed_limit_kbps = effective;
-        if let Err(error) = self.bt.apply_settings(&bt_settings).await {
-            tracing::warn!(error = %error, "同步 BT 设置失败");
+        // BT 引擎：全局限速/做种策略即时同步（aria2 运行中才生效，未运行时
+        // 由下次启动参数承接）。失败仅记录，不阻断设置保存。
+        let mut aria2_settings = settings.clone();
+        aria2_settings.speed_limit_kbps = effective;
+        if let Err(error) = self.bt.apply_settings(&aria2_settings).await {
+            tracing::warn!(error = %error, "同步 BT 设置到 aria2 失败");
         }
         self.dispatcher.notify_waiters();
         let _ = self.app.emit("settings-updated", settings);
         Ok(())
     }
 
-    pub async fn http_client(&self) -> reqwest::Client {
-        self.client.read().await.clone()
-    }
-
     /// 分时段限速轮询：每 30 秒按本地时间重算生效限速，窗口切换时
-    /// 同步 HTTP 内核调度器与 BT 引擎（§3 全局限速必须覆盖两个内核）。
+    /// 同步 HTTP 内核调度器与 aria2（§3 全局限速必须覆盖两个内核）。
     ///
-    /// 生效值未变化时不做任何下发。非 Windows 环境下
+    /// 生效值未变化时不做任何下发，避免无效 RPC。非 Windows 环境下
     /// `local_minute_of_day` 返回 `None`，循环空转不干预限速。
     async fn scheduled_limit_loop(self: Arc<Self>) {
         let mut applied: Option<u64> = None;
@@ -263,10 +236,10 @@ impl DownloadManager {
             if applied != Some(effective) {
                 applied = Some(effective);
                 self.bandwidth_scheduler.set_limit(effective * 1024);
-                let mut bt_settings = settings.clone();
-                bt_settings.speed_limit_kbps = effective;
-                if let Err(error) = self.bt.apply_settings(&bt_settings).await {
-                    tracing::warn!(error = %error, "同步分时段限速到 BT 引擎失败");
+                let mut aria2_settings = settings.clone();
+                aria2_settings.speed_limit_kbps = effective;
+                if let Err(error) = self.bt.apply_settings(&aria2_settings).await {
+                    tracing::warn!(error = %error, "同步分时段限速到 aria2 失败");
                 }
             }
             tokio::time::sleep(Duration::from_secs(30)).await;
@@ -396,7 +369,7 @@ impl DownloadManager {
             url: parsed.to_string(),
             file_name: file_name.clone(),
             destination,
-            total_bytes: request.total_bytes.unwrap_or(0),
+            total_bytes: 0,
             downloaded_bytes: 0,
             speed: 0,
             eta_seconds: None,
@@ -448,7 +421,6 @@ impl DownloadManager {
             cloud_refresh: request.cloud_refresh,
             method: request.method,
             body: request.body,
-            batch_id: request.batch_id,
         };
 
         // PikPak 裸直链自动注入 Referer 和元数据
@@ -483,13 +455,6 @@ impl DownloadManager {
         if request.urls.is_empty() || request.urls.len() > 500 {
             return Err("批量任务数量必须为 1–500".into());
         }
-        let batch_id = request.batch_id.clone().or_else(|| {
-            if request.urls.len() > 1 {
-                Some(format!("batch_{}", now()))
-            } else {
-                None
-            }
-        });
         let mut tasks = Vec::new();
         for url in request.urls {
             let task = self
@@ -512,8 +477,6 @@ impl DownloadManager {
                     cloud_refresh: None,
                     method: None,
                     body: None,
-                    total_bytes: None,
-                    batch_id: batch_id.clone(),
                 })
                 .await?;
             tasks.push(task);
@@ -539,12 +502,7 @@ impl DownloadManager {
         file_name: &str,
     ) -> String {
         if let Some(dir) = user_destination.map(str::trim).filter(|s| !s.is_empty()) {
-            let path = std::path::Path::new(dir);
-            if path.is_absolute() {
-                return normalize_directory(dir);
-            } else {
-                return sanitize_relative_destination(default_download_dir, dir);
-            }
+            return normalize_directory(dir);
         }
         if let Ok(rules) = self.store.category_rule_list().await {
             if let Some(matched) = apply_category_rules(&rules, url, file_name, None) {
@@ -652,8 +610,8 @@ impl DownloadManager {
                     token.cancel();
                 }
                 if task.task_kind == TaskKind::Bt {
-                    // BT：丢弃 BT 引擎侧下载记录与会话；数据文件按重名
-                    // 策略由 BT 引擎自动改名，不删除用户文件（§7）。
+                    // BT：丢弃 aria2 侧下载记录与控制文件；数据文件按重名
+                    // 策略由 aria2 自动改名，不删除用户文件（§7）。
                     let _ = self.bt.remove_task(id).await;
                     task.bt_meta = task.bt_meta.take().map(|mut meta| {
                         meta.metadata_ready = false;
@@ -704,7 +662,8 @@ impl DownloadManager {
     ///
     /// 与 HTTP 任务的关键差异：
     /// - 磁力元数据获取前不写文件名/大小（§3 BT 约束，UI 显示"待获取"）；
-    /// - 不做 HTTP 语义的输出路径预留：重名由 BT 引擎处理（rename 策略，绝不静默覆盖，§7）；
+    /// - 不做 HTTP 语义的输出路径预留：重名由 aria2 `auto-file-renaming=true`
+    ///   处理（rename 策略，`allow-overwrite=false` 保证绝不静默覆盖，§7）；
     /// - 分类规则需要 URL 域名，磁力无域名，直接使用全局下载目录。
     pub async fn add_bt(&self, request: BtNewTaskRequest) -> Result<DownloadTask, String> {
         let source = request.source.trim().to_string();
@@ -762,7 +721,7 @@ impl DownloadManager {
                 .map(str::to_owned)
                 .unwrap_or_else(|| "种子任务".into());
             let meta = BtTaskMeta {
-                // .torrent 的 infohash 由 BT 引擎接受添加后回填。
+                // .torrent 的 infohash 由 aria2 接受添加后回填（无 bencode 依赖）。
                 info_hash: String::new(),
                 selected_files: request.selected_files.clone(),
                 display_name: None,
@@ -826,7 +785,6 @@ impl DownloadManager {
             cloud_refresh: None,
             method: None,
             body: None,
-            batch_id: None,
         };
         self.store.upsert_task(&task).await?;
         self.register_power_action_target(&task.id).await;
@@ -835,7 +793,7 @@ impl DownloadManager {
         Ok(task)
     }
 
-    /// 程序退出路径：优雅关闭 BT 引擎（保存会话，保证重启可恢复，§3 BT）。
+    /// 程序退出路径：优雅关闭 aria2（保存会话，保证重启可恢复，§3 BT）。
     pub async fn shutdown_bt(&self) {
         self.bt.shutdown().await;
     }
@@ -1676,7 +1634,7 @@ impl DownloadManager {
                         break;
                     }
                 }
-                // BT 任务走 BT 引擎（轮询真实状态），HTTP/媒体任务走下载内核。
+                // BT 任务走 aria2 引擎（轮询真实状态），HTTP/媒体任务走下载内核。
                 // 返回语义一致：Ok = 完成；Err 前缀决定重试或终态。
                 let result = if task.task_kind == TaskKind::Bt {
                     crate::bt::run_task(&manager, task.clone(), token.clone()).await
@@ -1706,7 +1664,7 @@ impl DownloadManager {
                         // 完成后必须从 task.headers 中移除。
                         clear_auth_headers(&mut finished.headers);
                         let settings = manager.settings().await;
-                        // BT 完成判定即 BT 分片哈希校验通过（§3 BT），不再
+                        // BT 完成判定即 aria2 分片哈希校验通过（§3 BT），不再
                         // 对多文件种子目录做 HTTP 语义的整文件校验。
                         let needs_file_verify = finished.task_kind == TaskKind::Http
                             && (settings.verify_after_download
@@ -1721,12 +1679,7 @@ impl DownloadManager {
                         if let Ok(Some(completed)) = manager.store.get_task(&id).await {
                             if completed.status == TaskStatus::Completed {
                                 manager.notify_download_completed(&completed).await;
-                                manager.perform_completion_action(completed.clone()).await;
-                                if completed.source == "landisk_zip"
-                                    || completed.source == "landisk_deconstructed"
-                                {
-                                    manager.check_and_pack_landisk_zip(&completed).await;
-                                }
+                                manager.perform_completion_action(completed).await;
                             }
                         }
                         break;
@@ -1856,7 +1809,7 @@ impl DownloadManager {
                         break;
                     }
                     Err(error) if error.starts_with(crate::bt::BT_TERMINAL_PREFIX) => {
-                        // BT 终态失败（BT 引擎终态错误）：
+                        // BT 终态失败（组件缺失/进程死亡/aria2 error）：
                         // 任务状态已由引擎落库为 Failed，此处不重试、不覆盖状态。
                         break;
                     }
@@ -2059,8 +2012,6 @@ impl DownloadManager {
                             cloud_refresh: None,
                             method: None,
                             body: None,
-                            total_bytes: None,
-                            batch_id: None,
                         };
                         let _ = sub_manager.add(req).await;
                     }
@@ -2143,8 +2094,6 @@ impl DownloadManager {
                             cloud_refresh: None,
                             method: None,
                             body: None,
-                            total_bytes: None,
-                            batch_id: None,
                         };
                         let _ = sub_manager.add(req).await;
                     }
@@ -2252,8 +2201,6 @@ impl DownloadManager {
                             cloud_refresh: None,
                             method: None,
                             body: None,
-                            total_bytes: Some(f_size),
-                            batch_id: None,
                         };
                         let _ = sub_manager.add(req).await;
                     }
@@ -2406,8 +2353,6 @@ impl DownloadManager {
                                 cloud_refresh: None,
                                 method: None,
                                 body: None,
-                                total_bytes: None,
-                                batch_id: None,
                             };
                             if let Err(e) = self.add(new_req).await {
                                 tracing::warn!(error = %e, "创建图集子任务失败");
@@ -2945,6 +2890,10 @@ impl DownloadManager {
         };
         inject_media_credentials(&mut task, &self.store).await;
 
+        if crate::landisk_zip::is_landisk_batch_task(&task) {
+            return self.run_landisk_zip_download(task, &client, token).await;
+        }
+
         let is_post = task
             .method
             .as_deref()
@@ -3012,209 +2961,56 @@ impl DownloadManager {
             }
         };
 
-        let mut probe = initial_probe;
+        let probe = initial_probe;
 
-        // 针对局域网互联2 (LanDisk) 目录与批量打包：采用客户端任务树解构（Path A）
-        // 原生 POST /api/download/batch 为不可寻址动态 Deflate 流，无法断点续传且单线程低速。
-        // 通过调用 landisk 模块递归获取文件树，并展开为独立的 16 线程 HTTP Range 206 任务。
-        let is_landisk = crate::landisk::is_landisk_url(&task.url);
-        let is_batch_url = task.url.contains("/api/download/batch");
-        let is_files_api = task.url.contains("/api/files");
-        let is_spa_dir = task.url.contains("/#/files") || task.url.contains("path=");
-        let is_probe_error = !probe.status().is_success() && probe.status() != reqwest::StatusCode::PARTIAL_CONTENT;
-        let is_html_or_json = probe.status() == reqwest::StatusCode::OK
-            && probe
-                .headers()
-                .get(reqwest::header::CONTENT_TYPE)
-                .and_then(|v| v.to_str().ok())
-                .map(|ct| ct.contains("text/html") || ct.contains("application/json"))
-                .unwrap_or(false);
-
-        if is_landisk && (is_batch_url || is_files_api || (is_spa_dir && is_html_or_json) || is_probe_error) {
-            if let Some(params) = crate::landisk::parse_landisk_url(&task.url) {
-                let mut files_param = params.files.clone();
-                let mut folder_name = params
-                    .folder_name
-                    .clone()
-                    .unwrap_or_else(|| "batch_download".to_string());
-                let pin_param = params.pin.clone();
-
-                if files_param.is_empty() {
-                    if let Some(b) = &task.body {
-                        if let Ok(json_body) = serde_json::from_str::<serde_json::Value>(b) {
-                            if let Some(arr) = json_body.get("files").and_then(|v| v.as_array()) {
-                                for item in arr {
-                                    if let Some(s) = item.as_str() {
-                                        files_param.push(s.to_string());
-                                    }
-                                }
-                            }
-                            if let Some(fn_str) = json_body.get("folderName").and_then(|v| v.as_str()) {
-                                folder_name = fn_str.to_string();
-                            }
-                        }
-                    }
-                }
-
-                let base_url = Url::parse(&params.base_url)
-                    .or_else(|_| Url::parse(&task.url))
-                    .unwrap_or_else(|_| Url::parse("http://127.0.0.1").unwrap());
-
-                if !files_param.is_empty() {
-                    if let Ok(inspect_res) = crate::landisk::deconstruct_landisk_batch(
-                        &client,
-                        &base_url,
-                        &folder_name,
-                        &files_param,
-                        pin_param.as_deref(),
-                    ).await {
-                        if !inspect_res.files.is_empty() {
-                            tracing::info!(
-                                task_id = %task.id,
-                                file_count = inspect_res.files.len(),
-                                "局域网互联批量任务已成功解构为独立的 16 线程 HTTP Range 任务"
-                            );
-                            for file in &inspect_res.files {
-                                let sub_dest = if file.relative_dir.is_empty() {
-                                    folder_name.clone()
-                                } else {
-                                    format!("{}/{}", folder_name, file.relative_dir)
-                                };
-                                let child_dest = std::path::PathBuf::from(&task.destination).join(sub_dest);
-                                let child_req = NewTaskRequest {
-                                    url: file.download_url.clone(),
-                                    file_name: Some(file.name.clone()),
-                                    destination: Some(child_dest.to_string_lossy().to_string()),
-                                    headers: task.headers.clone(),
-                                    scheduled_at: None,
-                                    priority: task.priority,
-                                    expected_checksum: None,
-                                    source: Some("landisk_deconstructed".into()),
-                                    per_task_speed_limit: task.per_task_speed_limit,
-                                    collision_policy: task.collision_policy.clone(),
-                                    completion_action: CompletionAction::None,
-                                    media: None,
-                                    connection_count: Some(16),
-                                    start_paused: false,
-                                    user_edited_file_name: false,
-                                    cloud_refresh: None,
-                                    method: None,
-                                    body: None,
-                                    total_bytes: Some(file.size),
-                                    batch_id: Some(folder_name.clone()),
-                                };
-                                let _ = self.add(child_req).await;
-                            }
-
-                            task.file_name = format!("{folder_name}.zip (已解构为 {} 个任务)", inspect_res.files.len());
-                            task.downloaded_bytes = inspect_res.total_size;
-                            task.total_bytes = inspect_res.total_size;
-                            task.batch_id = Some(folder_name.clone());
-                            task.status = TaskStatus::Completed;
-                            task.completed_at = Some(now());
-                            task.speed = 0;
-                            task.eta_seconds = None;
-                            task.active_connections = 0;
-                            self.store.upsert_task(&task).await?;
-                            self.emit_task("updated", &task);
-                            return Ok(task);
-                        }
-                    }
-
-                    if !is_post {
-                        let mut clean_url = Url::parse(&task.url).unwrap_or_else(|_| base_url.clone());
-                        clean_url.set_query(None);
+        // 针对局域网互联2 (LanDisk) 目录打包自适应：
+        // 如果 GET 请求 /api/download?path=... 收到 400（"不能直接下载整个目录，请使用打包下载功能"），
+        // 自动将任务升级为 POST /api/download/batch，并进入分桶并发断点续传引擎。
+        if !probe.status().is_success() && probe.status() != reqwest::StatusCode::PARTIAL_CONTENT {
+            if let Ok(parsed_url) = Url::parse(&task.url) {
+                let path_str = parsed_url.path();
+                if path_str.ends_with("/api/download")
+                    && probe.status() == reqwest::StatusCode::BAD_REQUEST
+                {
+                    let path_param = parsed_url
+                        .query_pairs()
+                        .find(|(k, _)| k == "path")
+                        .map(|(_, v)| v.to_string());
+                    if let Some(target_dir) = path_param {
+                        let pin_param = parsed_url
+                            .query_pairs()
+                            .find(|(k, _)| k == "pin")
+                            .map(|(_, v)| v.to_string());
+                        let mut batch_url = parsed_url.clone();
+                        batch_url.set_path(&path_str.replace("/api/download", "/api/download/batch"));
+                        batch_url.set_query(None);
                         if let Some(pin) = &pin_param {
-                            clean_url.query_pairs_mut().append_pair("pin", pin);
+                            batch_url.query_pairs_mut().append_pair("pin", pin);
                         }
+                        let folder_name = std::path::Path::new(&target_dir)
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .filter(|s| !s.is_empty())
+                            .unwrap_or("folder_download")
+                            .to_string();
                         let body_json = serde_json::json!({
-                            "files": files_param,
+                            "files": [target_dir],
                             "folderName": folder_name
                         })
                         .to_string();
-                        task.url = clean_url.to_string();
+                        task.url = batch_url.to_string();
                         task.method = Some("POST".into());
-                        task.body = Some(body_json.clone());
+                        task.body = Some(body_json);
                         task.headers.insert("Content-Type".into(), "application/json".into());
                         task.file_name = format!("{folder_name}.zip");
                         task.category = "zip".into();
 
-                        let mut post_req = client
-                            .post(&task.url)
-                            .header(ACCEPT_ENCODING, "identity")
-                            .header(CONTENT_TYPE, "application/json")
-                            .body(body_json);
-                        for (name, value) in &task.headers {
-                            post_req = post_req.header(name, value);
-                        }
-                        if let Ok(new_resp) = post_req.send().await {
-                            probe = new_resp;
-                        }
-                    }
-                } else if let Some(target_dir) = &params.target_path {
-                    let folder_name = params.folder_name.clone().unwrap_or_else(|| {
-                        crate::landisk::extract_path_leaf_name(target_dir)
-                    });
-                    if let Ok(inspect_res) = crate::landisk::deconstruct_landisk_path(
-                        &client,
-                        &base_url,
-                        target_dir,
-                        pin_param.as_deref(),
-                    ).await {
-                        if inspect_res.files.len() > 1 || inspect_res.folder_count > 0 {
-                            tracing::info!(
-                                task_id = %task.id,
-                                file_count = inspect_res.files.len(),
-                                "局域网互联目录任务已自动解构为独立的 16 线程 HTTP Range 任务"
-                            );
-                            for file in &inspect_res.files {
-                                let sub_dest = if file.relative_dir.is_empty() {
-                                    folder_name.clone()
-                                } else {
-                                    format!("{}/{}", folder_name, file.relative_dir)
-                                };
-                                let child_dest = std::path::PathBuf::from(&task.destination).join(sub_dest);
-                                let child_req = NewTaskRequest {
-                                    url: file.download_url.clone(),
-                                    file_name: Some(file.name.clone()),
-                                    destination: Some(child_dest.to_string_lossy().to_string()),
-                                    headers: task.headers.clone(),
-                                    scheduled_at: None,
-                                    priority: task.priority,
-                                    expected_checksum: None,
-                                    source: Some("landisk_deconstructed".into()),
-                                    per_task_speed_limit: task.per_task_speed_limit,
-                                    collision_policy: task.collision_policy.clone(),
-                                    completion_action: CompletionAction::None,
-                                    media: None,
-                                    connection_count: Some(16),
-                                    start_paused: false,
-                                    user_edited_file_name: false,
-                                    cloud_refresh: None,
-                                    method: None,
-                                    body: None,
-                                    total_bytes: Some(file.size),
-                                    batch_id: Some(folder_name.clone()),
-                                };
-                                let _ = self.add(child_req).await;
-                            }
-
-                            task.file_name = format!("{folder_name} (已解构为 {} 个任务)", inspect_res.files.len());
-                            task.downloaded_bytes = inspect_res.total_size;
-                            task.total_bytes = inspect_res.total_size;
-                            task.batch_id = Some(folder_name.clone());
-                            task.status = TaskStatus::Completed;
-                            task.completed_at = Some(now());
-                            task.speed = 0;
-                            task.eta_seconds = None;
-                            task.active_connections = 0;
-                            self.store.upsert_task(&task).await?;
-                            self.emit_task("updated", &task);
-                            return Ok(task);
-                        } else if inspect_res.files.len() == 1 {
-                            task.url = inspect_res.files[0].download_url.clone();
-                            task.file_name = inspect_res.files[0].name.clone();
-                        }
+                        tracing::info!(
+                            task_id = %task.id,
+                            new_url = %task.url,
+                            "局域网互联目录打包自适应：400 目录下载已升级为分桶并发断点续传 ZIP 任务"
+                        );
+                        return self.run_landisk_zip_download(task, &client, token).await;
                     }
                 }
             }
@@ -3593,6 +3389,41 @@ impl DownloadManager {
         }
 
         Ok(task)
+    }
+
+    async fn run_landisk_zip_download(
+        self: &SharedManager,
+        mut task: DownloadTask,
+        client: &reqwest::Client,
+        token: CancellationToken,
+    ) -> Result<DownloadTask, String> {
+        let output = self.reserve_output_path(&mut task).await?;
+        let _ = ensure_task_temp_dir(&task.destination, &task.id).await;
+        let temp = task_temp_path(&task.destination, &task.id, &task.file_name);
+        let task_limiter = Arc::new(crate::manager::RateLimiter::new());
+
+        let mut completed_task = crate::landisk_zip::download_landisk_zip_task(
+            self,
+            task,
+            client,
+            &temp,
+            token,
+            task_limiter,
+        )
+        .await?;
+
+        if temp.exists() {
+            replace_file_atomically(&temp, &output).await?;
+        }
+        self.clear_parts(&completed_task).await;
+        completed_task.status = TaskStatus::Completed;
+        completed_task.completed_at = Some(now());
+        completed_task.speed = 0;
+        completed_task.eta_seconds = None;
+        completed_task.active_connections = 0;
+        self.store.upsert_task(&completed_task).await?;
+        self.emit_task("updated", &completed_task);
+        Ok(completed_task)
     }
 
     async fn download_stream(
@@ -4859,128 +4690,6 @@ impl DownloadManager {
         }
     }
 
-    /// 局域网互联目录全量任务完成时，在本地自动封包为标准 ZIP（0 远程服务端开销）。
-    pub async fn check_and_pack_landisk_zip(&self, task: &DownloadTask) {
-        let dest_dir = PathBuf::from(&task.destination);
-        if !dest_dir.exists() || !dest_dir.is_dir() {
-            return;
-        }
-
-        // 防御：绝不打包全局下载根目录或磁盘根驱动器
-        let default_download_dir = self.settings().await.download_dir;
-        let default_path = PathBuf::from(&default_download_dir);
-
-        let (target_dir, folder_name, parent_dir) = if dest_dir == default_path {
-            return;
-        } else if let Some(batch_name) = &task.batch_id {
-            let mut curr = Some(dest_dir.as_path());
-            let mut matched_target = None;
-            while let Some(c) = curr {
-                if c.file_name().map(|n| n.to_string_lossy()) == Some(batch_name.into()) {
-                    matched_target = Some(c);
-                    break;
-                }
-                curr = c.parent();
-            }
-            if let Some(target) = matched_target {
-                if let Some(parent) = target.parent().filter(|p| !p.as_os_str().is_empty()) {
-                    (target.to_path_buf(), batch_name.clone(), parent.to_path_buf())
-                } else {
-                    return;
-                }
-            } else if dest_dir.starts_with(&default_path) {
-                let rel = match dest_dir.strip_prefix(&default_path) {
-                    Ok(r) => r,
-                    Err(_) => return,
-                };
-                let top_component = rel.components().next();
-                match top_component {
-                    Some(std::path::Component::Normal(top_os)) => {
-                        let folder = top_os.to_string_lossy().to_string();
-                        let target = default_path.join(top_os);
-                        (target, folder, default_path.clone())
-                    }
-                    _ => return,
-                }
-            } else {
-                match (dest_dir.parent(), dest_dir.file_name()) {
-                    (Some(p), Some(name)) if p != std::path::Path::new("") => {
-                        (dest_dir.clone(), name.to_string_lossy().to_string(), p.to_path_buf())
-                    }
-                    _ => return,
-                }
-            }
-        } else if dest_dir.starts_with(&default_path) {
-            let rel = match dest_dir.strip_prefix(&default_path) {
-                Ok(r) => r,
-                Err(_) => return,
-            };
-            let top_component = rel.components().next();
-            match top_component {
-                Some(std::path::Component::Normal(top_os)) => {
-                    let folder = top_os.to_string_lossy().to_string();
-                    let target = default_path.join(top_os);
-                    (target, folder, default_path.clone())
-                }
-                _ => return,
-            }
-        } else {
-            // 自定义目录：确保存在父目录且不是根目录
-            match (dest_dir.parent(), dest_dir.file_name()) {
-                (Some(p), Some(name)) if p != std::path::Path::new("") => {
-                    (dest_dir.clone(), name.to_string_lossy().to_string(), p.to_path_buf())
-                }
-                _ => return,
-            }
-        };
-
-        if !target_dir.exists() || !target_dir.is_dir() {
-            return;
-        }
-
-        if let Ok(all_tasks) = self.store.list_tasks().await {
-            let has_pending = all_tasks.iter().any(|t| {
-                if t.id == task.id {
-                    return false;
-                }
-                let is_landisk_task =
-                    t.source == "landisk_zip" || t.source == "landisk_deconstructed";
-                if !is_landisk_task {
-                    return false;
-                }
-                let t_dest = PathBuf::from(&t.destination);
-                let in_same_scope = t_dest.starts_with(&target_dir)
-                    || (task.batch_id.is_some()
-                        && t.batch_id.is_some()
-                        && t.batch_id == task.batch_id);
-                in_same_scope
-                    && !matches!(
-                        t.status,
-                        TaskStatus::Completed | TaskStatus::Failed | TaskStatus::Cancelled
-                    )
-            });
-            if !has_pending {
-                let zip_path = parent_dir.join(format!("{folder_name}.zip"));
-                if let Ok(size) = crate::landisk::pack_directory_to_zip(&target_dir, &zip_path) {
-                    tracing::info!(
-                        dir = ?target_dir,
-                        zip = ?zip_path,
-                        size,
-                        "局域网互联目录全部任务完成，已自动在本地打包为 ZIP"
-                    );
-                    let _ = self.app.emit(
-                        "landisk-zip-created",
-                        serde_json::json!({
-                            "dir": target_dir.to_string_lossy(),
-                            "zip": zip_path.to_string_lossy(),
-                            "size": size,
-                        }),
-                    );
-                }
-            }
-        }
-    }
-
     /// 列出全部下载预设（Task 12）。
     pub async fn preset_list(&self) -> Result<Vec<DownloadPreset>, String> {
         self.store.download_preset_list().await
@@ -5703,6 +5412,21 @@ async fn execute_selfcheck(store: &Store) -> SelfcheckReport {
         task.speed = 0;
         task.eta_seconds = None;
         task.active_connections = 0;
+
+        if task_temp_dir(&task.destination, &task.id)
+            .join("landisk_manifest.json")
+            .exists()
+        {
+            for segment in &mut task.segments {
+                if segment.status == "downloading" {
+                    segment.status = "paused".into();
+                }
+            }
+            if store.upsert_task(&task).await.is_ok() {
+                report.interrupted_count += 1;
+            }
+            continue;
+        }
 
         let output = PathBuf::from(&task.destination).join(&task.file_name);
         let new_temp = task_temp_path(&task.destination, &task.id, &task.file_name);

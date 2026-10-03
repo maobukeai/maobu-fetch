@@ -705,7 +705,7 @@
     "uploadSpeedLabel": "Upload",
     "downloadSpeedLabel": "Download",
     "uploadedLabel": "Uploaded",
-    "statsStale": "Task not running; values above are the last BT status snapshot.",
+    "statsStale": "Task not running; values above are the last aria2 snapshot.",
     "keepOneFile": "At least one file must stay selected",
     "metadataPending": "Pending",
     "metadataPendingFilesHint": "File list becomes available after magnet metadata is fetched",
@@ -778,19 +778,5 @@
     "interrupted": "Interrupted; can resume",
     "remoteChanged": "Remote resource changed",
     "unknown": "Unknown state"
-  },
-  "batch": {
-    "title": "Batch Download",
-    "itemsProgress": "{done}/{total} completed",
-    "bytesProgress": "{downloaded} of {total}",
-    "bytesProgressNoTotal": "{downloaded} transferred",
-    "speed": "Fast downloading",
-    "eta": "{eta} remaining",
-    "allCompleted": "All completed",
-    "allPaused": "All paused",
-    "pauseAll": "Pause all",
-    "resumeAll": "Resume all",
-    "openFolder": "Open folder",
-    "dismiss": "Dismiss summary bar"
   }
 }

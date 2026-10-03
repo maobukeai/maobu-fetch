@@ -29,7 +29,7 @@ function syncMinSizeUi(value) {
     minSizeCustomEl.value = String(Math.max(1, Math.floor(numeric || 1)));
   }
 }
-syncMinSizeUi(stored.minSizeMb ?? 0);
+syncMinSizeUi(stored.minSizeMb === 1 ? 0 : (stored.minSizeMb ?? 0));
 
 const takeoverModeEl = $("takeoverMode");
 if (takeoverModeEl) takeoverModeEl.value = stored.takeoverMode === "ask" ? "ask" : "auto";

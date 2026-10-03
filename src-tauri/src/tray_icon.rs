@@ -221,7 +221,6 @@ mod tests {
             cloud_refresh: None,
             method: None,
             body: None,
-            batch_id: None,
         }
     }
 

@@ -128,8 +128,6 @@ fn import_request(item: TaskExportItem, destination: &Path) -> Result<NewTaskReq
         cloud_refresh: None,
         method: None,
         body: None,
-        total_bytes: None,
-        batch_id: None,
     })
 }
 
@@ -771,7 +769,6 @@ mod tests {
             cloud_refresh: None,
             method: None,
             body: None,
-            batch_id: None,
         }
     }
 

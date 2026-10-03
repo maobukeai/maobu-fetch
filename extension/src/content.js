@@ -84,19 +84,14 @@
 
   // ==================== 流嗅探缓存（仅用户开启嗅探的站点才收到推送） ====================
   // background 的 webRequest 观察器把页面播放器发出的媒体直链（m3u8/mp4 等）
-  // 推送到这里。FAB 优先对 video/audio 直连；若仅有 stream（m3u8 直连），由于
-  // 桌面端已原生支持 M3U8 下载，亦可直连下载。
+  // 推送到这里。FAB 只对 video/audio 直连（HTTP 内核可直接下载）；stream 类
+  // （m3u8/ts 分片）直连只会下载到播放列表文本或几秒片段，退回 page 模式
+  // 走桌面端 yt-dlp 解析。
   let sniffedItems = [];
   function latestSniffedTarget() {
     for (const kind of ["video", "audio"]) {
       for (let i = sniffedItems.length - 1; i >= 0; i -= 1) {
         if (sniffedItems[i]?.kind === kind) return sniffedItems[i].url;
-      }
-    }
-    for (let i = sniffedItems.length - 1; i >= 0; i -= 1) {
-      const item = sniffedItems[i];
-      if (item?.kind === "stream" && /\.m3u8(?:$|[?#])/i.test(item?.url || "")) {
-        return item.url;
       }
     }
     return "";
@@ -276,7 +271,7 @@
       }
     } else {
       const direct = sniffed
-        || (hasMediaElement ? [...found.values()].reverse().find((item) => item.type === "video" || item.type === "audio")?.url : null);
+        || (hasMediaElement ? [...found.values()].reverse().find((item) => item.type === "video" || item.type === "audio") : null);
       if (direct) {
         fabUrl = direct;
         fabMode = "direct";
@@ -777,41 +772,34 @@
         attributeFilter: ["src", "href"],
       });
     }
-    const SHORT_VIDEO_DOMAINS = ["douyin.com", "bilibili.com", "tiktok.com", "kuaishou.com"];
-    const currentHost = (location.hostname || "").toLowerCase();
-    const isShortVideoDomain = SHORT_VIDEO_DOMAINS.some((domain) => currentHost === domain || currentHost.endsWith("." + domain));
-
-    if (isShortVideoDomain) {
-      const timer = setInterval(() => {
-        if (!isContextValid()) {
-          clearInterval(timer);
-          return;
-        }
-        if (document.hidden) return; // 后台标签页暂停周期探测，省 CPU
-        collectMedia(true);
-      }, 5000);
-
-      // SPA 视频刷流与页面路由感知（抖音/快手/B站单页连续切视频）
-      let scrollDebounceTimer = 0;
-      window.addEventListener("wheel", () => {
-        clearTimeout(scrollDebounceTimer);
-        scrollDebounceTimer = setTimeout(() => {
-          if (isContextValid()) collectMedia(true);
-        }, 300);
-      }, { passive: true });
-
-      window.addEventListener("keydown", (e) => {
-        if (e.key === "ArrowDown" || e.key === "ArrowUp" || e.key === "PageDown" || e.key === "PageUp" || e.key === "Space") {
-          setTimeout(() => {
-            if (isContextValid()) collectMedia(true);
-          }, 350);
-        }
-      });
-    }
-
+    const timer = setInterval(() => {
+      if (!isContextValid()) {
+        clearInterval(timer);
+        return;
+      }
+      if (document.hidden) return; // 后台标签页暂停周期探测，省 CPU
+      collectMedia(true);
+    }, 5000);
     // 回到前台立即探测一次，不必等下一个周期（长驻后台的标签页恢复即时性）。
     document.addEventListener("visibilitychange", () => {
       if (!document.hidden && isContextValid()) collectMedia(true);
+    });
+
+    // SPA 视频刷流与页面路由感知（抖音/快手/B站单页连续切视频）
+    let scrollDebounceTimer = 0;
+    window.addEventListener("wheel", () => {
+      clearTimeout(scrollDebounceTimer);
+      scrollDebounceTimer = setTimeout(() => {
+        if (isContextValid()) collectMedia(true);
+      }, 300);
+    }, { passive: true });
+
+    window.addEventListener("keydown", (e) => {
+      if (e.key === "ArrowDown" || e.key === "ArrowUp" || e.key === "PageDown" || e.key === "PageUp" || e.key === "Space") {
+        setTimeout(() => {
+          if (isContextValid()) collectMedia(true);
+        }, 350);
+      }
     });
 
     window.addEventListener("popstate", () => setTimeout(() => { if (isContextValid()) collectMedia(true); }, 200));

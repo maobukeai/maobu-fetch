@@ -202,43 +202,44 @@ export interface DownloadTask {
    */
   proxy_auth?: ProxyAuth | null;
   /**
-   * 任务内核类型（2026-08-16 BT 批准，纯 Rust librqbit 内置）。`"http"` = 并发 Range 内核；
-   * `"bt"` = BT/磁力内核。旧数据缺失时后端默认 `"http"`。
+   * 任务内核类型（2026-08-16 BT 批准）。`"http"` = 并发 Range 内核；
+   * `"bt"` = aria2 BT/磁力内核。旧数据缺失时后端默认 `"http"`。
    */
   task_kind?: TaskKind;
   /** BT 任务持久化元数据；HTTP 任务恒为空。 */
   bt_meta?: BtTaskMeta | null;
   /** BT 运行时状态（peers/seeds/上传速度），仅随任务事件下发、不持久化。 */
   bt_runtime?: BtRuntimeStatus | null;
-  /** 云盘直链刷新元数据（PikPak 等）：直链失效时后端自动重新解析。 */
+  /**
+   * 云盘直链刷新元数据（PikPak 等）：直链失效时后端自动重新解析并无缝续传。
+   * 普通直链任务为空。旧数据缺失时后端默认空。
+   */
   cloud_refresh?: CloudRefreshMeta | null;
-  /** 批量任务标识（用于关联同一批次展开的任务并在主界面聚合统计） */
-  batch_id?: string | null;
 }
 
-/** 任务内核类型：HTTP Range 并发内核 或 BT/磁力内核。 */
+/** 任务内核类型：HTTP Range 并发内核 或 aria2 BT/磁力内核。 */
 export type TaskKind = "http" | "bt";
 
 /** BT 任务持久化元数据（后端 `BtTaskMeta` 镜像）。 */
 export interface BtTaskMeta {
-  /** 40 位小写十六进制 infohash；磁力创建即知，.torrent 由 BT 引擎回填。 */
+  /** 40 位小写十六进制 infohash；磁力创建即知，.torrent 由 aria2 回填。 */
   info_hash: string;
-  /** 用户勾选的 1 基文件索引。空 = 全部文件。 */
+  /** 用户勾选的 1 基文件索引（aria2 select-file）。空 = 全部文件。 */
   selected_files: number[];
   /** 元数据获取后的显示名；未就绪时为空（UI 必须显示"待获取"）。 */
   display_name?: string | null;
   /** 磁力元数据是否已获取(.torrent 任务创建即为 true)。 */
   metadata_ready: boolean;
   /**
-   * 拖放创建的 .torrent 内容(STANDARD base64)。BT 引擎接受添加并落盘会话后
+   * 拖放创建的 .torrent 内容(STANDARD base64)。aria2 接受添加并落盘会话后
    * 即不再依赖;保留用于暂停任务的后续恢复添加。旧数据缺失为 null。
    */
   torrent_data_base64?: string | null;
-  /** 边下边看：优先下载首尾分片。旧数据默认 false。 */
+  /** 边下边看：优先下载首尾分片（aria2 bt-prioritize-piece）。旧数据默认 false。 */
   streaming_priority?: boolean;
 }
 
-/** BT 任务运行时状态（后端 `BtRuntimeStatus` 镜像，来自 librqbit 真实状态）。 */
+/** BT 任务运行时状态（后端 `BtRuntimeStatus` 镜像，来自 aria2 真实状态）。 */
 export interface BtRuntimeStatus {
   num_seeds: number;
   num_peers: number;
@@ -246,7 +247,7 @@ export interface BtRuntimeStatus {
   fetching_metadata: boolean;
   /** 累计上传字节（分享率分子）。旧事件缺省 0。 */
   uploaded_bytes?: number;
-  /** BT 引擎报告本机正在做种上传。旧事件缺省 false。 */
+  /** aria2 报告本机正在做种上传。旧事件缺省 false。 */
   seeding?: boolean;
 }
 
@@ -383,10 +384,6 @@ export interface NewTaskRequest {
   user_edited_file_name?: boolean;
   /** 云盘直链刷新元数据（PikPak 等）：直链失效时后端自动重新解析。 */
   cloud_refresh?: CloudRefreshMeta;
-  /** 预填文件总大小（字节），在任务排队/未开始时即可显示确切大小，避免显示破折号 */
-  total_bytes?: number;
-  /** 批量任务标识（用于关联同一批次展开的任务并在主界面聚合统计） */
-  batch_id?: string;
 }
 
 export interface AppSettings {
@@ -529,7 +526,7 @@ export interface ToolStatus {
   ffmpeg_source: "missing" | "custom" | "bundled" | "system";
   yt_dlp_resolved_path?: string;
   ffmpeg_resolved_path?: string;
-  /** BT 引擎可用性（历史兼容字段）。独立于 state 字段（state 描述媒体组件）。 */
+  /** aria2 组件可用性（BT 前置条件）。独立于 state 字段（state 描述媒体组件）。 */
   aria2_available?: boolean;
   aria2_version?: string;
   aria2_download_bytes?: number;
@@ -1320,20 +1317,4 @@ export interface ImageFileInfo {
   size_bytes: number;
   ext: string;
   modified_ms: number;
-}
-
-export interface LanDiskDeconstructedFile {
-  name: string;
-  remotePath: string;
-  relativeDir: string;
-  size: number;
-  downloadUrl: string;
-}
-
-export interface LanDiskInspectionResult {
-  rootName: string;
-  totalSize: number;
-  fileCount: number;
-  folderCount: number;
-  files: LanDiskDeconstructedFile[];
 }

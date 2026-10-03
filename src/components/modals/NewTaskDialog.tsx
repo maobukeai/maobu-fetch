@@ -97,12 +97,7 @@ import {
 import { BaiduPanPicker } from "./BaiduPanPicker";
 import { LanzouPicker } from "./LanzouPicker";
 import { Pan123Picker } from "./Pan123Picker";
-import { LanDiskPicker } from "./LanDiskPicker";
-import {
-  inspectLanDiskShare,
-  isLanDiskUrl,
-} from "../../services/landisk";
-import type { LanzouShareInfo, Pan123ShareInfo, LanDiskInspectionResult } from "../../types";
+import type { LanzouShareInfo, Pan123ShareInfo } from "../../types";
 
 const isLanzouUrl = (url: string) => {
   if (!url) return false;
@@ -248,13 +243,6 @@ export function NewTaskDialog({
   const [pan123Open, setPan123Open] = useState(false);
   const [pan123PassCodeVerifying, setPan123PassCodeVerifying] = useState(false);
   const [pan123PassCodeError, setPan123PassCodeError] = useState<string>();
-
-  // LanDisk 局域网互联目录解析状态
-  const [landiskShareInfo, setLandiskShareInfo] = useState<LanDiskInspectionResult | null>(null);
-  const [landiskInspecting, setLandiskInspecting] = useState(false);
-  const [landiskSelectedIds, setLandiskSelectedIds] = useState<Set<string>>(new Set());
-  const [landiskOpen, setLandiskOpen] = useState(false);
-  const [landiskError, setLandiskError] = useState<string>();
 
   const fileNameInputRef = useRef<HTMLInputElement | null>(null);
   const userEditedFileName = useRef(false);
@@ -524,48 +512,11 @@ export function NewTaskDialog({
     [lines, connections, notify]
   );
 
-  const inspectLanDiskContent = useCallback(
-    async (targetUrl?: string) => {
-      const single = targetUrl || (lines.length === 1 ? lines[0].trim() : "");
-      if (!isLanDiskUrl(single)) return;
-      setLandiskInspecting(true);
-      setLandiskError(undefined);
-      try {
-        const info = await inspectLanDiskShare(single);
-        setLandiskShareInfo(info);
-        setLandiskOpen(true);
-        const onlyFiles = info.files;
-        setLandiskSelectedIds(new Set(onlyFiles.map((f) => f.remotePath)));
-        if (info.rootName && !userEditedFileName.current) {
-          setFileName(info.rootName);
-        }
-        // LanDisk 建议默认 16 连接并发直连分片下载
-        if (!userEditedConnections.current && connections < 16) {
-          setConnections(16);
-        }
-      } catch (err: any) {
-        console.warn("解析局域网互联目录失败:", err);
-        const errMsg = err?.message || String(err);
-        setLandiskError(errMsg);
-        notify?.(errMsg, "error");
-      } finally {
-        setLandiskInspecting(false);
-      }
-    },
-    [lines, connections, notify]
-  );
-
   useEffect(() => {
     if (defaultTorrent?.base64) {
       void inspectTorrentContent(undefined, defaultTorrent.base64);
     }
   }, [defaultTorrent, inspectTorrentContent]);
-
-  useEffect(() => {
-    if (defaultUrl && isLanDiskUrl(defaultUrl)) {
-      void inspectLanDiskContent(defaultUrl);
-    }
-  }, [defaultUrl, inspectLanDiskContent]);
 
   useEffect(() => {
     const firstUrl = lines[0];
@@ -916,24 +867,7 @@ export function NewTaskDialog({
   const isPan123Active = Boolean(isPan123 && pan123ShareInfo && pan123SelectedIds.size > 0);
   const isPan123WithoutSelection = Boolean(isPan123 && pan123ShareInfo && pan123SelectedIds.size === 0);
 
-  const isLanDisk = isLanDiskUrl(lines.length === 1 ? lines[0].trim() : "");
-  const isLanDiskActive = Boolean(isLanDisk && landiskShareInfo && landiskSelectedIds.size > 0);
-  const isLanDiskWithoutSelection = Boolean(isLanDisk && landiskShareInfo && landiskSelectedIds.size === 0);
-
-  const landiskSelectedStats = useMemo(() => {
-    if (!landiskShareInfo || !landiskSelectedIds.size) return null;
-    const selected = landiskShareInfo.files.filter((f) => landiskSelectedIds.has(f.remotePath));
-    const totalBytes = selected.reduce((sum, f) => sum + (f.size || 0), 0);
-    return { count: selected.length, totalBytes };
-  }, [landiskShareInfo, landiskSelectedIds]);
-
-  const isAnyCloudActive =
-    isPikPakActive ||
-    isQuarkActive ||
-    isBaiduActive ||
-    isLanzouActive ||
-    isPan123Active ||
-    isLanDiskActive;
+  const isAnyCloudActive = isPikPakActive || isQuarkActive || isBaiduActive || isLanzouActive || isPan123Active;
 
   const hasConflicts = !isAnyCloudActive && activeConflicts.length > 0;
   const hasDuplicates = !isAnyCloudActive && Boolean(duplicateResult?.matches?.length);
@@ -1723,113 +1657,6 @@ export function NewTaskDialog({
       setBusy(false);
       return;
     }
-
-    // 处理局域网互联 (LanDisk) 目录树解构与下载
-    let effectiveLandiskInfo = landiskShareInfo;
-    let effectiveLandiskIds = landiskSelectedIds;
-    if (isLanDisk && (!effectiveLandiskInfo || effectiveLandiskIds.size === 0)) {
-      try {
-        const probed = await inspectLanDiskShare(lines[0].trim());
-        effectiveLandiskInfo = probed;
-        effectiveLandiskIds = new Set(probed.files.map((f) => f.remotePath));
-      } catch {
-        // 探测失败时按普通单直链任务回退创建
-      }
-    }
-
-    if (effectiveLandiskInfo && effectiveLandiskIds.size > 0) {
-      const selectedFiles = effectiveLandiskInfo.files.filter(
-        (f) => effectiveLandiskIds.has(f.remotePath)
-      );
-      if (selectedFiles.length === 0) {
-        setError("请至少勾选一个需要下载的局域网互联文件");
-        setBusy(false);
-        return;
-      }
-
-      const isFolderOrBatch =
-        effectiveLandiskInfo.folderCount > 0 ||
-        effectiveLandiskInfo.files.length > 1 ||
-        (effectiveLandiskInfo.files.length === 1 &&
-          effectiveLandiskInfo.rootName !== effectiveLandiskInfo.files[0].name) ||
-        Boolean(selectedFiles[0]?.relativeDir);
-
-      const folderRoot =
-        (userEditedFileName.current && activeFileName
-          ? activeFileName
-          : effectiveLandiskInfo.rootName) || "download";
-      const baseDest = destination.replace(/[/\\]+$/, "");
-
-      const baseTemplate: Omit<NewTaskRequest, "url" | "file_name"> = {
-        destination,
-        headers,
-        scheduled_at: schedule ? new Date(schedule).getTime() : undefined,
-        priority,
-        expected_checksum: checksum || undefined,
-        source: "landisk_deconstructed",
-        per_task_speed_limit: limit * 1024,
-        collision_policy: policy,
-        completion_action:
-          selectedFiles.length > 1 ? "none" : completionAction,
-        connection_count: connections || 16,
-        media: undefined,
-        user_edited_file_name:
-          userEditedFileName.current || overrideFileName !== undefined,
-      };
-
-      try {
-        const results = await Promise.allSettled(
-          selectedFiles.map(async (fileItem) => {
-            let targetDir = baseDest;
-            if (isFolderOrBatch) {
-              const rel = fileItem.relativeDir ? fileItem.relativeDir.replace(/\\/g, "/") : "";
-              targetDir = rel
-                ? `${baseDest}/${folderRoot}/${rel}`
-                : `${baseDest}/${folderRoot}`;
-            }
-            const itemFileName =
-              selectedFiles.length === 1 && userEditedFileName.current && activeFileName
-                ? activeFileName
-                : fileItem.name;
-            return api.add({
-              url: fileItem.downloadUrl,
-              file_name: itemFileName,
-              ...baseTemplate,
-              destination: targetDir,
-              total_bytes: fileItem.size > 0 ? fileItem.size : undefined,
-              batch_id: isFolderOrBatch ? folderRoot : undefined,
-            });
-          })
-        );
-        const fulfilled: DownloadTask[] = [];
-        let firstError: string | undefined;
-        for (const r of results) {
-          if (r.status === "fulfilled") fulfilled.push(r.value);
-          else if (!firstError) firstError = String(r.reason);
-        }
-        if (lines[0]) {
-          void api.urlHistoryAdd(lines[0]).then(reloadHistory).catch(() => {});
-        }
-        if (fulfilled.length > 0) {
-          onCreated(fulfilled.length === 1 ? fulfilled[0] : fulfilled);
-        }
-        if (firstError) {
-          if (fulfilled.length === 0) {
-            setError(firstError);
-          } else {
-            notify?.(
-              `部分局域网互联文件创建失败：${firstError}（成功 ${fulfilled.length}/${selectedFiles.length}）`,
-              "error"
-            );
-          }
-        }
-      } catch (reason) {
-        setError(String(reason));
-      }
-      setBusy(false);
-      return;
-    }
-
     if (isPikPakDirect) {
       headers["Referer"] = "https://mypikpak.com/";
       if (!headers["User-Agent"] && !headers["user-agent"]) {
@@ -2143,12 +1970,6 @@ export function NewTaskDialog({
                         setPan123ShareInfo(null);
                         setPan123SelectedIds(new Set());
                       }
-                      if (isLanDiskUrl(singleUrl)) {
-                        void inspectLanDiskContent(singleUrl);
-                      } else {
-                        setLandiskShareInfo(null);
-                        setLandiskSelectedIds(new Set());
-                      }
                       const name = extractFileNameFromUrl(singleUrl);
                       if (name) {
                         setFileName(name);
@@ -2164,8 +1985,6 @@ export function NewTaskDialog({
                       setLanzouSelectedIds(new Set());
                       setPan123ShareInfo(null);
                       setPan123SelectedIds(new Set());
-                      setLandiskShareInfo(null);
-                      setLandiskSelectedIds(new Set());
                       if (parsed.lines.length === 0) {
                         setFileName("");
                       }
@@ -2474,41 +2293,6 @@ export function NewTaskDialog({
                   })()}
                   {(() => {
                     const single = lines.length === 1 ? lines[0].trim() : "";
-                    if (!isLanDiskUrl(single)) return null;
-                    return (
-                      <button
-                        type="button"
-                        className="torrent-pick-button"
-                        style={{
-                          color: "#10b981",
-                          borderColor: "rgba(16, 185, 129, 0.3)",
-                        }}
-                        disabled={landiskInspecting}
-                        onClick={() => {
-                          if (landiskShareInfo) {
-                            setLandiskOpen((prev) => !prev);
-                          } else {
-                            void inspectLanDiskContent();
-                          }
-                        }}
-                        title="免解压探测局域网互联目录树，支持勾选特定文件并以 16 线程并发直连下载"
-                      >
-                        <Search
-                          size={11}
-                          className={landiskInspecting ? "spin" : undefined}
-                        />
-                        {landiskInspecting
-                          ? "解析目录中..."
-                          : landiskShareInfo
-                          ? landiskOpen
-                            ? "收起局域网互联文件"
-                            : "展开局域网互联文件"
-                          : "解析局域网互联"}
-                      </button>
-                    );
-                  })()}
-                  {(() => {
-                    const single = lines.length === 1 ? lines[0].trim() : "";
                     const magnet = single
                       .toLowerCase()
                       .startsWith("magnet:");
@@ -2676,17 +2460,6 @@ export function NewTaskDialog({
                   />
                 );
               })()}
-              {(() => {
-                const single = lines.length === 1 ? lines[0].trim() : "";
-                if (!isLanDiskUrl(single) || !landiskShareInfo || !landiskOpen) return null;
-                return (
-                  <LanDiskPicker
-                    shareInfo={landiskShareInfo}
-                    selectedIds={landiskSelectedIds}
-                    onChange={setLandiskSelectedIds}
-                  />
-                );
-              })()}
               {btInspectResult && btInspectOpen && (
                 <div className="bt-preview-box">
                   <div className="bt-preview-header">
@@ -2843,9 +2616,6 @@ export function NewTaskDialog({
                             userEditedFileName.current = false;
                             const name = extractFileNameFromUrl(entry.url);
                             if (name) setFileName(name);
-                            if (isLanDiskUrl(entry.url)) {
-                              void inspectLanDiskContent(entry.url);
-                            }
                           }}
                           title={entry.url}
                         >
@@ -3565,9 +3335,6 @@ export function NewTaskDialog({
                 isPikPakWithoutSelection ||
                 isQuarkWithoutSelection ||
                 isBaiduWithoutSelection ||
-                isLanzouWithoutSelection ||
-                isPan123WithoutSelection ||
-                isLanDiskWithoutSelection ||
                 platformCompat?.level === "unsupported"
               }
               title={
@@ -3579,12 +3346,6 @@ export function NewTaskDialog({
                   ? "请至少勾选一个需要下载的夸克文件"
                   : isBaiduWithoutSelection
                   ? "请至少勾选一个需要下载的百度网盘文件"
-                  : isLanzouWithoutSelection
-                  ? "请至少勾选一个需要下载的蓝奏云文件"
-                  : isPan123WithoutSelection
-                  ? "请至少勾选一个需要下载的 123云盘文件"
-                  : isLanDiskWithoutSelection
-                  ? "请至少勾选一个需要下载的局域网互联文件"
                   : hasConflicts || hasDuplicates
                   ? "存在冲突或重复，请先选择处理方式"
                   : isGalleryWithoutSelection
@@ -3593,11 +3354,7 @@ export function NewTaskDialog({
               }
               onClick={() => void submit()}
             >
-              {busy
-                ? "正在创建任务..."
-                : isLanDiskActive && landiskSelectedStats
-                ? `开始下载 (共 ${landiskSelectedStats.count} 项${landiskSelectedStats.totalBytes > 0 ? ` · 总计 ${formatBytes(landiskSelectedStats.totalBytes)}` : ""})`
-                : "开始下载"}
+              {busy ? "正在创建任务..." : "开始下载"}
             </button>
           </div>
         </div>
