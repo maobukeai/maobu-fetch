@@ -132,12 +132,26 @@ export function extractFileNameFromUrl(url: string): string {
     const trimmed = url.trim();
     if (!trimmed) return "";
     const parsed = new URL(trimmed);
+    if (parsed.pathname.includes("/api/download/batch")) {
+      const qp = parsed.searchParams.get("folderName") || parsed.searchParams.get("filename");
+      if (qp && qp.trim() && qp.trim().toLowerCase() !== "batch") {
+        const decoded = decodeURIComponent(qp.trim());
+        const base = decoded.replace(/\.zip$/i, "");
+        return `${base}.zip`;
+      }
+    }
     const pathname = parsed.pathname;
     const lastSegment = pathname.substring(pathname.lastIndexOf("/") + 1);
     if (lastSegment) {
       try {
         const decoded = decodeURIComponent(lastSegment);
-        if (decoded.trim()) return decoded.trim();
+        if (decoded.trim()) {
+          const clean = decoded.trim();
+          if (parsed.pathname.includes("/api/download/batch") && !clean.toLowerCase().endsWith(".zip") && clean.toLowerCase() !== "batch") {
+            return `${clean}.zip`;
+          }
+          return clean;
+        }
       } catch (_) {
         if (lastSegment.trim()) return lastSegment.trim();
       }

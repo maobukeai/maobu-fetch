@@ -324,13 +324,31 @@ impl DownloadManager {
             }
         }
         let settings = self.settings().await;
-        let mut file_name = safe_name(request.file_name.as_deref().unwrap_or_else(|| {
+        let default_name = if parsed.path().contains("/api/download/batch") {
+            parsed
+                .query_pairs()
+                .find(|(k, v)| (k == "folderName" || k == "filename") && !v.trim().is_empty() && !v.trim().eq_ignore_ascii_case("batch"))
+                .map(|(_, v)| v.trim().trim_end_matches(".zip").to_string())
+                .unwrap_or_else(|| {
+                    parsed
+                        .path_segments()
+                        .and_then(|mut s| s.next_back())
+                        .filter(|s| !s.is_empty())
+                        .unwrap_or("download")
+                        .to_string()
+                })
+        } else {
             parsed
                 .path_segments()
                 .and_then(|mut s| s.next_back())
                 .filter(|s| !s.is_empty())
                 .unwrap_or("download")
-        }));
+                .to_string()
+        };
+        let mut file_name = safe_name(request.file_name.as_deref().unwrap_or(&default_name));
+        if parsed.path().contains("/api/download/batch") && !file_name.to_lowercase().ends_with(".zip") {
+            file_name = format!("{file_name}.zip");
+        }
         // Task 20: 用户未手动编辑文件名时应用文件名清理规则。
         // 失败时静默回退到原始文件名（不阻断任务创建）。
         if !request.user_edited_file_name {
@@ -3466,6 +3484,23 @@ impl DownloadManager {
         client: reqwest::Client,
         token: CancellationToken,
     ) -> Result<DownloadTask, String> {
+        // 保障输出文件一定是 .zip 后缀，避免无后缀文件
+        if task.file_name.eq_ignore_ascii_case("batch") || !task.file_name.to_lowercase().ends_with(".zip") {
+            if let Ok((_, folder_name, _, _, _)) = crate::landisk_zip::parse_batch_request(&task) {
+                let clean_name = if !folder_name.is_empty() && !folder_name.eq_ignore_ascii_case("batch") {
+                    folder_name
+                } else if !task.file_name.eq_ignore_ascii_case("batch") && !task.file_name.is_empty() {
+                    task.file_name.clone()
+                } else {
+                    "download_archive".to_string()
+                };
+                task.file_name = if clean_name.to_lowercase().ends_with(".zip") {
+                    clean_name
+                } else {
+                    format!("{clean_name}.zip")
+                };
+            }
+        }
         let output = self.reserve_output_path(&mut task).await?;
         let _ = ensure_task_temp_dir(&task.destination, &task.id).await;
         let temp = task_temp_path(&task.destination, &task.id, &task.file_name);
