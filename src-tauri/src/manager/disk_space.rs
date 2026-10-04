@@ -23,7 +23,21 @@ pub fn query_destination_available_space(path: &Path) -> Option<u64> {
 
 /// 查询目标目录所在磁盘的可用空间。
 pub fn query_available_space_for_destination(destination: &str) -> u64 {
-    let path = Path::new(destination);
+    let raw = Path::new(destination);
+    let resolved_buf;
+    let path = if destination.trim().is_empty() {
+        Path::new(".")
+    } else if !raw.is_absolute() {
+        if let Ok(cwd) = std::env::current_dir() {
+            resolved_buf = cwd.join(raw);
+            &resolved_buf
+        } else {
+            raw
+        }
+    } else {
+        raw
+    };
+
     if let Some(space) = query_destination_available_space(path) {
         return space;
     }

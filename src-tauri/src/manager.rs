@@ -501,17 +501,36 @@ impl DownloadManager {
         url: &str,
         file_name: &str,
     ) -> String {
+        let base_default = normalize_directory(default_download_dir);
+        let base_default = if base_default.trim().is_empty() {
+            crate::system_dirs::system_download_dir().to_string_lossy().to_string()
+        } else {
+            base_default
+        };
+
         if let Some(dir) = user_destination.map(str::trim).filter(|s| !s.is_empty()) {
-            return normalize_directory(dir);
+            let p = Path::new(dir);
+            if p.is_absolute() {
+                return normalize_directory(dir);
+            } else {
+                let joined = Path::new(&base_default).join(p);
+                return normalize_directory(&joined.to_string_lossy());
+            }
         }
         if let Ok(rules) = self.store.category_rule_list().await {
             if let Some(matched) = apply_category_rules(&rules, url, file_name, None) {
                 if !matched.trim().is_empty() {
-                    return normalize_directory(&matched);
+                    let p = Path::new(matched.trim());
+                    if p.is_absolute() {
+                        return normalize_directory(&matched);
+                    } else {
+                        let joined = Path::new(&base_default).join(p);
+                        return normalize_directory(&joined.to_string_lossy());
+                    }
                 }
             }
         }
-        normalize_directory(default_download_dir)
+        base_default
     }
 
     pub async fn action(self: &SharedManager, id: &str, action: &str) -> Result<(), String> {
@@ -542,6 +561,18 @@ impl DownloadManager {
                 // 标记会在网络变为非计量时由 clear_user_resumed_after_metered 清零。
                 let was_paused_by_metered = task.status == TaskStatus::PausedByMetered;
                 let was_paused_by_low_disk = task.status == TaskStatus::PausedByLowDisk;
+                if !Path::new(&task.destination).is_absolute() {
+                    let settings = self.settings().await;
+                    let default_dir = normalize_directory(&settings.download_dir);
+                    let default_dir = if default_dir.trim().is_empty() {
+                        crate::system_dirs::system_download_dir().to_string_lossy().to_string()
+                    } else {
+                        default_dir
+                    };
+                    let joined = Path::new(&default_dir).join(&task.destination);
+                    task.destination = normalize_directory(&joined.to_string_lossy());
+                    let _ = self.store.upsert_task(&task).await;
+                }
                 if was_paused_by_low_disk {
                     let available_opt = precheck::check_disk_space(&task.destination);
                     if let Some(available) = available_opt {
@@ -731,9 +762,23 @@ impl DownloadManager {
             };
             (source, stem, meta)
         };
+        let default_dir = normalize_directory(&settings.download_dir);
+        let default_dir = if default_dir.trim().is_empty() {
+            crate::system_dirs::system_download_dir().to_string_lossy().to_string()
+        } else {
+            default_dir
+        };
         let destination = match request.destination.as_deref().map(str::trim) {
-            Some(dir) if !dir.is_empty() => normalize_directory(dir),
-            _ => normalize_directory(&settings.download_dir),
+            Some(dir) if !dir.is_empty() => {
+                let p = Path::new(dir);
+                if p.is_absolute() {
+                    normalize_directory(dir)
+                } else {
+                    let joined = Path::new(&default_dir).join(p);
+                    normalize_directory(&joined.to_string_lossy())
+                }
+            }
+            _ => default_dir,
         };
         let display_name_for_file = safe_name(&initial_name);
         let task = DownloadTask {
@@ -1571,7 +1616,7 @@ impl DownloadManager {
         if controls.contains_key(&task.id) {
             return;
         }
-        let mut token = CancellationToken::new();
+        let token = CancellationToken::new();
         controls.insert(task.id.clone(), token.clone());
         drop(controls);
         self.task_runtime
@@ -1596,8 +1641,15 @@ impl DownloadManager {
         let _ = self.store.upsert_task(&task).await;
         self.emit_task("updated", &task);
         let manager = self.clone();
-        tauri::async_runtime::spawn(async move {
-            let id = task.id.clone();
+        tauri::async_runtime::spawn(Self::run_worker_loop(manager, task, token));
+    }
+
+    async fn run_worker_loop(
+        manager: SharedManager,
+        mut task: DownloadTask,
+        mut token: CancellationToken,
+    ) {
+        let id = task.id.clone();
             let mut attempt = task.retry_count;
             // 云盘直链自动刷新计数：链接失效哨兵触发时刷新直链并续传，
             // 超过 MAX_LINK_REFRESHES 后进入终态失败（防止分享失效时无限刷新）。
@@ -1639,7 +1691,7 @@ impl DownloadManager {
                 let result = if task.task_kind == TaskKind::Bt {
                     crate::bt::run_task(&manager, task.clone(), token.clone()).await
                 } else {
-                    manager.download_once(task.clone(), token.clone()).await
+                    manager.clone().download_once(task.clone(), token.clone()).await
                 };
                 // 云盘直链失效优先于暂停判定：download_segments 收尾时为尽快
                 // 停止其他 worker 已取消 token，这里必须先识别哨兵再决定是否 break。
@@ -1884,8 +1936,7 @@ impl DownloadManager {
             manager.controls.lock().await.remove(&id);
             manager.task_runtime.write().await.remove(&id);
             manager.dispatcher.notify_waiters();
-        });
-    }
+        }
 
     async fn resolve_cloud_share_task(
         self: &SharedManager,
@@ -2215,7 +2266,7 @@ impl DownloadManager {
     }
 
     async fn download_once(
-        self: &SharedManager,
+        self: SharedManager,
         mut task: DownloadTask,
         token: CancellationToken,
     ) -> Result<DownloadTask, String> {
@@ -2235,25 +2286,23 @@ impl DownloadManager {
             && (task.media.is_none() || task.file_name == "download" || task.file_name.is_empty())
         {
             let settings = self.settings().await;
-            let mut cookie = task.headers.get("Cookie").map(|s| s.as_str());
-            let mut referer = task.headers.get("Referer").map(|s| s.as_str());
-            let mut user_agent = task.headers.get("User-Agent").map(|s| s.as_str());
+            let mut cookie = task.headers.get("Cookie").cloned();
+            let mut referer = task.headers.get("Referer").cloned();
+            let mut user_agent = task.headers.get("User-Agent").cloned();
 
-            let stored_cred;
             if let Some(domain) = crate::media_cookies::extract_domain(&task.url) {
                 tracing::info!(domain = %domain, "开始匹配媒体凭据");
                 match self.store.media_credential_get_matching(&domain).await {
                     Ok(Some(cred)) => {
                         tracing::info!(domain = %domain, cookie_len = cred.cookie.len(), "成功匹配到凭据");
-                        stored_cred = cred;
-                        if cookie.is_none() && !stored_cred.cookie.is_empty() {
-                            cookie = Some(&stored_cred.cookie);
+                        if cookie.is_none() && !cred.cookie.is_empty() {
+                            cookie = Some(cred.cookie);
                         }
                         if referer.is_none() {
-                            referer = stored_cred.referer.as_deref();
+                            referer = cred.referer;
                         }
                         if user_agent.is_none() {
-                            user_agent = stored_cred.user_agent.as_deref();
+                            user_agent = cred.user_agent;
                         }
                     }
                     Ok(None) => {
@@ -2267,8 +2316,15 @@ impl DownloadManager {
                 tracing::warn!(url = %task.url, "无法提取域名，跳过凭据匹配");
             }
 
-            match crate::media::probe(&self.app, &settings, &task.url, cookie, referer, user_agent)
-                .await
+            match crate::media::probe(
+                &self.app,
+                &settings,
+                &task.url,
+                cookie.as_deref(),
+                referer.as_deref(),
+                user_agent.as_deref(),
+            )
+            .await
             {
                 Ok(media) => {
                     // 抖音图集自动拆分：用户直接提交抖音图集短链（未先点击"分析媒体"）时，
@@ -2891,7 +2947,10 @@ impl DownloadManager {
         inject_media_credentials(&mut task, &self.store).await;
 
         if crate::landisk_zip::is_landisk_batch_task(&task) {
-            return self.run_landisk_zip_download(task, &client, token).await;
+            return self
+                .clone()
+                .run_landisk_zip_download(task, client.clone(), token)
+                .await;
         }
 
         let is_post = task
@@ -2972,15 +3031,22 @@ impl DownloadManager {
                 if path_str.ends_with("/api/download")
                     && probe.status() == reqwest::StatusCode::BAD_REQUEST
                 {
-                    let path_param = parsed_url
-                        .query_pairs()
-                        .find(|(k, _)| k == "path")
-                        .map(|(_, v)| v.to_string());
+                    let query_str = parsed_url.query().unwrap_or("").replace('?', "&");
+                    let mut path_param = None;
+                    let mut pin_param = None;
+                    for (k, v) in url::form_urlencoded::parse(query_str.as_bytes()) {
+                        if k == "path" && path_param.is_none() {
+                            let clean_val = v.split('?').next().unwrap_or(&v).trim().to_string();
+                            if !clean_val.is_empty() {
+                                path_param = Some(clean_val);
+                            }
+                        } else if (k == "pin" || k == "token") && pin_param.is_none() {
+                            if !v.trim().is_empty() {
+                                pin_param = Some(v.trim().to_string());
+                            }
+                        }
+                    }
                     if let Some(target_dir) = path_param {
-                        let pin_param = parsed_url
-                            .query_pairs()
-                            .find(|(k, _)| k == "pin")
-                            .map(|(_, v)| v.to_string());
                         let mut batch_url = parsed_url.clone();
                         batch_url.set_path(&path_str.replace("/api/download", "/api/download/batch"));
                         batch_url.set_query(None);
@@ -3010,7 +3076,10 @@ impl DownloadManager {
                             new_url = %task.url,
                             "局域网互联目录打包自适应：400 目录下载已升级为分桶并发断点续传 ZIP 任务"
                         );
-                        return self.run_landisk_zip_download(task, &client, token).await;
+                        return self
+                            .clone()
+                            .run_landisk_zip_download(task, client.clone(), token)
+                            .await;
                     }
                 }
             }
@@ -3075,7 +3144,7 @@ impl DownloadManager {
             let task_limiter = Arc::new(crate::manager::RateLimiter::new());
 
             let download_res = crate::m3u8::downloader::download_m3u8_task(
-                self,
+                &self,
                 task.clone(),
                 &client,
                 &temp,
@@ -3392,9 +3461,9 @@ impl DownloadManager {
     }
 
     async fn run_landisk_zip_download(
-        self: &SharedManager,
+        self: SharedManager,
         mut task: DownloadTask,
-        client: &reqwest::Client,
+        client: reqwest::Client,
         token: CancellationToken,
     ) -> Result<DownloadTask, String> {
         let output = self.reserve_output_path(&mut task).await?;
@@ -3403,10 +3472,10 @@ impl DownloadManager {
         let task_limiter = Arc::new(crate::manager::RateLimiter::new());
 
         let mut completed_task = crate::landisk_zip::download_landisk_zip_task(
-            self,
+            self.clone(),
             task,
             client,
-            &temp,
+            temp.clone(),
             token,
             task_limiter,
         )
@@ -5712,7 +5781,21 @@ fn compute_low_disk_required_space(total_bytes: u64, downloaded_bytes: u64) -> u
 /// 目录不存在时向祖先目录回退，直到找到一个存在的目录；全部失败时返回 0
 /// （调用方将其视为"空间未知"，按不足处理）。
 fn query_available_space_for_destination(destination: &str) -> u64 {
-    let path = Path::new(destination);
+    let raw = Path::new(destination);
+    let resolved_buf;
+    let path = if destination.trim().is_empty() {
+        Path::new(".")
+    } else if !raw.is_absolute() {
+        if let Ok(cwd) = std::env::current_dir() {
+            resolved_buf = cwd.join(raw);
+            &resolved_buf
+        } else {
+            raw
+        }
+    } else {
+        raw
+    };
+
     if let Some(space) = query_destination_available_space(path) {
         return space;
     }

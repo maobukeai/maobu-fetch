@@ -82,6 +82,12 @@ export function evaluateDownload(item, settings, runtimeId, swStartTime = 0, opt
   if ([item.url, item.finalUrl].some((u) => /^(?:blob|data|file|filesystem|chrome-extension|moz-extension|about):/i.test(u || ""))) {
     return { eligible: false, reason: "scheme" };
   }
+  // 局域网互联打包下载是 POST 表单流。如果浏览器下载事件中捕获到的 URL 是 /api/download/batch，
+  // 但 URL 中并没有包含任何 files 参数（表明是 iframe 表单触发但浏览器未保留 POST body 的裸 GET），
+  // 严禁将这种裸 GET 当成有效任务拦截，否则会下发一个空 batch 任务导致服务端返回 400 且名称为 batch
+  if ([item.url, item.finalUrl].some((u) => u && /\/api\/download\/batch(?:\?.*)?$/i.test(u) && !/[?&]files=/i.test(u))) {
+    return { eligible: false, reason: "landisk-batch-without-body" };
+  }
 
   const urls = [...new Set([item.finalUrl, item.url].filter((url) => HTTP_URL.test(url || "")))];
   if (!urls.length) return { eligible: false, reason: "scheme" };

@@ -213,6 +213,36 @@
     };
   }
 
+  // ── 1.5 跨执行环境通用悬浮 Toast 提示 ──
+  function showFloatingToast(message, isSuccess = true) {
+    try {
+      let toast = document.getElementById("maobu-landisk-floating-toast");
+      if (!toast) {
+        toast = document.createElement("div");
+        toast.id = "maobu-landisk-floating-toast";
+        toast.style.cssText =
+          "position: fixed; bottom: 85px; left: 50%; transform: translateX(-50%);" +
+          "background: rgba(15, 23, 42, 0.95); color: #ffffff; padding: 10px 22px;" +
+          "border-radius: 9999px; font-size: 13px; font-weight: 600;" +
+          "box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.4), 0 8px 10px -6px rgba(0, 0, 0, 0.3);" +
+          "z-index: 100000; pointer-events: none; transition: opacity 0.3s ease, transform 0.3s ease;" +
+          "border: 1px solid rgba(255, 255, 255, 0.15); display: flex; align-items: center; gap: 8px;" +
+          "backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);";
+        document.body.appendChild(toast);
+      }
+      toast.innerHTML = `<span style="font-size: 16px;">${isSuccess ? "⚡" : "❌"}</span><span>${message}</span>`;
+      toast.style.opacity = "1";
+      toast.style.transform = "translateX(-50%) translateY(0)";
+      clearTimeout(window.__maobuToastTimer);
+      window.__maobuToastTimer = setTimeout(() => {
+        if (toast) {
+          toast.style.opacity = "0";
+          toast.style.transform = "translateX(-50%) translateY(10px)";
+        }
+      }, 3500);
+    } catch {}
+  }
+
   // ── 2. 拦截 FileBatchManager.prototype.downloadZip（Main World） ──
   function hookBatchManager() {
     if (!window.FileBatchManager || !window.FileBatchManager.prototype) return;
@@ -230,6 +260,7 @@
 
       dispatchBatchTask(payload, (ok) => {
         if (ok) {
+          showFloatingToast(`⚡ 猫步下载器已接管：${payload.fileName}（16 路并发 · 支持随时断点续传）`, true);
           if (window.LanDiskUI && typeof window.LanDiskUI.toast === "function") {
             window.LanDiskUI.toast(`⚡ 猫步下载器已接管：${payload.fileName}（16 路并发 · 支持随时断点续传）`, "success");
           }
@@ -290,6 +321,7 @@
             },
             (ok) => {
               if (ok) {
+                showFloatingToast(`⚡ 猫步下载器已接管：${folderName}.zip（16 路并发 · 支持随时断点续传）`, true);
                 if (window.LanDiskUI && typeof window.LanDiskUI.toast === "function") {
                   window.LanDiskUI.toast(`⚡ 猫步下载器已接管：${folderName}.zip（16 路并发 · 支持随时断点续传）`, "success");
                 }
@@ -366,14 +398,24 @@
       }
 
       turboBtn.textContent = "正在下发…";
+      turboBtn.disabled = true;
       dispatchBatchTask(payload, (ok, errMsg) => {
-        turboBtn.textContent = "⚡ 猫步并发极速下载";
+        turboBtn.disabled = false;
         if (ok) {
+          turboBtn.textContent = "✓ 已添加至猫步 (16路极速)";
+          turboBtn.style.background = "linear-gradient(135deg, #059669 0%, #047857 100%)";
+          showFloatingToast(`⚡ 猫步下载器已接管：${payload.fileName}（16 路并发 · 支持随时断点续传）`, true);
           if (window.LanDiskUI?.toast) {
             window.LanDiskUI.toast(`⚡ 猫步已接管：${payload.fileName}（16 路并发 · 支持续传）`, "success");
           }
+          setTimeout(() => {
+            turboBtn.textContent = "⚡ 猫步并发极速下载";
+            turboBtn.style.background = "linear-gradient(135deg, #10b981 0%, #059669 100%)";
+          }, 3500);
         } else {
+          turboBtn.textContent = "⚡ 猫步并发极速下载";
           const msg = errMsg || "请确保猫步下载器已运行并完成配对";
+          showFloatingToast(msg, false);
           if (window.LanDiskUI?.toast) window.LanDiskUI.toast(msg, "error");
         }
       });

@@ -252,7 +252,7 @@ export async function getTabDownloadHeaders(tab, targetUrl, cookiesApi = chrome?
     }
   }
   if (tab?.url && /^https?:/i.test(tab.url)) {
-    headers["Referer"] = tab.url;
+    headers["Referer"] = tab.url.split("#")[0];
   }
   if (typeof navigator !== "undefined" && navigator.userAgent) {
     headers["User-Agent"] = navigator.userAgent;

@@ -1337,6 +1337,16 @@ fn query_available_space_returns_zero_for_nonexistent_root() {
 }
 
 #[test]
+fn query_available_space_handles_relative_paths() {
+    let space = query_available_space_for_destination("batch_turbo_download");
+    assert!(space > 0, "相对目录应回退到当前工作目录所在磁盘并返回非零空间");
+    let space_dot = query_available_space_for_destination(".");
+    assert!(space_dot > 0, "当前目录应返回非零空间");
+    let space_empty = query_available_space_for_destination("");
+    assert!(space_empty > 0, "空字符串应回退到当前目录并返回非零空间");
+}
+
+#[test]
 fn low_disk_payload_serializes_for_frontend_event() {
     // 验证事件载荷可正确序列化，前端按 task_id/available_bytes/required_bytes 读取
     let payload = LowDiskPayload {

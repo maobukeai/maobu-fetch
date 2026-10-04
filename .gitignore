@@ -22,3 +22,4 @@ releases_out/
 .trae/
 .zcode/
 .codegraph/
+*.db

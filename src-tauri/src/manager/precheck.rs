@@ -1032,7 +1032,21 @@ fn compute_disk_requirements(
 
 /// 查询目录所在磁盘的可用空间（无法获取配额时返回 None）。
 pub(crate) fn check_disk_space(target_directory: &str) -> Option<u64> {
-    let path = Path::new(target_directory);
+    let raw = Path::new(target_directory);
+    let resolved_buf;
+    let path = if target_directory.trim().is_empty() {
+        Path::new(".")
+    } else if !raw.is_absolute() {
+        if let Ok(cwd) = std::env::current_dir() {
+            resolved_buf = cwd.join(raw);
+            &resolved_buf
+        } else {
+            raw
+        }
+    } else {
+        raw
+    };
+
     if let Some(space) = query_available_space(path) {
         return Some(space);
     }
