@@ -1036,7 +1036,7 @@ pub async fn download_landisk_zip_task(
     ));
     let shared_segments = Arc::new(Mutex::new(segments));
 
-    let active_workers = connections.min(pending_buckets.len().max(1) as u8);
+    let active_workers = connections.min(pending_buckets.len().clamp(1, u8::MAX as usize) as u8);
     task.status = TaskStatus::Downloading;
     task.accepts_ranges = Some(true);
     task.active_connections = active_workers;
@@ -1049,7 +1049,10 @@ pub async fn download_landisk_zip_task(
     // 若所有分桶均已完成，直接进入本地 ZIP 合流组装阶段
     if !pending_buckets.is_empty() {
         let queue = Arc::new(Mutex::new(pending_buckets));
-        let reporter_token = token.clone();
+        // 使用独立的子令牌协调内部 worker 停止，避免单个 worker 网络报错时直接 cancel 父 token
+        // 导致外层 manager.rs 误判为“用户手动点击了暂停”而跳过自动重试。
+        let worker_token = token.child_token();
+        let reporter_token = worker_token.clone();
         let reporter_progress = progress_bytes.clone();
         let reporter_total = dynamic_total_bytes.clone();
         let reporter_segments = shared_segments.clone();
@@ -1121,7 +1124,8 @@ pub async fn download_landisk_zip_task(
 
         for _ in 0..active_workers {
             let w_queue = queue.clone();
-            let w_token = token.clone();
+            let w_user_token = token.clone();
+            let w_token = worker_token.clone();
             let w_client = client.clone();
             let w_temp_dir = temp_dir.clone();
             let w_headers = task.headers.clone();
@@ -1139,6 +1143,7 @@ pub async fn download_landisk_zip_task(
             let w_known_total = is_known_total;
 
             worker_handles.push(tokio::spawn(async move {
+                const MAX_BUCKET_ATTEMPTS: u32 = 4;
                 loop {
                     if w_token.is_cancelled() {
                         break;
@@ -1158,28 +1163,56 @@ pub async fn download_landisk_zip_task(
                         }
                     }
 
-                    let res = execute_bucket_download(
-                        &w_client,
-                        &w_base,
-                        &bucket,
-                        &w_temp_dir,
-                        &w_headers,
-                        w_pin.as_deref(),
-                        w_tok.as_deref(),
-                        &w_token,
-                        &w_progress,
-                        &w_total,
-                        &w_segments,
-                        &w_limiter,
-                        &w_runtime,
-                        &w_bw,
-                        &w_task_id,
-                        w_known_total,
-                    )
-                    .await;
+                    let mut last_err: Option<String> = None;
+                    for attempt in 1..=MAX_BUCKET_ATTEMPTS {
+                        if w_token.is_cancelled() {
+                            break;
+                        }
+                        let res = execute_bucket_download(
+                            &w_client,
+                            &w_base,
+                            &bucket,
+                            &w_temp_dir,
+                            &w_headers,
+                            w_pin.as_deref(),
+                            w_tok.as_deref(),
+                            &w_token,
+                            &w_progress,
+                            &w_total,
+                            &w_segments,
+                            &w_limiter,
+                            &w_runtime,
+                            &w_bw,
+                            &w_task_id,
+                            w_known_total,
+                        )
+                        .await;
 
-                    if let Err(err_msg) = res {
-                        if !w_token.is_cancelled() {
+                        match res {
+                            Ok(()) => {
+                                last_err = None;
+                                break;
+                            }
+                            Err(err_msg) => {
+                                if w_token.is_cancelled() {
+                                    break;
+                                }
+                                last_err = Some(err_msg);
+                                if attempt < MAX_BUCKET_ATTEMPTS {
+                                    let backoff_ms =
+                                        500u64.saturating_mul(1u64 << (attempt - 1)).min(3000);
+                                    tokio::select! {
+                                        _ = w_token.cancelled() => break,
+                                        _ = tokio::time::sleep(Duration::from_millis(backoff_ms)) => {}
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    if let Some(err_msg) = last_err {
+                        w_queue.lock().await.push_front(bucket);
+                        if !w_user_token.is_cancelled() {
                             let mut err_guard = w_err.lock().await;
                             if err_guard.is_none() {
                                 *err_guard = Some(err_msg);
@@ -1198,20 +1231,17 @@ pub async fn download_landisk_zip_task(
         reporter_handle.abort();
         let _ = reporter_handle.await;
 
-        if let Some(err_msg) = first_error.lock().await.take() {
-            return Err(err_msg);
-        }
+        let final_raw = progress_bytes.load(Ordering::Relaxed);
+        let cur_tot = dynamic_total_bytes.load(Ordering::Relaxed).max(1);
+        let (saved_dl, saved_total) = if is_known_total {
+            (final_raw.min(cur_tot), cur_tot)
+        } else {
+            let dl = final_raw.max(initial_dl);
+            (dl, cur_tot.max(dl.saturating_add(4096)))
+        };
 
         if token.is_cancelled() {
-            // 用户点击了暂停：将已精确落盘的进度与分片状态写回数据库，确保不覆盖 Paused 状态且进度绝不丢失
-            let final_raw = progress_bytes.load(Ordering::Relaxed);
-            let cur_tot = dynamic_total_bytes.load(Ordering::Relaxed).max(1);
-            let (saved_dl, saved_total) = if is_known_total {
-                (final_raw.min(cur_tot), cur_tot)
-            } else {
-                let dl = final_raw.max(initial_dl);
-                (dl, cur_tot.max(dl.saturating_add(4096)))
-            };
+            // 用户主动点击了暂停：将已精确落盘的进度与分片状态写回数据库，确保不覆盖 Paused 状态且进度绝不丢失
             let mut segs = shared_segments.lock().await.clone();
             for s in &mut segs {
                 if s.status == "downloading" {
@@ -1233,6 +1263,33 @@ pub async fn download_landisk_zip_task(
                 manager.emit_task("updated", &stored_task);
             }
             return Err("任务已暂停".to_string());
+        }
+
+        if let Some(err_msg) = first_error.lock().await.take() {
+            let mut segs = shared_segments.lock().await.clone();
+            for s in &mut segs {
+                if s.status == "downloading" {
+                    s.status = "paused".into();
+                }
+            }
+            if let Ok(Some(mut stored_task)) = manager.store.get_task(&task.id).await {
+                stored_task.downloaded_bytes = saved_dl;
+                stored_task.total_bytes = saved_total;
+                stored_task.accepts_ranges = Some(true);
+                stored_task.speed = 0;
+                stored_task.eta_seconds = None;
+                stored_task.active_connections = 0;
+                stored_task.segments = segs;
+                let _ = manager.store.upsert_task(&stored_task).await;
+            }
+            return Err(err_msg);
+        }
+
+        let remaining_in_queue = queue.lock().await.len();
+        if remaining_in_queue > 0 {
+            return Err(format!(
+                "仍有 {remaining_in_queue} 个分片待下载，稍后自动续传"
+            ));
         }
     }
 
@@ -1359,11 +1416,18 @@ async fn execute_bucket_download(
             let mut stream = resp.bytes_stream();
             let mut written_in_chunk = if append_mode { existing } else { 0 };
 
+            let mut stream_err: Option<String> = None;
             while let Some(chunk_res) = tokio::select! {
                 _ = token.cancelled() => None,
                 item = stream.next() => item,
             } {
-                let chunk = chunk_res.map_err(friendly_body_error)?;
+                let chunk = match chunk_res {
+                    Ok(c) => c,
+                    Err(e) => {
+                        stream_err = Some(friendly_body_error(e));
+                        break;
+                    }
+                };
                 let remain_allow = (*length).saturating_sub(written_in_chunk) as usize;
                 let slice = &chunk[..chunk.len().min(remain_allow)];
                 if slice.is_empty() {
@@ -1377,10 +1441,10 @@ async fn execute_bucket_download(
                 }
                 bandwidth_scheduler.acquire(task_id, len_u64, 0, token).await;
 
-                writer
-                    .write_all(slice)
-                    .await
-                    .map_err(|e| format!("写入分片数据失败: {e}"))?;
+                if let Err(e) = writer.write_all(slice).await {
+                    stream_err = Some(format!("写入分片数据失败: {e}"));
+                    break;
+                }
                 written_in_chunk += len_u64;
                 progress_bytes.fetch_add(len_u64, Ordering::Relaxed);
 
@@ -1397,8 +1461,12 @@ async fn execute_bucket_download(
             }
 
             let _ = writer.flush().await;
+            drop(writer);
             if token.is_cancelled() {
                 return Err("任务已暂停".to_string());
+            }
+            if let Some(err) = stream_err {
+                return Err(err);
             }
             if written_in_chunk < *length {
                 return Err(format!(
@@ -1482,12 +1550,19 @@ async fn execute_bucket_download(
             let mut stream = resp.bytes_stream();
             let mut received: u64 = 0;
             let est = (*estimated_bytes).max(4096);
+            let mut stream_err: Option<String> = None;
 
             while let Some(chunk_res) = tokio::select! {
                 _ = token.cancelled() => None,
                 item = stream.next() => item,
             } {
-                let chunk = chunk_res.map_err(friendly_body_error)?;
+                let chunk = match chunk_res {
+                    Ok(c) => c,
+                    Err(e) => {
+                        stream_err = Some(friendly_body_error(e));
+                        break;
+                    }
+                };
                 if chunk.is_empty() {
                     continue;
                 }
@@ -1498,10 +1573,10 @@ async fn execute_bucket_download(
                 }
                 bandwidth_scheduler.acquire(task_id, len_u64, 0, token).await;
 
-                writer
-                    .write_all(&chunk)
-                    .await
-                    .map_err(|e| format!("写入压缩分桶失败: {e}"))?;
+                if let Err(e) = writer.write_all(&chunk).await {
+                    stream_err = Some(format!("写入压缩分桶失败: {e}"));
+                    break;
+                }
 
                 let prev_received = received;
                 received += len_u64;
@@ -1529,6 +1604,10 @@ async fn execute_bucket_download(
                 // 保留未完成的分块临时文件与已下载字节水位线，不调用 fetch_sub 也不调用 remove_file，保持当前字节水位线
                 return Err("任务已暂停".to_string());
             }
+            if let Some(err) = stream_err {
+                progress_bytes.fetch_sub(received, Ordering::Relaxed);
+                return Err(err);
+            }
 
             if !is_known_total && received < est {
                 let diff = est - received;
@@ -1542,6 +1621,14 @@ async fn execute_bucket_download(
             fs::rename(&part_path, &zip_path)
                 .await
                 .map_err(|e| format!("重命名完成分桶失败: {e}"))?;
+            if is_valid_zip_file(&zip_path).is_none() {
+                let _ = fs::remove_file(&zip_path).await;
+                progress_bytes.fetch_sub(received, Ordering::Relaxed);
+                return Err(format!(
+                    "压缩分桶数据未完整传输 (bucket_{})，正在重试",
+                    bucket.index
+                ));
+            }
 
             {
                 let mut segs = shared_segments.lock().await;
@@ -2130,5 +2217,39 @@ mod tests {
         let m = build_or_load_manifest(&client, &task, dir.path()).await.unwrap();
         assert!(!m.buckets.is_empty());
         assert!(m.buckets.len() > 1, "Should expand directory into multiple buckets, got: {}", m.buckets.len());
+    }
+
+    #[test]
+    fn test_active_workers_clamp_and_child_token_isolation() {
+        let connections: u8 = 32;
+        for pending_len in [256usize, 512, 4608, 8232, 15337] {
+            let active_workers = connections.min(pending_len.clamp(1, u8::MAX as usize) as u8);
+            assert_eq!(
+                active_workers, 32,
+                "pending_len={pending_len} must not truncate modulo 256 to 0 workers"
+            );
+        }
+        assert_eq!(
+            connections.min(0usize.clamp(1, u8::MAX as usize) as u8),
+            1
+        );
+
+        // 验证 worker_token.cancel() 不会污染父 token（防止 manager.rs 误判为用户点击暂停）
+        let user_token = CancellationToken::new();
+        let worker_token = user_token.child_token();
+        let w1 = worker_token.clone();
+        w1.cancel();
+        assert!(worker_token.is_cancelled());
+        assert!(
+            !user_token.is_cancelled(),
+            "Worker internal cancellation must not cancel parent user pause token"
+        );
+
+        // 验证父 token 取消时（用户主动暂停），子 token 自动联动取消
+        let user_token2 = CancellationToken::new();
+        let worker_token2 = user_token2.child_token();
+        user_token2.cancel();
+        assert!(user_token2.is_cancelled());
+        assert!(worker_token2.is_cancelled());
     }
 }

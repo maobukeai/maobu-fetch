@@ -3983,7 +3983,7 @@ impl DownloadManager {
         let token_outer = token.clone();
         let progress_outer = progress.clone();
         let runtimes_outer = runtimes.clone();
-        let token_for_workers = token_outer.clone();
+        let token_for_workers = token_outer.child_token();
         let progress_for_workers = progress_outer.clone();
         let runtimes_for_workers = runtimes_outer.clone();
         let runtime_options_for_workers = runtime_options.clone();
@@ -4412,21 +4412,21 @@ impl DownloadManager {
                     match &worker_error {
                         Some(prev) if !prev.starts_with(CLOUD_LINK_DEAD_PREFIX) && is_link_dead => {
                             worker_error = Some(error);
-                            token.cancel();
+                            token_for_workers.cancel();
                         }
                         None => {
                             worker_error = Some(error);
-                            token.cancel();
+                            token_for_workers.cancel();
                         }
                         _ => {
-                            token.cancel();
+                            token_for_workers.cancel();
                         }
                     }
                 }
                 Err(join_err) => {
                     if worker_error.is_none() {
                         worker_error = Some(format!("Worker 异常终止: {join_err}"));
-                        token.cancel();
+                        token_for_workers.cancel();
                     }
                 }
                 Ok(Ok(())) => {}
