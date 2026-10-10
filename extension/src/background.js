@@ -277,10 +277,21 @@ export async function handleContextMenuDownload(info, tab, deps = {}) {
   const cookiesApi = deps.cookies || (typeof chrome !== "undefined" ? chrome?.cookies : undefined);
   const focusDesktopFn = deps.focusDesktop || focusDesktop;
 
-  const url = info.linkUrl || info.srcUrl || info.pageUrl;
+  let url = info.linkUrl || info.srcUrl || info.pageUrl;
   if (!url) return false;
 
-  const fileName = inferMediaFilename(url);
+  let specifiedFileName = "";
+  if ((url.startsWith("blob:") || /douyin\.com/i.test(tab?.url || "")) && tab?.id) {
+    try {
+      const activeRes = await chrome.tabs.sendMessage(tab.id, { type: "get-active-media" });
+      if (activeRes?.ok && activeRes.url) {
+        url = activeRes.url;
+        if (activeRes.fileName) specifiedFileName = activeRes.fileName;
+      }
+    } catch {}
+  }
+
+  const fileName = specifiedFileName || inferMediaFilename(url);
   const headers = await getTabDownloadHeaders(tab, url, cookiesApi);
 
   try {

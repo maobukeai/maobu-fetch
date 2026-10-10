@@ -390,9 +390,7 @@ async fn focus_window(
 /// 抽出为独立函数便于复用；窗口不存在（异常状态）时静默返回，不视为错误。
 fn focus_main_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
-        let _ = window.show();
-        let _ = window.unminimize();
-        let _ = window.set_focus();
+        crate::bring_window_to_front(&window);
     }
 }
 

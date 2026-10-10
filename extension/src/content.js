@@ -139,6 +139,43 @@
     return isVideoSite ? 84 : 28;
   }
 
+  function findDouyinDirectStream(activeVideo) {
+    // 1. 检查 <video> 当前播放源（非 blob 直链）
+    const rawSrc = activeVideo?.currentSrc || activeVideo?.src || "";
+    if (rawSrc && /^https?:\/\//i.test(rawSrc) && !rawSrc.startsWith("blob:")) {
+      return rawSrc;
+    }
+
+    // 2. 检查 <video> 内部的 <source> 标签
+    if (activeVideo) {
+      const sources = activeVideo.querySelectorAll("source");
+      for (const s of sources) {
+        const src = s.src || s.getAttribute("src") || "";
+        if (src && /^https?:\/\//i.test(src) && !src.startsWith("blob:")) {
+          return src;
+        }
+      }
+    }
+
+    // 3. 从 sniffer 捕获列表中寻找
+    try {
+      const sniffed = latestSniffedTarget();
+      if (sniffed && (sniffed.includes("douyinvod.com") || sniffed.includes("byteplusvod.com") || sniffed.includes("/video/tos/"))) {
+        return sniffed;
+      }
+    } catch {}
+
+    // 4. 从已发现媒体集合中寻找
+    for (const item of found.values()) {
+      const u = item?.url || "";
+      if (u.includes("douyinvod.com") || u.includes("byteplusvod.com") || u.includes("ibytedtos.com")) {
+        return u;
+      }
+    }
+
+    return "";
+  }
+
   function extractDouyinActiveMedia() {
     if (!location.hostname.includes("douyin.com")) return null;
 
@@ -219,6 +256,26 @@
     const effectiveId = cardAwemeId || urlAwemeId;
     const finalTitle = cardTitle || document.title.replace(/\s*-\s*抖音.*$/i, "").trim() || "抖音视频";
 
+    // 4. 关键：优先检测是否有正在播放的直链媒体流！
+    const directStream = findDouyinDirectStream(activeVideo);
+    if (directStream) {
+      const cleanTitle = (finalTitle || "抖音视频")
+        .replace(/[\\/:*?"<>|\r\n\t]/g, "_")
+        .replace(/\s+/g, " ")
+        .trim()
+        .slice(0, 120);
+      const fileName = effectiveId ? `${cleanTitle}_${effectiveId}.mp4` : `${cleanTitle}.mp4`;
+      return {
+        url: directStream,
+        title: finalTitle,
+        type: "video",
+        isDirect: true,
+        fileName,
+        awemeId: effectiveId,
+      };
+    }
+
+    // 5. 若无直链（如尚未加载或为纯图文 note），回退到页面/图文 URL
     if (effectiveId) {
       const isNote = Boolean(activeCard?.querySelector('a[href*="/note/"]') || currentUrl.includes("/note/"));
       const path = isNote ? "note" : "video";
@@ -226,17 +283,8 @@
         url: `https://www.douyin.com/${path}/${effectiveId}`,
         title: finalTitle,
         type: isNote ? "gallery" : "video",
-      };
-    }
-
-    // 4. 兜底检查 activeVideo 的直链（如果非 blob）
-    const rawSrc = activeVideo?.currentSrc || activeVideo?.src || "";
-    if (rawSrc && /^https?:\/\//i.test(rawSrc) && !rawSrc.startsWith("blob:")) {
-      return {
-        url: rawSrc,
-        title: finalTitle,
-        type: "video",
-        isDirect: true,
+        isDirect: false,
+        awemeId: effectiveId,
       };
     }
 
@@ -472,9 +520,20 @@
         const douyinActive = extractDouyinActiveMedia();
         if (douyinActive?.url) {
           if (douyinActive.isDirect) {
-            label.textContent = "发送中…";
-            const payload = { type: "send", url: douyinActive.url, extra: { headers: { Referer: "https://www.douyin.com/" } } };
-            void sendMessageSafe(payload).then((response) => handleResponse(response, "✓ 已推送到桌面端", douyinActive.title));
+            label.textContent = `${connectionCount}线程发送…`;
+            const payload = {
+              type: "send",
+              url: douyinActive.url,
+              fileName: douyinActive.fileName || `${douyinActive.title}.mp4`,
+              extra: {
+                headers: {
+                  Referer: "https://www.douyin.com/",
+                  "User-Agent": navigator.userAgent,
+                },
+                connection_count: connectionCount,
+              },
+            };
+            void sendMessageSafe(payload).then((response) => handleResponse(response, `✓ 已推送 (${connectionCount}线程)`, douyinActive.title));
             return;
           }
           label.textContent = "分析中…";
@@ -520,10 +579,10 @@
     const items = [
       { label: "⬇ 下载当前媒体", value: "send-current" },
     ];
-    if (fabMode === "pikpak") {
+    if (fabMode === "pikpak" || location.hostname.includes("douyin.com")) {
       items.push(
-        { label: "⚡ 16 线程极速并发下载", value: "send-pikpak-16" },
-        { label: "⚡ 32 线程极限加速下载", value: "send-pikpak-32" }
+        { label: "⚡ 16 线程极速并发下载", value: "send-16" },
+        { label: "⚡ 32 线程极限加速下载", value: "send-32" }
       );
     }
     items.push(
@@ -542,11 +601,9 @@
     items.push({ label: "在此站点隐藏悬浮按钮", value: "hide" });
     try {
       Ui?.showFabMenu?.(fabElement, items, (value) => {
-        if (value === "send-current") {
+        if (value === "send-current" || value === "send-16" || value === "send-pikpak-16") {
           sendToDesktop(16);
-        } else if (value === "send-pikpak-16") {
-          sendToDesktop(16);
-        } else if (value === "send-pikpak-32") {
+        } else if (value === "send-32" || value === "send-pikpak-32") {
           sendToDesktop(32);
         } else if (value === "copy") {
           void (navigator.clipboard?.writeText?.(fabUrl) || Promise.reject())
@@ -699,6 +756,23 @@
       sendResponse({ ok: true });
       return false;
     }
+    if (message?.type === "get-active-media") {
+      if (location.hostname.includes("douyin.com")) {
+        const douyinActive = extractDouyinActiveMedia();
+        if (douyinActive?.url) {
+          sendResponse({
+            ok: true,
+            url: douyinActive.url,
+            fileName: douyinActive.fileName || `${douyinActive.title}.mp4`,
+            title: douyinActive.title,
+            isDirect: Boolean(douyinActive.isDirect),
+          });
+          return false;
+        }
+      }
+      sendResponse({ ok: false });
+      return false;
+    }
     if (message?.type === "grab-page-resources") {
       const items = [];
       const seen = new Set();
@@ -709,6 +783,13 @@
         seen.add(raw);
         items.push({ url: raw, title: String(title || "").trim() || raw, type: type || "link" });
       };
+
+      if (location.hostname.includes("douyin.com")) {
+        const douyinActive = extractDouyinActiveMedia();
+        if (douyinActive?.url) {
+          pushItem(douyinActive.url, douyinActive.title || "抖音视频", "video");
+        }
+      }
 
       document.querySelectorAll("video, audio, source").forEach((el) => {
         const src = el.currentSrc || el.src;

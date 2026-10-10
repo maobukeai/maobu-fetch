@@ -544,7 +544,7 @@ pub async fn build_or_load_manifest(
     let manifest_path = temp_dir.join("landisk_manifest.json");
     if manifest_path.exists() {
         if let Ok(content) = fs::read_to_string(&manifest_path).await {
-            if let Ok(existing) = serde_json::from_str::<LanDiskManifest>(&content) {
+            if let Ok(mut existing) = serde_json::from_str::<LanDiskManifest>(&content) {
                 // 脏清单自愈机制 (Manifest Auto-Healing)：
                 // 若读取的清单只有 1 个分桶且其大小等于 ESTIMATED_SUBDIR_BYTES (2.0 MB)，
                 // 自动判定为旧版探测失败残留的脏清单，予以作废并重新发起探测，解开 2.0MB 死锁
@@ -556,6 +556,26 @@ pub async fn build_or_load_manifest(
                 if is_dirty_single_bucket {
                     let _ = fs::remove_file(&manifest_path).await;
                 } else if !existing.buckets.is_empty() {
+                    let mut modified = false;
+                    if existing.total_bytes == 0 {
+                        let sum_bytes: u64 = existing
+                            .buckets
+                            .iter()
+                            .map(|b| match &b.kind {
+                                BucketKind::SingleFileChunk { length, .. } => *length,
+                                BucketKind::SubBatch { estimated_bytes, .. } => *estimated_bytes,
+                            })
+                            .sum();
+                        if sum_bytes > 0 {
+                            existing.total_bytes = sum_bytes;
+                            modified = true;
+                        }
+                    }
+                    if modified {
+                        if let Ok(json_str) = serde_json::to_string_pretty(&existing) {
+                            let _ = fs::write(&manifest_path, json_str).await;
+                        }
+                    }
                     return Ok(existing);
                 }
             }
@@ -676,135 +696,129 @@ pub async fn build_or_load_manifest(
             .await
             {
                 Some(level0_entries) => {
-                    // root_path 是目录：在 ZIP 内部顶层前缀为 `root_name`
-                    let mut l0_files_and_small = Vec::new();
-                    let mut l0_dirs = Vec::new();
+                    // root_path 是目录：进入队列深度并发递归探查所有子目录，杜绝巨型目录未展开
+                    let mut dir_queue: VecDeque<(String, String, usize)> = VecDeque::new();
+                    let mut small_files: Vec<(String, String, u64)> = Vec::new();
+
                     for entry in level0_entries {
                         if entry.is_directory {
-                            l0_dirs.push(entry);
+                            if !entry.name.starts_with('.') {
+                                dir_queue.push_back((
+                                    entry.path,
+                                    join_zip_prefix(&root_name, &entry.name),
+                                    1,
+                                ));
+                            }
+                        } else if entry.size >= SINGLE_FILE_RANGE_THRESHOLD {
+                            let entry_zip_name = join_zip_prefix(&root_name, &entry.name);
+                            push_file_chunks(&mut buckets, &entry.path, &entry_zip_name, entry.size);
                         } else {
-                            l0_files_and_small.push(entry);
+                            small_files.push((
+                                entry.path,
+                                root_name.clone(),
+                                entry.size,
+                            ));
                         }
                     }
-                    push_grouped_subbatches(&mut buckets, &l0_files_and_small, &root_name);
 
-                    // 控流拉取 Level 1 子目录（上限 16 个，并发数限制为 4）
-                    let (expand_l1, remain_l1) = if l0_dirs.len() > 16 {
-                        l0_dirs.split_at(16)
-                    } else {
-                        (l0_dirs.as_slice(), &[][..])
-                    };
-                    if !remain_l1.is_empty() {
-                        push_grouped_subbatches(&mut buckets, remain_l1, &root_name);
-                    }
+                    // 深度广度递归探查所有层级子目录（并发度为 6，最大深度限制为 10 防止极端循环）
+                    while !dir_queue.is_empty() {
+                        let mut batch = Vec::new();
+                        while batch.len() < 6 && !dir_queue.is_empty() {
+                            if let Some(item) = dir_queue.pop_front() {
+                                batch.push(item);
+                            }
+                        }
 
-                    let mut l1_results = Vec::with_capacity(expand_l1.len());
-                    for chunk in expand_l1.chunks(4) {
-                        let chunk_futs = chunk.iter().map(|d| {
-                            let prefix = join_zip_prefix(&root_name, &d.name);
-                            let path = d.path.clone();
-                            let name = d.name.clone();
+                        let batch_futs = batch.into_iter().map(|(dir_path, dir_prefix, depth)| {
+                            let c = client.clone();
                             let base = base_origin.clone();
                             let headers = task.headers.clone();
                             let pin_c = pin.clone();
                             let tok_c = qr_token.clone();
-                            let c = client.clone();
                             async move {
                                 let entries = fetch_dir_entries(
                                     &c,
                                     &base,
-                                    &path,
+                                    &dir_path,
                                     &headers,
                                     pin_c.as_deref(),
                                     tok_c.as_deref(),
                                 )
                                 .await;
-                                (name, path, prefix, entries)
+                                (dir_path, dir_prefix, depth, entries)
                             }
                         });
-                        l1_results.extend(futures_util::future::join_all(chunk_futs).await);
-                    }
 
-                    let mut l2_expand_targets: Vec<(String, String)> = Vec::new();
-                    for (_dir_name, dir_path, dir_prefix, entries_opt) in l1_results {
-                        match entries_opt {
-                            Some(l1_entries) => {
-                                let mut l1_non_expand = Vec::new();
-                                for item in l1_entries {
-                                    // 泛用性支持：对任意非隐藏子目录展开深度统计与大文件抽取
-                                    let should_expand_l2 = item.is_directory
-                                        && l2_expand_targets.len() < 16
-                                        && !item.name.starts_with('.');
-                                    if should_expand_l2 {
-                                        let sub_prefix = join_zip_prefix(&dir_prefix, &item.name);
-                                        l2_expand_targets.push((item.path, sub_prefix));
-                                    } else {
-                                        l1_non_expand.push(item);
+                        let results = futures_util::future::join_all(batch_futs).await;
+                        for (dir_path, dir_prefix, depth, entries_opt) in results {
+                            match entries_opt {
+                                Some(entries) => {
+                                    for entry in entries {
+                                        if entry.is_directory {
+                                            if depth < 10 && !entry.name.starts_with('.') {
+                                                dir_queue.push_back((
+                                                    entry.path,
+                                                    join_zip_prefix(&dir_prefix, &entry.name),
+                                                    depth + 1,
+                                                ));
+                                            } else {
+                                                let idx = buckets.len();
+                                                buckets.push(LanDiskBucket {
+                                                    index: idx,
+                                                    kind: BucketKind::SubBatch {
+                                                        remote_paths: vec![entry.path],
+                                                        zip_prefix: dir_prefix.clone(),
+                                                        estimated_bytes: ESTIMATED_SUBDIR_BYTES,
+                                                    },
+                                                });
+                                            }
+                                        } else if entry.size >= SINGLE_FILE_RANGE_THRESHOLD {
+                                            let entry_zip_name = join_zip_prefix(&dir_prefix, &entry.name);
+                                            push_file_chunks(&mut buckets, &entry.path, &entry_zip_name, entry.size);
+                                        } else {
+                                            small_files.push((
+                                                entry.path,
+                                                dir_prefix.clone(),
+                                                entry.size,
+                                            ));
+                                        }
                                     }
                                 }
-                                push_grouped_subbatches(&mut buckets, &l1_non_expand, &dir_prefix);
-                            }
-                            None => {
-                                let idx = buckets.len();
-                                buckets.push(LanDiskBucket {
-                                    index: idx,
-                                    kind: BucketKind::SubBatch {
-                                        remote_paths: vec![dir_path],
-                                        zip_prefix: root_name.clone(),
-                                        estimated_bytes: ESTIMATED_SUBDIR_BYTES,
-                                    },
-                                });
-                            }
-                        }
-                    }
-
-                    // 控流拉取重点 Level 2 目录（并发数限制为 4）
-                    if !l2_expand_targets.is_empty() {
-                        let mut l2_results = Vec::with_capacity(l2_expand_targets.len());
-                        for chunk in l2_expand_targets.chunks(4) {
-                            let chunk_futs = chunk.iter().map(|(path, prefix)| {
-                                let path = path.clone();
-                                let prefix = prefix.clone();
-                                let base = base_origin.clone();
-                                let headers = task.headers.clone();
-                                let pin_c = pin.clone();
-                                let tok_c = qr_token.clone();
-                                let c = client.clone();
-                                async move {
-                                    let entries = fetch_dir_entries(
-                                        &c,
-                                        &base,
-                                        &path,
-                                        &headers,
-                                        pin_c.as_deref(),
-                                        tok_c.as_deref(),
-                                    )
-                                    .await;
-                                    (path, prefix, entries)
-                                }
-                            });
-                            l2_results.extend(futures_util::future::join_all(chunk_futs).await);
-                        }
-                        for (path, prefix, entries_opt) in l2_results {
-                            match entries_opt {
-                                Some(l2_entries) => {
-                                    push_grouped_subbatches(&mut buckets, &l2_entries, &prefix);
-                                }
                                 None => {
-                                    let parent_prefix = prefix
-                                        .rsplit_once('/')
-                                        .map(|(p, _)| p.to_string())
-                                        .unwrap_or_default();
                                     let idx = buckets.len();
                                     buckets.push(LanDiskBucket {
                                         index: idx,
                                         kind: BucketKind::SubBatch {
-                                            remote_paths: vec![path],
-                                            zip_prefix: parent_prefix,
+                                            remote_paths: vec![dir_path],
+                                            zip_prefix: dir_prefix,
                                             estimated_bytes: ESTIMATED_SUBDIR_BYTES,
                                         },
                                     });
                                 }
+                            }
+                        }
+                    }
+
+                    // 将所有小文件按目录聚合为小批次
+                    if !small_files.is_empty() {
+                        let mut prefix_map: HashMap<String, Vec<(String, u64)>> = HashMap::new();
+                        for (path, prefix, size) in small_files {
+                            prefix_map.entry(prefix).or_default().push((path, size));
+                        }
+                        for (prefix, files) in prefix_map {
+                            for chunk in files.chunks(MAX_SMALL_FILES_PER_SUBBATCH) {
+                                let paths: Vec<String> = chunk.iter().map(|(p, _)| p.clone()).collect();
+                                let est_bytes: u64 = chunk.iter().map(|(_, s)| *s).sum();
+                                let idx = buckets.len();
+                                buckets.push(LanDiskBucket {
+                                    index: idx,
+                                    kind: BucketKind::SubBatch {
+                                        remote_paths: paths,
+                                        zip_prefix: prefix.clone(),
+                                        estimated_bytes: est_bytes.max(4096),
+                                    },
+                                });
                             }
                         }
                     }
@@ -870,12 +884,25 @@ pub async fn build_or_load_manifest(
         b.index = idx;
     }
 
+    let calculated_total: u64 = buckets
+        .iter()
+        .map(|b| match &b.kind {
+            BucketKind::SingleFileChunk { length, .. } => *length,
+            BucketKind::SubBatch { estimated_bytes, .. } => *estimated_bytes,
+        })
+        .sum();
+    let final_total = if detected_summary_total > 0 {
+        detected_summary_total
+    } else {
+        calculated_total
+    };
+
     let manifest = LanDiskManifest {
         base_origin,
         folder_name,
         pin,
         qr_token,
-        total_bytes: detected_summary_total,
+        total_bytes: final_total,
         buckets,
     };
 
@@ -947,8 +974,8 @@ pub async fn download_landisk_zip_task(
     let mut initial_persisted_bytes: u64 = 0;
     let mut initial_total_bytes: u64 = 0;
     let mut remaining_uncompleted_bytes: u64 = 0;
-    let bucket_count = manifest.buckets.len();
-    let mut segments: Vec<DownloadSegment> = Vec::with_capacity(bucket_count);
+    let max_bucket_index = manifest.buckets.iter().map(|b| b.index).max().unwrap_or(0);
+    let mut segments: Vec<DownloadSegment> = vec![DownloadSegment::default(); max_bucket_index + 1];
 
     for bucket in &manifest.buckets {
         match &bucket.kind {
@@ -962,7 +989,7 @@ pub async fn download_landisk_zip_task(
                 initial_total_bytes = initial_total_bytes.saturating_add(*length);
 
                 let done = existing_len >= *length;
-                segments.push(DownloadSegment {
+                segments[bucket.index] = DownloadSegment {
                     index: (bucket.index.min(u8::MAX as usize)) as u8,
                     start_byte: *offset,
                     end_byte: offset.saturating_add(*length),
@@ -974,7 +1001,7 @@ pub async fn download_landisk_zip_task(
                     } else {
                         "pending".into()
                     },
-                });
+                };
                 if !done {
                     remaining_uncompleted_bytes = remaining_uncompleted_bytes
                         .saturating_add(length.saturating_sub(existing_len));
@@ -988,25 +1015,25 @@ pub async fn download_landisk_zip_task(
                 if let Some(valid_len) = is_valid_zip_file(&zip_path) {
                     initial_persisted_bytes = initial_persisted_bytes.saturating_add(valid_len);
                     initial_total_bytes = initial_total_bytes.saturating_add(valid_len);
-                    segments.push(DownloadSegment {
+                    segments[bucket.index] = DownloadSegment {
                         index: (bucket.index.min(u8::MAX as usize)) as u8,
                         start_byte: 0,
                         end_byte: valid_len,
                         downloaded_bytes: valid_len,
                         status: "completed".into(),
-                    });
+                    };
                 } else {
                     let _ = fs::remove_file(&zip_path).await;
                     let est = (*estimated_bytes).max(4096);
                     initial_total_bytes = initial_total_bytes.saturating_add(est);
                     remaining_uncompleted_bytes = remaining_uncompleted_bytes.saturating_add(est);
-                    segments.push(DownloadSegment {
+                    segments[bucket.index] = DownloadSegment {
                         index: (bucket.index.min(u8::MAX as usize)) as u8,
                         start_byte: 0,
                         end_byte: est,
                         downloaded_bytes: 0,
                         status: "pending".into(),
-                    });
+                    };
                     pending_buckets.push_back(bucket.clone());
                 }
             }
@@ -1024,7 +1051,9 @@ pub async fn download_landisk_zip_task(
     let initial_dl = if is_known_total {
         true_total_bytes.saturating_sub(remaining_uncompleted_bytes)
     } else {
-        task.downloaded_bytes.max(initial_persisted_bytes)
+        task.downloaded_bytes
+            .min(initial_total_bytes)
+            .max(initial_persisted_bytes)
     };
     let progress_bytes = Arc::new(AtomicU64::new(initial_dl));
     let dynamic_total_bytes = Arc::new(AtomicU64::new(
@@ -1084,10 +1113,19 @@ pub async fn download_landisk_zip_task(
 
                         let cur_tot = reporter_total.load(Ordering::Relaxed).max(1);
                         let (display_dl, display_total) = if is_known_total {
-                            (raw_now.min(cur_tot), cur_tot)
+                            // 防 100% 假满假象不变量：在下载状态时，展示进度最多为 total - 1 字节（99.9%），
+                            // 严禁在尚未进入校验与合流阶段时显示 100% 引发用户困惑
+                            let clamped_dl = if raw_now >= cur_tot {
+                                cur_tot.saturating_sub(1)
+                            } else {
+                                raw_now
+                            };
+                            (clamped_dl, cur_tot)
                         } else {
                             let dl = raw_now.max(initial_dl);
-                            (dl, cur_tot.max(dl.saturating_add(4096)))
+                            let safe_tot = cur_tot.max(dl.saturating_add(4096));
+                            let clamped_dl = dl.min(safe_tot.saturating_sub(1));
+                            (clamped_dl, safe_tot)
                         };
 
                         reporter_task.downloaded_bytes = display_dl;
@@ -1233,11 +1271,23 @@ pub async fn download_landisk_zip_task(
 
         let final_raw = progress_bytes.load(Ordering::Relaxed);
         let cur_tot = dynamic_total_bytes.load(Ordering::Relaxed).max(1);
+        let has_unfinished = !queue.lock().await.is_empty();
         let (saved_dl, saved_total) = if is_known_total {
-            (final_raw.min(cur_tot), cur_tot)
+            let clamped = if has_unfinished && final_raw >= cur_tot {
+                cur_tot.saturating_sub(1)
+            } else {
+                final_raw.min(cur_tot)
+            };
+            (clamped, cur_tot)
         } else {
             let dl = final_raw.max(initial_dl);
-            (dl, cur_tot.max(dl.saturating_add(4096)))
+            let safe_tot = cur_tot.max(dl.saturating_add(4096));
+            let clamped = if has_unfinished && dl >= safe_tot {
+                safe_tot.saturating_sub(1)
+            } else {
+                dl
+            };
+            (clamped, safe_tot)
         };
 
         if token.is_cancelled() {
@@ -1606,6 +1656,9 @@ async fn execute_bucket_download(
             }
             if let Some(err) = stream_err {
                 progress_bytes.fetch_sub(received, Ordering::Relaxed);
+                if !is_known_total && received > est {
+                    dynamic_total_bytes.fetch_sub(received - est, Ordering::Relaxed);
+                }
                 return Err(err);
             }
 
@@ -1624,6 +1677,9 @@ async fn execute_bucket_download(
             if is_valid_zip_file(&zip_path).is_none() {
                 let _ = fs::remove_file(&zip_path).await;
                 progress_bytes.fetch_sub(received, Ordering::Relaxed);
+                if !is_known_total && received > est {
+                    dynamic_total_bytes.fetch_sub(received - est, Ordering::Relaxed);
+                }
                 return Err(format!(
                     "压缩分桶数据未完整传输 (bucket_{})，正在重试",
                     bucket.index

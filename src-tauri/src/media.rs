@@ -269,10 +269,11 @@ pub async fn probe(
                         error = %e,
                         "抖音直连解析失败，回退到 yt-dlp 流程"
                     );
+                    let canonical_url = format!("https://www.douyin.com/video/{id}");
                     probe_via_yt_dlp(
                         app,
                         settings,
-                        &effective_url,
+                        &canonical_url,
                         platform,
                         cookie,
                         referer,
@@ -1124,8 +1125,6 @@ pub(crate) async fn apply_platform_naming_template(
     };
     let template = find_template_for_platform(naming_templates, platform.as_str())
         .unwrap_or(&default_template);
-    let yt = resolve_yt_dlp(app, settings)
-        .ok_or_else(|| "MEDIA_YT_DLP_MISSING: 应用命名模板需要 yt-dlp".to_string())?;
     // 短链先跟随重定向（与 probe 一致），避免 yt-dlp 解析短链失败。
     let target_url = if let Some(referer) = task.headers.get("Referer") {
         if detect_platform(referer) != MediaPlatform::Unknown || referer.contains("douyin.com") {
@@ -1140,41 +1139,60 @@ pub(crate) async fn apply_platform_naming_template(
         Ok(final_url) => final_url,
         Err(_) => target_url.to_string(),
     };
-    let mut command = create_hidden_tokio_command(yt);
-    command
-        .env("PYTHONIOENCODING", "utf-8")
-        .env("PYTHONUTF8", "1");
-    command.args([
-        "--dump-single-json",
-        "--no-playlist",
-        "--no-warnings",
-        "--skip-download",
-        "--no-check-formats",
-        "--no-call-home",
-    ]);
-    let cookie_guard = attach_auth_args(
-        &mut command,
-        app,
-        &effective_url,
-        cookie,
-        referer,
-        user_agent,
-    )
-    .await?;
-    if platform == MediaPlatform::YouTube {
-        apply_youtube_extractor_args(
+    let value: Value = if platform == MediaPlatform::Douyin {
+        let candidate_id = extract_douyin_aweme_id(&effective_url)
+            .or_else(|| task.final_url.as_deref().and_then(extract_douyin_aweme_id))
+            .or_else(|| extract_douyin_aweme_id(&task.url))
+            .or_else(|| referer.and_then(extract_douyin_aweme_id));
+        if let Some(id) = candidate_id {
+            let detail =
+                fetch_douyin_aweme_detail_with_credentials(&id, cookie, referer, user_agent)
+                    .await?;
+            let mut json = convert_douyin_aweme_to_yt_dlp_json(&detail);
+            json["webpage_url"] = Value::String(effective_url.clone());
+            json
+        } else {
+            return Ok(());
+        }
+    } else {
+        let yt = resolve_yt_dlp(app, settings)
+            .ok_or_else(|| "MEDIA_YT_DLP_MISSING: 应用命名模板需要 yt-dlp".to_string())?;
+        let mut command = create_hidden_tokio_command(yt);
+        command
+            .env("PYTHONIOENCODING", "utf-8")
+            .env("PYTHONUTF8", "1");
+        command.args([
+            "--dump-single-json",
+            "--no-playlist",
+            "--no-warnings",
+            "--skip-download",
+            "--no-check-formats",
+            "--no-call-home",
+        ]);
+        let cookie_guard = attach_auth_args(
             &mut command,
-            &settings.youtube_po_token,
-            cookie_guard.path().is_some(),
-        );
-    }
-    command.arg(&effective_url);
-    let output = command.output().await.map_err(|e| e.to_string())?;
-    cookie_guard.consume().await;
-    if !output.status.success() {
-        return Err("yt-dlp 元数据探测失败".into());
-    }
-    let value: Value = serde_json::from_slice(&output.stdout).map_err(|e| e.to_string())?;
+            app,
+            &effective_url,
+            cookie,
+            referer,
+            user_agent,
+        )
+        .await?;
+        if platform == MediaPlatform::YouTube {
+            apply_youtube_extractor_args(
+                &mut command,
+                &settings.youtube_po_token,
+                cookie_guard.path().is_some(),
+            );
+        }
+        command.arg(&effective_url);
+        let output = command.output().await.map_err(|e| e.to_string())?;
+        cookie_guard.consume().await;
+        if !output.status.success() {
+            return Err("yt-dlp 元数据探测失败".into());
+        }
+        serde_json::from_slice(&output.stdout).map_err(|e| e.to_string())?
+    };
     let vars = build_naming_vars(&value, platform);
     let mut new_stem = apply_naming_template(&template.template, &vars);
 

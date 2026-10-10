@@ -205,7 +205,7 @@ pub struct ProxyAuth {
     pub password: String,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct DownloadSegment {
     pub index: u8,
     pub start_byte: u64,

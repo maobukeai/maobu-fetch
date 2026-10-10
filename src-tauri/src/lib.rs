@@ -700,7 +700,9 @@ pub(crate) async fn resolve_media_credentials(
         if stored.cookie.is_empty() {
             None
         } else {
-            Some(stored.cookie.clone())
+            Some(crate::media_cookies::netscape_to_cookie_header(
+                &stored.cookie,
+            ))
         }
     });
     let merged_referer = referer.or(stored.referer);
@@ -2666,6 +2668,19 @@ pub fn is_gui_running() -> bool {
     }
 }
 
+/// 在 Windows 上可靠地唤醒、恢复并置顶聚焦主窗口（穿透 Windows Foreground Lockout）。
+pub fn bring_window_to_front(window: &tauri::WebviewWindow) {
+    let _ = window.show();
+    let _ = window.unminimize();
+    #[cfg(windows)]
+    {
+        let _ = window.set_always_on_top(true);
+        let _ = window.set_always_on_top(false);
+    }
+    let _ = window.set_focus();
+    tracing::info!("bring_window_to_front: 主窗口已唤醒并置顶聚焦");
+}
+
 fn handle_single_instance_forward(app: &tauri::AppHandle, argv: Vec<String>) {
     // 检查 argv 是否包含 deep link 或 .maobu-task 关联文件
     for arg in argv.iter().skip(1) {
@@ -2705,9 +2720,7 @@ fn handle_single_instance_forward(app: &tauri::AppHandle, argv: Vec<String>) {
             // 若不是自启标志转发，则唤醒并聚焦主窗口。
             if !autostart {
                 if let Some(window) = app.get_webview_window("main") {
-                    let _ = window.show();
-                    let _ = window.unminimize();
-                    let _ = window.set_focus();
+                    bring_window_to_front(&window);
                 }
             }
         }
@@ -4289,9 +4302,7 @@ pub fn run() {
                     .on_menu_event(|app, event| {
                         if event.id.as_ref() == "show" {
                             if let Some(window) = app.get_webview_window("main") {
-                                let _ = window.show();
-                                let _ = window.unminimize();
-                                let _ = window.set_focus();
+                                bring_window_to_front(&window);
                             }
                         } else if event.id.as_ref() == "clipboard" {
                             let tray_items = app.state::<TrayMenuItems>();
@@ -4350,20 +4361,21 @@ pub fn run() {
                         {
                             let app = tray.app_handle();
                             if let Some(window) = app.get_webview_window("main") {
-                                let _ = window.show();
-                                let _ = window.unminimize();
-                                let _ = window.set_focus();
+                                bring_window_to_front(&window);
                             }
                         }
                     })
                     .build(app)?;
             }
 
-            if !is_silent {
+            if is_silent {
                 if let Some(window) = app.get_webview_window("main") {
-                    let _ = window.show();
-                    let _ = window.unminimize();
-                    let _ = window.set_focus();
+                    let _ = window.hide();
+                    tracing::info!("启动为静默/最小化模式，主窗口已隐藏至托盘");
+                }
+            } else {
+                if let Some(window) = app.get_webview_window("main") {
+                    bring_window_to_front(&window);
                 }
             }
 

@@ -2300,8 +2300,37 @@ impl DownloadManager {
         }
 
         let platform = crate::media_platforms::detect_platform(&task.url);
+        let has_media_ext = std::path::Path::new(&task.file_name)
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| {
+                matches!(
+                    e.to_ascii_lowercase().as_str(),
+                    "mp4"
+                        | "flv"
+                        | "mkv"
+                        | "webm"
+                        | "mov"
+                        | "avi"
+                        | "ts"
+                        | "mp3"
+                        | "m4a"
+                        | "aac"
+                        | "wav"
+                        | "flac"
+                        | "ogg"
+                        | "jpg"
+                        | "jpeg"
+                        | "png"
+                        | "webp"
+                        | "gif"
+                )
+            });
         if platform != crate::media_platforms::MediaPlatform::Unknown
-            && (task.media.is_none() || task.file_name == "download" || task.file_name.is_empty())
+            && (task.media.is_none()
+                || !has_media_ext
+                || task.file_name == "download"
+                || task.file_name.is_empty())
         {
             let settings = self.settings().await;
             let mut cookie = task.headers.get("Cookie").cloned();
@@ -2314,7 +2343,9 @@ impl DownloadManager {
                     Ok(Some(cred)) => {
                         tracing::info!(domain = %domain, cookie_len = cred.cookie.len(), "成功匹配到凭据");
                         if cookie.is_none() && !cred.cookie.is_empty() {
-                            cookie = Some(cred.cookie);
+                            cookie = Some(crate::media_cookies::netscape_to_cookie_header(
+                                &cred.cookie,
+                            ));
                         }
                         if referer.is_none() {
                             referer = cred.referer;
@@ -2469,7 +2500,8 @@ impl DownloadManager {
                             || task.file_name.starts_with("av")
                             || task.file_name.starts_with("ep")
                             || task.file_name.starts_with("ss");
-                        let is_default_name = task.file_name == "download"
+                        let is_default_name = !has_media_ext
+                            || task.file_name == "download"
                             || task.file_name.starts_with("LHmt")
                             || task.file_name.is_empty()
                             || is_bilibili_or_media_id
@@ -2579,6 +2611,29 @@ impl DownloadManager {
                 };
 
                 if let Some(purl) = play_url {
+                    if task.final_url.is_none()
+                        && crate::media_platforms::detect_platform(&task.url)
+                            != crate::media_platforms::MediaPlatform::Unknown
+                    {
+                        task.final_url = Some(task.url.clone());
+                    }
+                    let is_douyin_cdn = purl.contains("douyinvod.com")
+                        || purl.contains("byteplusvod.com")
+                        || purl.contains("ibytedtos.com");
+                    if is_douyin_cdn {
+                        // 抖音 CDN 直链仅校验 Referer 与 User-Agent，移除冗长的站点 Cookie 头避免 CDN 400/403
+                        task.headers.retain(|k, _| !k.eq_ignore_ascii_case("cookie"));
+                        if !task
+                            .headers
+                            .keys()
+                            .any(|k| k.eq_ignore_ascii_case("Referer"))
+                        {
+                            task.headers.insert(
+                                "Referer".to_string(),
+                                "https://www.douyin.com/".to_string(),
+                            );
+                        }
+                    }
                     let is_lan_or_ts = crate::proxy::is_private_or_tailscale_url(&purl)
                         || is_task_lan_or_tailscale(&task);
                     if crate::proxy::is_private_or_tailscale_url(&purl) && task.final_url.is_none()
@@ -2641,6 +2696,10 @@ impl DownloadManager {
                             task.url = resp.url().to_string();
                             is_resolved_direct_media = true;
                         }
+                    }
+                    if !is_resolved_direct_media && is_douyin_cdn {
+                        task.url = purl;
+                        is_resolved_direct_media = true;
                     }
                 }
             }
@@ -7121,7 +7180,10 @@ async fn inject_media_credentials(task: &mut DownloadTask, store: &Arc<Store>) {
         for d in lookup_domains {
             if let Ok(Some(stored)) = store.media_credential_get_matching(&d).await {
                 if !has_cookie && !stored.cookie.is_empty() {
-                    task.headers.insert("Cookie".to_string(), stored.cookie);
+                    task.headers.insert(
+                        "Cookie".to_string(),
+                        crate::media_cookies::netscape_to_cookie_header(&stored.cookie),
+                    );
                     has_cookie = true;
                 }
                 if !has_referer {

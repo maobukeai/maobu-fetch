@@ -71,6 +71,7 @@ export function bridgeMediaTask(result, pageTitle = "媒体下载", preference =
       subtitles: filterSubtitles(result.subtitles, subtitlePreference),
       thumbnail: result.thumbnail,
       requires_ffmpeg: Boolean(format.requires_ffmpeg),
+      url: format.url || undefined,
     },
   };
 }

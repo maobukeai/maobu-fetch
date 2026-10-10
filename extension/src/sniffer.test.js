@@ -11,6 +11,7 @@ test("isSniffableMediaUrl: 匹配媒体扩展名（含查询串），拒绝非�
   assert.equal(isSniffableMediaUrl("https://v.example.com/hls/index.m3u8?token=1"), true);
   assert.equal(isSniffableMediaUrl("https://v.example.com/video/720.mp4"), true);
   assert.equal(isSniffableMediaUrl("http://v.example.com/podcast.m4a"), true);
+  assert.equal(isSniffableMediaUrl("https://v26-web.douyinvod.com/video/tos/cn/tos-cn-ve-15/abc/?mime_type=video_mp4"), true, "抖音 CDN 视频流可嗅探");
   assert.equal(isSniffableMediaUrl("https://example.com/page?fmt=mp4"), false, "查询参数不算扩展名");
   assert.equal(isSniffableMediaUrl("https://example.com/page.html"), false);
   assert.equal(isSniffableMediaUrl("blob:https://example.com/uuid"), false);
@@ -22,12 +23,14 @@ test("sniffedKind: 区分流/视频/音频", () => {
   assert.equal(sniffedKind("https://v.example.com/seg-1.ts"), "stream");
   assert.equal(sniffedKind("https://v.example.com/movie.mp4"), "video");
   assert.equal(sniffedKind("https://v.example.com/podcast.mp3"), "audio");
+  assert.equal(sniffedKind("https://v26-web.douyinvod.com/video/tos/cn/tos-cn-ve-15/abc/?mime_type=video_mp4"), "video", "抖音 CDN 流识别为 video");
   assert.equal(sniffedKind("not a url"), "media");
 });
 
 test("sniffedName: 取路径最后一段并解码", () => {
   assert.equal(sniffedName("https://v.example.com/a/b/%E8%A7%86%E9%A2%91.mp4"), "视频.mp4");
   assert.equal(sniffedName("https://v.example.com/index.m3u8"), "index.m3u8");
+  assert.equal(sniffedName("https://v26-web.douyinvod.com/video/tos/cn/tos-cn-ve-15/abc/?mime_type=video_mp4"), "抖音视频.mp4");
 });
 
 // ---- 记录列表维护（纯函数）----

@@ -30,12 +30,21 @@ function pathExtension(url) {
   }
 }
 
-/// URL 是否为可嗅探的媒体直链（http/https + 媒体扩展名）。
+/// URL 是否为可嗅探的媒体直链（http/https + 媒体扩展名 或 抖音 CDN 视频特征）。
 export function isSniffableMediaUrl(url) {
   const text = String(url || "");
   if (!/^https?:/i.test(text)) return false;
   try {
-    return SNIFF_EXT_PATTERN.test(new URL(text).pathname.split("/").pop() || "");
+    const parsed = new URL(text);
+    const lastSeg = parsed.pathname.split("/").pop() || "";
+    if (SNIFF_EXT_PATTERN.test(lastSeg)) return true;
+    const host = parsed.hostname.toLowerCase();
+    if (host.includes("douyinvod.com") || host.includes("byteplusvod.com") || host.includes("ibytedtos.com")) {
+      if (parsed.pathname.includes("/video/tos/") || parsed.searchParams.get("mime_type")?.startsWith("video")) {
+        return true;
+      }
+    }
+    return false;
   } catch {
     return false;
   }
@@ -43,13 +52,24 @@ export function isSniffableMediaUrl(url) {
 
 /// 媒体类别（stream/video/audio），用于展示图标与 FAB 挑选优先级。
 export function sniffedKind(url) {
-  return KIND_BY_EXT[pathExtension(url)] || "media";
+  const ext = pathExtension(url);
+  if (KIND_BY_EXT[ext]) return KIND_BY_EXT[ext];
+  const text = String(url || "").toLowerCase();
+  if (text.includes("douyinvod.com") || text.includes("byteplusvod.com") || text.includes("ibytedtos.com") || text.includes("mime_type=video")) {
+    return "video";
+  }
+  return "media";
 }
 
 /// 从 URL 路径取展示名（最后一段，尽量解码）。
 export function sniffedName(url) {
   try {
-    const raw = new URL(url).pathname.split("/").pop() || "";
+    const parsed = new URL(url);
+    const host = parsed.hostname.toLowerCase();
+    if (host.includes("douyinvod.com") || host.includes("byteplusvod.com") || host.includes("ibytedtos.com")) {
+      return "抖音视频.mp4";
+    }
+    const raw = parsed.pathname.split("/").pop() || "";
     try { return decodeURIComponent(raw); } catch { return raw; }
   } catch {
     return "";

@@ -1009,19 +1009,416 @@ const DOUYIN_ANONYMOUS_TTWID: &str = "1%7C6gjfVcoFl_d0j8RolI8X7PCgqTGrt-NRW6X0ZE
 /// 抖音直连解析使用的浏览器 UA（与 `media::attach_auth_args_in_dir` 保持一致）。
 const DOUYIN_BROWSER_UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 
-/// 调用抖音 web API 获取 `aweme_detail`。
+fn acrawler_hash_str(input: &str, init: u32) -> u32 {
+    let mut k = init;
+    for ch in input.chars() {
+        k = (k ^ (ch as u32)).wrapping_mul(65599);
+    }
+    k
+}
+
+fn acrawler_enc_6bit(v: u32) -> char {
+    let v = v & 63;
+    let code = if v < 26 {
+        v + 65
+    } else if v < 52 {
+        v + 71
+    } else if v < 62 {
+        v - 4
+    } else {
+        v - 17
+    };
+    char::from_u32(code).unwrap_or('A')
+}
+
+fn acrawler_enc_30bit(val: u32, out: &mut String) {
+    for shift in [24u32, 18, 12, 6, 0] {
+        out.push(acrawler_enc_6bit(val >> shift));
+    }
+}
+
+/// 计算抖音 `byted_acrawler` 的 `__ac_signature`（47 字符，纯位运算实现）。
 ///
-/// 端点：`https://www.douyin.com/aweme/v1/web/aweme/detail/`
-/// 必需参数：`aweme_id`、`aid=6383`、`device_platform=webapp`、`cookie_enabled=true`
-/// 必需请求头：`User-Agent`（浏览器）、`Referer: https://www.douyin.com/`
-/// 必需 Cookie：`ttwid`（匿名访问令牌）
+/// 对应 `window.byted_acrawler.sign("", nonce)` 在访问 `https://{host_path}` 时的输出。
+pub fn compute_douyin_ac_signature(ts: u64, host_path: &str, ua: &str, nonce: &str) -> String {
+    let ts_u32 = ts as u32;
+    let h1 = acrawler_hash_str(&ts.to_string(), 0);
+    let h2 = acrawler_hash_str(host_path, h1);
+    let t5 = h2 % 65521;
+    let t0 = t5.wrapping_mul(65521) ^ ts_u32;
+    let t1: u32 = 0x0000_2030;
+    let t2: u32 = t0 ^ 0xFFFF_FFFF;
+    let s3_num: u64 = ((t1 as u64) << 32) | (t0 as u64);
+    let h3 = acrawler_hash_str(&s3_num.to_string(), 0);
+    let t3_hi = acrawler_hash_str(ua, h3) % 65521;
+    let t3_lo = acrawler_hash_str(nonce, h3) % 65521;
+    let t3 = (t3_hi << 16) | t3_lo;
+    let t4_28 = (t0 >> 4) ^ 0x0000_8812;
+
+    let w0 = t0 >> 2;
+    let w1 = ((t0 & 0x3) << 28) | (t1 >> 4);
+    let w2 = ((t1 & 0xF) << 26) | (t2 >> 6);
+    let w3 = ((t2 & 0x3F) << 24) | (t3 >> 8);
+    let w4 = ((t3 & 0xFF) << 22) | (t4_28 >> 6);
+    let w5 = ((t4_28 & 0x3F) << 24) | (t5 >> 6);
+    let v30 = t5 & 0x3F;
+
+    let mut body = String::with_capacity(47);
+    body.push_str("_02B4Z6wo00f01");
+    for w in [w0, w1, w2, w3, w4, w5] {
+        acrawler_enc_30bit(w, &mut body);
+    }
+    body.push(acrawler_enc_6bit(v30));
+
+    let mut chk: u32 = 0;
+    for ch in body.chars() {
+        chk = chk.wrapping_mul(65599).wrapping_add(ch as u32);
+    }
+    use std::fmt::Write;
+    let _ = write!(&mut body, "{:02x}", chk & 0xFF);
+    body
+}
+
+fn normalize_douyin_media_url(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if trimmed.starts_with("//") {
+        format!("https:{trimmed}")
+    } else {
+        trimmed.to_string()
+    }
+}
+
+/// 将抖音 `/note/{aweme_id}` SSR 页面中的 camelCase `detail` 对象转换为
+/// 与 `/aweme/v1/web/aweme/detail/` 一致的 `{"status_code": 0, "aweme_detail": ...}` 结构。
+pub fn normalize_douyin_ssr_detail(detail: &serde_json::Value) -> serde_json::Value {
+    let aweme_id = detail
+        .get("awemeId")
+        .or_else(|| detail.get("aweme_id"))
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("");
+    let desc = detail
+        .get("desc")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("");
+    let create_time = detail
+        .get("createTime")
+        .or_else(|| detail.get("create_time"))
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0);
+
+    let author_obj = detail.get("authorInfo").or_else(|| detail.get("author"));
+    let nickname = author_obj
+        .and_then(|a| a.get("nickname"))
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("");
+    let sec_uid = author_obj
+        .and_then(|a| a.get("secUid").or_else(|| a.get("sec_uid")))
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("");
+
+    let mut images_out = Vec::new();
+    if let Some(images_arr) = detail.get("images").and_then(serde_json::Value::as_array) {
+        for img in images_arr {
+            let urls: Vec<String> = img
+                .get("urlList")
+                .or_else(|| img.get("url_list"))
+                .and_then(serde_json::Value::as_array)
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(serde_json::Value::as_str)
+                        .map(normalize_douyin_media_url)
+                        .filter(|s| !s.is_empty())
+                        .collect()
+                })
+                .unwrap_or_default();
+            if !urls.is_empty() {
+                let width = img.get("width").and_then(serde_json::Value::as_u64);
+                let height = img.get("height").and_then(serde_json::Value::as_u64);
+                images_out.push(serde_json::json!({
+                    "url_list": urls,
+                    "width": width,
+                    "height": height,
+                }));
+            }
+        }
+    }
+
+    let video_out = if let Some(video_obj) = detail.get("video") {
+        let duration = video_obj
+            .get("duration")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0);
+        let width = video_obj.get("width").and_then(serde_json::Value::as_u64);
+        let height = video_obj.get("height").and_then(serde_json::Value::as_u64);
+        let data_size = video_obj
+            .get("playAddrSize")
+            .or_else(|| {
+                video_obj
+                    .get("play_addr")
+                    .and_then(|p| p.get("data_size"))
+            })
+            .and_then(serde_json::Value::as_u64);
+
+        let mut play_urls: Vec<String> = Vec::new();
+        if let Some(play_addr_arr) = video_obj
+            .get("playAddr")
+            .and_then(serde_json::Value::as_array)
+        {
+            for item in play_addr_arr {
+                if let Some(src) = item.get("src").and_then(serde_json::Value::as_str) {
+                    let norm = normalize_douyin_media_url(src);
+                    if !norm.is_empty() {
+                        play_urls.push(norm);
+                    }
+                }
+            }
+        }
+        if play_urls.is_empty() {
+            if let Some(url_list) = video_obj
+                .get("play_addr")
+                .and_then(|p| p.get("url_list"))
+                .and_then(serde_json::Value::as_array)
+            {
+                for item in url_list {
+                    if let Some(src) = item.as_str() {
+                        let norm = normalize_douyin_media_url(src);
+                        if !norm.is_empty() {
+                            play_urls.push(norm);
+                        }
+                    }
+                }
+            }
+        }
+        // 优先把直连 CDN 地址（douyinvod.com 等）排在前面，避免优先选到需二次跳转的 /aweme/v1/play/
+        play_urls.sort_by_key(|u| usize::from(u.contains("/aweme/v1/play/")));
+
+        let cover_urls: Vec<String> = video_obj
+            .get("coverUrlList")
+            .or_else(|| video_obj.get("originCoverUrlList"))
+            .or_else(|| video_obj.get("cover").and_then(|c| c.get("url_list")))
+            .and_then(serde_json::Value::as_array)
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(serde_json::Value::as_str)
+                    .map(normalize_douyin_media_url)
+                    .filter(|s| !s.is_empty())
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        serde_json::json!({
+            "duration": duration,
+            "width": width,
+            "height": height,
+            "data_size": data_size,
+            "play_addr": {
+                "url_list": play_urls,
+                "data_size": data_size,
+            },
+            "cover": {
+                "url_list": cover_urls,
+            }
+        })
+    } else {
+        serde_json::Value::Null
+    };
+
+    serde_json::json!({
+        "status_code": 0,
+        "aweme_detail": {
+            "aweme_id": aweme_id,
+            "desc": desc,
+            "create_time": create_time,
+            "author": {
+                "nickname": nickname,
+                "sec_uid": sec_uid,
+            },
+            "video": video_out,
+            "images": images_out,
+        }
+    })
+}
+
+/// 从抖音 `/note/{aweme_id}` SSR HTML 中提取 `self.__pace_f.push([1, "..."])` 内的 `aweme.detail`。
+pub fn extract_douyin_ssr_aweme_detail(html: &str) -> Option<serde_json::Value> {
+    let marker = "__pace_f.push([1,";
+    let mut search_from = 0;
+    while let Some(rel_pos) = html[search_from..].find(marker) {
+        let chunk_start = search_from + rel_pos + marker.len();
+        search_from = chunk_start;
+        let rest = html[chunk_start..].trim_start();
+        if !rest.starts_with('"') {
+            continue;
+        }
+        let script_end = rest.find("</script>").unwrap_or(rest.len());
+        let script_slice = &rest[..script_end];
+        if !script_slice.contains("aweme") && !script_slice.contains("detail") {
+            continue;
+        }
+        let mut str_de = serde_json::Deserializer::from_str(script_slice).into_iter::<String>();
+        let Some(Ok(inner)) = str_de.next() else {
+            continue;
+        };
+        for aweme_marker in ["\"aweme\":{", "\"detail\":{"] {
+            let mut inner_from = 0;
+            while let Some(m_pos) = inner[inner_from..].find(aweme_marker) {
+                let brace_offset = aweme_marker
+                    .rfind('{')
+                    .expect("aweme_marker 必含 '{'（构建期不变量）");
+                let obj_start = inner_from + m_pos + brace_offset;
+                inner_from = obj_start + 1;
+                let mut val_de = serde_json::Deserializer::from_str(&inner[obj_start..])
+                    .into_iter::<serde_json::Value>();
+                if let Some(Ok(obj)) = val_de.next() {
+                    let target_detail = obj.get("detail").unwrap_or(&obj);
+                    let has_id = target_detail
+                        .get("awemeId")
+                        .or_else(|| target_detail.get("aweme_id"))
+                        .and_then(serde_json::Value::as_str)
+                        .is_some_and(|s| !s.is_empty());
+                    let has_media = target_detail.get("video").is_some()
+                        || target_detail
+                            .get("images")
+                            .and_then(serde_json::Value::as_array)
+                            .is_some_and(|a| !a.is_empty());
+                    if has_id && has_media {
+                        return Some(normalize_douyin_ssr_detail(target_detail));
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+fn extract_cookie_pair_value(cookie_str: &str, key: &str) -> Option<String> {
+    let prefix = format!("{key}=");
+    for part in cookie_str.split(';') {
+        let trimmed = part.trim();
+        if let Some(val) = trimmed.strip_prefix(&prefix) {
+            let v = val.trim();
+            if !v.is_empty() {
+                return Some(v.to_string());
+            }
+        }
+    }
+    None
+}
+
+fn extract_ac_nonce_from_headers(headers: &reqwest::header::HeaderMap) -> Option<String> {
+    for header_val in headers.get_all(reqwest::header::SET_COOKIE) {
+        if let Ok(raw) = header_val.to_str() {
+            if let Some(nonce) = extract_cookie_pair_value(raw, "__ac_nonce") {
+                return Some(nonce);
+            }
+        }
+    }
+    None
+}
+
+/// 通过 `https://www.douyin.com/note/{aweme_id}` SSR + `byted_acrawler` 签名机制直连获取作品详情。
 ///
-/// **不需要** `a_bogus` / `msToken` / `__ac_signature` 等复杂签名。
-///
-/// 超时：10 秒（避免长尾阻塞新建任务对话框）。
-/// 失败时返回中文错误，不暴露内部异常细节（AGENTS.md §7）。
-///
-/// 成功返回原始 JSON（顶层含 `aweme_detail` 字段）。
+/// 同时支持视频与图集作品，且在无登录 Cookie 时可通过两阶段 `__ac_nonce` + `__ac_signature` 自动过盾。
+async fn fetch_douyin_aweme_via_note_ssr(
+    aweme_id: &str,
+    cookie: Option<&str>,
+    effective_ua: &str,
+) -> Result<serde_json::Value, String> {
+    let note_url = format!("https://www.douyin.com/note/{aweme_id}");
+    let host_path = format!("www.douyin.com/note/{aweme_id}");
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .connect_timeout(Duration::from_secs(5))
+        .redirect(reqwest::redirect::Policy::limited(5))
+        .build()
+        .map_err(|e| format!("抖音 SSR 客户端构建失败：{e}"))?;
+
+    let mut nonce_opt: Option<String> = None;
+
+    // Pass 1：如果传入的 Cookie 已含有效会话或 __ac_signature，直接携带请求一次
+    if let Some(user_cookie) = cookie.filter(|c| !c.trim().is_empty()) {
+        if let Ok(resp) = client
+            .get(&note_url)
+            .header(reqwest::header::USER_AGENT, effective_ua)
+            .header(reqwest::header::REFERER, "https://www.douyin.com/")
+            .header(
+                reqwest::header::ACCEPT,
+                "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            )
+            .header(reqwest::header::ACCEPT_LANGUAGE, "zh-CN,zh;q=0.9")
+            .header(reqwest::header::COOKIE, user_cookie)
+            .send()
+            .await
+        {
+            nonce_opt = extract_ac_nonce_from_headers(resp.headers());
+            if resp.status().is_success() {
+                if let Ok(html) = resp.text().await {
+                    if let Some(detail) = extract_douyin_ssr_aweme_detail(&html) {
+                        return Ok(detail);
+                    }
+                }
+            }
+        }
+    }
+
+    // 若尚未拿到服务端新鲜下发的 __ac_nonce，发送一次无 Cookie 请求获取 Set-Cookie: __ac_nonce
+    if nonce_opt.is_none() {
+        let resp = client
+            .get(&note_url)
+            .header(reqwest::header::USER_AGENT, effective_ua)
+            .header(
+                reqwest::header::ACCEPT,
+                "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            )
+            .header(reqwest::header::ACCEPT_LANGUAGE, "zh-CN,zh;q=0.9")
+            .send()
+            .await
+            .map_err(|e| format!("抖音 SSR 初始挑战请求失败：{e}"))?;
+        nonce_opt = extract_ac_nonce_from_headers(resp.headers());
+        if resp.status().is_success() {
+            if let Ok(html) = resp.text().await {
+                if let Some(detail) = extract_douyin_ssr_aweme_detail(&html) {
+                    return Ok(detail);
+                }
+            }
+        }
+    }
+
+    let nonce = nonce_opt.ok_or_else(|| "抖音 SSR 未能获取 __ac_nonce".to_string())?;
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let sig = compute_douyin_ac_signature(ts, &host_path, effective_ua, &nonce);
+    let challenge_cookie =
+        format!("__ac_nonce={nonce}; __ac_signature={sig}; __ac_referer=__ac_blank");
+
+    // Pass 2：携带计算出的 __ac_signature 获取完整 SSR 页面
+    let resp2 = client
+        .get(&note_url)
+        .header(reqwest::header::USER_AGENT, effective_ua)
+        .header(reqwest::header::REFERER, &note_url)
+        .header(
+            reqwest::header::ACCEPT,
+            "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        )
+        .header(reqwest::header::ACCEPT_LANGUAGE, "zh-CN,zh;q=0.9")
+        .header(reqwest::header::COOKIE, challenge_cookie)
+        .send()
+        .await
+        .map_err(|e| format!("抖音 SSR 签名请求失败：{e}"))?;
+
+    if !resp2.status().is_success() {
+        return Err(format!("抖音 SSR 响应状态异常：HTTP {}", resp2.status()));
+    }
+    let html2 = resp2
+        .text()
+        .await
+        .map_err(|e| format!("抖音 SSR 响应读取失败：{e}"))?;
+    extract_douyin_ssr_aweme_detail(&html2)
+        .ok_or_else(|| "抖音 SSR 页面未包含作品详情（可能作品已删除或受限）".into())
+}
+
 pub async fn fetch_douyin_aweme_detail(aweme_id: &str) -> Result<serde_json::Value, String> {
     fetch_douyin_aweme_detail_with_credentials(aweme_id, None, None, None).await
 }
@@ -1035,6 +1432,26 @@ pub async fn fetch_douyin_aweme_detail_with_credentials(
     if aweme_id.trim().is_empty() {
         return Err("抖音 aweme_id 为空".into());
     }
+    let effective_ua = user_agent
+        .filter(|u| !u.trim().is_empty())
+        .unwrap_or(DOUYIN_BROWSER_UA);
+    let normalized_cookie = cookie
+        .filter(|c| !c.trim().is_empty())
+        .map(crate::media_cookies::netscape_to_cookie_header);
+
+    // 优先通过 /note/{aweme_id} SSR + __ac_signature 获取详情（无需 a_bogus，无 Cookie 也可过盾）
+    match fetch_douyin_aweme_via_note_ssr(aweme_id, normalized_cookie.as_deref(), effective_ua).await
+    {
+        Ok(val) => return Ok(val),
+        Err(ssr_err) => {
+            tracing::debug!(
+                aweme_id = %aweme_id,
+                error = %ssr_err,
+                "抖音 SSR 解析未命中，尝试 web detail API"
+            );
+        }
+    }
+
     let url = format!(
         "https://www.douyin.com/aweme/v1/web/aweme/detail/?aweme_id={aweme_id}&aid=6383\
          &device_platform=webapp&cookie_enabled=true&browser_language=zh-CN\
@@ -1048,13 +1465,10 @@ pub async fn fetch_douyin_aweme_detail_with_credentials(
         .build()
         .map_err(|e| format!("抖音解析客户端构建失败：{e}"))?;
 
-    let effective_ua = user_agent
-        .filter(|u| !u.trim().is_empty())
-        .unwrap_or(DOUYIN_BROWSER_UA);
     let effective_ref = referer
         .filter(|r| !r.trim().is_empty())
         .unwrap_or("https://www.douyin.com/");
-    let effective_cookie = match cookie.filter(|c| !c.trim().is_empty()) {
+    let effective_cookie = match normalized_cookie.as_deref().filter(|c| !c.trim().is_empty()) {
         Some(c) => {
             if c.contains("ttwid=") {
                 c.to_string()
@@ -1133,17 +1547,18 @@ pub fn convert_douyin_aweme_to_yt_dlp_json(detail: &serde_json::Value) -> serde_
         .get("desc")
         .and_then(serde_json::Value::as_str)
         .unwrap_or("");
-    let author = aweme.get("author");
+    let author = aweme.get("author").or_else(|| aweme.get("authorInfo"));
     let nickname = author
         .and_then(|a| a.get("nickname"))
         .and_then(serde_json::Value::as_str)
         .unwrap_or("");
     let sec_uid = author
-        .and_then(|a| a.get("sec_uid"))
+        .and_then(|a| a.get("sec_uid").or_else(|| a.get("secUid")))
         .and_then(serde_json::Value::as_str)
         .unwrap_or("");
     let create_time = aweme
         .get("create_time")
+        .or_else(|| aweme.get("createTime"))
         .and_then(serde_json::Value::as_u64)
         .unwrap_or(0);
     let upload_date = if create_time > 0 {
@@ -1179,6 +1594,7 @@ pub fn convert_douyin_aweme_to_yt_dlp_json(detail: &serde_json::Value) -> serde_
         .filter_map(|img| {
             let url = img
                 .get("url_list")
+                .or_else(|| img.get("urlList"))
                 .and_then(serde_json::Value::as_array)
                 .and_then(|arr| arr.first())
                 .and_then(serde_json::Value::as_str)?;
@@ -1195,6 +1611,7 @@ pub fn convert_douyin_aweme_to_yt_dlp_json(detail: &serde_json::Value) -> serde_
     for (idx, img) in images.iter().enumerate() {
         let url = img
             .get("url_list")
+            .or_else(|| img.get("urlList"))
             .and_then(serde_json::Value::as_array)
             .and_then(|arr| arr.first())
             .and_then(serde_json::Value::as_str)
@@ -1215,7 +1632,7 @@ pub fn convert_douyin_aweme_to_yt_dlp_json(detail: &serde_json::Value) -> serde_
             "url": url,
         }));
     }
-    // 视频格式（如果有 play_addr）
+    // 视频格式（如果有 play_addr 且不是纯图集 BGM）
     if let Some(video_obj) = video {
         let play_addr = video_obj.get("play_addr");
         let video_url = play_addr
@@ -1224,9 +1641,14 @@ pub fn convert_douyin_aweme_to_yt_dlp_json(detail: &serde_json::Value) -> serde_
             .and_then(|arr| arr.first())
             .and_then(serde_json::Value::as_str)
             .unwrap_or("");
-        if !video_url.is_empty() && duration_sec > 0.0 {
+        if !video_url.is_empty() && (duration_sec > 0.0 || images.is_empty()) {
             let width = video_obj.get("width").and_then(serde_json::Value::as_u64);
             let height = video_obj.get("height").and_then(serde_json::Value::as_u64);
+            let filesize = play_addr
+                .and_then(|p| p.get("data_size"))
+                .or_else(|| video_obj.get("data_size"))
+                .or_else(|| video_obj.get("playAddrSize"))
+                .and_then(serde_json::Value::as_u64);
             formats.push(serde_json::json!({
                 "format_id": "play-0",
                 "format_note": "原片",
@@ -1235,6 +1657,7 @@ pub fn convert_douyin_aweme_to_yt_dlp_json(detail: &serde_json::Value) -> serde_
                 "acodec": "aac",
                 "width": width,
                 "height": height,
+                "filesize": filesize,
                 "url": video_url,
             }));
         }
@@ -1244,7 +1667,17 @@ pub fn convert_douyin_aweme_to_yt_dlp_json(detail: &serde_json::Value) -> serde_
         .first()
         .and_then(|t| t.get("url"))
         .and_then(serde_json::Value::as_str)
-        .map(|s| s.to_string());
+        .map(|s| s.to_string())
+        .or_else(|| {
+            video
+                .and_then(|v| v.get("cover"))
+                .and_then(|c| c.get("url_list"))
+                .and_then(serde_json::Value::as_array)
+                .and_then(|arr| arr.first())
+                .and_then(serde_json::Value::as_str)
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string())
+        });
 
     // 图集标记：images 数组非空时标记为图集，供 probe 函数覆盖 media_type。
     // 不能仅靠 URL 路径判断，因为抖音短链可能展开为 /discover?modal_id=xxx
@@ -1962,8 +2395,10 @@ pub(crate) fn classify_douyin_error(lower_stderr: &str) -> MediaPlatformError {
         return MediaPlatformError::RegionBlocked;
     }
 
-    // 登录失效 / 权限拒绝
+    // 登录失效 / 权限拒绝 / 反爬拦截
     if lower_stderr.contains("login required")
+        || lower_stderr.contains("fresh cookies")
+        || lower_stderr.contains("argus")
         || lower_stderr.contains("cookie")
         || lower_stderr.contains("403")
         || lower_stderr.contains("forbidden")
@@ -5376,5 +5811,61 @@ mod tests {
             formats[1]["url"],
             "https://pbs.twimg.com/media/F987654321.jpg?name=orig"
         );
+    }
+
+    #[test]
+    fn test_compute_douyin_ac_signature_vectors() {
+        let host_path = "www.douyin.com/note/7694589931460594953";
+        let ua = DOUYIN_BROWSER_UA;
+        let nonce = "069386b2c00383a516c49";
+        let sig = compute_douyin_ac_signature(1791620000, host_path, ua, nonce);
+        assert_eq!(sig, "_02B4Z6wo00f014TI4ZAAAIDAezcebzlpdLuE6uUAAIwE00");
+        assert_eq!(sig.len(), 47);
+        let sig2 = compute_douyin_ac_signature(1791620001, host_path, ua, nonce);
+        assert_eq!(sig2.len(), 47);
+        assert_ne!(sig, sig2);
+    }
+
+    #[test]
+    fn test_extract_douyin_ssr_aweme_detail_video() {
+        let inner_payload = r#"8:[["$","$L10",null,{"aweme":{"detail":{"awemeId":"7694589931460594953","desc":"永劫无间 测试视频","createTime":1768055086,"authorInfo":{"nickname":"测试作者","secUid":"MS4wLjABAAAA123"},"video":{"duration":22534,"width":1440,"height":1080,"playAddrSize":7814918,"playAddr":[{"src":"//v11-weba.douyinvod.com/test/video.mp4"},{"src":"https://www.douyin.com/aweme/v1/play/?video_id=123"}],"coverUrlList":["https://p3-pc-sign.douyinpic.com/cover.jpeg"]},"images":[]}}}]]"#;
+        let html = format!(
+            "<html><head></head><body><script>self.__pace_f.push([1,{}])</script></body></html>",
+            serde_json::to_string(inner_payload).unwrap()
+        );
+        let extracted =
+            extract_douyin_ssr_aweme_detail(&html).expect("应成功提取 SSR aweme_detail");
+        assert_eq!(extracted["status_code"], 0);
+        let converted = convert_douyin_aweme_to_yt_dlp_json(&extracted);
+        assert_eq!(converted["title"], "永劫无间 测试视频");
+        assert_eq!(converted["uploader"], "测试作者");
+        assert_eq!(converted["uploader_id"], "MS4wLjABAAAA123");
+        assert_eq!(converted["_is_douyin_gallery"], false);
+        let formats = converted["formats"].as_array().unwrap();
+        assert_eq!(formats.len(), 1);
+        assert_eq!(
+            formats[0]["url"],
+            "https://v11-weba.douyinvod.com/test/video.mp4"
+        );
+        assert_eq!(formats[0]["filesize"], 7814918);
+        assert_eq!(
+            converted["thumbnail"],
+            "https://p3-pc-sign.douyinpic.com/cover.jpeg"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_live_douyin_aweme_detail_fetch() {
+        let aweme_id = "7694589931460594953";
+        let res = fetch_douyin_aweme_detail_with_credentials(aweme_id, None, None, None).await;
+        assert!(res.is_ok(), "fetch_douyin_aweme_detail_with_credentials 应该成功: {:?}", res.err());
+        let val = res.unwrap();
+        let desc = val["aweme_detail"]["desc"].as_str().unwrap_or("");
+        assert!(!desc.is_empty(), "desc 应该非空");
+        let converted = convert_douyin_aweme_to_yt_dlp_json(&val);
+        let formats = converted["formats"].as_array().expect("formats 必须为数组");
+        assert!(!formats.is_empty(), "formats 应该非空");
+        let url0 = formats[0]["url"].as_str().unwrap_or("");
+        assert!(url0.starts_with("https://"), "视频直链必须为 https");
     }
 }
