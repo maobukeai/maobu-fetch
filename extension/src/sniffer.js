@@ -9,6 +9,7 @@
 //   - 只在用户开启嗅探的站点记录，默认全局关闭；
 //   - 仅存 Service Worker 内存（随 SW 回收清空），不写 storage、不上传。
 
+import { createSnifferDocuments } from "./sniffer-documents.js";
 export const SNIFF_LIST_MAX = 30;
 
 // 扩展名匹配基于路径（去掉查询串），避免 ?format=mp4 之类的误报。
@@ -134,6 +135,23 @@ export function attachSniffer(deps = {}) {
   if (!webRequest?.onBeforeRequest?.addListener || !tabsApi?.sendMessage) return null;
 
   const sniffed = new Map();
+  const documents = createSnifferDocuments();
+  const clearTab = (tabId) => {
+    sniffed.delete(tabId);
+    void Promise.resolve(tabsApi.sendMessage(tabId, { type: "sniffed-media", items: [] })).catch(() => {});
+  };
+  const onRemoved = (tabId) => { sniffed.delete(tabId); documents.remove(tabId); };
+  const onUpdated = (tabId, change) => {
+    if (change.url || change.status === "loading") clearTab(tabId);
+  };
+  const onNavigation = (details) => {
+    if (details.frameId === 0) clearTab(details.tabId);
+    documents.commit(details);
+  };
+  const onSameDocumentNavigation = (details) => {
+    clearTab(details.tabId);
+    documents.commit(details);
+  };
   let enabledHosts = [];
   const loadHosts = async () => {
     try {
@@ -146,14 +164,19 @@ export function attachSniffer(deps = {}) {
     }
   };
   void loadHosts();
+  const onStorageChanged = (changes, area) => {
+    if (area !== "local" || !changes.snifferHosts) return;
+    for (const tabId of sniffed.keys()) clearTab(tabId);
+    void loadHosts();
+  };
   try {
-    storage?.onChanged?.addListener?.((changes, area) => {
-      if (area === "local" && changes.snifferHosts) void loadHosts();
-    });
+    storage?.onChanged?.addListener?.(onStorageChanged);
   } catch { /* onChanged 不可用时开关需重启 SW 生效，可接受。 */ }
 
   const onBeforeRequest = (details) => {
     if (!details || !(details.tabId >= 0)) return;
+    if (details.type === "main_frame") { clearTab(details.tabId); return; }
+    if (!documents.matches(details)) return;
     if (!isSniffableMediaUrl(details.url)) return;
 
     let initiatorHost = "";
@@ -175,7 +198,11 @@ export function attachSniffer(deps = {}) {
   };
   try {
     webRequest.onBeforeRequest.addListener(onBeforeRequest, { urls: ["http://*/*", "https://*/*"] });
-    tabsApi.onRemoved?.addListener?.((tabId) => { sniffed.delete(tabId); });
+    tabsApi.onRemoved?.addListener?.(onRemoved);
+    tabsApi.onUpdated?.addListener?.(onUpdated);
+    chromeLike.webNavigation?.onCommitted?.addListener?.(onNavigation);
+    chromeLike.webNavigation?.onHistoryStateUpdated?.addListener?.(onSameDocumentNavigation);
+    chromeLike.webNavigation?.onReferenceFragmentUpdated?.addListener?.(onSameDocumentNavigation);
   } catch {
     return null;
   }
@@ -183,6 +210,16 @@ export function attachSniffer(deps = {}) {
   return {
     getItems: (tabId) => (sniffed.get(tabId) || []).slice().reverse(),
     isHostEnabled: (hostname) => hostMatchesList(hostname, enabledHosts),
-    stop: () => { try { webRequest.onBeforeRequest.removeListener(onBeforeRequest); } catch {} },
+    stop: () => {
+      for (const [event, listener] of [
+        [webRequest.onBeforeRequest, onBeforeRequest], [tabsApi.onRemoved, onRemoved],
+        [tabsApi.onUpdated, onUpdated], [storage?.onChanged, onStorageChanged],
+        [chromeLike.webNavigation?.onCommitted, onNavigation],
+        [chromeLike.webNavigation?.onHistoryStateUpdated, onSameDocumentNavigation],
+        [chromeLike.webNavigation?.onReferenceFragmentUpdated, onSameDocumentNavigation],
+      ]) { try { event?.removeListener?.(listener); } catch {} }
+      sniffed.clear();
+      documents.clear();
+    },
   };
 }

@@ -12,6 +12,7 @@ import { LogicalSize } from "@tauri-apps/api/dpi";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { onAction } from "@tauri-apps/plugin-notification";
+import { CompletionToast } from "./components/CompletionToast";
 import { readText } from "@tauri-apps/plugin-clipboard-manager";
 import { open as openUrl } from "@tauri-apps/plugin-shell";
 import {
@@ -169,6 +170,9 @@ const defaults: AppSettings = {
   archive_days: 30,
   archive_threshold: 100,
   notify_on_complete: true,
+  completion_notice_seconds: 30,
+  progress_window_enabled: true,
+  progress_window_always_on_top: true,
   notify_on_failure: true,
   notify_sound_enabled: true,
   notify_failure_sound_enabled: false,
@@ -297,6 +301,10 @@ export default function App() {
   const [splash, setSplash] = useState(true);
   const [initialUrlFromClipboard, setInitialUrlFromClipboard] = useState("");
   const [toast, setToast] = useState<{ kind: "ok" | "error"; text: string }>();
+  const [completionNotices, setCompletionNotices] = useState<TaskNotificationPayload[]>([]);
+  const dismissCompletionNotice = useCallback((taskId: string) => {
+    setCompletionNotices((items) => items.filter((item) => item.task_id !== taskId));
+  }, []);
   const [context, setContext] = useState<{
     x: number;
     y: number;
@@ -556,6 +564,7 @@ export default function App() {
       .subscribe((event) => {
         taskEventSeq.current += 1;
         if ("removed" in event) {
+          setCompletionNotices((items) => items.filter((item) => item.task_id !== event.removed));
           setTasks((items) =>
             items.filter((task) => task.id !== event.removed)
           );
@@ -584,6 +593,7 @@ export default function App() {
     void api.subscribeSettings(setSettings).then((item) => {
       keep(item);
     });
+    void api.subscribeShutdownErrors((message) => setToast({ kind: "error", text: message })).then(keep);
     void api.subscribePowerAction(setPowerAction).then((item) => {
       keep(item);
     });
@@ -672,12 +682,19 @@ export default function App() {
       });
       void listen<string>("notification-focus-task", (event) => {
         setSelected(new Set([event.payload]));
+        setPrimaryTaskId(event.payload);
         requestShowDetails(true);
         setView("main");
         setFilter("all");
+        setSettingsOpen(false);
+        setSearch("");
+        setAdvancedFilter({ ...EMPTY_ADVANCED_FILTER });
       }).then((item) => {
         keep(item);
       });
+      void listen<string>("progress-window-error", (event) => {
+        notifyRef.current(event.payload, "error");
+      }).then(keep);
     }
     return () => {
       disposed = true;
@@ -706,9 +723,13 @@ export default function App() {
 
   useEffect(() => {
     let unlisten: (() => void) | undefined;
+    let disposed = false;
     void api
       .subscribeTaskNotification((payload: TaskNotificationPayload) => {
+        if (disposed) return;
         if (payload.kind === "completed") {
+          setCompletionNotices((items) => items.some((item) => item.task_id === payload.task_id)
+            ? items : [...items, payload]);
           if (settings.notify_sound_enabled) {
             void playNotificationSound("completed");
           }
@@ -724,9 +745,11 @@ export default function App() {
         }
       })
       .then((item) => {
-        if (item) unlisten = item;
+        if (disposed) item?.();
+        else unlisten = item;
       });
     return () => {
+      disposed = true;
       if (unlisten) unlisten();
     };
   }, [settings.notify_sound_enabled, settings.notify_failure_sound_enabled]);
@@ -1575,7 +1598,23 @@ export default function App() {
   const titlebar = isDesktop() ? <Titlebar /> : null;
 
   const globalToastLayer = (
-    <>
+    <div className="toast-stack">
+      <CompletionToast
+        notices={completionNotices}
+        durationSeconds={settings.completion_notice_seconds ?? 30}
+        onDismiss={dismissCompletionNotice}
+        onView={(taskId) => {
+          setSelected(new Set([taskId]));
+          setPrimaryTaskId(taskId);
+          requestShowDetails(true);
+          setView("main");
+          setFilter("all");
+          setSettingsOpen(false);
+          setSearch("");
+          setAdvancedFilter({ ...EMPTY_ADVANCED_FILTER });
+        }}
+        onError={(message) => notify(message, "error")}
+      />
       {toast && (
         <div className="toast">
           <span>
@@ -1698,7 +1737,7 @@ export default function App() {
           </button>
         </div>
       )}
-    </>
+    </div>
   );
 
   if (settingsOpen)

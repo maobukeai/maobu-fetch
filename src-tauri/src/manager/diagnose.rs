@@ -21,6 +21,9 @@ use crate::models::{ErrorCategory, ErrorDiagnosis, SuggestedAction};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::sync::OnceLock;
+mod access_messages;
+#[cfg(test)]
+mod access_messages_tests;
 
 // ===== Task 37 / 40 / 44：媒体平台错误分类与中文翻译 =====
 //
@@ -40,7 +43,7 @@ use std::sync::OnceLock;
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "kebab-case")]
 pub enum MediaPlatformError {
-    /// 登录态失效（Cookie 过期或未提供）。需用户重新获取 Cookie。
+    /// 认证或访问校验未通过；保留历史标识，不据此断定用户此前登录过或凭据过期。
     LoginExpired,
     /// 地区限制（如 TikTok 在某些地区不可用）。
     RegionBlocked,
@@ -66,7 +69,7 @@ pub enum MediaPlatformError {
 ///    时直接采用。
 /// 3. **地区限制**：含 `geo restricted`、`not available in your country`、
 ///    `unavailable in your region` → `RegionBlocked`
-/// 4. **登录失效**：含 `403`、`forbidden`、`login required`、`cookie`、`unauthorized`、
+/// 4. **认证或访问校验**（历史类别 `LoginExpired`）：含 `403`、`forbidden`、`login required`、`cookie`、`unauthorized`、
 ///    `401`、`log in`、`authentication required`、`age-restricted`、
 ///    `sign in to confirm your age`（YouTube 年龄限制）、`premium only`、
 ///    `vip`（B 站会员限制，Task 40）→ `LoginExpired`
@@ -82,8 +85,7 @@ pub enum MediaPlatformError {
 /// - **YouTube 年龄限制**：`age-restricted`、`Sign in to confirm your age` → `LoginExpired`
 /// - **YouTube 机器人验证**：`Sign in to confirm you're not a bot`、
 ///   `cookies-from-browser`、`cookies for the authentication` → `LoginExpired`
-///   （自 2024 年 YouTube 加强 PO Token 校验后常见，需用户在「设置 → 媒体凭证」
-///   提供 Cookie）
+///   此类别无法单独证明 PO Token、凭据过期或账号登录要求；具体提示只按实际工具证据生成。
 /// - **B 站会员限制**：`premium only`、`VIP` → `LoginExpired`
 /// - **微博链接失效**：`404`、`deleted` → `LinkExpired`（已覆盖）
 ///
@@ -134,7 +136,7 @@ pub fn classify_platform_error(platform: MediaPlatform, stderr: &str) -> MediaPl
     {
         return MediaPlatformError::RegionBlocked;
     }
-    // 登录失效（含 Task 40：YouTube 年龄限制、B 站会员限制）
+    // 保留历史类别；匹配到这些关键词并不证明用户此前登录过或凭据已过期。
     if lower.contains("403")
         || lower.contains("forbidden")
         || lower.contains("login required")
@@ -180,9 +182,7 @@ pub fn classify_platform_error(platform: MediaPlatform, stderr: &str) -> MediaPl
 /// 不包含 Cookie、Authorization 等敏感字段（输入 stderr 应已脱敏）。
 ///
 /// 平台特定文案：
-/// - `(LoginExpired, Douyin)` → "抖音登录已失效，请重新获取 Cookie"
-/// - `(LoginExpired, TikTok)` → "TikTok 登录已失效，请重新获取 Cookie"
-/// - `(LoginExpired, Twitter)` → "Twitter/X 登录已失效，请重新获取 Cookie"
+/// - `LoginExpired` 为历史兼容类别，仅描述认证或访问校验未通过，不断言凭据已过期。
 /// - `(RegionBlocked, TikTok)` → "该内容在你的地区不可用"
 /// - `(LinkExpired, _)` → "该链接已失效或已被删除"
 /// - `(DrmProtected, _)` → "该内容受 DRM 保护，无法下载"
@@ -190,36 +190,25 @@ pub fn classify_platform_error(platform: MediaPlatform, stderr: &str) -> MediaPl
 /// - `(Unknown, _)` → "下载失败，请稍后重试"
 pub fn platform_error_to_chinese(error: MediaPlatformError, platform: MediaPlatform) -> String {
     match (error, platform) {
-        (MediaPlatformError::LoginExpired, MediaPlatform::Douyin) => {
-            "抖音登录已失效，请重新获取 Cookie".into()
-        }
-        (MediaPlatformError::LoginExpired, MediaPlatform::TikTok) => {
-            "TikTok 登录已失效，请重新获取 Cookie".into()
-        }
-        (MediaPlatformError::LoginExpired, MediaPlatform::Twitter) => {
-            "Twitter/X 登录已失效，请重新获取 Cookie".into()
-        }
-        (MediaPlatformError::LoginExpired, MediaPlatform::YouTube) => {
-            "YouTube 反爬虫验证失败（PO Token）。这是 YouTube 强制的反机器人机制，不是软件 bug。\n\
-             可尝试：1) 在「设置 → 媒体工具/高级」配置 YouTube PO Token 凭证；\n\
-             2) 用无痕窗口登录 YouTube 后访问 https://www.youtube.com/robots.txt，导出 Cookie 到「设置 → 媒体凭证」（此 Cookie 不会被轮换）；\n\
-             3) 稍后重试（PO Token 有时效，12 小时后可能自动恢复）；\n\
-             4) 升级 yt-dlp 到最新版（「设置 → 媒体工具 → 检查更新」）。".into()
-        }
-        (MediaPlatformError::LoginExpired, MediaPlatform::Bilibili) => {
-            "哔哩哔哩登录已失效，请重新获取 Cookie".into()
-        }
-        (MediaPlatformError::LoginExpired, MediaPlatform::Weibo) => {
-            "微博登录已失效，请重新获取 Cookie".into()
-        }
-        (MediaPlatformError::LoginExpired, _) => {
-            "登录已失效，请重新获取认证信息".into()
-        }
+        (MediaPlatformError::LoginExpired, platform) => access_messages::message(platform, None),
         (MediaPlatformError::RegionBlocked, _) => "该内容在你的地区不可用".into(),
         (MediaPlatformError::LinkExpired, _) => "该链接已失效或已被删除".into(),
         (MediaPlatformError::DrmProtected, _) => "该内容受 DRM 保护，无法下载".into(),
         (MediaPlatformError::Unsupported, _) => "该平台暂不支持下载此类型内容".into(),
         (MediaPlatformError::Unknown, _) => "下载失败，请稍后重试".into(),
+    }
+}
+
+/// Preserve concrete tool evidence without reflecting its raw content or changing serialized categories.
+pub fn platform_error_to_chinese_with_evidence(
+    error: MediaPlatformError,
+    platform: MediaPlatform,
+    evidence: &str,
+) -> String {
+    if error == MediaPlatformError::LoginExpired {
+        access_messages::message(platform, Some(evidence))
+    } else {
+        platform_error_to_chinese(error, platform)
     }
 }
 
@@ -350,8 +339,8 @@ fn classify_by_keyword(error: &str) -> Option<ErrorCategory> {
 fn title_and_description(category: ErrorCategory, context: &ErrorContext) -> (String, String) {
     match category {
         ErrorCategory::AuthExpired => (
-            "链接或登录信息已过期".into(),
-            "服务器返回 401/403，可能是下载链接已过期或需要登录认证。请重新从浏览器获取链接后再试。".into(),
+            "认证或访问校验未通过".into(),
+            "服务器返回 401/403，本次请求被拒绝。可能涉及访问校验、资源权限、链接有效期或凭据条件；请检查浏览器访问、自己的合法凭据及当前网络设置。".into(),
         ),
         ErrorCategory::RangeInvalid => (
             "分片范围无效".into(),
@@ -526,7 +515,7 @@ pub fn redact_sensitive(text: &str) -> String {
     let kv_re = kv_param_regex();
     let result = header_re.replace_all(text, "${1}: ***");
     let result = kv_re.replace_all(&result, "${1}=***");
-    result.into_owned()
+    super::redaction::structured(&result)
 }
 
 /// 编译并缓存 HTTP 头脱敏正则。
@@ -536,7 +525,7 @@ pub fn redact_sensitive(text: &str) -> String {
 fn header_regex() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
-        Regex::new(r"(?i)\b((?:set-)?cookie|authorization|proxy-password)\s*:\s*[^\r\n]*")
+        Regex::new(r"(?i)\b((?:set-)?cookie|(?:proxy-)?authorization|proxy-password|x-api-key|x-luma-token|x-luma-signature)\s*:\s*[^\r\n]*")
             .expect("header redaction regex is statically validated")
     })
 }
@@ -853,7 +842,7 @@ mod tests {
     #[test]
     fn title_and_description_are_chinese() {
         let (title, desc) = title_and_description(ErrorCategory::AuthExpired, &ctx());
-        assert!(title.contains("过期"));
+        assert!(title.contains("认证或访问校验未通过"));
         assert!(desc.contains("401/403"));
     }
 
@@ -1332,21 +1321,21 @@ mod tests {
     fn platform_error_to_chinese_douyin_login() {
         let msg =
             platform_error_to_chinese(MediaPlatformError::LoginExpired, MediaPlatform::Douyin);
-        assert_eq!(msg, "抖音登录已失效，请重新获取 Cookie");
+        assert!(msg.starts_with("抖音：认证或访问校验未通过"));
     }
 
     #[test]
     fn platform_error_to_chinese_tiktok_login() {
         let msg =
             platform_error_to_chinese(MediaPlatformError::LoginExpired, MediaPlatform::TikTok);
-        assert_eq!(msg, "TikTok 登录已失效，请重新获取 Cookie");
+        assert!(msg.starts_with("TikTok：认证或访问校验未通过"));
     }
 
     #[test]
     fn platform_error_to_chinese_twitter_login() {
         let msg =
             platform_error_to_chinese(MediaPlatformError::LoginExpired, MediaPlatform::Twitter);
-        assert_eq!(msg, "Twitter/X 登录已失效，请重新获取 Cookie");
+        assert!(msg.starts_with("Twitter/X：认证或访问校验未通过"));
     }
 
     #[test]
@@ -1364,20 +1353,20 @@ mod tests {
     fn platform_error_to_chinese_bilibili_login() {
         let msg =
             platform_error_to_chinese(MediaPlatformError::LoginExpired, MediaPlatform::Bilibili);
-        assert_eq!(msg, "哔哩哔哩登录已失效，请重新获取 Cookie");
+        assert!(msg.starts_with("哔哩哔哩：认证或访问校验未通过"));
     }
 
     #[test]
     fn platform_error_to_chinese_weibo_login() {
         let msg = platform_error_to_chinese(MediaPlatformError::LoginExpired, MediaPlatform::Weibo);
-        assert_eq!(msg, "微博登录已失效，请重新获取 Cookie");
+        assert!(msg.starts_with("微博：认证或访问校验未通过"));
     }
 
     #[test]
     fn platform_error_to_chinese_unknown_platform_login() {
         let msg =
             platform_error_to_chinese(MediaPlatformError::LoginExpired, MediaPlatform::Unknown);
-        assert_eq!(msg, "登录已失效，请重新获取认证信息");
+        assert!(msg.starts_with("认证或访问校验未通过"));
     }
 
     #[test]
@@ -1534,11 +1523,10 @@ mod tests {
 
     #[test]
     fn classify_youtube_bot_check() {
-        // YouTube 机器人验证（PO Token 校验失败）：yt-dlp 输出形如
+        // YouTube 访问校验：yt-dlp 输出形如
         // "Sign in to confirm you're not a bot. Use --cookies-from-browser or
         //  --cookies for the authentication."
-        // 此错误自 2024 年 YouTube 加强反爬虫后常见，统一识别为 LoginExpired
-        // 并通过中文文案引导用户提供 Cookie
+        // 保留 LoginExpired 历史类别，但不能由此推断 PO Token 或凭据过期。
         let stderr1 = "ERROR: [youtube] abc: Sign in to confirm you're not a bot. \
             Use --cookies-from-browser or --cookies for the authentication.";
         assert_eq!(

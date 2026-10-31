@@ -17,47 +17,8 @@
 
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
-
-/// 解析 `name=value; name2=value2` 格式的 Cookie 字符串。
-///
-/// 返回 (name, value) 元组列表。空值或格式错误的条目会被跳过。
-/// 不对 name/value 内容做 URL 解码，因为 yt-dlp 接受原始值。
-pub(crate) fn parse_cookie_header(cookie: &str) -> Vec<(String, String)> {
-    cookie
-        .split(';')
-        .map(str::trim)
-        .filter(|segment| !segment.is_empty())
-        .filter_map(|segment| {
-            let idx = segment.find('=')?;
-            let name = segment[..idx].trim();
-            let value = segment[idx + 1..].trim();
-            if name.is_empty() {
-                None
-            } else {
-                Some((name.to_string(), value.to_string()))
-            }
-        })
-        .collect()
-}
-
-/// 判断 Cookie 字符串是否为 Netscape cookies.txt 格式。
-///
-/// 识别条件：包含 `# Netscape` 头或任一行含 TAB 分隔的 7 列。
-/// 用于检测「设置 → 媒体凭证」里存的 Cookie 是 HTTP 头格式还是 cookies.txt 文件格式，
-/// 以便在用作 HTTP `Cookie:` 头前先转换格式（HTTP 头不允许 TAB/换行字符）。
-pub(crate) fn is_netscape_format(cookie: &str) -> bool {
-    let trimmed = cookie.trim();
-    if trimmed.is_empty() {
-        return false;
-    }
-    if trimmed.contains("# Netscape") {
-        return true;
-    }
-    // 检查是否有 TAB 分隔的至少 7 列的行（Netscape 格式特征）
-    trimmed
-        .lines()
-        .any(|line| !line.starts_with('#') && line.split('\t').count() >= 7)
-}
+mod scope;
+pub(crate) use scope::{header_for_url, is_netscape_format, parse_cookie_header};
 
 /// 判断是否应跳过扩展自动同步对已存在凭证的覆盖。
 ///

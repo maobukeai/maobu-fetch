@@ -1,5 +1,6 @@
 import { IGNORED_HISTORY_MAX, pushIgnoredEntry } from "./ignored-history.js";
 import { buildCookieHeader } from "./auth-download.js";
+import { readTargetCookies } from "./cookie-context.js";
 
 const HTTP_URL = /^https?:/i;
 
@@ -20,7 +21,7 @@ const extensionFrom = (item, urls) => {
   return "";
 };
 
-/// 明确的归档包与安装程序格式：属于用户明确下载意图，不受小文件体积阈值过滤
+/// 文件类型列表供界面/兼容调用使用；任何类型均遵守用户设定的体积阈值。
 export const ARCHIVE_AND_EXEC_EXTENSIONS = new Set([
   "zip", "rar", "7z", "tar", "gz", "tgz", "bz2", "xz",
   "exe", "msi", "apk", "dmg", "pkg", "iso", "torrent"
@@ -107,8 +108,8 @@ export function evaluateDownload(item, settings, runtimeId, swStartTime = 0, opt
     return { eligible: false, reason: "extension" };
   }
   const minimum = Number(settings.minSizeMb || 0) * 1024 * 1024;
-  const isArchiveOrInstaller = ARCHIVE_AND_EXEC_EXTENSIONS.has(extension);
-  if (!forcedTake && !isArchiveOrInstaller && minimum > 0 && item.totalBytes > 0 && item.totalBytes < minimum) {
+  if (!forcedTake && minimum > 0 && !(item.totalBytes > 0)) return { eligible: false, reason: "size-unknown" };
+  if (!forcedTake && minimum > 0 && item.totalBytes > 0 && item.totalBytes < minimum) {
     return { eligible: false, reason: "size" };
   }
 
@@ -330,38 +331,12 @@ export function resetNotificationCooldownsForTest() {
 export async function getDownloadAuthHeaders(item, { cookies, tab, url } = {}) {
   const headers = {};
   const cookiesApi = cookies || (typeof chrome !== "undefined" ? chrome.cookies : undefined);
-  const targetUrl = url || item?.url || item?.finalUrl;
+  const targetUrl = url || item?.finalUrl || item?.url;
 
-  // 1. 匹配目标下载 URL 与源页面、Referer 的 Cookie（去重合并，跨无痕 storeId 容错）
-  if (cookiesApi?.getAll) {
-    const cookieMap = new Map();
-    const collectCookies = async (sourceUrl) => {
-      if (!sourceUrl || !/^https?:/i.test(sourceUrl)) return;
-      try {
-        const params = { url: sourceUrl };
-        if (tab?.cookieStoreId) params.storeId = tab.cookieStoreId;
-        const matched = await cookiesApi.getAll(params);
-        if (Array.isArray(matched)) {
-          for (const c of matched) {
-            if (c?.name && !cookieMap.has(c.name)) {
-              cookieMap.set(c.name, c.value ?? "");
-            }
-          }
-        }
-      } catch {}
-    };
-
-    if (targetUrl) await collectCookies(targetUrl);
-    if (item?.finalUrl && item.finalUrl !== targetUrl) await collectCookies(item.finalUrl);
-    if (tab?.url && tab.url !== targetUrl) await collectCookies(tab.url);
-    if (item?.referrer && item.referrer !== targetUrl && item.referrer !== tab?.url) await collectCookies(item.referrer);
-
-    if (cookieMap.size > 0) {
-      headers["Cookie"] = Array.from(cookieMap.entries())
-        .map(([name, val]) => `${name}=${val}`)
-        .join("; ");
-    }
-  }
+  // 只把实际目标的凭据交给该目标，来源页/Referer 不能扩张 Cookie 作用域。
+  const matched = await readTargetCookies(cookiesApi, targetUrl, { tab, tabId: item?.tabId });
+  const cookieHeader = buildCookieHeader(matched);
+  if (cookieHeader) headers.Cookie = cookieHeader;
 
   // 2. Referer 补齐
   const referer = item?.referrer || (tab?.url && /^https?:/i.test(tab.url) ? tab.url : undefined);
@@ -398,8 +373,7 @@ export async function getDownloadAuthHeaders(item, { cookies, tab, url } = {}) {
     } catch {}
   };
   extractQueryAuth(targetUrl);
-  if (item?.finalUrl && item.finalUrl !== targetUrl) extractQueryAuth(item.finalUrl);
-  if (item?.referrer && item.referrer !== targetUrl) extractQueryAuth(item.referrer);
+
 
   return headers;
 }

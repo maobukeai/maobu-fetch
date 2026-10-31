@@ -542,6 +542,7 @@ test("popup_uses_current_page_cookies_when_clicked: chrome.cookies.getAll is cal
   let cookiesGetAllCalled = false;
   let cookiesGetAllUrl = null;
   const cookiesApi = {
+    getAllCookieStores: async () => [{ id: "normal", tabIds: [1] }],
     getAll: async ({ url }) => {
       cookiesGetAllCalled = true;
       cookiesGetAllUrl = url;
@@ -555,6 +556,7 @@ test("popup_uses_current_page_cookies_when_clicked: chrome.cookies.getAll is cal
 
   await sendWithCurrentPageAuth({
     url: tabUrl,
+    tab: { id: 1 },
     userAgent: "TestBrowser/1.0",
     cookiesApi,
     sendMessage,
@@ -567,6 +569,7 @@ test("popup_uses_current_page_cookies_when_clicked: chrome.cookies.getAll is cal
 test("popup_sends_cookie_to_local_bridge: /v1/tasks/add request body contains cookie field", async () => {
   const tabUrl = "https://example.com/page";
   const cookiesApi = {
+    getAllCookieStores: async () => [{ id: "normal", tabIds: [1] }],
     getAll: async () => [
       { name: "session", value: "abc123" },
       { name: "token", value: "xyz789" },
@@ -580,6 +583,7 @@ test("popup_sends_cookie_to_local_bridge: /v1/tasks/add request body contains co
 
   const result = await sendWithCurrentPageAuth({
     url: tabUrl,
+    tab: { id: 1 },
     userAgent: "TestBrowser/1.0",
     cookiesApi,
     sendMessage,
@@ -637,6 +641,7 @@ test("popup_incognito_mode: cookieStoreId is forwarded to chrome.cookies.getAll 
   let receivedStoreId = "__not_set__";
   let receivedUrl = null;
   const cookiesApi = {
+    getAllCookieStores: async () => [{ id: "normal", tabIds: [1] }],
     getAll: async ({ url, storeId }) => {
       receivedUrl = url;
       receivedStoreId = storeId;
@@ -658,11 +663,11 @@ test("popup_incognito_mode: cookieStoreId is forwarded to chrome.cookies.getAll 
   assert.equal(receivedStoreId, incognitoStoreId, "storeId must be forwarded for incognito windows");
 });
 
-test("popup_incognito_mode: omitting cookieStoreId keeps default-store behavior (backward compatible)", async () => {
-  // 不传 cookieStoreId 时不得在 getAll 参数中加入 storeId 字段，
-  // 否则普通窗口行为可能因 storeId=undefined 被当作字符串处理而异常。
+test("popup_incognito_mode: resolves actual store from tab instead of guessing default context", async () => {
+  // 使用真实tab所属store；缺少Firefox-only字段不会导致猜测默认身份。
   let receivedParams = null;
   const cookiesApi = {
+    getAllCookieStores: async () => [{ id: "normal", tabIds: [1] }],
     getAll: async (params) => {
       receivedParams = params;
       return [{ name: "session", value: "default-store-token" }];
@@ -672,13 +677,14 @@ test("popup_incognito_mode: omitting cookieStoreId keeps default-store behavior 
 
   await sendWithCurrentPageAuth({
     url: "https://example.com/page",
+    tab: { id: 1 },
     userAgent: "TestBrowser/1.0",
     cookiesApi,
     sendMessage,
   });
 
   assert.ok(receivedParams, "getAll must be called");
-  assert.ok(!("storeId" in receivedParams), "storeId must NOT be present when cookieStoreId is omitted");
+  assert.equal(receivedParams.storeId, "normal");
 });
 
 test("popup_does_not_persist_cookie_in_storage: sendWithCurrentPageAuth does not write to chrome.storage.local", async () => {
@@ -690,17 +696,23 @@ test("popup_does_not_persist_cookie_in_storage: sendWithCurrentPageAuth does not
     set: async (values) => { storageWrites.push(values); },
   };
   const cookiesApi = {
+    getAllCookieStores: async () => [{ id: "normal", tabIds: [1] }],
     getAll: async () => [{ name: "session", value: "secret-value-123" }],
   };
   const sendMessage = async () => ({ ok: true });
 
-  await sendWithCurrentPageAuth({
+  const previousChrome = globalThis.chrome;
+  globalThis.chrome = { storage: { local: storageLocal } };
+  const result = await sendWithCurrentPageAuth({
     url: "https://example.com/page",
+    tab: { id: 1 },
     userAgent: "TestBrowser/1.0",
     cookiesApi,
     sendMessage,
   });
 
+  globalThis.chrome = previousChrome;
+  assert.equal(result.ok, true);
   // 验证 sendWithCurrentPageAuth 完全不调用 storage.set
   // （cookie 仅通过 sendMessage 一次性传递给 background，不持久化在扩展 storage 中）
   for (const write of storageWrites) {
@@ -756,7 +768,7 @@ test("popup_does_not_persist_cookie_in_storage: signedFetch serializes cookie in
 //   - buildNetscapeCookiesText: 输出 yt-dlp 兼容格式，域名归一化到主域
 //   - exportCurrentPageCookies: 透传 storeId（无痕支持），失败返回可读错误
 //   - exportCurrentPageCookies: 不写入 chrome.storage.local
-test("buildNetscapeCookiesText: outputs yt-dlp compatible Netscape format with normalized domain", () => {
+test("buildNetscapeCookiesText: preserves exact Cookie scope in yt-dlp compatible format", () => {
   const cookies = [
     { name: "SID", value: "abc", expirationDate: 1800000000, path: "/" },
     { name: "LOGIN_INFO", value: "xyz", expirationDate: 0, path: "/" },
@@ -764,8 +776,8 @@ test("buildNetscapeCookiesText: outputs yt-dlp compatible Netscape format with n
   const content = buildNetscapeCookiesText(cookies, "https://www.youtube.com/watch?v=abc");
   const lines = content.split("\n").filter(Boolean);
   assert.equal(lines[0], "# Netscape HTTP Cookie File");
-  // www.youtube.com 应归一化为 .youtube.com（与桌面端 media_cookies.rs 一致）
-  assert.ok(lines[1].startsWith(".youtube.com\tTRUE\t/\tTRUE\t"), "domain must be normalized to .youtube.com");
+  // 未提供Cookie域元数据时只保留当前精确主机，不扩大为父域。
+  assert.ok(lines[1].startsWith("www.youtube.com\tFALSE\t/\tTRUE\t"), "missing domain metadata must not broaden the page host");
   // expirationDate=0 的会话 cookie 应输出 0
   const sessionLine = lines.find((l) => l.includes("LOGIN_INFO"));
   assert.ok(sessionLine.includes("\t0\tLOGIN_INFO\txyz"), "session cookie expiration must be 0");
@@ -780,6 +792,7 @@ test("exportCurrentPageCookies: forwards storeId for incognito windows", async (
   const incognitoStoreId = "2";
   let receivedStoreId = "__not_set__";
   const cookiesApi = {
+    getAllCookieStores: async () => [{ id: "normal", tabIds: [1] }],
     getAll: async ({ url, storeId }) => {
       receivedStoreId = storeId;
       return [{ name: "SID", value: "incognito-token" }];
@@ -836,11 +849,16 @@ test("exportCurrentPageCookies: does not write to chrome.storage.local", async (
   };
   const cookiesApi = { getAll: async () => [{ name: "SID", value: "secret-export-token" }] };
   const triggerDownload = async () => {};
-  await exportCurrentPageCookies({
+  const previousChrome = globalThis.chrome;
+  globalThis.chrome = { storage: { local: fakeStorage } };
+  const result = await exportCurrentPageCookies({
     pageUrl: "https://example.com",
     cookiesApi,
+    cookieStoreId: "normal",
     triggerDownload,
   });
+  globalThis.chrome = previousChrome;
+  assert.equal(result.ok, true);
   // 模拟 storage 不可达时也安全（导出完全不该用 storage）
   for (const write of storageWrites) {
     const json = JSON.stringify(write);
@@ -999,6 +1017,7 @@ test("inferMediaFilename: 准确解析 ChatGPT estuary 图片 id 与 query filen
 
 test("getTabDownloadHeaders: 自动附带当前页面的 Referer 与 Cookie", async () => {
   const mockCookiesApi = {
+    getAllCookieStores: async () => [{ id: "normal", tabIds: [1] }],
     getAll: async ({ url }) => {
       if (url.includes("chatgpt.com")) {
         return [
@@ -1011,7 +1030,7 @@ test("getTabDownloadHeaders: 自动附带当前页面的 Referer 与 Cookie", as
   };
 
   const headers = await getTabDownloadHeaders(
-    { url: "https://chatgpt.com/c/123-456" },
+    { id: 1, url: "https://chatgpt.com/c/123-456" },
     "https://chatgpt.com/backend-api/estuary/content?id=file_test",
     mockCookiesApi
   );
@@ -1039,6 +1058,7 @@ test("handleContextMenuDownload: 成功时携带推导文件名与认证头发�
   };
 
   const mockCookiesApi = {
+    getAllCookieStores: async () => [{ id: "normal", tabIds: [1] }],
     getAll: async () => [{ name: "sid", value: "cookie_val" }],
   };
 
@@ -1046,6 +1066,7 @@ test("handleContextMenuDownload: 成功时携带推导文件名与认证头发�
     srcUrl: "https://chatgpt.com/backend-api/estuary/content?id=file_kitten_123",
   };
   const tab = {
+    id: 1,
     url: "https://chatgpt.com/",
     title: "ChatGPT",
   };
@@ -1088,6 +1109,7 @@ test("handleContextMenuDownload: 桌面端离线或鉴权失败时安全回退�
     srcUrl: "https://chatgpt.com/backend-api/estuary/content?id=file_kitten_403",
   };
   const tab = {
+    id: 1,
     url: "https://chatgpt.com/",
   };
 

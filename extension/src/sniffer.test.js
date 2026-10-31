@@ -124,3 +124,31 @@ test("attachSniffer: webRequest 不可用时返回 null（功能整体降级）"
   assert.equal(attachSniffer({ chrome: { tabs: { sendMessage: async () => {} } } }), null);
   assert.equal(attachSniffer({}), null);
 });
+
+test("Navigation clears media, rejects late old-document requests, and stop removes listeners", async () => {
+  const listeners = {};
+  const removed = [];
+  const event = (name) => ({ addListener: (fn) => { listeners[name] = fn; }, removeListener: (fn) => { assert.equal(fn, listeners[name]); removed.push(name); } });
+  const fake = {
+    storage: { local: { get: async () => ({ snifferHosts: ["video.example"] }) }, onChanged: event("storage") },
+    tabs: { sendMessage: async () => {}, onUpdated: event("updated"), onRemoved: event("removed") },
+    webRequest: { onBeforeRequest: event("request") },
+    webNavigation: { onCommitted: event("committed"), onHistoryStateUpdated: event("history"), onReferenceFragmentUpdated: event("fragment") },
+  };
+  const sniffer = attachSniffer({ chrome: fake });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const media = { tabId: 7, initiator: "https://video.example", url: "https://video.example/a.mp4", documentId: "a" };
+  listeners.committed({ tabId: 7, frameId: 0, documentId: "a" });
+  listeners.request(media);
+  assert.equal(sniffer.getItems(7).length, 1);
+  listeners.updated(7, { url: "https://video.example/next" });
+  listeners.committed({ tabId: 7, frameId: 0, documentId: "b" });
+  listeners.request(media);
+  assert.equal(sniffer.getItems(7).length, 0);
+  listeners.request({ ...media, documentId: "b" });
+  assert.equal(sniffer.getItems(7).length, 1);
+  listeners.history({ tabId: 7, frameId: 0, documentId: "b" });
+  assert.equal(sniffer.getItems(7).length, 0);
+  sniffer.stop();
+  assert.equal(removed.length, 7);
+});

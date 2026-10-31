@@ -1,14 +1,21 @@
 [package]
 name = "maobu-fetch"
-version = "0.10.11"
+version = "0.10.12"
 description = "A clean-room open-source download manager"
 authors = ["Maobu Fetch contributors"]
 license = "MIT"
 edition = "2021"
 
+[package.metadata.tauri-winres]
+OriginalFilename = "maobu-fetch.exe"
+
 [lib]
 name = "maobu_fetch_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
+
+[patch.crates-io]
+# 同一官方 9.0.0 源码：修低速配额和公开真实 torrent limiter；理由/校验见 vendor/librqbit/MAOBU-PATCHES.md。
+librqbit = { path = "vendor/librqbit" }
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
@@ -22,8 +29,11 @@ tauri-plugin-shell = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }
-tokio-util = "0.7"
+tokio-util = { version = "0.7", features = ["rt"] }
 reqwest = { version = "0.12", features = ["stream", "rustls-tls", "socks", "json", "gzip", "brotli", "deflate"] }
+# HTTPS 上游代理隧道使用系统 TLS；两包已在锁文件中，避免自建 TLS 实现。
+native-tls = "0.2.18"
+tokio-native-tls = "0.3.1"
 futures-util = "0.3"
 uuid = { version = "1", features = ["v4"] }
 url = "2"
@@ -85,11 +95,14 @@ windows-sys = { version = "0.59", features = [
     "Win32_Security_Cryptography",
     "Win32_Storage_FileSystem",
     "Win32_System_Console",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_JobObjects",
     "Win32_System_Memory",
     "Win32_System_Registry",
     "Win32_System_SystemInformation",
     "Win32_System_Threading",
     "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
 ] }
 
 [profile.dev]

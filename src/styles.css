@@ -1,4 +1,5 @@
 :root {
+  color-scheme: light;
   font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
   color: #1d1d1f;
   background: #f5f5f7;
@@ -51,6 +52,7 @@
 }
 
 :root[data-theme="dark"] {
+  color-scheme: dark;
   color: #f5f5f7;
   background: #161617;
   --surface: rgba(29, 29, 31, 0.96);
@@ -363,6 +365,9 @@ svg { flex: 0 0 auto; }
 .file-type { display: grid; place-items: center; width: 23px; height: 24px; border: 0; border-radius: 6px; color: var(--accent); background: var(--surface-alt); }
 .file-type.video { color: #c239b3; }.file-type.audio { color: #0f7b0f; }.file-type.archives { color: #9d5d00; }
 .task-status { display: inline-flex; align-items: center; gap: 5px; color: var(--muted); }
+.task-status { min-width: 0; padding-right: 3px; }
+.task-status-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.task-status .task-status-btn { flex-shrink: 0; }
 .task-status::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--subtle); }
 .task-status.downloading, .task-status.verifying { color: var(--accent); }.task-status.downloading::before, .task-status.verifying::before { background: var(--accent); }
 .task-status.completed { color: var(--success); }.task-status.completed::before { background: var(--success); }
@@ -398,6 +403,8 @@ svg { flex: 0 0 auto; }
 .task-status-btn:active {
   transform: scale(0.85);
 }
+.task-recording-finish { opacity: 0.85; transform: none; }
+.task-status-btn:focus-visible { opacity: 1; transform: none; outline: 2px solid var(--accent); outline-offset: 2px; }
 .connection-count { color: var(--muted); font-variant-numeric: tabular-nums; }
 .connection-count small { color: var(--subtle); font-size: 8px; }
 .task-row:has(.task-status.downloading) .connection-count { color: var(--accent); font-weight: 600; }
@@ -1431,6 +1438,14 @@ svg { flex: 0 0 auto; }
 .delete-task-option p { margin: 0; font-size: 10px; color: var(--muted); line-height: 1.5; }
 .delete-task-warning { color: var(--danger) !important; font-weight: 600; }
 .toast { position: fixed; right: 18px; bottom: 38px; z-index: 60; max-width: 360px; padding: 10px 14px; border: 1px solid var(--border); border-radius: 8px; color: var(--text); background: var(--surface-solid); box-shadow: var(--shadow); font-size: 11px; }
+.toast-stack { position: fixed; right: 18px; bottom: 38px; z-index: 60; display: flex; flex-direction: column; align-items: flex-end; gap: 8px; max-width: calc(100vw - 36px); max-height: calc(100vh - 76px); overflow-y: auto; pointer-events: none; }
+.toast-stack > .toast { position: static; flex-shrink: 0; pointer-events: auto; }
+.toast.completion-toast .toast-body { flex-direction: column; align-items: flex-start; gap: 4px; min-width: 0; }
+.completion-toast .completion-toast-title { overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.toast.completion-toast .toast-icon { color: var(--accent); }
+.completion-toast .toast-actions { flex-wrap: wrap; }
+.completion-toast button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.completion-toast button:disabled { opacity: 0.55; cursor: default; }
 .spin { animation: spin 1s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
@@ -2080,7 +2095,7 @@ svg { flex: 0 0 auto; }
   pointer-events: none;
 }
 .form-field input, .form-field textarea, .form-field select {
-  transition: border-color 0.15s ease-in-out, box-shadow 0.15s ease-in-out, background-color 0.15s ease-in-out;
+  transition: border-color 0.15s ease-in-out, box-shadow 0.15s ease-in-out;
 }
 .form-field input:focus, .form-field textarea:focus, .form-field select:focus {
   border-color: var(--accent);
@@ -4807,4 +4822,11 @@ svg { flex: 0 0 auto; }
   margin-top: 16px;
   padding-top: 14px;
   border-top: 1px solid var(--line);
+}
+
+.custom-select-option.keyboard-active { outline: 2px solid var(--accent); outline-offset: -2px; }
+
+/* Theme changes apply foreground and control background together to retain readable contrast. */
+:root button, :root [role="combobox"] {
+  transition-property: border-color, box-shadow, transform, opacity;
 }

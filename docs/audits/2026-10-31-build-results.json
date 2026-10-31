@@ -1,0 +1,55 @@
+{
+  "Date": "2026-10-31",
+  "Timezone": "Asia/Shanghai",
+  "Baseline": "7ecb065",
+  "ReleaseReady": false,
+  "TauriBuildExitCode": 0,
+  "Packages": [
+    {
+      "Name": "Maobu Fetch_0.10.11_x64-setup.exe",
+      "Bytes": 5030286,
+      "MiB": 4.797,
+      "SHA256": "6B4C33C605BE4B8414E62F802FE3352B7D5B861D3A68B4267AEF3F0A575D4597"
+    },
+    {
+      "Name": "Maobu Fetch_0.10.11_x64_zh-CN.msi",
+      "Bytes": 6696960,
+      "MiB": 6.387,
+      "SHA256": "01DB74267AD41F961D56DDF77A4BDB73B98C6174E4FCC4AE4ECB29C64F2F21C0"
+    },
+    {
+      "Name": "maobu-fetch.exe",
+      "Bytes": 13454848,
+      "MiB": 12.832,
+      "SHA256": "80296FD84C5FD11FCD5ACFF397B42CB3EC4858D0696315B17438882C9124E18D"
+    },
+    {
+      "Name": "maobu-fetch-extension-v0.10.11.zip",
+      "Bytes": 111787,
+      "MiB": 0.107,
+      "SHA256": "D238BD915E767E98BD582AE18F5C81634BC0EF16A78DD1EFE76888D49CA292B6"
+    },
+    {
+      "Name": "extension.zip",
+      "Bytes": 111787,
+      "MiB": 0.107,
+      "SHA256": "D238BD915E767E98BD582AE18F5C81634BC0EF16A78DD1EFE76888D49CA292B6"
+    }
+  ],
+  "InstallersUnder30MB": true,
+  "ForbiddenMediaExecutablesFound": false,
+  "ExeProperties": {
+    "ProductName": "Maobu Fetch",
+    "ProductVersion": "0.10.11",
+    "OriginalFilename": "",
+    "FileVersion": "0.10.11"
+  },
+  "ContainsDevelopmentUserPath": true,
+  "NewReleaseHealthVerified": false,
+  "ExistingHealthObservation": "pre-existing 0.10.11 client returned ready=true; not the newly built EXE",
+  "IgnoredRustTests": 9,
+  "FinalRustUnitPassed": 1213,
+  "RangeTestsPassed": 9,
+  "ExtensionTestsPassed": 169,
+  "UiCasesPassed": 21
+}

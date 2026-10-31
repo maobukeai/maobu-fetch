@@ -2832,8 +2832,6 @@ dependencies = [
 [[package]]
 name = "librqbit"
 version = "9.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "10003b9b157ef1d8352b4ff2e2025fa1544453d40539741779ee918028aba75b"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -3194,7 +3192,7 @@ dependencies = [
 
 [[package]]
 name = "maobu-fetch"
-version = "0.10.11"
+version = "0.10.12"
 dependencies = [
  "aes",
  "aes-gcm",
@@ -3208,6 +3206,7 @@ dependencies = [
  "httpdate",
  "librqbit",
  "md-5",
+ "native-tls",
  "open",
  "pbkdf2",
  "pico-args",
@@ -3230,6 +3229,7 @@ dependencies = [
  "tauri-winrt-notification",
  "tempfile",
  "tokio",
+ "tokio-native-tls",
  "tokio-util",
  "tracing",
  "tracing-appender",
@@ -6103,6 +6103,7 @@ dependencies = [
  "bytes",
  "futures-core",
  "futures-sink",
+ "futures-util",
  "pin-project-lite",
  "tokio",
 ]

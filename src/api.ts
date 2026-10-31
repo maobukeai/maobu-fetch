@@ -17,13 +17,14 @@ export const api = {
   inspectTorrent: (params: { source?: string; torrentPath?: string; torrentBase64?: string }) =>
     call<BtTorrentInspectResult>("bt_inspect_torrent", {
       source: params.source,
-      torrent_path: params.torrentPath,
-      torrent_base64: params.torrentBase64,
+      torrentPath: params.torrentPath,
+      torrentBase64: params.torrentBase64,
     }),
   /** 列出 BT 任务种子内文件。磁力元数据未就绪时抛 `BT_METADATA_PENDING:` 前缀错误。 */
   btTaskFiles: (id: string) => call<BtFileEntry[]>("bt_task_files", { id }),
   /** 勾选/取消勾选 BT 任务内文件（1 基索引，至少保留一个）。 */
   btSelectFiles: (id: string, indices: number[]) => call<void>("bt_select_files", { id, indices }),
+  btRequestSeeding: (id: string, requested: boolean) => call<void>("bt_request_seeding", { id, requested }),
   addBatch: (urls: string[], template: Omit<NewTaskRequest, "url">) => call<DownloadTask[]>("tasks_add_batch", { request: { urls, destination: template.destination, headers: template.headers, scheduled_at: template.scheduled_at, priority: template.priority, per_task_speed_limit: template.per_task_speed_limit, collision_policy: template.collision_policy, completion_action: template.completion_action, connection_count: template.connection_count } }),
   exportTasks: (path: string) => call<number>("tasks_export", { path }),
   importTasks: (path: string, destination: string) => call<DownloadTask[]>("tasks_import", { path, destination }),
@@ -56,10 +57,10 @@ export const api = {
   rename: (id: string, newFilename: string) => call<DownloadTask>("task_rename", { id, newFilename }),
   /** 刷新/更新任务的下载链接（支持过期临时直链无缝刷新续传）。 */
   refreshTaskUrl: (id: string, newUrl: string, headers?: Record<string, string>) =>
-    call<DownloadTask>("task_refresh_url", { id, new_url: newUrl, headers }),
+    call<DownloadTask>("task_refresh_url", { id, newUrl, headers }),
   /** 从订阅源拉取并更新 BT Trackers。 */
   updateBtTrackers: (subscribeUrl?: string) =>
-    call<number>("bt_update_trackers", { subscribe_url: subscribeUrl }),
+    call<number>("bt_update_trackers", { subscribeUrl }),
   reorder: (ids: string[]) => call<void>("queue_reorder", { ids }),
   settings: () => call<AppSettings>("settings_get"),
   saveSettings: (settings: AppSettings) => call<void>("settings_save", { settings }),
@@ -89,7 +90,7 @@ export const api = {
   pairing: () => call<PairingInfo>("pairing_info"),
   rotatePairing: () => call<PairingInfo>("pairing_rotate"),
   revokePairing: () => call<void>("pairing_revoke"),
-  probeMedia: (url: string, options?: { cookie?: string; referer?: string; user_agent?: string }) => call<MediaProbeResult>("media_probe", { url, cookie: options?.cookie, referer: options?.referer, user_agent: options?.user_agent }),
+  probeMedia: (url: string, options?: { cookie?: string; referer?: string; user_agent?: string; include_collection?: boolean }) => call<MediaProbeResult>("media_probe", { url, cookie: options?.cookie, referer: options?.referer, userAgent: options?.user_agent, includeCollection: options?.include_collection }),
   /**
    * Task 37.1：识别 URL 所属媒体平台。
    *
@@ -284,6 +285,7 @@ export const api = {
   subscribeSettings: async (handler: (settings: AppSettings) => void): Promise<UnlistenFn | undefined> => isDesktop() ? listen<AppSettings>("settings-changed", event => handler(event.payload)) : undefined,
   subscribePowerAction: async (handler: (state: PowerActionState) => void): Promise<UnlistenFn | undefined> => isDesktop() ? listen<PowerActionState>("power-action-state", event => handler(event.payload)) : undefined,
   subscribeNotificationErrors: async (handler: (message: string) => void): Promise<UnlistenFn | undefined> => isDesktop() ? listen<string>("notification-error", event => handler(event.payload)) : undefined,
+  subscribeShutdownErrors: async (handler: (message: string) => void): Promise<UnlistenFn | undefined> => isDesktop() ? listen<string>("shutdown-error", event => handler(event.payload)) : undefined,
   subscribeStartupSelfcheck: async (handler: (report: SelfcheckReport) => void): Promise<UnlistenFn | undefined> => isDesktop() ? listen<SelfcheckReport>("startup-selfcheck", event => handler(event.payload)) : undefined,
   /** Task 29：监听 maobu:// 深链错误（URL 无效、任务不存在等）。 */
   subscribeDeepLinkErrors: async (handler: (message: string) => void): Promise<UnlistenFn | undefined> => isDesktop() ? listen<string>("deep-link-error", event => handler(event.payload)) : undefined,

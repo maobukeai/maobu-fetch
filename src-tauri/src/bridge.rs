@@ -146,11 +146,14 @@ struct RecentTasksResponse {
 
 /// `/v1/tasks/{id}/action` 请求体（SubTask 13.2）。
 ///
-/// `action` 仅允许 `pause` / `resume` / `open_file` 三个值，
-/// 其它值返回 400。
+/// 操作白名单与桌面既有命令保持一致；新增 cancel 为向后兼容的能力扩展。
 #[derive(Deserialize)]
 struct ActionRequest {
     action: String,
+}
+
+fn is_manager_action(action: &str) -> bool {
+    matches!(action, "pause" | "resume" | "cancel")
 }
 
 #[derive(Serialize)]
@@ -161,6 +164,19 @@ struct ActionResponse {
 }
 
 pub async fn run(manager: SharedManager, pairing: PairingService, app: AppHandle) {
+    if let Ok(listener) = tokio::net::TcpListener::bind("127.0.0.1:17433").await {
+        let router = router(manager, pairing, app);
+        let router = if smoke_guard::enabled() {
+            smoke_guard::apply(router)
+        } else {
+            router
+        };
+        let _ = axum::serve(listener, router).await;
+    }
+}
+mod smoke_guard;
+
+fn router(manager: SharedManager, pairing: PairingService, app: AppHandle) -> Router {
     let state = BridgeState {
         manager,
         pairing,
@@ -169,7 +185,7 @@ pub async fn run(manager: SharedManager, pairing: PairingService, app: AppHandle
         recent_requests: Arc::new(Mutex::new(VecDeque::new())),
         pair_requests: Arc::new(Mutex::new(VecDeque::new())),
     };
-    let router = Router::new()
+    Router::new()
         .route("/v1/health", get(health))
         .route("/v1/pair", post(pair))
         .route("/v1/tasks", post(add_task))
@@ -178,11 +194,11 @@ pub async fn run(manager: SharedManager, pairing: PairingService, app: AppHandle
         .route("/v1/media/probe", post(probe_media))
         .route("/v1/media/credentials/sync", post(sync_media_credentials))
         .route("/v1/focus", post(focus_window))
-        .with_state(state);
-    if let Ok(listener) = tokio::net::TcpListener::bind("127.0.0.1:17433").await {
-        let _ = axum::serve(listener, router).await;
-    }
+        .with_state(state)
 }
+
+#[cfg(test)]
+pub(crate) mod browser_fixture;
 
 async fn health(State(state): State<BridgeState>) -> impl IntoResponse {
     // 扩展通过本端点同步桌面端接管设置（takeover_enabled / min_file_size_mb），
@@ -342,7 +358,7 @@ async fn task_action(
     // 统一错误类型为 `Result<(), String>`，最终包装为 `ActionResponse`。
     // 这样 HTTP 层始终返回 200 + `{success, error?}`，便于扩展弹窗统一处理。
     let result: Result<(), String> = match request.action.as_str() {
-        "pause" | "resume" => state.manager.action(&id, &request.action).await,
+        action if is_manager_action(action) => state.manager.action(&id, action).await,
         "open_file" => open_file_for_task(&state, &id).await,
         other => Err(format!("不支持的操作: {other}")),
     };
@@ -852,11 +868,14 @@ mod tests {
 
     #[test]
     fn action_request_deserializes_known_actions() {
-        for action in ["pause", "resume", "open_file"] {
+        for action in ["pause", "resume", "cancel", "open_file"] {
             let request: ActionRequest =
                 serde_json::from_str(&format!("{{\"action\":\"{action}\"}}")).unwrap();
             assert_eq!(request.action, action);
+            assert!(is_manager_action(action) || action == "open_file");
         }
+        assert!(!is_manager_action("remove"));
+        assert!(!is_manager_action("redownload"));
     }
 
     // Task 45.6：扩展 /v1/tasks/add 端点接收 cookie/referer/user_agent 字段后

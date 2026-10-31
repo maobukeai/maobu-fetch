@@ -18,6 +18,7 @@ pub struct BtProgress {
     /// 累计上传字节，用于分享率展示。
     pub uploaded_bytes: u64,
     pub num_seeds: u32,
+    pub seeds_known: bool,
     pub num_peers: u32,
     /// 是否处于做种状态。
     pub seeder: bool,
@@ -26,6 +27,7 @@ pub struct BtProgress {
     /// 种子显示名称，元数据未就绪时为 None。
     pub display_name: Option<String>,
     pub files: Vec<BtFileEntry>,
+    pub output_folder: Option<String>,
     pub error: Option<String>,
 }
 

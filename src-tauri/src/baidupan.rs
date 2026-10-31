@@ -7,63 +7,17 @@
 //! 4. 配合专属 User-Agent（pan.baidu.com）直连猫步下载器 HTTP Range 多连接并发内核。
 
 use regex::Regex;
-use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, VecDeque};
-use std::sync::OnceLock;
-use std::time::Duration;
+use std::collections::HashMap;
+#[path = "baidupan/listing.rs"]
+mod listing;
 
 pub const BAIDU_API_HOST: &str = "https://pan.baidu.com";
 pub const BAIDU_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 pub const BAIDU_DLINK_USER_AGENT: &str = "netdisk;P2SP;2.2.90.43;WindowsBaiduYunGuanJia;netdisk;11.4.5;android-android;11.0;JSbridge4.4.0;LogStatistic";
 
-static HTTP_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
-
-fn get_http_client() -> &'static reqwest::Client {
-    HTTP_CLIENT.get_or_init(|| {
-        reqwest::Client::builder()
-            .timeout(Duration::from_secs(20))
-            .user_agent(BAIDU_USER_AGENT)
-            .build()
-            .unwrap_or_default()
-    })
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct BaiduFileItem {
-    pub id: String, // fs_id 字符串
-    pub name: String,
-    pub kind: String, // "drive#file" or "drive#folder"
-    pub size: u64,
-    pub path: String,
-    pub md5: Option<String>,
-    pub category: Option<i64>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct BaiduShareInfo {
-    pub surl: String,
-    pub share_id: Option<String>,
-    pub uk: Option<String>,
-    pub title: String,
-    pub files: Vec<BaiduFileItem>,
-    pub total_size: u64,
-    pub file_count: usize,
-    pub folder_count: usize,
-    pub pass_code_required: bool,
-    pub randsk: Option<String>,
-    pub sign: Option<String>,
-    pub timestamp: Option<i64>,
-    pub seckey: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct BaiduDirectUrlResult {
-    pub url: String,
-    pub headers: HashMap<String, String>,
-}
+#[path = "baidupan/models.rs"]
+mod models;
+pub use models::*;
 
 #[derive(Debug, Clone)]
 pub struct ParsedBaiduUrl {
@@ -125,7 +79,34 @@ pub fn url_encode(input: &str) -> String {
 
 /// 校验百度网盘提取码，换取 BDCLND (randsk)
 pub async fn verify_baidu_pass_code(surl: &str, pass_code: &str) -> Result<String, String> {
-    let client = get_http_client();
+    let network = crate::cloud_request::CloudRequestContext::defaults(
+        BAIDU_USER_AGENT,
+        20,
+        tokio_util::sync::CancellationToken::new(),
+    )?;
+    verify_baidu_pass_code_with_context(surl, pass_code, &network).await
+}
+pub async fn verify_baidu_pass_code_with_context(
+    surl: &str,
+    pass_code: &str,
+    network: &crate::cloud_request::CloudRequestContext,
+) -> Result<String, String> {
+    let network = network
+        .with_user_agent(BAIDU_USER_AGENT)
+        .with_cookie_source(BAIDU_API_HOST);
+    network
+        .run(
+            "百度网盘",
+            verify_baidu_pass_code_impl(surl, pass_code, &network),
+        )
+        .await
+}
+async fn verify_baidu_pass_code_impl(
+    surl: &str,
+    pass_code: &str,
+    network: &crate::cloud_request::CloudRequestContext,
+) -> Result<String, String> {
+    let client = network;
     let clean_surl = surl.strip_prefix('1').unwrap_or(surl);
     let verify_url = format!(
         "{}/share/verify?channel=chunlei&clienttype=0&web=1&app_id=250528&surl={}",
@@ -156,8 +137,8 @@ pub async fn verify_baidu_pass_code(surl: &str, pass_code: &str) -> Result<Strin
         }
     }
 
-    let text = resp
-        .text()
+    let text = network
+        .text(resp)
         .await
         .map_err(|e| format!("读取验证响应失败: {}", e))?;
     let json: serde_json::Value = serde_json::from_str(&text).unwrap_or_default();
@@ -167,12 +148,9 @@ pub async fn verify_baidu_pass_code(surl: &str, pass_code: &str) -> Result<Strin
         if errno == -9 {
             return Err("提取码错误，请重新输入 4 位提取码".to_string());
         }
-        let msg = json
-            .get("err_msg")
-            .or_else(|| json.get("show_msg"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("提取码验证失败");
-        return Err(format!("验证提取码失败 (错误码 {}): {}", errno, msg));
+        return Err(format!(
+            "验证提取码失败（代码 {errno}），请检查密码和分享权限"
+        ));
     }
 
     if randsk.is_empty() {
@@ -194,6 +172,46 @@ pub async fn inspect_baidu_share(
     pass_code: Option<&str>,
     cookie: Option<&str>,
 ) -> Result<BaiduShareInfo, String> {
+    inspect_baidu_share_with_cancel(
+        url,
+        pass_code,
+        cookie,
+        &tokio_util::sync::CancellationToken::new(),
+    )
+    .await
+}
+pub async fn inspect_baidu_share_with_cancel(
+    url: &str,
+    pass_code: Option<&str>,
+    cookie: Option<&str>,
+    cancel: &tokio_util::sync::CancellationToken,
+) -> Result<BaiduShareInfo, String> {
+    let network =
+        crate::cloud_request::CloudRequestContext::defaults(BAIDU_USER_AGENT, 20, cancel.clone())?;
+    inspect_baidu_share_with_context(url, pass_code, cookie, &network).await
+}
+pub async fn inspect_baidu_share_with_context(
+    url: &str,
+    pass_code: Option<&str>,
+    cookie: Option<&str>,
+    network: &crate::cloud_request::CloudRequestContext,
+) -> Result<BaiduShareInfo, String> {
+    let network = network
+        .with_user_agent(BAIDU_USER_AGENT)
+        .with_cookie_source(BAIDU_API_HOST);
+    network
+        .run(
+            "百度网盘",
+            inspect_baidu_share_impl(url, pass_code, cookie, &network),
+        )
+        .await
+}
+async fn inspect_baidu_share_impl(
+    url: &str,
+    pass_code: Option<&str>,
+    cookie: Option<&str>,
+    network: &crate::cloud_request::CloudRequestContext,
+) -> Result<BaiduShareInfo, String> {
     let parsed = parse_baidu_url(url).ok_or_else(|| "无效的百度网盘分享链接".to_string())?;
     let clean_surl = parsed.surl.strip_prefix('1').unwrap_or(&parsed.surl);
     let effective_pass_code = pass_code.or(parsed.pass_code.as_deref());
@@ -204,23 +222,26 @@ pub async fn inspect_baidu_share(
     // 若有提取码，优先验证提取码拿到 randsk
     if let Some(pwd) = effective_pass_code {
         if !pwd.trim().is_empty() {
-            match verify_baidu_pass_code(clean_surl, pwd.trim()).await {
+            match verify_baidu_pass_code_with_context(clean_surl, pwd.trim(), network).await {
                 Ok(r) => current_randsk = r,
                 Err(e) => return Err(e),
             }
         }
     }
 
-    let client = get_http_client();
+    let client = network;
     let page_url = format!("{}/s/1{}", BAIDU_API_HOST, clean_surl);
 
-    let mut cookie_header = cookie.unwrap_or("").to_string();
-    if !current_randsk.is_empty() {
-        if !cookie_header.is_empty() {
-            cookie_header.push_str("; ");
-        }
-        cookie_header.push_str(&format!("BDCLND={}", current_randsk));
-    }
+    let cookie_header = if current_randsk.is_empty() {
+        cookie.unwrap_or("").to_owned()
+    } else {
+        crate::cloud_request::with_cookie_pair(
+            cookie.unwrap_or(""),
+            "BDCLND",
+            &current_randsk,
+            BAIDU_API_HOST,
+        )?
+    };
 
     let page_resp = client
         .get(&page_url)
@@ -230,8 +251,8 @@ pub async fn inspect_baidu_share(
         .await
         .map_err(|e| format!("请求百度网盘分享页失败: {}", e))?;
 
-    let html = page_resp
-        .text()
+    let html = network
+        .text(page_resp)
         .await
         .map_err(|e| format!("读取分享页面失败: {}", e))?;
 
@@ -323,131 +344,40 @@ pub async fn inspect_baidu_share(
         }
     }
 
-    let mut all_files = Vec::new();
-    let mut total_size: u64 = 0;
-    let mut file_count: usize = 0;
-    let mut folder_count: usize = 0;
-
-    // 目录树遍历
-    let effective_uk = uk.clone().unwrap_or_default();
-    let effective_shareid = share_id.clone().unwrap_or_default();
-
-    if !effective_uk.is_empty() && !effective_shareid.is_empty() {
-        let mut dir_queue = VecDeque::new();
-        dir_queue.push_back(("/".to_string(), String::new()));
-
-        while let Some((current_dir, parent_path)) = dir_queue.pop_front() {
-            let encoded_dir: String =
-                url::form_urlencoded::byte_serialize(current_dir.as_bytes()).collect();
-            let is_root = if current_dir == "/" { "1" } else { "0" };
-            let list_url = format!(
-                "{}/share/list?shorturl={}&uk={}&shareid={}&root={}&order=other&desc=1&showempty=0&web=1&page=1&num=100&dir={}&channel=chunlei&app_id=250528",
-                BAIDU_API_HOST,
-                clean_surl,
-                effective_uk,
-                effective_shareid,
-                is_root,
-                encoded_dir
-            );
-
-            let list_resp = client
-                .get(&list_url)
-                .header("Cookie", &cookie_header)
-                .header("Referer", &page_url)
-                .send()
-                .await;
-
-            if let Ok(resp) = list_resp {
-                if let Ok(text) = resp.text().await {
-                    let json: serde_json::Value = serde_json::from_str(&text).unwrap_or_default();
-                    if let Some(list) = json.get("list").and_then(|v| v.as_array()) {
-                        for item in list {
-                            let isdir = item.get("isdir").and_then(|v| v.as_i64()).unwrap_or(0)
-                                == 1
-                                || item.get("isdir").and_then(|v| v.as_str()).unwrap_or("0") == "1";
-
-                            let fs_id = if let Some(s) = item.get("fs_id").and_then(|v| v.as_str())
-                            {
-                                s.to_string()
-                            } else if let Some(n) = item.get("fs_id").and_then(|v| v.as_i64()) {
-                                n.to_string()
-                            } else {
-                                item.get("fs_id").map(|v| v.to_string()).unwrap_or_default()
-                            };
-
-                            let server_filename = item
-                                .get("server_filename")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("unknown")
-                                .to_string();
-
-                            let size = if let Some(n) = item.get("size").and_then(|v| v.as_u64()) {
-                                n
-                            } else if let Some(s) = item.get("size").and_then(|v| v.as_str()) {
-                                s.parse::<u64>().unwrap_or(0)
-                            } else {
-                                0
-                            };
-
-                            let md5 = item
-                                .get("md5")
-                                .and_then(|v| v.as_str())
-                                .map(|s| s.to_string());
-                            let category =
-                                item.get("category").and_then(|v| v.as_i64()).or_else(|| {
-                                    item.get("category")
-                                        .and_then(|v| v.as_str())
-                                        .and_then(|s| s.parse::<i64>().ok())
-                                });
-
-                            let item_path = if parent_path.is_empty() {
-                                server_filename.clone()
-                            } else {
-                                format!("{}/{}", parent_path, server_filename)
-                            };
-
-                            if isdir {
-                                folder_count += 1;
-                                let sub_dir = item
-                                    .get("path")
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or(&format!(
-                                        "{}/{}",
-                                        current_dir.trim_end_matches('/'),
-                                        server_filename
-                                    ))
-                                    .to_string();
-                                dir_queue.push_back((sub_dir, item_path.clone()));
-
-                                all_files.push(BaiduFileItem {
-                                    id: fs_id,
-                                    name: server_filename,
-                                    kind: "drive#folder".to_string(),
-                                    size: 0,
-                                    path: item_path,
-                                    md5: None,
-                                    category: None,
-                                });
-                            } else {
-                                file_count += 1;
-                                total_size += size;
-
-                                all_files.push(BaiduFileItem {
-                                    id: fs_id,
-                                    name: server_filename,
-                                    kind: "drive#file".to_string(),
-                                    size,
-                                    path: item_path,
-                                    md5,
-                                    category,
-                                });
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
+    let effective_uk = uk
+        .as_deref()
+        .filter(|value| !value.is_empty())
+        .ok_or("百度网盘文件列表未完整：分享者标识读取失败，请检查分享链接和权限")?;
+    let effective_shareid = share_id
+        .as_deref()
+        .filter(|value| !value.is_empty())
+        .ok_or("百度网盘文件列表未完整：分享标识读取失败，请检查分享链接和权限")?;
+    let all_files = listing::fetch(
+        network.client(),
+        BAIDU_API_HOST,
+        clean_surl,
+        effective_uk,
+        effective_shareid,
+        &cookie_header,
+        &page_url,
+        network.cancel().clone(),
+        network.user_agent(),
+        network.clone(),
+    )
+    .await?;
+    let file_count = all_files
+        .iter()
+        .filter(|entry| entry.kind == "drive#file")
+        .count();
+    let folder_count = all_files.len() - file_count;
+    let total_size = all_files
+        .iter()
+        .filter(|entry| entry.kind == "drive#file")
+        .try_fold(0u64, |total, entry| {
+            total
+                .checked_add(entry.size)
+                .ok_or("百度网盘文件总大小溢出，列表未完整")
+        })?;
 
     Ok(BaiduShareInfo {
         surl: clean_surl.to_string(),
@@ -502,7 +432,53 @@ pub async fn resolve_baidu_file(
     randsk: Option<&str>,
     cookie: Option<&str>,
 ) -> Result<BaiduDirectUrlResult, String> {
-    let client = get_http_client();
+    let network = crate::cloud_request::CloudRequestContext::defaults(
+        BAIDU_USER_AGENT,
+        20,
+        tokio_util::sync::CancellationToken::new(),
+    )?;
+    resolve_baidu_file_with_context(
+        surl, fs_id, share_id, uk, sign, timestamp, seckey, randsk, cookie, &network,
+    )
+    .await
+}
+pub async fn resolve_baidu_file_with_context(
+    surl: &str,
+    fs_id: &str,
+    share_id: Option<&str>,
+    uk: Option<&str>,
+    sign: Option<&str>,
+    timestamp: Option<i64>,
+    seckey: Option<&str>,
+    randsk: Option<&str>,
+    cookie: Option<&str>,
+    network: &crate::cloud_request::CloudRequestContext,
+) -> Result<BaiduDirectUrlResult, String> {
+    let network = network
+        .with_user_agent(BAIDU_USER_AGENT)
+        .with_cookie_source(BAIDU_API_HOST);
+    network
+        .run(
+            "百度网盘",
+            resolve_baidu_file_impl(
+                surl, fs_id, share_id, uk, sign, timestamp, seckey, randsk, cookie, &network,
+            ),
+        )
+        .await
+}
+async fn resolve_baidu_file_impl(
+    surl: &str,
+    fs_id: &str,
+    share_id: Option<&str>,
+    uk: Option<&str>,
+    sign: Option<&str>,
+    timestamp: Option<i64>,
+    seckey: Option<&str>,
+    randsk: Option<&str>,
+    cookie: Option<&str>,
+    network: &crate::cloud_request::CloudRequestContext,
+) -> Result<BaiduDirectUrlResult, String> {
+    let client = network;
     let clean_surl = surl.strip_prefix('1').unwrap_or(surl);
 
     let mut effective_share_id = share_id.map(|s| s.to_string());
@@ -513,10 +489,11 @@ pub async fn resolve_baidu_file(
     let mut effective_randsk = randsk.map(|s| s.to_string());
 
     if effective_share_id.is_none() || effective_uk.is_none() {
-        if let Ok(info) = inspect_baidu_share(
+        if let Ok(info) = inspect_baidu_share_with_context(
             &format!("{}/s/1{}", BAIDU_API_HOST, clean_surl),
             None,
             cookie,
+            network,
         )
         .await
         {
@@ -541,15 +518,19 @@ pub async fn resolve_baidu_file(
         }
     }
 
-    let mut cookie_header = cookie.unwrap_or("").to_string();
-    if let Some(r) = &effective_randsk {
-        if !r.is_empty() && !cookie_header.contains("BDCLND=") {
-            if !cookie_header.is_empty() {
-                cookie_header.push_str("; ");
-            }
-            cookie_header.push_str(&format!("BDCLND={}", r));
-        }
-    }
+    let cookie_header = if let Some(value) = effective_randsk
+        .as_deref()
+        .filter(|value| !value.is_empty())
+    {
+        crate::cloud_request::with_cookie_pair(
+            cookie.unwrap_or(""),
+            "BDCLND",
+            value,
+            BAIDU_API_HOST,
+        )?
+    } else {
+        cookie.unwrap_or("").to_owned()
+    };
 
     let seckey_clean = if let Some(r) = &effective_randsk {
         url_decode(r)
@@ -592,7 +573,7 @@ pub async fn resolve_baidu_file(
             .await;
 
         if let Ok(r) = resp {
-            if let Ok(text) = r.text().await {
+            if let Ok(text) = network.text(r).await {
                 let json: serde_json::Value = serde_json::from_str(&text).unwrap_or_default();
                 if let Some(0) = json.get("errno").and_then(|v| v.as_i64()) {
                     if let Some(list) = json.get("list").and_then(|v| v.as_array()) {
@@ -651,7 +632,7 @@ pub async fn resolve_baidu_file(
             .await;
 
         if let Ok(tr) = t_resp {
-            if let Ok(text) = tr.text().await {
+            if let Ok(text) = network.text(tr).await {
                 let json: serde_json::Value = serde_json::from_str(&text).unwrap_or_default();
                 let errno = json.get("errno").and_then(|v| v.as_i64()).unwrap_or(-1);
                 tracing::debug!(baidu_errno = errno, "百度转存请求已返回");
@@ -711,7 +692,7 @@ pub async fn resolve_baidu_file(
                             }
                         }
                     }
-                    tracing::debug!(target_fs_id, "百度转存目标文件已解析");
+                    tracing::debug!("百度转存目标文件已解析");
 
                     let fsids_param = format!("[{}]", target_fs_id);
 
@@ -729,7 +710,7 @@ pub async fn resolve_baidu_file(
                             .send()
                             .await
                         {
-                            if let Ok(meta_text) = meta_resp.text().await {
+                            if let Ok(meta_text) = network.text(meta_resp).await {
                                 let meta_json: serde_json::Value =
                                     serde_json::from_str(&meta_text).unwrap_or_default();
                                 if let Some(list) = meta_json.get("list").and_then(|v| v.as_array())
@@ -780,7 +761,7 @@ pub async fn resolve_baidu_file(
                                 .await;
 
                             if let Ok(fm_r) = fm_resp {
-                                if let Ok(fm_text) = fm_r.text().await {
+                                if let Ok(fm_text) = network.text(fm_r).await {
                                     let fm_json: serde_json::Value =
                                         serde_json::from_str(&fm_text).unwrap_or_default();
                                     if let Some(list) =
@@ -839,7 +820,7 @@ pub async fn resolve_baidu_file(
                                 .send()
                                 .await
                             {
-                                if let Ok(loc_text) = loc_resp.text().await {
+                                if let Ok(loc_text) = network.text(loc_resp).await {
                                     let loc_json: serde_json::Value =
                                         serde_json::from_str(&loc_text).unwrap_or_default();
                                     if let Some(urls) =
@@ -880,14 +861,7 @@ pub async fn resolve_baidu_file(
                     // 4. 通道 3: 官方 PCS Direct 直连端点 + 302 重定向 CDN 探查（100% 极速稳定）
                     if let Some(ref path_str) = resolved_path {
                         let encoded_path = url_encode(path_str);
-                        let no_redirect_client = match reqwest::Client::builder()
-                            .redirect(reqwest::redirect::Policy::none())
-                            .timeout(Duration::from_secs(10))
-                            .build()
-                        {
-                            Ok(c) => c,
-                            Err(_) => client.clone(),
-                        };
+                        let no_redirect_client = network;
 
                         for app_id in &["266719", "498065", "309847", "778750", "250528"] {
                             let pcs_direct_url = format!(
@@ -895,7 +869,7 @@ pub async fn resolve_baidu_file(
                                 encoded_path, app_id
                             );
                             if let Ok(pcs_resp) = no_redirect_client
-                                .get(&pcs_direct_url)
+                                .no_redirect_get(&pcs_direct_url)
                                 .header("Cookie", &cookie_header)
                                 .header("User-Agent", BAIDU_DLINK_USER_AGENT)
                                 .send()
@@ -929,14 +903,9 @@ pub async fn resolve_baidu_file(
 
                     return Err(format!("文件已成功转存至网盘（fs_id: {}），但提取直链地址失败，请检查账号状态或稍后重试", target_fs_id));
                 } else {
-                    let err_msg = json
-                        .get("show_msg")
-                        .or_else(|| json.get("errmsg"))
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("转存失败");
                     return Err(format!(
-                        "百度网盘转存文件失败 (错误码 {}): {}",
-                        errno, err_msg
+                        "百度网盘转存文件失败（代码 {}），请检查账号权限",
+                        errno
                     ));
                 }
             }
@@ -994,158 +963,56 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "显式授权的联网验收：设置 MAOBU_TEST_BAIDU_SHARE 后单独运行"]
     async fn test_inspect_real_baidu_share() {
-        let url = "https://pan.baidu.com/s/1uqSBOwEkkw-NdAenNndoqA?pwd=fqq4";
-        let res = inspect_baidu_share(url, None, None).await;
-        if let Ok(info) = res {
-            assert_eq!(info.surl, "uqSBOwEkkw-NdAenNndoqA");
-            assert!(!info.files.is_empty(), "必须拉取到分享中的文件列表");
-            let file = info.files.iter().find(|f| f.kind == "drive#file");
-            assert!(file.is_some(), "必须包含真实文件");
-            let f = file.unwrap();
-            assert!(f.name.contains("2026"), "必须解析出真实文件名: {}", f.name);
-            assert!(f.size > 1_000_000_000, "文件大小应大于 1GB: {}", f.size);
-        } else {
-            eprintln!("当前环境连接百度外部服务器受限或超时，跳过在线断言");
-        }
+        let url = std::env::var("MAOBU_TEST_BAIDU_SHARE")
+            .expect("请显式提供自己的合法测试分享 MAOBU_TEST_BAIDU_SHARE");
+        let cookie = std::env::var("MAOBU_TEST_BAIDU_COOKIE").ok();
+        let result = inspect_baidu_share(&url, None, cookie.as_deref()).await;
+        assert!(result.is_ok(), "百度在线解析失败；不将失败记为跳过或成功");
+        let info = result.unwrap();
+        assert!(
+            info.files
+                .iter()
+                .any(|file| file.kind == "drive#file" && file.size > 0),
+            "测试分享必须包含非空文件"
+        );
     }
 
     #[tokio::test]
-    #[ignore]
+    #[ignore = "显式授权的在线直链解析；只读取测试环境变量，不读取个人数据"]
     async fn test_resolve_real_baidu_file() {
-        let url = "https://pan.baidu.com/s/1uqSBOwEkkw-NdAenNndoqA?pwd=fqq4#list/path=%2F";
-        let real_cookie: Option<String> = tokio::task::spawn_blocking(move || {
-            let data_dir = std::env::var("APPDATA")
-                .map(|p| std::path::PathBuf::from(p).join("app.lumaget.desktop"))
-                .ok()?;
-            if data_dir.join("lumaget.db").exists() {
-                if let Ok(store) = crate::store::Store::open(data_dir) {
-                    let rt = tokio::runtime::Builder::new_current_thread()
-                        .enable_all()
-                        .build()
-                        .ok()?;
-                    return rt.block_on(async move {
-                        if let Ok(tasks) = store.list_tasks().await {
-                            for t in tasks.iter().rev().take(5) {
-                                println!(
-                                    ">>> [DB TASK] id={}, name={}, status={:?}",
-                                    t.id, t.file_name, t.status
-                                );
-                            }
-                        }
-                        store
-                            .media_credential_get_matching("pan.baidu.com")
-                            .await
-                            .ok()
-                            .flatten()
-                            .map(|c| c.cookie)
-                    });
-                }
-            }
-            None
-        })
-        .await
-        .ok()
-        .flatten();
-
-        if let Some(ref c) = real_cookie {
-            println!(
-                ">>> 成功从本地数据库加载 pan.baidu.com Cookie, 长度: {}",
-                c.len()
-            );
-            let u_resp = get_http_client()
-                .get("https://pan.baidu.com/api/user/getinfo?need_sub_user=1")
-                .header("Cookie", c)
-                .header("User-Agent", BAIDU_USER_AGENT)
-                .send()
-                .await;
-            if let Ok(ur) = u_resp {
-                if let Ok(t) = ur.text().await {
-                    println!(">>> [百度用户信息查询回执] is_ok, 长度={}", t.len());
-                }
-            }
-        }
-
-        match inspect_baidu_share(url, None, real_cookie.as_deref()).await {
-            Ok(info) => {
-                println!(
-                    ">>> 成功解析分享信息: surl={}, share_id={:?}, uk={:?}, randsk_len={}",
-                    info.surl,
-                    info.share_id,
-                    info.uk,
-                    info.randsk.as_ref().map(|r| r.len()).unwrap_or(0)
-                );
-                if let Some(file) = info.files.iter().find(|f| f.kind == "drive#file") {
-                    println!(
-                        ">>> 目标文件: id={}, name={}, size={}",
-                        file.id, file.name, file.size
-                    );
-                    let dlink_res = resolve_baidu_file(
-                        &info.surl,
-                        &file.id,
-                        info.share_id.as_deref(),
-                        info.uk.as_deref(),
-                        info.sign.as_deref(),
-                        info.timestamp,
-                        info.seckey.as_deref(),
-                        info.randsk.as_deref(),
-                        real_cookie.as_deref(),
-                    )
-                    .await;
-                    println!(">>> 真实直链获取结果: is_ok={}", dlink_res.is_ok());
-                    assert!(dlink_res.is_ok(), "必须成功获取直链");
-                    let res = dlink_res.unwrap();
-                    // 直链 URL 含临时签名、headers 含 Cookie，严禁打印完整值
-                    println!(">>> [直链 URL 长度] {}", res.url.len());
-                    println!(
-                        ">>> [直链 Headers 键] {:?}",
-                        res.headers.keys().collect::<Vec<_>>()
-                    );
-                    let client = reqwest::Client::new();
-
-                    let mut handles = Vec::new();
-                    for i in 0..4u64 {
-                        let client = client.clone();
-                        let url = res.url.clone();
-                        let headers = res.headers.clone();
-                        let start = i * 1024 * 1024;
-                        let end = (i + 1) * 1024 * 1024 - 1;
-                        handles.push(tokio::spawn(async move {
-                            let mut req = client
-                                .get(&url)
-                                .header("Range", format!("bytes={}-{}", start, end));
-                            for (k, v) in &headers {
-                                req = req.header(k, v);
-                            }
-                            let send_start = std::time::Instant::now();
-                            let resp = req.send().await;
-                            let status = resp.as_ref().map(|r| r.status().as_u16()).unwrap_or(0);
-                            let body_bytes = if let Ok(r) = resp {
-                                r.bytes().await.map(|b| b.len()).unwrap_or(0)
-                            } else {
-                                0
-                            };
-                            let elapsed = send_start.elapsed().as_millis();
-                            println!(
-                                ">>> [并发分片 #{}] status={}, bytes={}, 耗时={}ms",
-                                i, status, body_bytes, elapsed
-                            );
-                            (status, body_bytes)
-                        }));
-                    }
-                    for h in handles {
-                        let (st, len) = h.await.unwrap();
-                        assert_eq!(st, 206, "并发分片必须返回 206");
-                        assert_eq!(len, 1024 * 1024, "分片大小必须为 1MB");
-                    }
-                    println!(">>> 4 路并发 Range 全部成功下载 4MB 数据！");
-                } else {
-                    println!(">>> 未找到文件");
-                }
-            }
-            Err(e) => {
-                println!(">>> 解析分享失败: {}", e);
-            }
-        }
+        // 从测试配置取得凭证；严禁自动读取个人客户端数据库或用户信息接口。
+        let url = std::env::var("MAOBU_TEST_BAIDU_SHARE").expect("请设置 MAOBU_TEST_BAIDU_SHARE");
+        let cookie = std::env::var("MAOBU_TEST_BAIDU_COOKIE")
+            .expect("请设置该测试分享所需的 MAOBU_TEST_BAIDU_COOKIE");
+        let result = inspect_baidu_share(&url, None, Some(&cookie)).await;
+        assert!(result.is_ok(), "百度在线元数据解析失败（凭证与回执不输出）");
+        let info = result.unwrap();
+        let file = info
+            .files
+            .iter()
+            .find(|file| file.kind == "drive#file")
+            .expect("测试分享必须包含文件");
+        let result = resolve_baidu_file(
+            &info.surl,
+            &file.id,
+            info.share_id.as_deref(),
+            info.uk.as_deref(),
+            info.sign.as_deref(),
+            info.timestamp,
+            info.seckey.as_deref(),
+            info.randsk.as_deref(),
+            Some(&cookie),
+        )
+        .await;
+        assert!(
+            result.is_ok(),
+            "百度在线直链解析失败（凭证与签名URL不输出）"
+        );
+        let result = result.unwrap();
+        assert!(
+            url::Url::parse(&result.url).is_ok_and(|url| matches!(url.scheme(), "http" | "https"))
+        );
     }
 }

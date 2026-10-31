@@ -1,0 +1,276 @@
+{
+  "date_local": "2026-10-31",
+  "timezone": "Asia/Shanghai",
+  "scope": "Anonymous yt-dlp metadata probes only. Native Maobu Douyin SSR/Twitter API paths and full media downloads are not covered. First round includes upstream historical samples; second round replaces unavailable samples and uses project UA. No browser or saved cookies were used.",
+  "round1": [
+    {
+      "platform": "Douyin",
+      "url": "https://www.douyin.com/video/6961737553342991651",
+      "time_utc": "2026-10-31T02:08:53.300412+00:00",
+      "tool_version": "2026.07.04",
+      "cookie": "none",
+      "mode": "metadata-only; project probe flags plus timeout, no config",
+      "exit_code": 1,
+      "error_summary": "ERROR: [Douyin] 6961737553342991651: Fresh cookies (not necessarily logged in) are needed"
+    },
+    {
+      "platform": "Bilibili",
+      "url": "https://www.bilibili.com/video/BV13x41117TL",
+      "time_utc": "2026-10-31T02:08:53.300652+00:00",
+      "tool_version": "2026.07.04",
+      "cookie": "none",
+      "mode": "metadata-only; project probe flags plus timeout, no config",
+      "exit_code": 1,
+      "error_summary": "ERROR: [BiliBili] 13x41117TL: Unable to download webpage: HTTP Error 412: Precondition Failed (caused by <HTTPError 412: Precondition Failed>)"
+    },
+    {
+      "platform": "YouTube",
+      "url": "https://www.youtube.com/watch?v=BaW_jenozKc",
+      "time_utc": "2026-10-31T02:08:53.300994+00:00",
+      "tool_version": "2026.07.04",
+      "cookie": "none",
+      "mode": "metadata-only; project probe flags plus timeout, no config",
+      "exit_code": 1,
+      "error_summary": "ERROR: [youtube] BaW_jenozKc: This video is unavailable"
+    },
+    {
+      "platform": "TikTok",
+      "url": "https://www.tiktok.com/@leenabhushan/video/6748451240264420610",
+      "time_utc": "2026-10-31T02:08:53.301752+00:00",
+      "tool_version": "2026.07.04",
+      "cookie": "none",
+      "mode": "metadata-only; project probe flags plus timeout, no config",
+      "exit_code": 1,
+      "error_summary": "ERROR: [TikTok] 6748451240264420610: Unexpected response from webpage request; please report this issue on  https://github.com/yt-dlp/yt-dlp/issues?q= , filling out the appropriate issue template. Confirm you are on the latest version using  yt-dlp -U"
+    },
+    {
+      "platform": "Twitter",
+      "url": "https://twitter.com/i/status/560070183650213889",
+      "time_utc": "2026-10-31T02:08:54.696026+00:00",
+      "tool_version": "2026.07.04",
+      "cookie": "none",
+      "mode": "metadata-only; project probe flags plus timeout, no config",
+      "exit_code": 1,
+      "error_summary": "ERROR: [twitter] 560070183650213889: No video could be found in this tweet"
+    },
+    {
+      "platform": "Weibo",
+      "url": "https://m.weibo.cn/status/4189191225395228",
+      "time_utc": "2026-10-31T02:08:55.676207+00:00",
+      "tool_version": "2026.07.04",
+      "cookie": "none",
+      "mode": "metadata-only; project probe flags plus timeout, no config",
+      "exit_code": 0,
+      "extractor": "Weibo",
+      "format_count": 2,
+      "title_present": true,
+      "drm": null
+    },
+    {
+      "platform": "Xiaohongshu",
+      "url": "https://www.xiaohongshu.com/explore/6411cf99000000001300b6d9",
+      "time_utc": "2026-10-31T02:08:56.057760+00:00",
+      "tool_version": "2026.07.04",
+      "cookie": "none",
+      "mode": "metadata-only; project probe flags plus timeout, no config",
+      "exit_code": 1,
+      "error_summary": "ERROR: [XiaoHongShu] 6411cf99000000001300b6d9: No video formats found!; please report this issue on  https://github.com/yt-dlp/yt-dlp/issues?q= , filling out the appropriate issue template. Confirm you are on the latest version using  yt-dlp -U"
+    },
+    {
+      "platform": "Ixigua",
+      "url": "https://www.ixigua.com/6996881461559165471",
+      "time_utc": "2026-10-31T02:08:56.741255+00:00",
+      "tool_version": "2026.07.04",
+      "cookie": "none",
+      "mode": "metadata-only; project probe flags plus timeout, no config",
+      "exit_code": 1,
+      "error_summary": "ERROR: [Ixigua] 699688146155916547: Cookies (not necessarily logged in) are needed"
+    },
+    {
+      "platform": "Kuaishou",
+      "url": "https://www.kuaishou.com/short-video/3x5kdtj4t9fqws6",
+      "time_utc": "2026-10-31T02:09:00.531954+00:00",
+      "tool_version": "2026.07.04",
+      "cookie": "none",
+      "mode": "metadata-only; project probe flags plus timeout, no config",
+      "exit_code": 1,
+      "error_summary": "ERROR: Unsupported URL: https://www.kuaishou.com/short-video/3x5kdtj4t9fqws6"
+    }
+  ],
+  "round2": [
+    {
+      "platform": "Douyin-current-project-test",
+      "url": "https://www.douyin.com/video/7694589931460594953",
+      "time_utc": "2026-10-31T02:09:43.968306+00:00",
+      "tool_version": "2026.07.04",
+      "cookie": "none",
+      "mode": "metadata-only; project user-agent; no config; bounded timeout",
+      "exit_code": 1,
+      "error_summary": "ERROR: [Douyin] 7694589931460594953: Fresh cookies (not necessarily logged in) are needed"
+    },
+    {
+      "platform": "Bilibili-project-UA",
+      "url": "https://www.bilibili.com/video/BV13x41117TL",
+      "time_utc": "2026-10-31T02:09:43.968719+00:00",
+      "tool_version": "2026.07.04",
+      "cookie": "none",
+      "mode": "metadata-only; project user-agent; no config; bounded timeout",
+      "exit_code": 1,
+      "error_summary": "ERROR: [BiliBili] 13x41117TL: Unable to download webpage: [SSL: UNEXPECTED_EOF_WHILE_READING] EOF occurred in violation of protocol (_ssl.c:1081) (caused by SSLError('[SSL: UNEXPECTED_EOF_WHILE_READING] EOF occurred in violation of protocol (_ssl.c:1081)')); please report this issue on  https://gith"
+    },
+    {
+      "platform": "Bilibili-second",
+      "url": "https://www.bilibili.com/video/BV1bK411W797",
+      "time_utc": "2026-10-31T02:09:43.970075+00:00",
+      "tool_version": "2026.07.04",
+      "cookie": "none",
+      "mode": "metadata-only; project user-agent; no config; bounded timeout",
+      "exit_code": 1,
+      "error_summary": "ERROR: [BiliBili] 1bK411W797: Unable to download webpage: HTTP Error 412: Precondition Failed (caused by <HTTPError 412: Precondition Failed>)"
+    },
+    {
+      "platform": "YouTube-public",
+      "url": "https://www.youtube.com/watch?v=YE7VzlLtp-4",
+      "time_utc": "2026-10-31T02:09:43.970534+00:00",
+      "tool_version": "2026.07.04",
+      "cookie": "none",
+      "mode": "metadata-only; project user-agent; no config; bounded timeout",
+      "exit_code": 0,
+      "extractor": "Youtube",
+      "format_count": 27,
+      "title_present": true,
+      "drm": null
+    },
+    {
+      "platform": "Twitter-public",
+      "url": "https://twitter.com/starwars/status/665052190608723968",
+      "time_utc": "2026-10-31T02:09:46.435116+00:00",
+      "tool_version": "2026.07.04",
+      "cookie": "none",
+      "mode": "metadata-only; project user-agent; no config; bounded timeout",
+      "exit_code": 1,
+      "error_summary": "ERROR: [twitter:amplify] 93ad3568-03d2-47b9-a57b-624b88693acd: Unable to download webpage: HTTP Error 500: Domain Not Found (caused by <HTTPError 500: Domain Not Found>)"
+    }
+  ],
+  "pinned_tools": {
+    "yt-dlp": {
+      "version": "2026.07.04",
+      "head_status": 200,
+      "size_bytes": 18226085,
+      "sha256": "52fe3c26dcf71fbdc85b528589020bb0b8e383155cfa81b64dd447bbe35e24b8",
+      "authority": "https://api.github.com/repos/yt-dlp/yt-dlp/releases/tags/2026.07.04",
+      "verification": "official asset digest matches source constant; no executable downloaded"
+    },
+    "ffmpeg": {
+      "version": "8.1.2 essentials",
+      "head_status": 200,
+      "size_bytes": 109728040,
+      "sha256": "db580001caa24ac104c8cb856cd113a87b0a443f7bdf47d8c12b1d740584a2ec",
+      "authority": "https://www.gyan.dev/ffmpeg/builds/packages/ffmpeg-8.1.2-essentials_build.zip.sha256",
+      "verification": "official SHA256 text matches source constant; no archive downloaded"
+    }
+  },
+  "default_format_probe": {
+    "time_utc": "2026-10-31T02:15:50.987963+00:00",
+    "platform": "youtube",
+    "url": "https://www.youtube.com/watch?v=YE7VzlLtp-4",
+    "exit_code": 0,
+    "type": "metadata evidence for silent default-format path; selection inferred from source, UI not driven",
+    "highest_video_format_id": "248-sr",
+    "height": 1080,
+    "vcodec": "vp9",
+    "acodec": "none",
+    "video_only": true,
+    "combined_format_count": 1
+  },
+  "twitter_native_http_probe": {
+    "time_utc": "2026-10-31T02:15:08.686769+00:00",
+    "public_sample": "https://twitter.com/starwars/status/665052190608723968",
+    "mode": "HTTP request matching native Syndication endpoint; no cookie; Rust conversion not executed",
+    "status": 200,
+    "core_fields_present": true,
+    "media_count": 0,
+    "mp4_variant_count": 0,
+    "top_video_present": false
+  },
+  "native_cloud_share_probes": [
+    {
+      "cookie": "none",
+      "mode": "native module share listing only; no resolve/save/download",
+      "platform": "pikpak",
+      "public_sample": "https://mypikpak.com/s/VOveL7ZI01ViAz9VVKGgSWDlo2",
+      "result": {
+        "ok": true,
+        "summary": {
+          "file_count": 1,
+          "listed_items": 1,
+          "pass_code_required": false
+        }
+      },
+      "time_utc": "2026-10-31T02:19:56+00:00",
+      "evidence": "directly imported unchanged native module; no Tauri app or user database"
+    },
+    {
+      "cookie": "none",
+      "mode": "native module share listing only; no resolve/save/download",
+      "platform": "quark",
+      "public_sample": "https://pan.quark.cn/s/69ba75a686aa#/list/share",
+      "result": {
+        "ok": true,
+        "summary": {
+          "file_count": 0,
+          "listed_items": 0,
+          "pass_code_required": false
+        }
+      },
+      "time_utc": "2026-10-31T02:19:55+00:00",
+      "evidence": "directly imported unchanged native module; no Tauri app or user database"
+    },
+    {
+      "cookie": "none",
+      "mode": "native module share listing only; no resolve/save/download",
+      "platform": "baidupan",
+      "public_sample": "https://pan.baidu.com/s/1uqSBOwEkkw-NdAenNndoqA",
+      "result": {
+        "ok": true,
+        "summary": {
+          "file_count": 1,
+          "listed_items": 2,
+          "pass_code_required": false
+        }
+      },
+      "time_utc": "2026-10-31T02:19:59+00:00",
+      "evidence": "directly imported unchanged native module; no Tauri app or user database"
+    },
+    {
+      "cookie": "none",
+      "mode": "native module share listing only; no resolve/save/download",
+      "platform": "lanzou",
+      "public_sample": "https://www.lanzoui.com/u/yoyodadada",
+      "result": {
+        "ok": true,
+        "summary": {
+          "listed_items": 49,
+          "requires_password": false
+        }
+      },
+      "time_utc": "2026-10-31T02:19:54+00:00",
+      "evidence": "directly imported unchanged native module; no Tauri app or user database"
+    },
+    {
+      "cookie": "none",
+      "mode": "native module share listing only; no resolve/save/download",
+      "platform": "pan123",
+      "public_sample": "https://1683912.share.123pan.cn/123pan/z3h9-rtFzh",
+      "result": {
+        "ok": true,
+        "summary": {
+          "listed_items": 0,
+          "requires_password": true
+        }
+      },
+      "time_utc": "2026-10-31T02:19:54+00:00",
+      "evidence": "directly imported unchanged native module; no Tauri app or user database"
+    }
+  ]
+}

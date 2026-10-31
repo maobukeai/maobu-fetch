@@ -7,68 +7,21 @@
 //! 4. 直链直连猫步下载器 HTTP Range 16/32 线程并发内核。
 
 use regex::Regex;
-use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, VecDeque};
-use std::sync::OnceLock;
-use std::time::Duration;
+use std::collections::HashMap;
+#[path = "quark/listing.rs"]
+mod listing;
+#[cfg(test)]
+#[path = "quark/selection_tests.rs"]
+mod selection_tests;
 
 pub const QUARK_API_HOST: &str = "https://drive.quark.cn";
 pub const QUARK_PC_API_HOST: &str = "https://drive-pc.quark.cn";
 pub const QUARK_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 pub const QUARK_PC_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) quark-cloud-drive/3.13.5 Chrome/108.0.5359.215 Electron/22.3.26 Safari/537.36 Channel/pconline";
 
-static HTTP_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
-
-fn get_http_client() -> &'static reqwest::Client {
-    HTTP_CLIENT.get_or_init(|| {
-        reqwest::Client::builder()
-            .timeout(Duration::from_secs(20))
-            .user_agent(QUARK_PC_USER_AGENT)
-            .build()
-            .unwrap_or_default()
-    })
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct QuarkFileItem {
-    pub id: String,
-    pub name: String,
-    pub kind: String, // "drive#file" or "drive#folder"
-    pub size: u64,
-    pub path: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub share_fid_token: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub mime_type: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub file_extension: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub thumbnail_url: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub format_type: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct QuarkShareInfo {
-    pub pwd_id: String,
-    pub title: String,
-    pub files: Vec<QuarkFileItem>,
-    pub total_size: u64,
-    pub file_count: usize,
-    pub folder_count: usize,
-    pub pass_code_required: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub stoken: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct QuarkDirectUrlResult {
-    pub url: String,
-    pub headers: HashMap<String, String>,
-}
+#[path = "quark/models.rs"]
+mod models;
+pub use models::*;
 
 /// 解析夸克分享 URL 结构
 pub struct ParsedQuarkUrl {
@@ -124,7 +77,36 @@ pub async fn get_share_token(
     pass_code: Option<&str>,
     cookie: Option<&str>,
 ) -> Result<String, String> {
-    let client = get_http_client();
+    let network = crate::cloud_request::CloudRequestContext::defaults(
+        QUARK_PC_USER_AGENT,
+        20,
+        tokio_util::sync::CancellationToken::new(),
+    )?;
+    get_share_token_with_context(pwd_id, pass_code, cookie, &network).await
+}
+pub async fn get_share_token_with_context(
+    pwd_id: &str,
+    pass_code: Option<&str>,
+    cookie: Option<&str>,
+    network: &crate::cloud_request::CloudRequestContext,
+) -> Result<String, String> {
+    let network = network
+        .with_user_agent(QUARK_PC_USER_AGENT)
+        .with_cookie_source(QUARK_API_HOST);
+    network
+        .run(
+            "夸克网盘",
+            get_share_token_impl(pwd_id, pass_code, cookie, &network),
+        )
+        .await
+}
+async fn get_share_token_impl(
+    pwd_id: &str,
+    pass_code: Option<&str>,
+    cookie: Option<&str>,
+    network: &crate::cloud_request::CloudRequestContext,
+) -> Result<String, String> {
+    let client = network;
     let mut payload = serde_json::json!({
         "pwd_id": pwd_id,
     });
@@ -154,8 +136,8 @@ pub async fn get_share_token(
         .await
         .map_err(|e| format!("连接夸克分享服务失败: {}", e))?;
 
-    let text = resp
-        .text()
+    let text = network
+        .text(resp)
         .await
         .map_err(|e| format!("读取夸克响应失败: {}", e))?;
     let json: serde_json::Value = serde_json::from_str(&text).unwrap_or_default();
@@ -182,7 +164,9 @@ pub async fn get_share_token(
         if msg.contains("密码") || msg.contains("提取码") {
             return Err("NEED_PASS_CODE".to_string());
         }
-        return Err(msg.to_string());
+        return Err(format!(
+            "夸克访问令牌获取失败（代码 {code}），请检查分享权限和登录状态"
+        ));
     }
 
     Err("未能获取有效的夸克分享访问令牌".to_string())
@@ -192,161 +176,22 @@ pub async fn get_share_token(
 async fn fetch_directory_tree(
     pwd_id: &str,
     stoken: &str,
+    root: &str,
     cookie: Option<&str>,
+    network: &crate::cloud_request::CloudRequestContext,
 ) -> Result<Vec<QuarkFileItem>, String> {
-    let client = get_http_client();
-    let mut results = Vec::new();
-    let mut queue = VecDeque::new();
-    queue.push_back(("0".to_string(), String::new())); // 0 为夸克根目录 fid
-
-    let mut file_count = 0;
-    let mut folder_visits = 0;
-    const MAX_FILES: usize = 300;
-    const MAX_FOLDER_VISITS: usize = 40;
-
-    while let Some((pdir_fid, current_path)) = queue.pop_front() {
-        folder_visits += 1;
-        if folder_visits > MAX_FOLDER_VISITS && file_count > 0 {
-            break;
-        }
-
-        let mut page = 1;
-        loop {
-            let mut req = client
-                .get(format!(
-                    "{}/1/clouddrive/share/sharepage/detail",
-                    QUARK_API_HOST
-                ))
-                .query(&[
-                    ("pwd_id", pwd_id),
-                    ("stoken", stoken),
-                    ("pdir_fid", &pdir_fid),
-                    ("_page", &page.to_string()),
-                    ("_size", &"100".to_string()),
-                ])
-                .header("Referer", "https://pan.quark.cn/");
-
-            if let Some(c) = cookie {
-                if !c.is_empty() {
-                    req = req.header("Cookie", c);
-                }
-            }
-
-            let resp = req
-                .send()
-                .await
-                .map_err(|e| format!("拉取夸克分享内容失败: {}", e))?;
-
-            let text = resp
-                .text()
-                .await
-                .map_err(|e| format!("读取夸克文件列表失败: {}", e))?;
-            let json: serde_json::Value = serde_json::from_str(&text).unwrap_or_default();
-
-            if let Some(data) = json.get("data") {
-                let list = data
-                    .get("list")
-                    .and_then(|v| v.as_array())
-                    .cloned()
-                    .unwrap_or_default();
-                if list.is_empty() {
-                    break;
-                }
-
-                for item in list {
-                    let fid = item
-                        .get("fid")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string();
-                    let file_name = item
-                        .get("file_name")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string();
-                    let is_dir = item.get("dir").and_then(|v| v.as_bool()).unwrap_or(false)
-                        || item.get("file").and_then(|v| v.as_bool()) == Some(false)
-                        || item
-                            .get("is_dir")
-                            .and_then(|v| v.as_bool())
-                            .unwrap_or(false)
-                        || item.get("obj_type").and_then(|v| v.as_str()) == Some("dir")
-                        || item.get("format_type").and_then(|v| v.as_str()) == Some("dir");
-                    let size = item
-                        .get("size")
-                        .and_then(|v| v.as_u64())
-                        .or_else(|| {
-                            item.get("size")
-                                .and_then(|v| v.as_str())
-                                .and_then(|s| s.parse::<u64>().ok())
-                        })
-                        .unwrap_or(0);
-                    let format_type = item
-                        .get("format_type")
-                        .and_then(|v| v.as_str())
-                        .map(|s| s.to_string());
-                    let file_extension = item
-                        .get("file_extension")
-                        .and_then(|v| v.as_str())
-                        .map(|s| s.to_string())
-                        .or_else(|| file_name.split('.').last().map(|s| s.to_string()));
-                    let thumbnail_url = item
-                        .get("thumbnail")
-                        .or_else(|| item.get("icon"))
-                        .and_then(|v| v.as_str())
-                        .map(|s| s.to_string());
-
-                    let item_path = if current_path.is_empty() {
-                        file_name.clone()
-                    } else {
-                        format!("{}/{}", current_path, file_name)
-                    };
-
-                    let kind = if is_dir { "drive#folder" } else { "drive#file" }.to_string();
-                    if !is_dir {
-                        file_count += 1;
-                    }
-
-                    let share_fid_token = item
-                        .get("share_fid_token")
-                        .or_else(|| item.get("fid_token"))
-                        .and_then(|v| v.as_str())
-                        .map(|s| s.to_string());
-
-                    results.push(QuarkFileItem {
-                        id: fid.clone(),
-                        name: file_name.clone(),
-                        kind,
-                        size,
-                        path: item_path.clone(),
-                        share_fid_token,
-                        mime_type: None,
-                        file_extension,
-                        thumbnail_url,
-                        format_type,
-                    });
-
-                    if is_dir && file_count < MAX_FILES {
-                        queue.push_front((fid, item_path));
-                    }
-                }
-
-                let total = data.get("total").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
-                if page * 100 >= total || file_count >= MAX_FILES {
-                    break;
-                }
-                page += 1;
-            } else {
-                break;
-            }
-        }
-
-        if file_count >= MAX_FILES {
-            break;
-        }
-    }
-
-    Ok(results)
+    listing::fetch(
+        network.client(),
+        QUARK_API_HOST,
+        pwd_id,
+        stoken,
+        root,
+        cookie,
+        network.cancel().clone(),
+        network.user_agent(),
+        network.clone(),
+    )
+    .await
 }
 
 /// 解析夸克分享链接
@@ -355,14 +200,58 @@ pub async fn inspect_quark_share(
     provided_pass_code: Option<String>,
     cookie: Option<String>,
 ) -> Result<QuarkShareInfo, String> {
+    inspect_quark_share_with_cancel(
+        raw_url,
+        provided_pass_code,
+        cookie,
+        &tokio_util::sync::CancellationToken::new(),
+    )
+    .await
+}
+pub async fn inspect_quark_share_with_cancel(
+    raw_url: &str,
+    provided_pass_code: Option<String>,
+    cookie: Option<String>,
+    cancel: &tokio_util::sync::CancellationToken,
+) -> Result<QuarkShareInfo, String> {
+    let network = crate::cloud_request::CloudRequestContext::defaults(
+        QUARK_PC_USER_AGENT,
+        20,
+        cancel.clone(),
+    )?;
+    inspect_quark_share_with_context(raw_url, provided_pass_code, cookie, &network).await
+}
+pub async fn inspect_quark_share_with_context(
+    raw_url: &str,
+    provided_pass_code: Option<String>,
+    cookie: Option<String>,
+    network: &crate::cloud_request::CloudRequestContext,
+) -> Result<QuarkShareInfo, String> {
+    let network = network
+        .with_user_agent(QUARK_PC_USER_AGENT)
+        .with_cookie_source(QUARK_API_HOST);
+    network
+        .run(
+            "夸克网盘",
+            inspect_quark_share_impl(raw_url, provided_pass_code, cookie, &network),
+        )
+        .await
+}
+async fn inspect_quark_share_impl(
+    raw_url: &str,
+    provided_pass_code: Option<String>,
+    cookie: Option<String>,
+    network: &crate::cloud_request::CloudRequestContext,
+) -> Result<QuarkShareInfo, String> {
     let parsed = parse_quark_url(raw_url)
         .ok_or_else(|| "无效的夸克分享链接，格式应为 https://pan.quark.cn/s/xxxx".to_string())?;
 
     let effective_pass_code = provided_pass_code.or(parsed.pass_code);
-    let stoken_res = get_share_token(
+    let stoken_res = get_share_token_with_context(
         &parsed.pwd_id,
         effective_pass_code.as_deref(),
         cookie.as_deref(),
+        network,
     )
     .await;
 
@@ -383,7 +272,14 @@ pub async fn inspect_quark_share(
         Err(e) => return Err(e),
     };
 
-    let all_items = fetch_directory_tree(&parsed.pwd_id, &stoken, cookie.as_deref()).await?;
+    let all_items = fetch_directory_tree(
+        &parsed.pwd_id,
+        &stoken,
+        parsed.pdir_fid.as_deref().unwrap_or("0"),
+        cookie.as_deref(),
+        network,
+    )
+    .await?;
 
     let total_size = all_items
         .iter()
@@ -426,8 +322,9 @@ async fn save_share_file_to_drive(
     share_fid_token: Option<&str>,
     stoken: &str,
     cookie: &str,
+    network: &crate::cloud_request::CloudRequestContext,
 ) -> Result<String, String> {
-    let client = get_http_client();
+    let client = network;
     let mut payload = serde_json::json!({
         "fid_list": [fid],
         "pwd_id": pwd_id,
@@ -456,20 +353,15 @@ async fn save_share_file_to_drive(
         .await
         .map_err(|e| format!("自动转存请求失败: {}", e))?;
 
-    let text = resp
-        .text()
+    let text = network
+        .text(resp)
         .await
         .map_err(|e| format!("读取转存响应失败: {}", e))?;
     let json: serde_json::Value = serde_json::from_str(&text).unwrap_or_default();
 
     if let Some(code) = json.get("code").and_then(|v| v.as_i64()) {
         if code != 0 && code != 200 {
-            let msg = json
-                .get("message")
-                .or_else(|| json.get("msg"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("未知错误");
-            return Err(format!("自动转存失败: {}", msg));
+            return Err(format!("自动转存失败（代码 {code}），请检查账号权限"));
         }
     }
 
@@ -496,7 +388,7 @@ async fn save_share_file_to_drive(
                 .await;
 
             if let Ok(p_resp) = poll_resp {
-                if let Ok(p_text) = p_resp.text().await {
+                if let Ok(p_text) = network.text(p_resp).await {
                     let p_json: serde_json::Value =
                         serde_json::from_str(&p_text).unwrap_or_default();
                     if let Some(data) = p_json.get("data") {
@@ -543,7 +435,7 @@ async fn save_share_file_to_drive(
                                 .await;
 
                             if let Ok(s_resp) = sort_resp {
-                                if let Ok(s_text) = s_resp.text().await {
+                                if let Ok(s_text) = network.text(s_resp).await {
                                     let s_json: serde_json::Value =
                                         serde_json::from_str(&s_text).unwrap_or_default();
                                     if let Some(list) = s_json
@@ -579,7 +471,40 @@ pub async fn resolve_quark_file(
     stoken: Option<&str>,
     cookie: Option<&str>,
 ) -> Result<QuarkDirectUrlResult, String> {
-    let client = get_http_client();
+    let network = crate::cloud_request::CloudRequestContext::defaults(
+        QUARK_PC_USER_AGENT,
+        20,
+        tokio_util::sync::CancellationToken::new(),
+    )?;
+    resolve_quark_file_with_context(pwd_id, fid, share_fid_token, stoken, cookie, &network).await
+}
+pub async fn resolve_quark_file_with_context(
+    pwd_id: &str,
+    fid: &str,
+    share_fid_token: Option<&str>,
+    stoken: Option<&str>,
+    cookie: Option<&str>,
+    network: &crate::cloud_request::CloudRequestContext,
+) -> Result<QuarkDirectUrlResult, String> {
+    let network = network
+        .with_user_agent(QUARK_PC_USER_AGENT)
+        .with_cookie_source(QUARK_API_HOST);
+    network
+        .run(
+            "夸克网盘",
+            resolve_quark_file_impl(pwd_id, fid, share_fid_token, stoken, cookie, &network),
+        )
+        .await
+}
+async fn resolve_quark_file_impl(
+    pwd_id: &str,
+    fid: &str,
+    share_fid_token: Option<&str>,
+    stoken: Option<&str>,
+    cookie: Option<&str>,
+    network: &crate::cloud_request::CloudRequestContext,
+) -> Result<QuarkDirectUrlResult, String> {
+    let client = network;
 
     let cookie_val = cookie.unwrap_or("").trim();
     let effective_stoken = match stoken {
@@ -600,7 +525,7 @@ pub async fn resolve_quark_file(
                 .await;
 
             if let Ok(t_resp) = token_resp {
-                if let Ok(t_text) = t_resp.text().await {
+                if let Ok(t_text) = network.text(t_resp).await {
                     let t_json: serde_json::Value =
                         serde_json::from_str(&t_text).unwrap_or_default();
                     t_json
@@ -642,7 +567,7 @@ pub async fn resolve_quark_file(
         .await;
 
     if let Ok(resp) = resp_res {
-        if let Ok(text) = resp.text().await {
+        if let Ok(text) = network.text(resp).await {
             let json: serde_json::Value = serde_json::from_str(&text).unwrap_or_default();
             let direct_url = json
                 .get("data")
@@ -674,7 +599,7 @@ pub async fn resolve_quark_file(
                     .or_else(|| json.get("error"))
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
-                last_error_msg = msg.to_string();
+                last_error_msg = format!("接口错误代码 {code}");
 
                 let is_size_limit = code == 23018
                     || msg.contains("size limit")
@@ -697,7 +622,7 @@ pub async fn resolve_quark_file(
                             .send()
                             .await
                         {
-                            if let Ok(t_text) = t_resp.text().await {
+                            if let Ok(t_text) = network.text(t_resp).await {
                                 let t_json: serde_json::Value =
                                     serde_json::from_str(&t_text).unwrap_or_default();
                                 if let Some(stk) = t_json
@@ -717,6 +642,7 @@ pub async fn resolve_quark_file(
                         share_fid_token,
                         &stoken_to_use,
                         cookie_val,
+                        network,
                     )
                     .await
                     {
@@ -739,7 +665,7 @@ pub async fn resolve_quark_file(
                                 .await;
 
                             if let Ok(s_resp) = save_down {
-                                if let Ok(s_text) = s_resp.text().await {
+                                if let Ok(s_text) = network.text(s_resp).await {
                                     let s_json: serde_json::Value =
                                         serde_json::from_str(&s_text).unwrap_or_default();
                                     let s_direct_url = s_json
@@ -768,13 +694,8 @@ pub async fn resolve_quark_file(
                                     if let Some(url) = s_direct_url {
                                         resolved_url = Some(url);
                                     } else {
-                                        let s_msg = s_json
-                                            .get("message")
-                                            .or_else(|| s_json.get("msg"))
-                                            .and_then(|v| v.as_str())
-                                            .unwrap_or("");
                                         last_error_msg =
-                                            format!("转存成功但获取直链失败: {}", s_msg);
+                                            "转存成功但未能获取下载直链，请刷新登录态重试".into();
                                     }
                                 }
                             }
@@ -831,18 +752,20 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "显式授权的联网验收：设置 MAOBU_TEST_QUARK_SHARE 后单独运行"]
     async fn test_inspect_real_quark_share() {
-        let url = "https://pan.quark.cn/s/69ba75a686aa#/list/share";
-        let res = inspect_quark_share(url, None, None).await;
-        if let Ok(info) = res {
-            if !info.files.is_empty() {
-                if let Some(movie) = info.files.iter().find(|f| f.kind == "drive#file") {
-                    assert!(movie.name.contains("2026"), "必须解析出真实电影文件名");
-                    assert!(movie.size > 1_000_000_000, "电影大小应大于 1GB");
-                }
-            }
-        } else {
-            eprintln!("当前环境连接夸克外部服务器受限或超时，跳过在线断言");
-        }
+        let url = std::env::var("MAOBU_TEST_QUARK_SHARE")
+            .expect("请显式提供自己的合法测试分享 MAOBU_TEST_QUARK_SHARE");
+        let cookie = std::env::var("MAOBU_TEST_QUARK_COOKIE").ok();
+        let result = inspect_quark_share(&url, None, cookie).await;
+        assert!(result.is_ok(), "夸克在线解析失败；不将失败记为跳过或成功");
+        let info = result.unwrap();
+        assert!(!info.files.is_empty(), "分享文件列表为空，未通过在线验收");
+        assert!(
+            info.files
+                .iter()
+                .any(|file| file.kind == "drive#file" && file.size > 0),
+            "测试分享必须包含非空文件"
+        );
     }
 }

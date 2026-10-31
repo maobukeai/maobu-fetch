@@ -738,7 +738,9 @@
                 void sendMessageSafe({ type: "task-action", id: message.taskId, action: "cancel" }).then((response) => {
                   const ok = Boolean(response?.ok && response.result?.success);
                   showBadge(ok ? "info" : "error",
-                    ok ? "已取消桌面端任务（浏览器下载已结束，可重新发起）"
+                    ok ? (response.result.paused_instead
+                      ? "旧版桌面端尚不支持撤销，已暂停任务；可在桌面端删除或继续"
+                      : "已取消桌面端任务（浏览器下载已结束，可重新发起）")
                       : `撤销失败：${truncate(response?.error || response?.result?.error || "未知错误", 40)}`);
                 });
               },

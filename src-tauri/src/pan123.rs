@@ -4,10 +4,10 @@
 //! 支持公开分享免登录解析、多层目录递归展开与 32 线程满载多并发下载。
 
 use regex::Regex;
-use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::LazyLock;
-use std::time::Duration;
+#[path = "pan123/listing.rs"]
+mod listing;
 
 pub const PAN123_USER_AGENT: &str =
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
@@ -19,32 +19,9 @@ static RE_PAN123_URL: LazyLock<Regex> = LazyLock::new(|| {
         .expect("RE_PAN123_URL regex compile")
 });
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Pan123FileItem {
-    pub id: i64,
-    pub name: String,
-    pub size: u64,
-    pub size_formatted: String,
-    pub etag: String,
-    pub s3_key_flag: String,
-    pub kind: String, // "file" | "folder"
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Pan123ShareInfo {
-    pub share_key: String,
-    pub share_url: String,
-    pub title: String,
-    pub is_folder: bool,
-    pub requires_password: bool,
-    pub files: Vec<Pan123FileItem>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Pan123DirectUrlResult {
-    pub url: String,
-    pub headers: HashMap<String, String>,
-}
+#[path = "pan123/models.rs"]
+mod models;
+pub use models::*;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParsedPan123Url {
@@ -91,133 +68,111 @@ pub async fn inspect_pan123_share(
     share_url: &str,
     pass_code: Option<&str>,
 ) -> Result<Pan123ShareInfo, String> {
+    inspect_pan123_share_with_cancel(
+        share_url,
+        pass_code,
+        &tokio_util::sync::CancellationToken::new(),
+    )
+    .await
+}
+pub async fn inspect_pan123_share_with_cancel(
+    share_url: &str,
+    pass_code: Option<&str>,
+    cancel: &tokio_util::sync::CancellationToken,
+) -> Result<Pan123ShareInfo, String> {
+    let network =
+        crate::cloud_request::CloudRequestContext::defaults(PAN123_USER_AGENT, 15, cancel.clone())?;
+    inspect_pan123_share_with_context(share_url, pass_code, &network).await
+}
+pub async fn inspect_pan123_share_with_context(
+    share_url: &str,
+    pass_code: Option<&str>,
+    network: &crate::cloud_request::CloudRequestContext,
+) -> Result<Pan123ShareInfo, String> {
+    let network = network
+        .with_user_agent(PAN123_USER_AGENT)
+        .with_cookie_source(PAN123_API_BASE);
+    network
+        .run(
+            "123云盘",
+            inspect_pan123_share_impl(share_url, pass_code, &network),
+        )
+        .await
+}
+async fn inspect_pan123_share_impl(
+    share_url: &str,
+    pass_code: Option<&str>,
+    network: &crate::cloud_request::CloudRequestContext,
+) -> Result<Pan123ShareInfo, String> {
     let parsed =
         parse_pan123_url(share_url).ok_or_else(|| "无法识别的 123云盘分享链接".to_string())?;
     let effective_pwd = pass_code
         .map(|s| s.to_string())
         .or(parsed.pass_code.clone());
 
-    let client = reqwest::Client::builder()
-        .user_agent(PAN123_USER_AGENT)
-        .timeout(Duration::from_secs(15))
-        .build()
-        .map_err(|e| format!("创建 HTTP 客户端失败：{e}"))?;
-
-    let pwd_param = effective_pwd.as_deref().unwrap_or("");
-    let mut files = Vec::new();
-    let mut title = format!("123云盘分享 - {}", parsed.share_key);
-    let mut is_folder = false;
-
-    // 递归获取分享内的文件列表（支持嵌套子目录）
-    let mut folder_queue = vec![0i64];
-    let mut visited_folders = std::collections::HashSet::new();
-
-    while let Some(parent_id) = folder_queue.pop() {
-        if !visited_folders.insert(parent_id) {
-            continue;
-        }
-
-        let list_url = format!(
-            "{}/share/get?limit=100&next=0&page=1&orderBy=share_id&orderDirection=desc&shareKey={}&SharePwd={}&parentFileId={}",
+    let mut source = listing::Pan123Source {
+        context: crate::cloud_pagination::Context::new(
+            network.client(),
             PAN123_API_BASE,
-            parsed.share_key,
-            pwd_param,
-            parent_id
-        );
-
-        let resp = client
-            .get(&list_url)
-            .header("Referer", share_url)
-            .header("Platform", "web")
-            .header("App-Version", "3")
-            .send()
-            .await
-            .map_err(|e| format!("请求 123云盘分享失败：{e}"))?;
-
-        let json_text = resp.text().await.unwrap_or_default();
-        let json_val: serde_json::Value = serde_json::from_str(&json_text)
-            .map_err(|_| format!("123云盘接口回执异常：{json_text}"))?;
-
-        let code = json_val.get("code").and_then(|v| v.as_i64()).unwrap_or(-1);
-        if code == 5103
-            || code == 50001
-            || code == 50002
-            || code == 401
-            || json_text.contains("提取码")
-            || json_text.contains("密码")
-        {
+            network.cancel().clone(),
+            "123云盘",
+        )
+        .with_user_agent(network.user_agent())
+        .with_network(network.clone()),
+        share_key: &parsed.share_key,
+        password: effective_pwd.as_deref().unwrap_or(""),
+        referer: share_url,
+    };
+    let entries = match crate::cloud_pagination::collect(&mut source, "0").await {
+        Ok(entries) => entries,
+        Err(error) if error == "NEED_PASS_CODE" => {
             return Ok(Pan123ShareInfo {
                 share_key: parsed.share_key.clone(),
-                share_url: share_url.to_string(),
-                title: format!("123云盘加密分享 - {}", parsed.share_key),
+                share_url: share_url.into(),
+                title: "123云盘加密分享".into(),
                 is_folder: false,
                 requires_password: true,
                 files: Vec::new(),
-            });
+            })
         }
-
-        if code != 0 {
-            let msg = json_val
-                .get("message")
+        Err(error) => return Err(error),
+    };
+    let is_folder = entries.iter().any(|entry| entry.folder)
+        || entries.iter().filter(|entry| !entry.folder).count() > 1;
+    let title = entries
+        .iter()
+        .find(|entry| entry.folder)
+        .map(|entry| entry.name.clone())
+        .unwrap_or_else(|| "123云盘分享".into());
+    let mut files = Vec::new();
+    for entry in entries.into_iter().filter(|entry| !entry.folder) {
+        let id = entry
+            .id
+            .parse::<i64>()
+            .map_err(|_| "123云盘文件列表未完整：文件标识无效")?;
+        files.push(Pan123FileItem {
+            id,
+            name: entry.name,
+            size: entry.size,
+            size_formatted: format_bytes(entry.size),
+            etag: entry
+                .raw
+                .get("Etag")
                 .and_then(|v| v.as_str())
-                .unwrap_or("未知错误");
-            return Err(format!("123云盘解析失败：{msg}"));
-        }
-
-        if let Some(data) = json_val.get("data") {
-            if let Some(list) = data.get("InfoList").and_then(|v| v.as_array()) {
-                for item in list {
-                    let file_id = item.get("FileId").and_then(|v| v.as_i64()).unwrap_or(0);
-                    let name = item
-                        .get("FileName")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string();
-                    let size = item.get("Size").and_then(|v| v.as_u64()).unwrap_or(0);
-                    let etag = item
-                        .get("Etag")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string();
-                    let s3_key_flag = item
-                        .get("S3KeyFlag")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string();
-                    let f_type = item.get("Type").and_then(|v| v.as_i64()).unwrap_or(0);
-
-                    if f_type == 1 {
-                        // 文件夹 -> 递归排队拉取其子文件
-                        is_folder = true;
-                        if !name.is_empty() && title.starts_with("123云盘分享") {
-                            title = name.clone();
-                        }
-                        folder_queue.push(file_id);
-                    } else {
-                        // 真实文件
-                        let size_formatted = format_bytes(size);
-                        files.push(Pan123FileItem {
-                            id: file_id,
-                            name,
-                            size,
-                            size_formatted,
-                            etag,
-                            s3_key_flag,
-                            kind: "file".to_string(),
-                        });
-                    }
-                }
-            }
-        }
+                .unwrap_or_default()
+                .into(),
+            s3_key_flag: entry
+                .raw
+                .get("S3KeyFlag")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .into(),
+            kind: "file".into(),
+        });
     }
-
-    if files.len() > 1 {
-        is_folder = true;
-    }
-
     Ok(Pan123ShareInfo {
         share_key: parsed.share_key,
-        share_url: share_url.to_string(),
+        share_url: share_url.into(),
         title,
         is_folder,
         requires_password: false,
@@ -234,11 +189,63 @@ pub async fn resolve_pan123_file(
     pass_code: Option<&str>,
     token_or_cookie: Option<&str>,
 ) -> Result<Pan123DirectUrlResult, String> {
-    let client = reqwest::Client::builder()
-        .user_agent(PAN123_USER_AGENT)
-        .timeout(Duration::from_secs(15))
-        .build()
-        .map_err(|e| format!("创建 HTTP 客户端失败：{e}"))?;
+    let network = crate::cloud_request::CloudRequestContext::defaults(
+        PAN123_USER_AGENT,
+        15,
+        tokio_util::sync::CancellationToken::new(),
+    )?;
+    resolve_pan123_file_with_context(
+        share_key,
+        file_id,
+        s3_key_flag,
+        size,
+        etag,
+        pass_code,
+        token_or_cookie,
+        &network,
+    )
+    .await
+}
+pub async fn resolve_pan123_file_with_context(
+    share_key: &str,
+    file_id: i64,
+    s3_key_flag: &str,
+    size: u64,
+    etag: &str,
+    pass_code: Option<&str>,
+    token_or_cookie: Option<&str>,
+    network: &crate::cloud_request::CloudRequestContext,
+) -> Result<Pan123DirectUrlResult, String> {
+    let network = network
+        .with_user_agent(PAN123_USER_AGENT)
+        .with_cookie_source(PAN123_API_BASE);
+    network
+        .run(
+            "123云盘",
+            resolve_pan123_file_impl(
+                share_key,
+                file_id,
+                s3_key_flag,
+                size,
+                etag,
+                pass_code,
+                token_or_cookie,
+                &network,
+            ),
+        )
+        .await
+}
+async fn resolve_pan123_file_impl(
+    share_key: &str,
+    file_id: i64,
+    s3_key_flag: &str,
+    size: u64,
+    etag: &str,
+    pass_code: Option<&str>,
+    token_or_cookie: Option<&str>,
+    network: &crate::cloud_request::CloudRequestContext,
+) -> Result<Pan123DirectUrlResult, String> {
+    let client = network;
 
     let api_url = format!("{}/share/download/info", PAN123_API_BASE);
 
@@ -261,9 +268,13 @@ pub async fn resolve_pan123_file(
     if let Some(cred) = token_or_cookie {
         let cred_trim = cred.trim();
         if !cred_trim.is_empty() {
-            if cred_trim.contains('=') && !cred_trim.starts_with("Bearer") {
+            if crate::media_cookies::is_netscape_format(cred_trim)
+                || cred_trim.contains('=') && !cred_trim.starts_with("Bearer")
+            {
                 req = req.header("Cookie", cred_trim);
-                if let Some(tok) = cred_trim.split(';').find_map(|p| {
+                let scoped =
+                    crate::media_cookies::header_for_url(cred_trim, PAN123_API_BASE, &api_url);
+                if let Some(tok) = scoped.split(';').find_map(|p| {
                     let p_trim = p.trim();
                     if p_trim.starts_with("token=") || p_trim.starts_with("authorization=") {
                         Some(p_trim.split('=').nth(1)?.trim())
@@ -285,9 +296,9 @@ pub async fn resolve_pan123_file(
         .await
         .map_err(|e| format!("请求 123云盘直链失败：{e}"))?;
 
-    let json_text = resp.text().await.unwrap_or_default();
-    let json_val: serde_json::Value = serde_json::from_str(&json_text)
-        .map_err(|_| format!("123云盘直链接口回执异常：{json_text}"))?;
+    let json_text = network.text(resp).await?;
+    let json_val: serde_json::Value =
+        serde_json::from_str(&json_text).map_err(|_| "123云盘直链接口返回无效 JSON".to_owned())?;
 
     let code = json_val.get("code").and_then(|v| v.as_i64()).unwrap_or(-1);
     if code == 5112 {
@@ -295,11 +306,9 @@ pub async fn resolve_pan123_file(
     }
 
     if code != 0 {
-        let msg = json_val
-            .get("message")
-            .and_then(|v| v.as_str())
-            .unwrap_or("未知错误");
-        return Err(format!("123云盘获取直链失败：{msg}"));
+        return Err(format!(
+            "123云盘获取直链失败（代码 {code}），请检查分享权限和登录状态"
+        ));
     }
 
     let dlink = json_val

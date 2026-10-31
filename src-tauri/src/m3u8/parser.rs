@@ -1,6 +1,6 @@
 // HLS M3U8 播放列表解析器（纯 Rust 实现，遵循 RFC 8216 标准）
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use url::Url;
 
 /// 加密方法类型
@@ -37,6 +37,9 @@ pub struct MediaSegment {
     pub byte_range: Option<(u64, Option<u64>)>,
     /// 是否为 fMP4 初始化分片 (#EXT-X-MAP)
     pub is_init_segment: bool,
+    /// 此切片实际使用的初始化段，支持直播/不连续点切换 EXT-X-MAP。
+    pub initialization: Option<Box<MediaSegment>>,
+    pub discontinuity: u64,
 }
 
 /// 主播放列表（Master Playlist）变体流信息
@@ -70,11 +73,26 @@ pub enum ParsedPlaylist {
 /// 解析 M3U8 文本内容
 pub fn parse_m3u8(content: &str, base_url: &str) -> Result<ParsedPlaylist, String> {
     let trimmed = content.trim();
-    if !trimmed.starts_with("#EXTM3U") {
+    if trimmed.lines().next() != Some("#EXTM3U") {
         return Err("无效的 M3U8 文件：缺少 #EXTM3U 头部".to_string());
     }
 
+    for line in content.lines().map(str::trim) {
+        if let Some(attributes) = line.strip_prefix("#EXT-X-SESSION-KEY:") {
+            if super::media_parser::parse_key(&parse_attributes(attributes)?, base_url)?.is_none() {
+                return Err("M3U8 会话密钥不能使用 METHOD=NONE".into());
+            }
+        }
+    }
+
     if trimmed.contains("#EXT-X-STREAM-INF") {
+        if content
+            .lines()
+            .map(str::trim)
+            .any(|line| line.starts_with("#EXTINF:") || line.starts_with("#EXT-X-MEDIA-SEQUENCE:"))
+        {
+            return Err("M3U8 主播放列表混入媒体列表标签，已拒绝解析".into());
+        }
         let variants = parse_master_playlist(content, base_url)?;
         Ok(ParsedPlaylist::Master(variants))
     } else {
@@ -85,6 +103,7 @@ pub fn parse_m3u8(content: &str, base_url: &str) -> Result<ParsedPlaylist, Strin
 
 /// 解析 Master Playlist
 pub fn parse_master_playlist(content: &str, base_url: &str) -> Result<Vec<MasterVariant>, String> {
+    let audio_groups = master_audio_groups(content)?;
     let mut variants = Vec::new();
     let mut current_stream_inf: Option<HashMap<String, String>> = None;
 
@@ -95,12 +114,27 @@ pub fn parse_master_playlist(content: &str, base_url: &str) -> Result<Vec<Master
         }
 
         if line.starts_with("#EXT-X-STREAM-INF:") {
-            let attrs = parse_attributes(&line["#EXT-X-STREAM-INF:".len()..]);
+            if current_stream_inf.is_some() {
+                return Err("M3U8 变体流缺少资源地址".into());
+            }
+            let attrs = parse_attributes(&line["#EXT-X-STREAM-INF:".len()..])?;
+            if attrs
+                .get("AUDIO")
+                .is_some_and(|group| !audio_groups.contains(group))
+            {
+                return Err("M3U8 变体引用了不存在的音轨组，未下载不完整媒体".into());
+            }
             current_stream_inf = Some(attrs);
         } else if !line.starts_with('#') {
             if let Some(attrs) = current_stream_inf.take() {
                 let variant_url = resolve_url(base_url, line)?;
-                let bandwidth = attrs.get("BANDWIDTH").and_then(|v| v.parse::<u64>().ok());
+                let bandwidth = Some(
+                    attrs
+                        .get("BANDWIDTH")
+                        .and_then(|v| v.parse::<u64>().ok())
+                        .filter(|value| *value > 0)
+                        .ok_or("M3U8 变体流缺少有效 BANDWIDTH")?,
+                );
                 let resolution = attrs.get("RESOLUTION").and_then(|v| {
                     let parts: Vec<&str> = v.split('x').collect();
                     if parts.len() == 2 {
@@ -123,11 +157,39 @@ pub fn parse_master_playlist(content: &str, base_url: &str) -> Result<Vec<Master
         }
     }
 
+    if current_stream_inf.is_some() {
+        return Err("M3U8 变体流缺少资源地址".into());
+    }
     if variants.is_empty() {
         return Err("Master Playlist 中未找到有效的变体流 (#EXT-X-STREAM-INF)".to_string());
     }
 
     Ok(variants)
+}
+
+fn master_audio_groups(content: &str) -> Result<HashSet<String>, String> {
+    let mut groups = HashSet::new();
+    for line in content.lines().map(str::trim) {
+        let Some(raw) = line.strip_prefix("#EXT-X-MEDIA:") else {
+            continue;
+        };
+        let attributes = parse_attributes(raw)?;
+        if attributes
+            .get("TYPE")
+            .is_none_or(|kind| !kind.eq_ignore_ascii_case("AUDIO"))
+        {
+            continue;
+        }
+        if attributes.contains_key("URI") {
+            return Err("原生 M3U8 暂不支持主列表的外部独立音轨，未只下载无声视频；请使用媒体解析选择完整音视频格式或安装媒体工具".into());
+        }
+        let group = attributes
+            .get("GROUP-ID")
+            .filter(|group| !group.is_empty())
+            .ok_or("M3U8 音轨组缺少有效 GROUP-ID")?;
+        groups.insert(group.clone());
+    }
+    Ok(groups)
 }
 
 /// 选择最佳清晰度/码率的变体流
@@ -147,185 +209,94 @@ pub fn select_best_variant(variants: &[MasterVariant]) -> Option<String> {
 
 /// 解析 Media Playlist
 pub fn parse_media_playlist(content: &str, base_url: &str) -> Result<MediaPlaylist, String> {
-    let mut target_duration = None;
-    let mut media_sequence = 0u64;
-    let mut is_endlist = false;
-    let mut init_segment = None;
-    let mut segments = Vec::new();
-
-    let mut current_key: Option<EncryptionKey> = None;
-    let mut next_duration = 0.0f64;
-    let mut next_byte_range = None;
-    let mut current_byte_offset = 0u64;
-
-    for line in content.lines() {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-
-        if line.starts_with("#EXT-X-TARGETDURATION:") {
-            target_duration = line["#EXT-X-TARGETDURATION:".len()..]
-                .trim()
-                .parse::<f64>()
-                .ok();
-        } else if line.starts_with("#EXT-X-MEDIA-SEQUENCE:") {
-            if let Ok(seq) = line["#EXT-X-MEDIA-SEQUENCE:".len()..].trim().parse::<u64>() {
-                media_sequence = seq;
-            }
-        } else if line.starts_with("#EXT-X-KEY:") {
-            let attrs = parse_attributes(&line["#EXT-X-KEY:".len()..]);
-            let method_str = attrs.get("METHOD").map(|s| s.as_str()).unwrap_or("NONE");
-            let method = match method_str.to_uppercase().as_str() {
-                "NONE" => EncryptionMethod::None,
-                "AES-128" => EncryptionMethod::Aes128,
-                "SAMPLE-AES" => EncryptionMethod::SampleAes,
-                other => EncryptionMethod::Other(other.to_string()),
-            };
-
-            if method == EncryptionMethod::None {
-                current_key = None;
-            } else if let Some(key_uri_raw) = attrs.get("URI") {
-                let key_url = resolve_url(base_url, key_uri_raw)?;
-                let iv = attrs.get("IV").and_then(|iv_str| parse_hex_iv(iv_str));
-                current_key = Some(EncryptionKey {
-                    method,
-                    uri: key_url,
-                    iv,
-                });
-            }
-        } else if line.starts_with("#EXT-X-MAP:") {
-            let attrs = parse_attributes(&line["#EXT-X-MAP:".len()..]);
-            if let Some(uri_raw) = attrs.get("URI") {
-                let init_url = resolve_url(base_url, uri_raw)?;
-                let byte_range = attrs
-                    .get("BYTERANGE")
-                    .and_then(|br_str| parse_byte_range(br_str));
-                init_segment = Some(MediaSegment {
-                    index: 0,
-                    sequence: media_sequence,
-                    duration: 0.0,
-                    url: init_url,
-                    key: current_key.clone(),
-                    byte_range,
-                    is_init_segment: true,
-                });
-            }
-        } else if line.starts_with("#EXT-X-BYTERANGE:") {
-            next_byte_range = parse_byte_range(&line["#EXT-X-BYTERANGE:".len()..]);
-        } else if line.starts_with("#EXTINF:") {
-            let inf_part = &line["#EXTINF:".len()..];
-            let dur_str = inf_part.split(',').next().unwrap_or("0").trim();
-            next_duration = dur_str.parse::<f64>().unwrap_or(0.0);
-        } else if line == "#EXT-X-ENDLIST" {
-            is_endlist = true;
-        } else if !line.starts_with('#') {
-            let seg_url = resolve_url(base_url, line)?;
-            let seg_index = segments.len();
-            let seg_seq = media_sequence.saturating_add(seg_index as u64);
-
-            let byte_range = if let Some((len, opt_offset)) = next_byte_range.take() {
-                let actual_offset = opt_offset.unwrap_or(current_byte_offset);
-                current_byte_offset = actual_offset.saturating_add(len);
-                Some((len, Some(actual_offset)))
-            } else {
-                None
-            };
-
-            segments.push(MediaSegment {
-                index: seg_index,
-                sequence: seg_seq,
-                duration: next_duration,
-                url: seg_url,
-                key: current_key.clone(),
-                byte_range,
-                is_init_segment: false,
-            });
-
-            next_duration = 0.0;
-        }
-    }
-
-    Ok(MediaPlaylist {
-        target_duration,
-        media_sequence,
-        is_endlist,
-        init_segment,
-        segments,
-    })
+    super::media_parser::parse_media_playlist(content, base_url)
 }
 
 /// 解析 M3U8 标签属性列表，如 `KEY=VALUE,URI="https://..."`
-pub fn parse_attributes(input: &str) -> HashMap<String, String> {
-    let mut map = HashMap::new();
-    let mut chars = input.chars().peekable();
-
-    while let Some(&c) = chars.peek() {
-        if c.is_whitespace() || c == ',' {
-            chars.next();
-            continue;
+pub fn parse_attributes(input: &str) -> Result<HashMap<String, String>, String> {
+    let bytes = input.as_bytes();
+    let mut cursor = 0;
+    let mut attributes = HashMap::new();
+    while cursor < bytes.len() {
+        skip_spaces(bytes, &mut cursor);
+        let start = cursor;
+        while cursor < bytes.len()
+            && (bytes[cursor].is_ascii_alphanumeric() || bytes[cursor] == b'-')
+        {
+            cursor += 1;
         }
-
-        // 读取键名
-        let mut key = String::new();
-        while let Some(&k) = chars.peek() {
-            if k == '=' || k.is_whitespace() {
-                break;
-            }
-            key.push(k);
-            chars.next();
+        if start == cursor {
+            return Err("M3U8 属性名称无效".into());
         }
-
-        while let Some(&k) = chars.peek() {
-            if k == '=' {
-                chars.next();
-                break;
-            }
-            chars.next();
+        let key = input[start..cursor].to_ascii_uppercase();
+        skip_spaces(bytes, &mut cursor);
+        if bytes.get(cursor) != Some(&b'=') {
+            return Err("M3U8 属性缺少等号".into());
         }
-
-        let key = key.trim().to_uppercase();
-        if key.is_empty() {
-            continue;
+        cursor += 1;
+        skip_spaces(bytes, &mut cursor);
+        let value = parse_attribute_value(input, &mut cursor)?;
+        if attributes.insert(key, value).is_some() {
+            return Err("M3U8 属性重复，已拒绝有歧义的声明".into());
         }
-
-        // 读取值
-        let mut value = String::new();
-        if let Some(&'"') = chars.peek() {
-            chars.next(); // 跳过开头的引号
-            for v in chars.by_ref() {
-                if v == '"' {
-                    break;
-                }
-                value.push(v);
-            }
-        } else {
-            while let Some(&v) = chars.peek() {
-                if v == ',' || v.is_whitespace() {
-                    break;
-                }
-                value.push(v);
-                chars.next();
-            }
+        skip_spaces(bytes, &mut cursor);
+        if cursor == bytes.len() {
+            break;
         }
-
-        map.insert(key, value);
+        if bytes[cursor] != b',' {
+            return Err("M3U8 属性之间缺少逗号".into());
+        }
+        cursor += 1;
+        if cursor == bytes.len() {
+            return Err("M3U8 属性列表不能以逗号结尾".into());
+        }
     }
+    Ok(attributes)
+}
 
-    map
+fn skip_spaces(bytes: &[u8], cursor: &mut usize) {
+    while *cursor < bytes.len() && bytes[*cursor].is_ascii_whitespace() {
+        *cursor += 1;
+    }
+}
+
+fn parse_attribute_value(input: &str, cursor: &mut usize) -> Result<String, String> {
+    let bytes = input.as_bytes();
+    if bytes.get(*cursor) == Some(&b'"') {
+        *cursor += 1;
+        let start = *cursor;
+        while *cursor < bytes.len() && bytes[*cursor] != b'"' {
+            *cursor += 1;
+        }
+        if *cursor == bytes.len() {
+            return Err("M3U8 属性引号没有闭合".into());
+        }
+        let value = input[start..*cursor].to_owned();
+        *cursor += 1;
+        Ok(value)
+    } else {
+        let start = *cursor;
+        while *cursor < bytes.len()
+            && bytes[*cursor] != b','
+            && !bytes[*cursor].is_ascii_whitespace()
+        {
+            *cursor += 1;
+        }
+        if *cursor == start {
+            return Err("M3U8 属性值为空".into());
+        }
+        Ok(input[start..*cursor].to_owned())
+    }
 }
 
 /// 将相对 URL 转换为基于 base_url 的绝对 URL
 pub fn resolve_url(base: &str, relative_or_abs: &str) -> Result<String, String> {
     let trimmed = relative_or_abs.trim();
-    if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
-        return Ok(trimmed.to_string());
+    let base_parsed = Url::parse(base).map_err(|_| "M3U8 基础地址无效")?;
+    let joined = base_parsed.join(trimmed).map_err(|_| "M3U8 资源地址无效")?;
+    if !matches!(joined.scheme(), "http" | "https") || joined.host_str().is_none() {
+        return Err("M3U8 仅允许 HTTP/HTTPS 媒体、播放列表和密钥地址".into());
     }
-
-    let base_parsed = Url::parse(base).map_err(|e| format!("无效的 Base URL '{base}': {e}"))?;
-    let joined = base_parsed
-        .join(trimmed)
-        .map_err(|e| format!("无法将 '{trimmed}' 拼接至 '{base}': {e}"))?;
     Ok(joined.to_string())
 }
 
@@ -339,11 +310,15 @@ pub fn parse_hex_iv(iv_str: &str) -> Option<[u8; 16]> {
         raw
     };
 
+    if hex_part.is_empty()
+        || hex_part.len() > 32
+        || !hex_part.bytes().all(|b| b.is_ascii_hexdigit())
+    {
+        return None;
+    }
     let mut padded = hex_part.to_string();
     if padded.len() < 32 {
         padded = format!("{:0>32}", padded);
-    } else if padded.len() > 32 {
-        padded = padded[..32].to_string();
     }
 
     let bytes = hex::decode(&padded).ok()?;
@@ -360,14 +335,20 @@ pub fn parse_hex_iv(iv_str: &str) -> Option<[u8; 16]> {
 pub fn parse_byte_range(range_str: &str) -> Option<(u64, Option<u64>)> {
     let trimmed = range_str.trim();
     let parts: Vec<&str> = trimmed.split('@').collect();
-    if parts.is_empty() {
+    if parts.is_empty() || parts.len() > 2 {
         return None;
     }
     let length = parts[0].parse::<u64>().ok()?;
+    if length == 0 {
+        return None;
+    }
     let offset = if parts.len() > 1 {
-        parts[1].parse::<u64>().ok()
+        Some(parts[1].parse::<u64>().ok()?)
     } else {
         None
     };
+    if offset.is_some_and(|start| start.checked_add(length).is_none()) {
+        return None;
+    }
     Some((length, offset))
 }

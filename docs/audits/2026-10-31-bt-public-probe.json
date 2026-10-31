@@ -1,0 +1,37 @@
+{
+  "source": "https://releases.ubuntu.com/24.04/ubuntu-24.04.5-live-server-amd64.iso.torrent",
+  "observed_at_utc": "2026-10-31T05:29:05Z",
+  "layer": "public network/protocol reachability; not production-engine public download",
+  "production_metadata": "passed",
+  "public_protocol": "passed",
+  "payload_cap_bytes": 2097152,
+  "metadata_bytes": 311682,
+  "metadata_sha256": "81d2234a304fbed595c78df9ec243ae7695263f591f3dabedcb808e5cd7615c8",
+  "info_hash": "a3b4136a174e30b121a6bb6ab75b577ea7eda5f3",
+  "piece_length": 262144,
+  "name": "ubuntu-24.04.5-live-server-amd64.iso",
+  "counters": {
+    "wire_bytes": 262434,
+    "payload_bytes": 262144,
+    "requested_payload_bytes": 262144,
+    "valid_handshakes": 1
+  },
+  "peer_attempts": [
+    {
+      "status": "passed",
+      "piece_index": 13831,
+      "verified_payload_bytes": 262144,
+      "piece_sha1": "25f06e3c864547e66e276ed3a7f775e9bd15ab3e"
+    }
+  ],
+  "trackers": [
+    {
+      "url": "https://torrent.ubuntu.com/announce",
+      "status": "passed",
+      "public_ipv4_peers": 1,
+      "duration_ms": 1062
+    }
+  ],
+  "stopped_announce": "sent",
+  "duration_ms": 20187
+}

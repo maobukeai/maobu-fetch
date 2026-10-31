@@ -1,9 +1,12 @@
+mod app_shutdown;
 mod autostart;
 mod baidupan;
 mod bridge;
 mod bt;
 mod cache;
 pub mod cli;
+mod cloud_pagination;
+pub(crate) mod cloud_request;
 mod deep_link;
 pub mod file_assoc;
 mod logging;
@@ -20,8 +23,8 @@ mod media_muxer;
 // Task 37 / 39：媒体平台识别与适配（抖音 / TikTok / Twitter/X 等）。
 // 提供 detect_platform / expand_short_url / classify_platform_error /
 // is_twitter_space / format_twitter_filename 等函数。
-mod lanzou;
 pub mod landisk_zip;
+mod lanzou;
 mod media_platforms;
 mod media_tools;
 mod models;
@@ -34,9 +37,13 @@ mod proxy;
 // Task 34：便携版模式。检测 EXE 同目录 maobu.portable 标记文件，
 // 存在时所有数据写入 EXE_DIR/data/。
 mod portable;
+mod progress_window;
 mod secure_storage;
 mod store;
+mod startup_failure;
 pub mod system_dirs;
+mod system_integration;
+mod task_file_actions;
 mod task_transfer;
 mod tray_icon;
 mod updater;
@@ -121,7 +128,7 @@ async fn bt_task_files(
     if task.task_kind != crate::models::TaskKind::Bt {
         return Err("该任务不是 BT 任务".into());
     }
-    manager.inner().bt.files_of(&id, &task.destination).await
+    manager.inner().bt.files_for_task(&task).await
 }
 
 /// 勾选/取消勾选 BT 任务内文件（1 基索引，至少保留一个）。
@@ -140,14 +147,27 @@ async fn bt_select_files(
     if task.task_kind != crate::models::TaskKind::Bt {
         return Err("该任务不是 BT 任务".into());
     }
-    manager.inner().bt.select_files(&id, &indices).await?;
-    // 持久化勾选，重启恢复后仍按用户选择执行。
-    let mut updated = task;
-    if let Some(meta) = updated.bt_meta.as_mut() {
-        meta.selected_files = indices;
-    }
-    manager.inner().store.upsert_task(&updated).await?;
+    manager.inner().bt.files_for_task(&task).await?;
+    manager.inner().bt.select_files_for(&task, &indices).await?;
+    let updated = manager
+        .inner()
+        .store
+        .update_bt_selection(&id, indices)
+        .await?;
+    manager.inner().emit_task("updated", &updated);
     Ok(())
+}
+
+#[tauri::command]
+async fn bt_request_seeding(
+    id: String,
+    requested: bool,
+    manager: State<'_, SharedManager>,
+) -> Result<(), String> {
+    if requested && !manager.settings().await.bt_seed_enabled {
+        return Err("请先在设置中开启做种策略，再选择要做种的已完成任务".into());
+    }
+    crate::bt::request_seeding(manager.inner(), &id, requested).await
 }
 
 /// 预解析种子文件或磁力链接（新建任务前预览文件列表与总大小）。
@@ -507,121 +527,16 @@ async fn task_open_file(
     file_path: Option<String>,
     manager: State<'_, SharedManager>,
 ) -> Result<(), String> {
-    let task = manager.store.get_task(&id).await?.ok_or("任务不存在")?;
-    let dest_dir = PathBuf::from(&task.destination);
-
-    // 1. 如果指定了具体子文件路径
-    if let Some(sub) = file_path.filter(|s| !s.trim().is_empty()) {
-        // 恶意种子的文件路径可能携带 ".." 分量：canonicalize 后必须仍位于
-        // 下载目录之内才允许打开（§7 路径安全）。
-        let Ok(dest_canonical) = dest_dir.canonicalize() else {
-            return Err("下载目录不存在或无法访问".into());
-        };
-        let in_dest = |p: &PathBuf| -> bool {
-            p.canonicalize()
-                .map(|c| c.starts_with(&dest_canonical) && c.is_file())
-                .unwrap_or(false)
-        };
-        let direct_path = dest_dir.join(&sub);
-        if in_dest(&direct_path) {
-            return open::that(&direct_path).map_err(|e| format!("打开文件失败: {e}"));
-        }
-        let nested_path = dest_dir.join(&task.file_name).join(&sub);
-        if in_dest(&nested_path) {
-            return open::that(&nested_path).map_err(|e| format!("打开文件失败: {e}"));
-        }
-    }
-
-    let is_media_ext = |p: &std::path::Path| -> bool {
-        p.extension()
-            .and_then(|ext| ext.to_str())
-            .map(|ext| {
-                matches!(
-                    ext.to_ascii_lowercase().as_str(),
-                    "mp4"
-                        | "mkv"
-                        | "avi"
-                        | "mov"
-                        | "flv"
-                        | "wmv"
-                        | "ts"
-                        | "webm"
-                        | "mp3"
-                        | "flac"
-                        | "wav"
-                        | "m4a"
-                        | "aac"
-                )
-            })
-            .unwrap_or(false)
-    };
-
-    // 2. 检查 task.destination / task.file_name
-    let main_path = dest_dir.join(&task.file_name);
-    if main_path.exists() && main_path.is_file() {
-        return open::that(&main_path).map_err(|e| format!("打开文件失败: {e}"));
-    }
-
-    // 3. 递归在下载目录及子目录中搜索已下载或正在下载的媒体文件（按体积排序）
-    let mut search_dirs = Vec::new();
-    if main_path.exists() && main_path.is_dir() {
-        search_dirs.push(main_path);
-    }
-    search_dirs.push(dest_dir.clone());
-
-    let mut largest_media: Option<(PathBuf, u64)> = None;
-    for dir in search_dirs {
-        if let Ok(mut entries) = tokio::fs::read_dir(&dir).await {
-            while let Ok(Some(entry)) = entries.next_entry().await {
-                let p = entry.path();
-                if p.is_file() && is_media_ext(&p) {
-                    let len = entry.metadata().await.map(|m| m.len()).unwrap_or(0);
-                    if len > 0
-                        && (largest_media.is_none() || len > largest_media.as_ref().unwrap().1)
-                    {
-                        largest_media = Some((p, len));
-                    }
-                } else if p.is_dir() {
-                    if let Ok(mut sub_entries) = tokio::fs::read_dir(&p).await {
-                        while let Ok(Some(sub_entry)) = sub_entries.next_entry().await {
-                            let sub_p = sub_entry.path();
-                            if sub_p.is_file() && is_media_ext(&sub_p) {
-                                let len = sub_entry.metadata().await.map(|m| m.len()).unwrap_or(0);
-                                if len > 0
-                                    && (largest_media.is_none()
-                                        || len > largest_media.as_ref().unwrap().1)
-                                {
-                                    largest_media = Some((sub_p, len));
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    if let Some((media_path, len)) = largest_media {
-        if len > 0 {
-            return open::that(&media_path).map_err(|e| format!("唤起本地播放器失败: {e}"));
-        }
-    }
-
-    if task.status == crate::models::TaskStatus::Downloading
-        || task.status == crate::models::TaskStatus::Queued
-    {
-        return Err(
-            "视频文件正在缓冲中（首段数据尚未写入磁盘），请等待下载产生进度后再点击播放".into(),
-        );
-    }
-
-    Err("未在下载目录中找到可播放的媒体文件".into())
+    let task = task_file_actions::resolved_task(manager.inner(), &id).await?;
+    let path = task_file_actions::content_path(&task, file_path.as_deref()).await?;
+    open::that(path).map_err(|e| format!("打开任务文件失败：{e}"))
 }
 
 #[tauri::command]
 async fn task_open_folder(id: String, manager: State<'_, SharedManager>) -> Result<(), String> {
-    let task = manager.store.get_task(&id).await?.ok_or("任务不存在")?;
-    open::that(task.destination).map_err(|e| e.to_string())
+    let task = task_file_actions::resolved_task(manager.inner(), &id).await?;
+    let path = task_file_actions::folder_path(&task).await?;
+    open::that(path).map_err(|e| format!("打开任务文件夹失败：{e}"))
 }
 
 #[tauri::command]
@@ -638,7 +553,7 @@ async fn history_clear(
     include_completed: bool,
     manager: State<'_, SharedManager>,
 ) -> Result<(), String> {
-    manager.store.clear_history(include_completed).await
+    manager.clear_history(include_completed).await
 }
 
 #[tauri::command]
@@ -700,9 +615,7 @@ pub(crate) async fn resolve_media_credentials(
         if stored.cookie.is_empty() {
             None
         } else {
-            Some(crate::media_cookies::netscape_to_cookie_header(
-                &stored.cookie,
-            ))
+            Some(stored.cookie.clone())
         }
     });
     let merged_referer = referer.or(stored.referer);
@@ -716,6 +629,7 @@ async fn media_probe(
     cookie: Option<String>,
     referer: Option<String>,
     user_agent: Option<String>,
+    include_collection: Option<bool>,
     app: tauri::AppHandle,
     manager: State<'_, SharedManager>,
 ) -> Result<MediaProbeResult, String> {
@@ -723,6 +637,17 @@ async fn media_probe(
     // 解密失败（换机器/密文损坏）时安全降级为"无凭证"，不阻塞 probe。
     let (cookie, referer, user_agent) =
         resolve_media_credentials(&url, cookie, referer, user_agent, &manager.store).await;
+    if include_collection.unwrap_or(false) {
+        return media::probe_collection(
+            &app,
+            &manager.settings().await,
+            &url,
+            cookie.as_deref(),
+            referer.as_deref(),
+            user_agent.as_deref(),
+        )
+        .await;
+    }
     media::probe(
         &app,
         &manager.settings().await,
@@ -778,7 +703,7 @@ async fn media_normalize_url(input: String) -> Result<String, String> {
         Err(_) => extracted.clone(),
     };
     let normalized = media_platforms::strip_tracking_params(&expanded);
-    Ok(normalized)
+    Ok(media_platforms::normalize_bilibili_video_url(&normalized))
 }
 
 #[tauri::command]
@@ -1364,16 +1289,15 @@ async fn media_credential_check(
         Some(c) => (Some(c.cookie), c.referer, c.user_agent),
         None => (None, None, None),
     };
-    // 用户可能从「导出 cookies.txt」按钮导出 Netscape 格式后直接导入「媒体凭证」，
-    // 此时的 Cookie 字符串含 TAB/换行，不能直接作为 HTTP `Cookie:` 头值（reqwest 会报 builder error）。
-    // 在这里统一转换为 `name=value; name2=value2` 头格式。yt-dlp 下载路径仍走
-    // `write_cookie_file_in_dir`，那里同时兼容两种格式。
-    let cookie_for_check = cookie.map(|c| crate::media_cookies::netscape_to_cookie_header(&c));
-    media_platforms::check_media_credential(
+    let target = media_platforms::media_credential_check_target(domain)?;
+    let settings = manager.settings().await;
+    let client = media::metadata_client(&settings, &target)?;
+    media_platforms::check_media_credential_with_client(
         domain,
-        cookie_for_check.as_deref(),
+        cookie.as_deref(),
         referer.as_deref(),
         user_agent.as_deref(),
+        client,
     )
     .await
 }
@@ -2518,17 +2442,25 @@ async fn cli_remove(store: &Arc<Store>, id: &str, delete_file: bool) -> Result<(
         .await?
         .ok_or_else(|| "任务不存在".to_string())?;
 
-    let is_completed = task.status == models::TaskStatus::Completed;
-    if delete_file || !is_completed {
-        let path = std::path::PathBuf::from(&task.destination).join(&task.file_name);
-        if path.exists() {
-            let _ = std::fs::remove_file(&path);
+    if task.task_kind == models::TaskKind::Bt {
+        let engine = bt::BtEngine::with_data_dir(store.data_dir().join("session"));
+        // 离线维护不启动会话、DHT 或任何下载连接。
+        engine.remove_task_offline(&task).await?;
+        if delete_file {
+            bt::delete_task_files(&task).await?;
         }
-        // 同时清理 .lumaget 临时文件
-        let temp_path = std::path::PathBuf::from(format!("{}.lumaget", path.to_string_lossy()));
-        if temp_path.exists() {
-            let _ = std::fs::remove_file(&temp_path);
+    } else if delete_file {
+        if !manager::is_safe_path_component(&task.file_name) {
+            return Err("任务文件名无效，未删除文件".into());
         }
+        let path = PathBuf::from(&task.destination).join(&task.file_name);
+        match tokio::fs::remove_file(&path).await {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(format!("删除任务文件失败，任务记录已保留：{error}")),
+        }
+        manager::clear_task_parts(&task, store).await?;
+        media::cleanup_task_workspace(&task).await?;
     }
 
     store.remove_task(id).await?;
@@ -2543,8 +2475,7 @@ pub fn run_cli(command: CliCommand) -> i32 {
     match command {
         CliCommand::Run { .. } => {
             // 不应到达此处；main.rs 会直接调用 run()。
-            run();
-            0
+            run()
         }
         CliCommand::Add {
             url,
@@ -2643,8 +2574,7 @@ pub fn run_cli(command: CliCommand) -> i32 {
             }
         }
         CliCommand::Play { .. } | CliCommand::ViewImage { .. } => {
-            run();
-            0
+            run()
         }
     }
 }
@@ -2857,6 +2787,13 @@ async fn run_forwarded_command(manager: &SharedManager, command: CliCommand) -> 
     }
 }
 
+async fn cloud_network(
+    manager: &SharedManager,
+) -> Result<crate::cloud_request::CloudRequestContext, String> {
+    let settings = manager.settings().await;
+    manager::cloud_request_context(&settings, None, tokio_util::sync::CancellationToken::new())
+}
+
 #[tauri::command]
 #[allow(non_snake_case)]
 async fn pikpak_inspect_share(
@@ -2865,10 +2802,18 @@ async fn pikpak_inspect_share(
     passCode: Option<String>,
     device_id: Option<String>,
     deviceId: Option<String>,
+    manager: State<'_, SharedManager>,
 ) -> Result<pikpak::PikPakShareInfo, String> {
+    let network = cloud_network(manager.inner()).await?;
     let effective_pass_code = pass_code.or(passCode);
     let effective_device_id = device_id.or(deviceId).unwrap_or_default();
-    pikpak::inspect_pikpak_share(&url, effective_pass_code, &effective_device_id).await
+    pikpak::inspect_pikpak_share_with_context(
+        &url,
+        effective_pass_code,
+        &effective_device_id,
+        &network,
+    )
+    .await
 }
 
 #[tauri::command]
@@ -2882,16 +2827,19 @@ async fn pikpak_resolve_file(
     passCodeToken: Option<String>,
     device_id: Option<String>,
     deviceId: Option<String>,
+    manager: State<'_, SharedManager>,
 ) -> Result<pikpak::PikPakDirectUrlResult, String> {
+    let network = cloud_network(manager.inner()).await?;
     let effective_share_id = share_id.or(shareId).ok_or("缺少 share_id")?;
     let effective_file_id = file_id.or(fileId).ok_or("缺少 file_id")?;
     let effective_pass_code_token = pass_code_token.or(passCodeToken);
     let effective_device_id = device_id.or(deviceId).unwrap_or_default();
-    pikpak::resolve_pikpak_file(
+    pikpak::resolve_pikpak_file_with_context(
         &effective_share_id,
         &effective_file_id,
         effective_pass_code_token.as_deref(),
         &effective_device_id,
+        &network,
     )
     .await
 }
@@ -2905,6 +2853,7 @@ async fn quark_inspect_share(
     cookie: Option<String>,
     manager: State<'_, SharedManager>,
 ) -> Result<quark::QuarkShareInfo, String> {
+    let network = cloud_network(manager.inner()).await?;
     let effective_pass_code = pass_code.or(passCode);
     let mut effective_cookie = cookie;
     if effective_cookie.as_deref().unwrap_or("").trim().is_empty() {
@@ -2918,7 +2867,8 @@ async fn quark_inspect_share(
             }
         }
     }
-    quark::inspect_quark_share(&url, effective_pass_code, effective_cookie).await
+    quark::inspect_quark_share_with_context(&url, effective_pass_code, effective_cookie, &network)
+        .await
 }
 
 #[tauri::command]
@@ -2933,6 +2883,7 @@ async fn quark_resolve_file(
     cookie: Option<String>,
     manager: State<'_, SharedManager>,
 ) -> Result<quark::QuarkDirectUrlResult, String> {
+    let network = cloud_network(manager.inner()).await?;
     let effective_pwd_id = pwd_id.or(pwdId).ok_or("缺少 pwd_id")?;
     let effective_fid = fid.ok_or("缺少 fid")?;
     let effective_share_fid_token = share_fid_token.or(shareFidToken);
@@ -2948,12 +2899,13 @@ async fn quark_resolve_file(
             }
         }
     }
-    quark::resolve_quark_file(
+    quark::resolve_quark_file_with_context(
         &effective_pwd_id,
         &effective_fid,
         effective_share_fid_token.as_deref(),
         stoken.as_deref(),
         effective_cookie.as_deref(),
+        &network,
     )
     .await
 }
@@ -2967,6 +2919,7 @@ async fn baidupan_inspect_share(
     cookie: Option<String>,
     manager: State<'_, SharedManager>,
 ) -> Result<baidupan::BaiduShareInfo, String> {
+    let network = cloud_network(manager.inner()).await?;
     let effective_pass_code = pass_code.or(passCode);
     let mut effective_cookie = cookie;
     if effective_cookie.as_deref().unwrap_or("").trim().is_empty() {
@@ -2980,10 +2933,11 @@ async fn baidupan_inspect_share(
             }
         }
     }
-    baidupan::inspect_baidu_share(
+    baidupan::inspect_baidu_share_with_context(
         &url,
         effective_pass_code.as_deref(),
         effective_cookie.as_deref(),
+        &network,
     )
     .await
 }
@@ -3004,6 +2958,7 @@ async fn baidupan_resolve_file(
     cookie: Option<String>,
     manager: State<'_, SharedManager>,
 ) -> Result<baidupan::BaiduDirectUrlResult, String> {
+    let network = cloud_network(manager.inner()).await?;
     let effective_fs_id = fs_id.or(fsId).ok_or("缺少 fs_id")?;
     let effective_share_id = share_id.or(shareId);
     let mut effective_cookie = cookie;
@@ -3018,7 +2973,7 @@ async fn baidupan_resolve_file(
             }
         }
     }
-    baidupan::resolve_baidu_file(
+    baidupan::resolve_baidu_file_with_context(
         &surl,
         &effective_fs_id,
         effective_share_id.as_deref(),
@@ -3028,6 +2983,7 @@ async fn baidupan_resolve_file(
         seckey.as_deref(),
         randsk.as_deref(),
         effective_cookie.as_deref(),
+        &network,
     )
     .await
 }
@@ -3038,9 +2994,11 @@ async fn lanzou_inspect_share(
     url: String,
     pass_code: Option<String>,
     passCode: Option<String>,
+    manager: State<'_, SharedManager>,
 ) -> Result<lanzou::LanzouShareInfo, String> {
+    let network = cloud_network(manager.inner()).await?;
     let effective_pass_code = pass_code.or(passCode);
-    lanzou::inspect_lanzou_share(&url, effective_pass_code.as_deref()).await
+    lanzou::inspect_lanzou_share_with_context(&url, effective_pass_code.as_deref(), &network).await
 }
 
 #[tauri::command]
@@ -3052,14 +3010,17 @@ async fn lanzou_resolve_file(
     fileId: Option<String>,
     pass_code: Option<String>,
     passCode: Option<String>,
+    manager: State<'_, SharedManager>,
 ) -> Result<lanzou::LanzouDirectUrlResult, String> {
+    let network = cloud_network(manager.inner()).await?;
     let effective_url = share_url.or(shareUrl).unwrap_or_default();
     let effective_fid = file_id.or(fileId).unwrap_or_default();
     let effective_pass_code = pass_code.or(passCode);
-    lanzou::resolve_lanzou_file(
+    lanzou::resolve_lanzou_file_with_context(
         &effective_url,
         &effective_fid,
         effective_pass_code.as_deref(),
+        &network,
     )
     .await
 }
@@ -3070,9 +3031,11 @@ async fn pan123_inspect_share(
     url: String,
     pass_code: Option<String>,
     passCode: Option<String>,
+    manager: State<'_, SharedManager>,
 ) -> Result<pan123::Pan123ShareInfo, String> {
+    let network = cloud_network(manager.inner()).await?;
     let effective_pass_code = pass_code.or(passCode);
-    pan123::inspect_pan123_share(&url, effective_pass_code.as_deref()).await
+    pan123::inspect_pan123_share_with_context(&url, effective_pass_code.as_deref(), &network).await
 }
 
 #[tauri::command]
@@ -3090,6 +3053,7 @@ async fn pan123_resolve_file(
     passCode: Option<String>,
     manager: State<'_, SharedManager>,
 ) -> Result<pan123::Pan123DirectUrlResult, String> {
+    let network = cloud_network(manager.inner()).await?;
     let effective_key = share_key.or(shareKey).unwrap_or_default();
     let effective_fid = file_id.or(fileId).unwrap_or(0);
     let effective_s3 = s3_key_flag.or(s3KeyFlag).unwrap_or_default();
@@ -3107,7 +3071,7 @@ async fn pan123_resolve_file(
 
     let token_str = stored_cred.as_ref().map(|c| c.cookie.as_str());
 
-    pan123::resolve_pan123_file(
+    pan123::resolve_pan123_file_with_context(
         &effective_key,
         effective_fid,
         &effective_s3,
@@ -3115,6 +3079,7 @@ async fn pan123_resolve_file(
         &etag,
         effective_pass_code.as_deref(),
         token_str,
+        &network,
     )
     .await
 }
@@ -4123,8 +4088,19 @@ async fn default_apps_settings_open() -> Result<(), String> {
     file_assoc::open_default_apps_settings()
 }
 
-pub fn run() {
-    tauri::Builder::default()
+pub fn run() -> i32 {
+    run_with_presentation(startup_failure::Presentation::Interactive)
+}
+
+/// Existing CLI commands forward through single-instance handling without a modal error UI.
+pub fn run_for_cli() -> i32 {
+    run_with_presentation(startup_failure::Presentation::Console)
+}
+
+fn run_with_presentation(presentation: startup_failure::Presentation) -> i32 {
+    let data_directory = Arc::new(std::sync::OnceLock::<PathBuf>::new());
+    let setup_directory = data_directory.clone();
+    let built = tauri::Builder::default()
         .register_asynchronous_uri_scheme_protocol("stream", |_ctx, request, responder| {
             tauri::async_runtime::spawn(async move {
                 let path = request.uri().path().to_string();
@@ -4151,18 +4127,23 @@ pub fn run() {
         .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
             handle_single_instance_forward(app, argv);
         }))
-        .setup(|app| {
+        .setup(move |app| {
             app.manage(PlayerState::default());
             app.manage(ImageViewerState::default());
 
             #[cfg(windows)]
             {
-                let _ = file_assoc::ensure_registered_applications();
+                if system_integration::allowed() {
+                    if let Err(error)=file_assoc::ensure_registered_applications() {
+                        tracing::warn!(error=%manager::redact_sensitive(&error),"注册文件关联能力失败，可在设置中重试");
+                    }
+                }
             }
 
             // Task 34：解析数据目录，优先级：环境变量 > 便携标记 > app_data_dir。
             // 便携模式下数据写入 EXE 同目录的 data/ 文件夹，与系统安装版隔离。
             let data_dir = portable::resolve_data_dir(app.handle());
+            let _ = setup_directory.set(data_dir.clone());
             // 便携模式启用时提前创建 data/ 目录及子目录，避免后续写入失败。
             // 仅在便携模式下创建，不污染 app_data_dir 路径。
             if portable::is_portable_mode_effective() {
@@ -4185,9 +4166,9 @@ pub fn run() {
             // 初始化日志系统（Task 23.1）：按天滚动 + 脱敏 writer
             // debug 模式（dev build）启用 DEBUG 级别；release 启用 INFO
             logging::init(data_dir.join("logs"), cfg!(debug_assertions));
-            let store = Arc::new(Store::open(data_dir)?);
-            let manager =
-                tauri::async_runtime::block_on(DownloadManager::new(store, app.handle().clone()))?;
+            let manager = tauri::async_runtime::block_on(
+                startup_failure::initialize_manager(data_dir, app.handle().clone()),
+            )?;
             let pairing = PairingService::new(manager.clone());
             let media_tools = MediaTools::new(
                 app.handle(),
@@ -4196,6 +4177,7 @@ pub fn run() {
             app.manage(manager.clone());
             app.manage(pairing.clone());
             app.manage(media_tools);
+            progress_window::register(app.handle(), manager.clone());
             let bridge_app = app.handle().clone();
             tauri::async_runtime::spawn(bridge::run(manager.clone(), pairing, bridge_app));
 
@@ -4389,6 +4371,7 @@ pub fn run() {
             bt_task_add,
             bt_task_files,
             bt_select_files,
+            bt_request_seeding,
             bt_inspect_torrent,
             tasks_export,
             tasks_import,
@@ -4534,21 +4517,24 @@ pub fn run() {
             player_save_screenshot,
             player_get_folder_videos,
             player_get_matched_subtitles,
-            player_read_subtitle_content
+            player_read_subtitle_content,
+            progress_window::commands::progress_window_snapshot,
+            progress_window::commands::progress_window_set_pinned,
+            progress_window::commands::progress_window_set_expanded,
+            progress_window::commands::progress_window_set_revealed,
+            progress_window::commands::progress_window_task_action,
+            progress_window::commands::progress_window_show_main,
+            progress_window::commands::progress_window_dismiss,
+            progress_window::commands::progress_window_restore
         ])
-        .build(tauri::generate_context!())
-        .expect("error while building Maobu Fetch")
-        .run(|app_handle, event| {
-            // 程序退出前优雅关闭 aria2：保存会话与控制文件，重启后可恢复
-            // （AGENTS.md §3 BT/磁力内核：暂停/退出必须保持可恢复状态）。
-            if let tauri::RunEvent::Exit = event {
-                if let Some(manager) = app_handle.try_state::<SharedManager>() {
-                    tauri::async_runtime::block_on(async move {
-                        manager.shutdown_bt().await;
-                    });
-                }
-            }
-        });
+        .build(tauri::generate_context!());
+    startup_failure::finish_build(
+        built,
+        presentation,
+        data_directory.get().map(PathBuf::as_path),
+        &startup_failure::NativeSink,
+        |app| app.run(app_shutdown::handler()),
+    )
 }
 
 #[cfg(test)]
@@ -4630,3 +4616,6 @@ mod image_viewer_tests {
         assert_eq!(dims, Some((1024, 768)));
     }
 }
+
+#[cfg(test)]
+mod cli_remove_tests;

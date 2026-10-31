@@ -21,6 +21,7 @@ import {
 } from "lucide-react";
 import { open as pickPath } from "@tauri-apps/plugin-dialog";
 import { api } from "../../api";
+import { collectionFormatSelector, formatTrackDescription, selectDefaultVideoFormat, selectOriginalFileFormat } from "../../media-format-selection";
 import { t, useLocale } from "../../i18n";
 import type {
   AppSettings,
@@ -957,14 +958,21 @@ export function NewTaskDialog({
   const probe = async () => {
     setBusy(true);
     setError(undefined);
+    setFormat("");
+    setMedia(undefined);
     try {
       const result = await api.probeMedia(lines[0], {
         cookie: cookie || undefined,
         referer: referer || undefined,
+        include_collection: true,
       });
       if (result.drm)
         throw new Error("检测到 DRM 保护，猫步下载器不处理此内容");
       setMedia(result);
+      const availableFfmpeg = result.ffmpeg_available;
+      if (typeof availableFfmpeg === "boolean") {
+        setToolStatus((status) => status ? { ...status, ffmpeg_available: availableFfmpeg } : status);
+      }
       setSubtitleLangs([]);
       if (result.media_type === "gallery") {
         setFormat("");
@@ -976,27 +984,21 @@ export function NewTaskDialog({
         const eps = result.episodes || [];
         setSelectedEpisodeIndices(new Set(eps.map((e) => e.index)));
         if (!fileName) setFileName(safeDisplayName(result.title));
+      } else if (result.formats.some((format) => format.original_file)) {
+        const selected = selectOriginalFileFormat(result);
+        setFormat(selected.id);
+        if (!userEditedFileName.current) setFileName(safeDisplayName(result.title));
       } else if (result.media_type === "audio") {
         const audioFormats = result.formats
-          .filter((item) => item.has_audio && !item.has_video)
+          .filter((item) => item.has_audio && !item.audio_unknown && (!item.requires_ffmpeg || (result.ffmpeg_available ?? toolStatus?.ffmpeg_available ?? false)))
           .sort((a, b) => (b.file_size ?? 0) - (a.file_size ?? 0));
-        const selected = audioFormats[0] ?? result.formats[0];
+        const selected = audioFormats.find((item) => !item.has_video) ?? audioFormats[0];
+        if (!selected) throw new Error(result.formats.some((item) => item.audio_unknown) ? "来源未确认音轨，可手动选择‘音轨未确认’原文件后下载" : "未找到已确认可下载的音轨，请检查媒体权限与组件状态");
         setFormat(selected?.id ?? "");
-        if (!fileName) setFileName(`${safeDisplayName(result.title)}.m4a`);
+        if (!fileName) setFileName(`${safeDisplayName(result.title)}.${selected.extension || "m4a"}`);
       } else {
-        const hasFfmpeg = toolStatus?.ffmpeg_available ?? false;
-        const directOrVideo = result.formats
-          .filter((item) => item.has_video && !item.requires_ffmpeg)
-          .sort((a, b) => (b.height ?? 0) - (a.height ?? 0));
-        const merged = hasFfmpeg
-          ? result.formats
-              .filter(
-                (item) =>
-                  item.has_video && item.has_audio && item.requires_ffmpeg
-              )
-              .sort((a, b) => (b.height ?? 0) - (a.height ?? 0))
-          : [];
-        const selected = directOrVideo[0] ?? merged[0] ?? result.formats[0];
+        const hasFfmpeg = result.ffmpeg_available ?? toolStatus?.ffmpeg_available ?? false;
+        const selected = selectDefaultVideoFormat(result.formats, hasFfmpeg);
         setFormat(selected?.id ?? "");
         if (!fileName) setFileName(`${safeDisplayName(result.title)}.mp4`);
       }
@@ -1070,7 +1072,12 @@ export function NewTaskDialog({
     if (cookie) headers.Cookie = cookie;
     if (authorization) headers.Authorization = authorization;
     const selectedFormat = media?.formats.find((item) => item.id === format);
-    if (selectedFormat?.requires_ffmpeg && !toolStatus?.ffmpeg_available) {
+    if (media && ["video", "mixed", "audio"].includes(media.media_type) && !selectedFormat) {
+      setError("请先选择带音轨的视频格式，或明确选择无声视频/纯音频格式");
+      setBusy(false);
+      return;
+    }
+    if (selectedFormat?.requires_ffmpeg && !(toolStatus?.ffmpeg_available ?? media?.ffmpeg_available ?? false)) {
       setError("当前最高画质需要先安装 FFmpeg 高清合并组件");
       setBusy(false);
       return;
@@ -1098,7 +1105,15 @@ export function NewTaskDialog({
         collision_policy: policy,
         completion_action: eps.length > 1 ? "none" : completionAction,
         connection_count: connections,
-        media: undefined,
+        media: {
+          is_live: media.is_live === true,
+          extractor: media.extractor,
+          format_id: collectionFormatSelector(collectionQualityPreference, toolStatus?.ffmpeg_available ?? media.ffmpeg_available ?? false),
+          format_label: `合集画质：${collectionQualityPreference}`,
+          subtitles: subtitleLangs,
+          thumbnail: media.thumbnail,
+          requires_ffmpeg: toolStatus?.ffmpeg_available ?? media.ffmpeg_available ?? false,
+        },
         user_edited_file_name:
           userEditedFileName.current || overrideFileName !== undefined,
       };
@@ -1679,6 +1694,7 @@ export function NewTaskDialog({
       media: media
         ? {
             extractor: media.extractor,
+            is_live: media.is_live === true,
             format_id: format,
             format_label: selectedFormat?.label,
             subtitles: subtitleLangs,
@@ -2877,8 +2893,8 @@ export function NewTaskDialog({
 
           {toolStatus &&
             (!toolStatus.yt_dlp_available ||
-              (media?.formats.find((item) => item.id === format)
-                ?.requires_ffmpeg &&
+              ((media?.formats.find((item) => item.id === format)?.requires_ffmpeg ||
+                (!format && media?.formats.some((item) => item.requires_ffmpeg))) &&
                 !toolStatus.ffmpeg_available)) && (
               <MediaToolsCard
                 status={toolStatus}
@@ -2910,6 +2926,7 @@ export function NewTaskDialog({
                   onChange={setSelectedEpisodeIndices}
                   qualityPreference={collectionQualityPreference}
                   onQualityChange={setCollectionQualityPreference}
+                  ffmpegAvailable={toolStatus?.ffmpeg_available ?? media.ffmpeg_available ?? false}
                 />
               ) : media.media_type === "audio" ? (
                 <div className="media-format-select-row">
@@ -2917,23 +2934,21 @@ export function NewTaskDialog({
                     value={format}
                     onChange={(val: any) => setFormat(String(val))}
                     options={media.formats
-                      .filter((item) => item.has_audio && !item.has_video)
+                      .filter((item) => item.has_audio || item.original_file || item.audio_unknown)
                       .map((item) => ({
                         value: item.id,
-                        label: `${item.label}${
+                        label: `${item.label}${formatTrackDescription(item)}${item.has_video ? " · 含视频" : ""}${
                           item.file_size
-                            ? ` (${formatBytes(item.file_size)})`
+                            ? ` (${item.file_size_approximate ? "约 " : ""}${formatBytes(item.file_size)})`
                             : ""
                         }`,
                       }))}
                     ariaLabel="音频格式选择"
                     style={{ width: "100%" }}
                   />
-                  {media.formats.filter(
-                    (item) => item.has_audio && !item.has_video
-                  ).length === 0 && (
+                  {!media.formats.some((item) => item.has_audio || item.original_file || item.audio_unknown) && (
                     <div className="media-empty-hint">
-                      未识别到独立音频流，将尝试使用默认格式下载
+                      未识别到可下载音轨，请检查媒体权限与组件状态
                     </div>
                   )}
                 </div>
@@ -2943,20 +2958,14 @@ export function NewTaskDialog({
                     value={format}
                     onChange={(val: any) => setFormat(String(val))}
                     options={media.formats
-                      .filter((item) => item.has_video || item.has_audio)
+                      .filter((item) => item.has_video || item.has_audio || item.original_file || item.audio_unknown)
                       .map((item) => ({
                         value: item.id,
                         label: `${item.label}${
                           item.file_size
-                            ? ` (${formatBytes(item.file_size)})`
+                            ? ` (${item.file_size_approximate ? "约 " : ""}${formatBytes(item.file_size)})`
                             : ""
-                        }${
-                          !item.requires_ffmpeg &&
-                          item.has_video &&
-                          item.has_audio
-                            ? " · 轻量单文件"
-                            : ""
-                        }`,
+                        }${formatTrackDescription(item)}`,
                       }))}
                     ariaLabel="视频格式选择"
                     style={{ width: "100%" }}

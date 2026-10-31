@@ -716,7 +716,7 @@ test("evaluateDownload: 默认 minSizeMb=0 时不限文件大小，小文件正�
   assert.equal(res.fileName, "small.pdf");
 });
 
-test("evaluateDownload: GitHub M8.zip (987 KB) 在各类阈值下均能被正确接管", () => {
+test("evaluateDownload: 归档文件与其他格式同样遵守明确大小阈值", () => {
   const m8Item = {
     id: 519,
     url: "https://github.com/maobukeai/M8/releases/download/v3.7.8/M8.zip",
@@ -731,10 +731,10 @@ test("evaluateDownload: GitHub M8.zip (987 KB) 在各类阈值下均能被正确
   assert.equal(resDefault.eligible, true);
   assert.equal(resDefault.fileName, "M8.zip");
 
-  // 2. 即使设置了 5 MB 阈值，由于属于 zip 归档格式，免除体积拦截：接管
+  // 用户设置 5 MB 时，较小的 ZIP 也必须交还浏览器。
   const resExempt = evaluateDownload(m8Item, { ...settings, minSizeMb: 5 }, "extension-id");
-  assert.equal(resExempt.eligible, true);
-  assert.equal(resExempt.fileName, "M8.zip");
+  assert.equal(resExempt.eligible, false);
+  assert.equal(resExempt.reason, "size");
 });
 
 test("evaluateDownload: 非归档/非安装包文件在设定 minSizeMb > 0 时正常受阈值限制", () => {
@@ -755,6 +755,15 @@ test("evaluateDownload: 非归档/非安装包文件在设定 minSizeMb > 0 时�
   // minSizeMb = 0 (不限大小) 放行
   const resAllowed = evaluateDownload(pdfItem, { ...settings, minSizeMb: 0 }, "extension-id");
   assert.equal(resAllowed.eligible, true);
+});
+
+test("Unknown file sizes safely remain in browser when a minimum was explicitly set", () => {
+  for (const totalBytes of [-1, 0]) {
+    const result = evaluateDownload({ url: "https://example.com/archive.zip", filename: "archive.zip", totalBytes },
+      { ...settings, minSizeMb: 1 }, "extension-id");
+    assert.equal(result.eligible, false);
+    assert.equal(result.reason, "size-unknown");
+  }
 });
 
 test("evaluateDownload: POST 表单导出与 blob/data 特殊协议安全放行由浏览器原生下载", () => {
@@ -795,6 +804,7 @@ test("evaluateDownload: POST 表单导出与 blob/data 特殊协议安全放行�
 
 test("getDownloadAuthHeaders: 自动按目标 URL 提取 Cookie 并注入完整 User-Agent/Referer/Accept 上下文", async () => {
   const mockCookiesApi = {
+    getAllCookieStores: async () => [{ id: "normal", tabIds: [1] }],
     getAll: async ({ url }) => {
       if (url.includes("download.internal.net")) {
         return [
@@ -811,8 +821,8 @@ test("getDownloadAuthHeaders: 自动按目标 URL 提取 Cookie 并注入完整 
     referrer: "https://portal.internal.net/downloads",
   };
   const tab = {
+    id: 1,
     url: "https://portal.internal.net/downloads",
-    cookieStoreId: "store_incognito",
   };
 
   const headers = await getDownloadAuthHeaders(item, { cookies: mockCookiesApi, tab });
@@ -841,12 +851,13 @@ test("interceptBrowserDownload: 携带 cookies 与 tab 时自动向 sendTask 注
     resume: async () => calls.push("resume"),
   };
   const mockCookies = {
+    getAllCookieStores: async () => [{ id: "normal", tabIds: [1] }],
     getAll: async () => [
       { name: "token", value: "jwt_abc" },
       { name: "env", value: "prod" },
     ],
   };
-  const tab = { url: "https://auth.example.com/dashboard" };
+  const tab = { id: 1, url: "https://auth.example.com/dashboard" };
   const sent = [];
 
   const handled = await interceptBrowserDownload(fresh, {
@@ -908,8 +919,9 @@ test("interceptBrowserDownload: 桌面端返回 500 错误时安全回退并恢�
   assert.ok(messages.some((m) => m[0].includes("接管失败") || m[1].includes("500")));
 });
 
-test("getDownloadAuthHeaders: 多源 Cookie 去重合并（目标 CDN/文件域 与 页面源域）", async () => {
+test("getDownloadAuthHeaders: 跨域 CDN 仅接收目标域 Cookie，不拼接来源页面身份", async () => {
   const mockCookiesApi = {
+    getAllCookieStores: async () => [{ id: "normal", tabIds: [1] }],
     getAll: async ({ url }) => {
       if (url.includes("files.example.com")) {
         return [
@@ -932,11 +944,12 @@ test("getDownloadAuthHeaders: 多源 Cookie 去重合并（目标 CDN/文件域 
     referrer: "https://app.example.com/reports",
   };
   const tab = {
+    id: 1,
     url: "https://app.example.com/reports",
   };
 
   const headers = await getDownloadAuthHeaders(item, { cookies: mockCookiesApi, tab });
-  assert.equal(headers["Cookie"], "token=file_token_123; shared=from_files; session_id=sess_web_789");
+  assert.equal(headers["Cookie"], "token=file_token_123; shared=from_files");
   assert.equal(headers["Referer"], "https://app.example.com/reports");
 });
 

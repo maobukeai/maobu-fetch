@@ -3,6 +3,11 @@ import { interceptBrowserDownload, evaluateDownload, skipUnpairedDownload, notif
 import { bridgeMediaTask, selectBridgeMediaFormat } from "./media-selection.js";
 import { requestPageWithTrackingFallback } from "./rules.js";
 import { buildCookieHeader } from "./auth-download.js";
+import { readTargetCookies } from "./cookie-context.js";
+import { validateLanDiskRequest } from "./landisk-security.js";
+import { createLanDiskApproval } from "./landisk-approval.js";
+import { performBridgeTaskAction } from "./task-action.js";
+const landiskApproval = createLanDiskApproval({ chrome });
 import { matchMediaDomain } from "./domains.js";
 import { extractLinksFromText, isDownloadableMagnet } from "./links.js";
 import { attachSniffer, toggleSniffHost } from "./sniffer.js";
@@ -26,11 +31,6 @@ const defaults = {
 const config = async () => {
   const stored = await chrome.storage.local.get(Object.keys(defaults));
   const cfg = { ...defaults, ...stored };
-  // 迁移旧版默认值：若 minSizeMb 为 1（旧版硬编码默认值导致 <1MB 正常下载如 zip/exe 被跳过），自动升级为 0（不限大小）
-  if (cfg.minSizeMb === 1) {
-    cfg.minSizeMb = 0;
-    try { await chrome.storage.local.set({ minSizeMb: 0 }); } catch {}
-  }
   return cfg;
 };
 
@@ -58,7 +58,7 @@ async function fetchDesktopGate() {
     desktopGateCache = {
       at: current,
       enabled: data.takeover_enabled !== false,
-      minSizeMb: data.min_file_size_mb === 1 ? 0 : Number(data.min_file_size_mb || 0),
+      minSizeMb: Number(data.min_file_size_mb || 0),
       btMagnetEnabled: data.bt_magnet_enabled !== false,
     };
     return desktopGateCache;
@@ -116,7 +116,7 @@ async function openResourceGrabberForTab(tab) {
   } catch {
     try {
       if (chrome.scripting?.executeScript) {
-        await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["src/content-ui.js", "src/pikpak-adapter.js", "src/landisk-adapter.js", "src/content.js"] });
+        await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["src/content-ui.js", "src/pikpak-adapter.js", "src/landisk-bridge.js", "src/content.js"] });
         const res = await chrome.tabs.sendMessage(tab.id, { type: "grab-page-resources" });
         if (res?.items) items = res.items;
       }
@@ -158,15 +158,9 @@ async function openResourceGrabberForTab(tab) {
 // ---- 页面媒体发送（右键"分析当前页面"、悬浮按钮 page 模式、快捷键共用） ----
 // 附带当前页 Cookie：B 站等平台风控要求 buvid 等 Cookie，裸请求会被 412 拦截。
 // 一次性传递给探针，不持久化（凭证库同步由常规浏览流程负责）。
-// `cookieStoreId`：无痕窗口的 Cookie 存放在独立 store，必须显式指定才能读到。
-async function sendPageMedia(url, title, cookieStoreId) {
-  let pageCookie = "";
-  try {
-    const params = { url };
-    if (cookieStoreId) params.storeId = cookieStoreId;
-    const cookies = await chrome.cookies.getAll(params);
-    pageCookie = buildCookieHeader(cookies || []);
-  } catch {}
+// 根据真实 tab 解析 CookieStore.tabIds；无痕身份不回退普通上下文。
+async function sendPageMedia(url, title, tab) {
+  const pageCookie = buildCookieHeader(await readTargetCookies(chrome.cookies, url, { tab }));
   const isBili = /bilibili\.com|b23\.tv/i.test(url);
   const response = await withKeepAlive(requestPageWithTrackingFallback(
     (candidate) => signedFetch("/v1/media/probe", {
@@ -224,33 +218,8 @@ export function inferMediaFilename(url) {
 /// 提取当前标签页与目标 URL 的下载认证与防盗链请求头（Cookie、Referer、User-Agent、Accept、Accept-Language）。
 export async function getTabDownloadHeaders(tab, targetUrl, cookiesApi = chrome?.cookies) {
   const headers = {};
-  if (cookiesApi?.getAll) {
-    const cookieMap = new Map();
-    const collectCookies = async (sourceUrl) => {
-      if (!sourceUrl || !/^https?:/i.test(sourceUrl)) return;
-      try {
-        const params = { url: sourceUrl };
-        if (tab?.cookieStoreId) params.storeId = tab.cookieStoreId;
-        const cookies = await cookiesApi.getAll(params);
-        if (Array.isArray(cookies)) {
-          for (const c of cookies) {
-            if (c?.name && !cookieMap.has(c.name)) {
-              cookieMap.set(c.name, c.value ?? "");
-            }
-          }
-        }
-      } catch {}
-    };
-
-    if (targetUrl) await collectCookies(targetUrl);
-    if (tab?.url && tab.url !== targetUrl) await collectCookies(tab.url);
-
-    if (cookieMap.size > 0) {
-      headers["Cookie"] = Array.from(cookieMap.entries())
-        .map(([name, val]) => `${name}=${val}`)
-        .join("; ");
-    }
-  }
+  const cookieHeader = buildCookieHeader(await readTargetCookies(cookiesApi, targetUrl, { tab }));
+  if (cookieHeader) headers.Cookie = cookieHeader;
   if (tab?.url && /^https?:/i.test(tab.url)) {
     headers["Referer"] = tab.url.split("#")[0];
   }
@@ -376,7 +345,7 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
   if (!url) return;
   try {
     if (info.menuItemId === "lumaget-page") {
-      await sendPageMedia(url, tab?.title, tab?.cookieStoreId);
+      await sendPageMedia(url, tab?.title, tab);
     } else {
       // 右键"下载链接/下载媒体"：提取当前页面 Cookie 与 Referer，支持受保护与防盗链媒体，
       // 若桌面端未响应或返回鉴权/风控拦截，自动回退到浏览器原生下载。
@@ -433,7 +402,7 @@ chrome.downloads.onCreated.addListener(async (item) => {
   const desktopGate = await fetchDesktopGate();
   if (desktopGate) {
     settings.desktopTakeoverEnabled = desktopGate.enabled;
-    const gateMinSize = desktopGate.minSizeMb === 1 ? 0 : Number(desktopGate.minSizeMb || 0);
+    const gateMinSize = Number(desktopGate.minSizeMb || 0);
     if (gateMinSize > 0) {
       settings.minSizeMb = Math.max(Number(settings.minSizeMb || 0), gateMinSize);
     }
@@ -553,7 +522,7 @@ export async function confirmTakeoverWithOverlay(item, settings, deps = {}) {
   } catch {
     try {
       if (chrome.scripting?.executeScript) {
-        await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["src/content-ui.js", "src/pikpak-adapter.js", "src/landisk-adapter.js", "src/content.js"] });
+        await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["src/content-ui.js", "src/pikpak-adapter.js", "src/landisk-bridge.js", "src/content.js"] });
         response = await askOverlay();
       }
     } catch {}
@@ -593,28 +562,16 @@ const originOf = (url) => {
 /// 浮层与成功徽章）→ 当前活动标签 → 任意活动标签。
 export async function findSourceTab(item, deps = {}) {
   const queryTabs = deps.queryTabs || ((q) => chrome.tabs.query(q));
-  const referrerOrigin = originOf(item?.referrer || "");
-  let activeCurrent = null;
+  const sourceOrigin = originOf(item?.referrer) || originOf(item?.url) || originOf(item?.finalUrl);
+  const matches = (tab) => /^https?:/i.test(tab?.url || "")
+    && originOf(tab.url) === sourceOrigin
+    && (typeof item?.incognito !== "boolean" || Boolean(tab.incognito) === item.incognito);
   try {
-    const tabs = await queryTabs({ active: true, currentWindow: true });
-    if (tabs && tabs[0] && /^https?:/i.test(tabs[0].url || "")) activeCurrent = tabs[0];
-  } catch {}
-  if (activeCurrent && (!referrerOrigin || originOf(activeCurrent.url) === referrerOrigin)) {
-    return activeCurrent;
-  }
-  if (referrerOrigin) {
-    let all = [];
-    try { all = (await queryTabs({})) || []; } catch {}
-    const matched = all.filter((tab) => /^https?:/i.test(tab.url || "") && originOf(tab.url) === referrerOrigin);
-    const activeMatched = matched.find((tab) => tab.active) || matched[0];
-    if (activeMatched) return activeMatched;
-  }
-  if (activeCurrent) return activeCurrent;
-  try {
-    const tabs = await queryTabs({ active: true });
-    if (tabs && tabs[0] && /^https?:/i.test(tabs[0].url || "")) return tabs[0];
-  } catch {}
-  return null;
+    const active = (await queryTabs({ active: true, currentWindow: true }))?.find(matches);
+    if (active) return active;
+    const all = (await queryTabs({})) || [];
+    return all.find((tab) => matches(tab) && tab.active) || all.find(matches) || null;
+  } catch { return null; }
 }
 
 // 桥接错误转用户可读文案：剥离桌面端内部前缀，补上可操作指引。
@@ -698,64 +655,37 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
         return { ok: false, error: friendly };
       }
     }
-    // 局域网互联2 (LanDisk) 打包下载接管：接管网页端的 POST /api/download/batch 流式 ZIP 下载
-    if (message.type === "send-landisk-batch-task") {
-      try {
-        let headers = {
-          "Content-Type": message.contentType || "application/x-www-form-urlencoded",
-          ...(message.pin ? { "x-pin": String(message.pin) } : {}),
-          ...(message.headers || {}),
-        };
-        if (sender.tab) {
-          const tabHeaders = await getTabDownloadHeaders(sender.tab, message.url);
-          headers = { ...tabHeaders, ...headers };
-        }
-        const task = await sendTask(message.url, message.fileName, {
-          headers,
-          method: "POST",
-          body: message.body,
-          connection_count: 16,
-        });
-        notify("猫步下载器", `已接管局域网互联打包下载 (16 路并发 · 支持续传)：${message.fileName || "文件"}`);
-        void focusDesktop();
-        return { ok: true, item: task };
-      } catch (error) {
-        const friendly = friendlyBridgeError(error);
-        notify("猫步下载器发送失败", friendly);
-        return { ok: false, error: friendly };
-      }
+    if (message.type === "landisk-approval-details" || message.type === "landisk-approval-choice") {
+      return landiskApproval.message(message, sender);
     }
-    // 局域网互联2 (LanDisk) 极速并发下载：用户勾选多文件时，通过多任务独立 HTTP Range（各 16 线程）绕过服务端单线程打包瓶颈
-    if (message.type === "send-landisk-concurrent-files") {
-      try {
-        const items = Array.isArray(message.items) ? message.items : [];
-        let addedCount = 0;
-        for (const item of items) {
-          let headers = message.headers || {};
-          if (sender.tab) {
-            const tabHeaders = await getTabDownloadHeaders(sender.tab, item.url);
-            headers = { ...tabHeaders, ...headers };
-          }
-          await sendTask(item.url, item.fileName, {
-            headers,
-            connection_count: 16,
-          });
-          addedCount++;
-        }
-        notify("猫步下载器", `已添加 ${addedCount} 个并发极速任务 (每个 16 线程)：正在满速下载`);
-        void focusDesktop();
-        return { ok: true, count: addedCount };
-      } catch (error) {
-        const friendly = friendlyBridgeError(error);
-        notify("猫步下载器发送失败", friendly);
-        return { ok: false, error: friendly };
+    // 网页消息没有权限；必须在扩展 origin 的安全确认窗口批准当前绑定请求。
+    if (message.type === "send-landisk-batch-task") {
+      const gate = await fetchDesktopGate();
+      const request = validateLanDiskRequest(message, sender, await config(), gate);
+      const { bridgeToken } = await chrome.storage.local.get("bridgeToken");
+      if (!bridgeToken || !gate) return { ok: false, fallback: true, error: "桌面端离线或尚未配对，已交还网页下载" };
+      if (!await withKeepAlive(landiskApproval.ask(request, sender))) return { ok: false, fallback: true, error: "已交还网页下载" };
+      const currentTab = await chrome.tabs.get(sender.tab.id);
+      const frame = await chrome.webNavigation.getFrame({ tabId: sender.tab.id, frameId: 0 });
+      if (frame?.documentId !== sender.documentId || frame.url !== (sender.url || sender.tab.url)) {
+        throw new Error("来源页面已变化，请重新发起下载");
       }
+      validateLanDiskRequest(message, { ...sender, tab: currentTab }, await config(), await fetchDesktopGate());
+      const headers = await getTabDownloadHeaders(sender.tab, request.url);
+      headers["Content-Type"] = "application/x-www-form-urlencoded";
+      if (request.pin) headers["x-pin"] = request.pin;
+      const task = await sendTask(request.url, request.fileName, {
+        headers, method: "POST", body: request.body, connection_count: 16,
+      });
+      notify("猫步下载器", `已添加打包下载：${request.fileName}`);
+      void focusDesktop();
+      return { ok: true, item: task };
     }
     // 页内悬浮按钮（page 模式）：MSE 站点（B 站/YouTube 等）拿不到 http(s) 直链，
     // 发送页面 URL，与右键菜单"使用猫步下载器下载媒体"走相同的探测与任务构造流程。
     if (message.type === "download-page-media") {
       try {
-        await sendPageMedia(message.url, message.title || sender.tab?.title, sender.tab?.cookieStoreId);
+        await sendPageMedia(message.url, message.title || sender.tab?.title, sender.tab);
         return { ok: true };
       } catch (error) {
         // 完整错误用系统通知展示（悬浮按钮空间有限只显示截断文案），
@@ -773,9 +703,11 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
       const url = String(message.url || "");
       if (!isDownloadableMagnet(url)) return { ok: false, fallback: true, error: "不是有效的磁力链接" };
       const settings = await config();
-      if (!settings.interceptMagnet) return { ok: false, fallback: true };
+      if (!settings.intercept || !settings.interceptMagnet || Date.now() < Number(settings.bypassUntil || 0)) {
+        return { ok: false, fallback: true };
+      }
       const gate = await fetchDesktopGate();
-      if (gate && gate.btMagnetEnabled === false) return { ok: false, fallback: true };
+      if (gate && (gate.btMagnetEnabled === false || gate.enabled === false)) return { ok: false, fallback: true };
       const { bridgeToken } = await chrome.storage.local.get("bridgeToken").catch(() => ({}));
       if (!bridgeToken) {
         await notifyThrottled(
@@ -796,7 +728,7 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
           return { ok: false, fallback: true, offline: true };
         }
         const friendly = friendlyBridgeError(error);
-        return { ok: false, fallback: false, error: friendly };
+        return { ok: false, fallback: true, error: friendly };
       }
     }
     if (message.type === "bypass") {
@@ -829,9 +761,7 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
       return { ok: true, result: await response.json() };
     }
     if (message.type === "task-action") {
-      const response = await signedFetch(`/v1/tasks/${encodeURIComponent(message.id)}/action`, { action: message.action });
-      if (!response.ok) throw new Error(await response.text() || `HTTP ${response.status}`);
-      return { ok: true, result: await response.json() };
+      return { ok: true, result: await performBridgeTaskAction(message.id, message.action, signedFetch) };
     }
     if (message.type === "sync-cookies") {
       const response = await signedFetch("/v1/media/credentials/sync", {
@@ -921,7 +851,7 @@ chrome.commands?.onCommand?.addListener?.((command) => {
           notify("无法发送页面媒体", "当前标签页不是 HTTP/HTTPS 页面");
           return;
         }
-        await sendPageMedia(tab.url, tab.title, tab.cookieStoreId);
+        await sendPageMedia(tab.url, tab.title, tab);
         notify("已发送到猫步下载器", tab.title || tab.url);
       } catch (error) {
         notify("猫步下载器发送失败", friendlyBridgeError(error));
@@ -951,54 +881,24 @@ async function shouldSyncNow(baseDomain) {
   }
 }
 
-async function syncCookiesForDomain(domain, url, cookieStoreId) {
+async function syncCookiesForDomain(domain, url, tab) {
+  if (tab?.incognito) return; // 无痕登录态不得自动写入持久凭证库。
   try {
-    const stored = await chrome.storage.local.get("bridgeToken");
-    if (!stored.bridgeToken) return;
-    // 无痕窗口的 Cookie 在独立 store 中，必须显式指定 storeId 才能读到。
-    const params = { url };
-    if (cookieStoreId) params.storeId = cookieStoreId;
-    let cookies = await chrome.cookies.getAll(params).catch(() => []);
-
-    // 顶级域或主站 Cookie 补充拉取并去重合并（例如 .quark.cn 与 pan.quark.cn）
-    if (domain) {
-      const extraDomains = [domain, domain.replace(/^(?:pan|drive|www)\./i, "")];
-      for (const d of extraDomains) {
-        if (!d) continue;
-        const subCookies = await chrome.cookies.getAll({
-          domain: d.startsWith(".") ? d : `.${d}`,
-          ...(cookieStoreId ? { storeId: cookieStoreId } : {})
-        }).catch(() => []);
-        const map = new Map(cookies.map(c => [c.name, c]));
-        for (const sc of subCookies) {
-          if (sc?.name && !map.has(sc.name)) {
-            map.set(sc.name, sc);
-          }
-        }
-        cookies = Array.from(map.values());
-      }
-    }
-
-    if (!cookies || cookies.length === 0) return;
-    const cookieHeader = buildCookieHeader(cookies);
-    if (!cookieHeader) return;
-
-    await signedFetch("/v1/media/credentials/sync", {
-      domain,
-      cookie: cookieHeader
-    });
-  } catch (err) {
-    console.error(`Failed to sync cookies for ${domain}:`, err);
-  }
+    const { bridgeToken } = await chrome.storage.local.get("bridgeToken");
+    if (!bridgeToken) return;
+    const cookieHeader = buildCookieHeader(await readTargetCookies(chrome.cookies, url, { tab }));
+    if (cookieHeader) await signedFetch("/v1/media/credentials/sync", { domain, cookie: cookieHeader });
+  } catch { /* 认证失败不输出 Cookie 或包含认证信息的上游错误。 */ }
 }
 
 async function maybeSyncTabCookies(tab) {
+  if (tab?.incognito) return;
   try {
     const hostname = new URL(tab.url).hostname.toLowerCase();
     const { customMediaDomains = [] } = await chrome.storage.local.get("customMediaDomains");
     const baseDomain = matchMediaDomain(hostname, customMediaDomains);
     if (baseDomain && await shouldSyncNow(baseDomain)) {
-      await syncCookiesForDomain(baseDomain, tab.url, tab.cookieStoreId);
+      await syncCookiesForDomain(baseDomain, tab.url, tab);
     }
   } catch {}
 }

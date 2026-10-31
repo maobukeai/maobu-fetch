@@ -1,16 +1,21 @@
 // HLS AES-128-CBC 原生解密器（纯 Rust，基于 RustCrypto aes/cbc）
 
 use aes::Aes128;
-use cbc::cipher::{
-    block_padding::{NoPadding, Pkcs7},
-    BlockDecryptMut, KeyIvInit,
-};
+use cbc::cipher::{block_padding::Pkcs7, BlockDecryptMut, KeyIvInit};
 use cbc::Decryptor;
 
 type Aes128CbcDec = Decryptor<Aes128>;
 
 /// 解密 AES-128-CBC 密文
 pub fn decrypt_aes_128(key: &[u8], iv: &[u8; 16], ciphertext: &[u8]) -> Result<Vec<u8>, String> {
+    decrypt_aes_128_owned(key, iv, ciphertext.to_vec())
+}
+
+pub(crate) fn decrypt_aes_128_owned(
+    key: &[u8],
+    iv: &[u8; 16],
+    mut ciphertext: Vec<u8>,
+) -> Result<Vec<u8>, String> {
     if key.len() != 16 {
         return Err(format!(
             "AES-128 密钥长度必须为 16 字节，实际为 {} 字节",
@@ -27,22 +32,15 @@ pub fn decrypt_aes_128(key: &[u8], iv: &[u8; 16], ciphertext: &[u8]) -> Result<V
         ));
     }
 
-    let mut buf = ciphertext.to_vec();
     let decryptor = Aes128CbcDec::new(key.into(), iv.into());
 
-    // 优先尝试标准 PKCS#7 填充解密
-    match decryptor.decrypt_padded_mut::<Pkcs7>(&mut buf) {
-        Ok(decrypted) => Ok(decrypted.to_vec()),
-        Err(_) => {
-            // 部分 HLS TS 流使用整块传输（末尾无标准 PKCS#7 填充），回退至 NoPadding
-            let raw_dec = Aes128CbcDec::new(key.into(), iv.into());
-            let mut raw_buf = ciphertext.to_vec();
-            match raw_dec.decrypt_padded_mut::<NoPadding>(&mut raw_buf) {
-                Ok(raw_res) => Ok(raw_res.to_vec()),
-                Err(e) => Err(format!("AES-128-CBC 解密失败: {e:?}")),
-            }
-        }
-    }
+    // RFC 8216 AES-128 使用 PKCS#7；错误密钥/损坏密文不能退化为无填充后假成功。
+    let length = decryptor
+        .decrypt_padded_mut::<Pkcs7>(&mut ciphertext)
+        .map_err(|_| "M3U8 AES-128 解密校验失败，可能是密钥变化或分片损坏".to_owned())?
+        .len();
+    ciphertext.truncate(length);
+    Ok(ciphertext)
 }
 
 /// 根据 RFC 8216 §5.2 规范：若 #EXT-X-KEY 未显式指定 IV 属性，

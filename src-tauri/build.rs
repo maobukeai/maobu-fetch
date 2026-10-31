@@ -1,17 +1,18 @@
 fn main() {
+    // lib 单测实际构造 Wry 时同样需要 Common Controls v6。
+    // 仅主程序嵌资源不会覆盖 test harness，缺失会在测试入口前报 0xc0000139。
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows")
+        && std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc")
+    {
+        println!("cargo:rustc-link-arg=/MANIFEST:EMBED");
+        println!("cargo:rustc-link-arg=/MANIFESTINPUT:windows/app.manifest");
+    }
     println!("cargo:rerun-if-changed=windows/app.manifest");
     println!("cargo:rerun-if-changed=icons/icon.ico");
-    // 图标（bundle.icon 的 icons/icon.ico）、版本资源（跟随 tauri.conf.json 的
-    // version / productName，不再像 lumaget.rc 那样硬编码）由 tauri_build 统一嵌入。
-    //
-    // Windows manifest 不用 tauri_build 的 app_manifest() 内联机制：它把 XML 按行
-    // 拼进 RC 字符串（每行首尾附加空格），SxS 激活上下文解析该产物会报
-    // 14001"并行配置不正确"。这里改为通过 append_rc_content 让 RC 编译器直接
-    // include manifest 文件，字节原样嵌入（保留 PerMonitorV2 DPI 感知）。
-    // 必须用相对路径：本仓库路径含中文（"下载器"），rc.exe 命令行无法解析
-    // 非 ASCII 绝对路径；RC 会以 build script 工作目录（crate 根）解析相对引用。
-    let windows = tauri_build::WindowsAttributes::new_without_app_manifest()
-        .append_rc_content("1 24 \"windows/app.manifest\"");
+    // 图标和版本资源仍由 tauri_build 编译；Manifest 统一由链接器嵌入。
+    // RC 内联 XML 会改变字节引起 SxS 14001；仅对 bin 的资源指令又覆盖不到
+    // lib --test harness。通用 link-arg 使用相对输入路径，避免中文绝对路径问题。
+    let windows = tauri_build::WindowsAttributes::new_without_app_manifest();
     if let Err(error) =
         tauri_build::try_build(tauri_build::Attributes::new().windows_attributes(windows))
     {

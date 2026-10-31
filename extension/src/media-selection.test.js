@@ -2,6 +2,18 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { bridgeMediaTask, filterSubtitles, selectBridgeMediaFormat } from "./media-selection.js";
 
+test("bridge carries only actual probe live metadata and defaults legacy results to VOD",()=>{
+  const base={formats:[{id:'known',has_video:true,has_audio:true,extension:'mp4'}]};
+  assert.equal(bridgeMediaTask({...base,is_live:true}).media.is_live,true);
+  assert.equal(bridgeMediaTask(base).media.is_live,false);
+});
+
+test("unknown audio is never reported or selected as confirmed audible", () => {
+  const unknown={id:"unknown",height:2160,has_video:true,has_audio:true,audio_unknown:true};
+  assert.throws(()=>selectBridgeMediaFormat({formats:[unknown],ffmpeg_available:true}),/未确认/);
+  assert.equal(selectBridgeMediaFormat({formats:[unknown,{id:"audible",height:360,has_video:true,has_audio:true}],ffmpeg_available:true}).id,"audible");
+});
+
 test("browser bridge prefers a lightweight combined format", () => {
   const formats = [
     { id: "bestvideo+bestaudio", has_video: true, has_audio: true, requires_ffmpeg: true },
@@ -13,10 +25,58 @@ test("browser bridge prefers a lightweight combined format", () => {
 test("browser bridge preserves the selected component requirement", () => {
   const task = bridgeMediaTask({
     title: "示例:视频",
+    ffmpeg_available: true,
     formats: [{ id: "high", label: "最高画质", extension: "mp4", has_video: true, has_audio: true, requires_ffmpeg: true }],
   });
   assert.equal(task.fileName, "示例_视频.mp4");
   assert.equal(task.media.requires_ffmpeg, true);
+});
+
+test("FFmpeg capability selects best audible resolution without choosing silent video", () => {
+  const formats = [
+    { id: "silent-4k", height: 2160, has_video: true, has_audio: false },
+    { id: "merged-1080", height: 1080, has_video: true, has_audio: true, requires_ffmpeg: true },
+    { id: "direct-360", height: 360, has_video: true, has_audio: true },
+  ];
+  assert.equal(selectBridgeMediaFormat({ formats, ffmpeg_available: true }).id, "merged-1080");
+  assert.equal(selectBridgeMediaFormat({ formats, ffmpeg_available: false }).id, "direct-360");
+  assert.equal(selectBridgeMediaFormat({ formats }).id, "direct-360");
+  assert.equal(selectBridgeMediaFormat({ formats: [...formats, { id: "direct-1080", height: 1080, has_video: true, has_audio: true }], ffmpeg_available: true }).id, "direct-1080");
+});
+
+test("missing components and missing audio are actionable, never silent automatic downloads", () => {
+  assert.throws(() => bridgeMediaTask({ formats: [{ id: "merge", has_video: true, has_audio: true, requires_ffmpeg: true }] }), /FFmpeg/);
+  assert.throws(() => bridgeMediaTask({ formats: [{ id: "silent", has_video: true, has_audio: false }] }), /音轨/);
+  const audio = { id: "audio", has_video: false, has_audio: true };
+  assert.throws(() => bridgeMediaTask({ formats: [audio] }), /音轨/);
+  assert.equal(selectBridgeMediaFormat({ formats: [audio], media_type: "audio" }).id, "audio");
+  assert.equal(selectBridgeMediaFormat({ formats: [audio] }, "audio").id, "audio");
+});
+
+test("gallery remains explicit image selection and collection requests desktop episode choices", () => {
+  const image = { id: "image-1", image_url: "https://example.test/image.jpg" };
+  assert.equal(selectBridgeMediaFormat({ media_type: "gallery", formats: [image] }), image);
+  assert.throws(() => bridgeMediaTask({ media_type: "collection", formats: [] }), /分集/);
+});
+
+test("same resolution uses actual bitrate before direct preference, missing bitrate stays optional", () => {
+  const direct = { id:"direct",height:1080,has_video:true,has_audio:true,bitrate_kbps:1000 };
+  const merged = { ...direct,id:"merged",requires_ffmpeg:true,bitrate_kbps:3000 };
+  assert.equal(selectBridgeMediaFormat({formats:[direct,merged],ffmpeg_available:true}).id,"merged");
+  assert.equal(selectBridgeMediaFormat({formats:[direct,merged],ffmpeg_available:false}).id,"direct");
+  assert.equal(selectBridgeMediaFormat({formats:[{...direct,bitrate_kbps:3000},merged],ffmpeg_available:true}).id,"direct");
+  const unknown = { ...direct,bitrate_kbps:undefined };
+  selectBridgeMediaFormat({formats:[unknown,merged],ffmpeg_available:true});
+  assert.equal(unknown.bitrate_kbps,undefined);
+});
+
+test("explicit PikPak original files keep real filename and unknown tracks, never become an audible video default", () => {
+  const original = {id:"original",label:"原文件（音视频属性待检测）",original_file:true,has_video:false,has_audio:false,extension:"flac"};
+  const result = {title:"actual.flac",extractor:"pikpak",media_type:"audio",formats:[original]};
+  assert.equal(bridgeMediaTask(result).fileName,"actual.flac");
+  assert.equal(selectBridgeMediaFormat(result),original);
+  assert.throws(()=>selectBridgeMediaFormat({...result,extractor:"youtube"}),/原文件/);
+  assert.throws(()=>selectBridgeMediaFormat({formats:[{...original,original_file:false}]}),/音轨/);
 });
 
 test("browser bridge refuses DRM media", () => {

@@ -29,6 +29,7 @@ const MAX_LOG_FILES: usize = 7;
 /// 全局 guard，drop 时关闭非阻塞 writer。
 /// 进程退出前必须保持存活，否则日志可能丢失。
 static LOG_GUARD: OnceLock<WorkerGuard> = OnceLock::new();
+static STDERR_GUARD: OnceLock<WorkerGuard> = OnceLock::new();
 
 /// 全局日志目录，供 `open_logs_dir` 和 `export_recent_logs` 使用。
 static LOG_DIR: OnceLock<PathBuf> = OnceLock::new();
@@ -56,8 +57,13 @@ pub fn init(log_dir: PathBuf, debug: bool) {
     };
 
     let stderr_layer = tracing_subscriber::fmt::layer()
-        .with_writer(std::io::stderr)
+        .with_writer({
+            let (writer, stderr_guard) = tracing_appender::non_blocking(std::io::stderr());
+            let _ = STDERR_GUARD.set(stderr_guard);
+            RedactingMakeWriter::new(writer)
+        })
         .with_target(false)
+        .with_ansi(false)
         .with_filter(level_filter.clone());
 
     let file_layer = tracing_subscriber::fmt::layer()

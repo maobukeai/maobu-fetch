@@ -1,4 +1,5 @@
 import { sendWithCurrentPageAuth, buildCookieHeader, exportCurrentPageCookies } from "./auth-download.js";
+import { readTargetCookies } from "./cookie-context.js";
 import { describeIgnoredReason, shortReasonLabel } from "./reasons.js";
 import { matchMediaDomain } from "./domains.js";
 
@@ -29,7 +30,7 @@ function syncMinSizeUi(value) {
     minSizeCustomEl.value = String(Math.max(1, Math.floor(numeric || 1)));
   }
 }
-syncMinSizeUi(stored.minSizeMb === 1 ? 0 : (stored.minSizeMb ?? 0));
+syncMinSizeUi(stored.minSizeMb ?? 0);
 
 const takeoverModeEl = $("takeoverMode");
 if (takeoverModeEl) takeoverModeEl.value = stored.takeoverMode === "ask" ? "ask" : "auto";
@@ -233,35 +234,14 @@ if (authDownloadSection && isHttpTab) {
 
 // 打开弹窗时同步当前媒体平台 Cookie（域名表统一来自 domains.js，
 // 含用户在选项页配置的自定义同步域名，与 background 的逻辑保持一致）。
-if (isHttpTab) {
+if (isHttpTab && !tab?.incognito) {
   (async () => {
     try {
       const urlObj = new URL(currentTabUrl);
       const { customMediaDomains = [] } = await chrome.storage.local.get("customMediaDomains").catch(() => ({}));
       const baseDomain = matchMediaDomain(urlObj.hostname, customMediaDomains);
       if (!baseDomain) return;
-      // 显式传入 tab.cookieStoreId 以支持无痕窗口（无痕 Cookie 在独立 store 中）
-      const getAllParams = { url: currentTabUrl };
-      if (tab?.cookieStoreId) getAllParams.storeId = tab.cookieStoreId;
-      let cookies = await chrome.cookies.getAll(getAllParams).catch(() => []);
-
-      if (baseDomain) {
-        const extraDomains = [baseDomain, baseDomain.replace(/^(?:pan|drive|www)\./i, "")];
-        for (const d of extraDomains) {
-          if (!d) continue;
-          const subCookies = await chrome.cookies.getAll({
-            domain: d.startsWith(".") ? d : `.${d}`,
-            ...(tab?.cookieStoreId ? { storeId: tab.cookieStoreId } : {})
-          }).catch(() => []);
-          const map = new Map(cookies.map(c => [c.name, c]));
-          for (const sc of subCookies) {
-            if (sc?.name && !map.has(sc.name)) {
-              map.set(sc.name, sc);
-            }
-          }
-          cookies = Array.from(map.values());
-        }
-      }
+      const cookies = await readTargetCookies(chrome.cookies, currentTabUrl, { tab });
 
       const cookieHeader = buildCookieHeader(cookies);
       if (cookieHeader) {
@@ -323,7 +303,7 @@ if (useAuthDownloadEl) {
           userAgent: navigator.userAgent,
           cookiesApi: chrome.cookies,
           sendMessage: call,
-          cookieStoreId: tab?.cookieStoreId,
+          tab,
         });
         if (result.ok) {
           message("已发送登录态到桌面端");
@@ -369,7 +349,7 @@ if (useAuthDownloadEl) {
         const result = await exportCurrentPageCookies({
           pageUrl: currentTabUrl,
           cookiesApi: chrome.cookies,
-          cookieStoreId: tab?.cookieStoreId,
+          tab,
           triggerDownload,
         });
         if (result.ok) {

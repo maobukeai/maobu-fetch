@@ -249,6 +249,21 @@ impl TaskKind {
 /// 仅 `task_kind = Bt` 的任务携带；HTTP 任务恒为 `None`。
 #[derive(Clone, Debug, Serialize, Deserialize, Default, PartialEq)]
 pub struct BtTaskMeta {
+    /// 仅显式请求过做种的已完成任务可在重启后恢复做种。
+    #[serde(default)]
+    pub seeding_requested: bool,
+    /// 从真实引擎累计的历史上传量；重启后用于恢复分享率。
+    #[serde(default)]
+    pub uploaded_bytes: u64,
+    /// 引擎实际输出根，不能从展示名反推。旧任务 None 时由引擎恢复核验。
+    #[serde(default)]
+    pub output_folder: Option<String>,
+    /// 已核验的种子相对文件清单；删除仅限这些文件，不递归删除同名目录。
+    #[serde(default)]
+    pub owned_files: Vec<String>,
+    /// 仅由新任务原子分配的独占输出目录为 true。
+    #[serde(default)]
+    pub output_owned: bool,
     /// 40 位十六进制小写 infohash。磁力任务创建时即可从 `xt` 解析；
     /// .torrent 任务在 aria2 接受添加后回填。
     #[serde(default)]
@@ -300,6 +315,9 @@ pub struct BtTorrentInspectResult {
 #[derive(Clone, Debug, Serialize, Deserialize, Default, PartialEq, Eq)]
 pub struct BtRuntimeStatus {
     pub num_seeds: u32,
+    /// 引擎不能提供确数时 UI 显示未知，不把推算值当种子数。
+    #[serde(default)]
+    pub seeds_known: bool,
     pub num_peers: u32,
     pub upload_speed: u64,
     /// 磁力元数据获取阶段为 true（此时无文件名/大小可展示）。
@@ -337,6 +355,9 @@ pub struct BtNewTaskRequest {
 
 #[derive(Clone, Debug, Serialize, Deserialize, Default, PartialEq, Eq)]
 pub struct MediaSelection {
+    /// Actual probe/playlist evidence. Missing legacy data must not imply a live recording.
+    #[serde(default)]
+    pub is_live: bool,
     pub extractor: Option<String>,
     pub format_id: Option<String>,
     pub format_label: Option<String>,
@@ -347,6 +368,8 @@ pub struct MediaSelection {
     #[serde(default)]
     pub url: Option<String>,
 }
+
+pub const NATIVE_HLS_EXTRACTOR: &str = "native-hls";
 
 #[derive(Clone, Debug, Serialize, Deserialize, Default, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -757,6 +780,7 @@ fn default_true() -> bool {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
 pub struct AppSettings {
     pub download_dir: String,
     pub concurrent_downloads: u8,
@@ -797,8 +821,11 @@ pub struct AppSettings {
     pub ffprobe_path: String,
     #[serde(default)]
     pub low_memory_mode: bool,
+    #[serde(default)]
     pub window_width: Option<u32>,
+    #[serde(default)]
     pub window_height: Option<u32>,
+    #[serde(default)]
     pub auto_scale_ui: Option<bool>,
     /// 全局默认重试策略（Task 14）。任务未设置 `retry_policy_override` 时使用。
     #[serde(default)]
@@ -829,6 +856,15 @@ pub struct AppSettings {
     /// 旧 JSON 缺失此字段时通过 serde 默认值安全回填到 true。
     #[serde(default = "default_notify_on_complete")]
     pub notify_on_complete: bool,
+    /// 应用内完成提醒停留秒数；0 为手动关闭。旧设置安全回填 30 秒。
+    #[serde(default = "default_completion_notice_seconds")]
+    pub completion_notice_seconds: u32,
+    /// 下载进行时显示独立进度悬浮窗；旧设置默认开启，可由用户关闭。
+    #[serde(default = "default_true")]
+    pub progress_window_enabled: bool,
+    /// 进度悬浮窗默认置顶；仅影响悬浮窗，用户选择会持久化。
+    #[serde(default = "default_true")]
+    pub progress_window_always_on_top: bool,
     /// Task 30.1：下载失败后发送系统通知。默认 true。
     /// 旧 JSON 缺失此字段时通过 serde 默认值安全回填到 true。
     #[serde(default = "default_notify_on_failure")]
@@ -1048,6 +1084,10 @@ fn default_notify_on_complete() -> bool {
     true
 }
 
+fn default_completion_notice_seconds() -> u32 {
+    30
+}
+
 fn default_notify_on_failure() -> bool {
     true
 }
@@ -1134,6 +1174,9 @@ impl Default for AppSettings {
             archive_days: default_archive_days(),
             archive_threshold: default_archive_threshold(),
             notify_on_complete: default_notify_on_complete(),
+            completion_notice_seconds: default_completion_notice_seconds(),
+            progress_window_enabled: true,
+            progress_window_always_on_top: true,
             notify_on_failure: default_notify_on_failure(),
             notify_sound_enabled: default_notify_sound_enabled(),
             notify_failure_sound_enabled: default_notify_failure_sound_enabled(),
@@ -1334,6 +1377,11 @@ pub struct MediaEpisode {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct MediaProbeResult {
+    #[serde(default)]
+    pub is_live: bool,
+    /// 真实组件能力；旧响应或旧 JSON 安全回退 false。
+    #[serde(default)]
+    pub ffmpeg_available: bool,
     pub title: String,
     pub thumbnail: Option<String>,
     pub extractor: Option<String>,
@@ -1376,6 +1424,16 @@ pub enum MediaType {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct MediaFormat {
+    #[serde(default)]
+    pub file_size_approximate: bool,
+    #[serde(default)]
+    pub audio_unknown: bool,
+    /// 明确下载平台原文件；不代表已确认视频/音轨或画质。
+    #[serde(default)]
+    pub original_file: bool,
+    /// 平台实际报告的总码率（kbps），缺失为未知而非伪造零。
+    #[serde(default)]
+    pub bitrate_kbps: Option<f64>,
     pub id: String,
     pub label: String,
     pub extension: Option<String>,
@@ -1664,6 +1722,7 @@ impl Default for BackoffStrategy {
 /// `task_timeout_secs` 优先于连接重试：即使 attempt 未达上限，
 /// 超过总任务时长也强制失败。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
 pub struct RetryPolicy {
     /// 单连接超时（秒），用于 reqwest ClientBuilder 的 connect_timeout + timeout。
     pub connection_timeout_secs: u64,
@@ -2116,6 +2175,18 @@ pub struct PlatformCompatibility {
     pub known_issues: Vec<String>,
     #[serde(default)]
     pub last_tested_at: String,
+    #[serde(default)]
+    pub verification: Option<PlatformVerificationEvidence>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(default)]
+pub struct PlatformVerificationEvidence {
+    pub app_version: String,
+    pub tool_version: String,
+    pub sample: String,
+    pub scope: String,
+    pub result: String,
 }
 
 /// 缓存检查结果。
@@ -2694,6 +2765,22 @@ mod tests {
     // ===== Task 30: 下载完成通知与声音 =====
 
     #[test]
+    fn completion_notice_duration_preserves_old_and_manual_settings() {
+        let mut value = serde_json::to_value(AppSettings::default()).unwrap();
+        value
+            .as_object_mut()
+            .unwrap()
+            .remove("completion_notice_seconds");
+        let old: AppSettings = serde_json::from_value(value).unwrap();
+        assert_eq!(old.completion_notice_seconds, 30);
+        let mut settings = old;
+        settings.completion_notice_seconds = 0;
+        let restored: AppSettings =
+            serde_json::from_str(&serde_json::to_string(&settings).unwrap()).unwrap();
+        assert_eq!(restored.completion_notice_seconds, 0);
+    }
+
+    #[test]
     fn app_settings_default_has_task30_notification_defaults() {
         let settings = AppSettings::default();
         assert!(settings.notify_on_complete);
@@ -3101,3 +3188,6 @@ mod tests {
         assert!(restored.message.is_empty());
     }
 }
+
+#[cfg(test)]
+mod compatibility_tests;

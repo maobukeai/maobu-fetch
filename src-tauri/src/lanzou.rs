@@ -7,7 +7,11 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::LazyLock;
-use std::time::Duration;
+
+#[path = "lanzou/endpoint.rs"]
+mod endpoint;
+#[path = "lanzou/pagination.rs"]
+mod pagination;
 
 pub const LANZOU_USER_AGENT: &str =
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
@@ -140,11 +144,12 @@ fn compute_acw_sc_v2(arg1: &str) -> String {
 /// 发送请求并自动处理 WAF Cookie 挑战
 /// 发送请求并自动处理 WAF Cookie 挑战，返回 (页面内容, 有效Cookie)
 async fn fetch_lanzou_page(
-    client: &reqwest::Client,
+    client: &crate::cloud_request::CloudRequestContext,
     url: &str,
     referer: Option<&str>,
     cookie: Option<&str>,
 ) -> Result<(String, Option<String>), String> {
+    let network = client;
     let mut req = client
         .get(url)
         .header("Accept-Language", "zh-CN,zh;q=0.9")
@@ -161,7 +166,7 @@ async fn fetch_lanzou_page(
         .send()
         .await
         .map_err(|e| format!("请求蓝奏云页面失败：{e}"))?;
-    let html = resp.text().await.unwrap_or_default();
+    let html = network.text(resp).await?;
 
     if html.contains("var arg1") {
         let re_arg1 = Regex::new(r#"var\s+arg1\s*=\s*'([^']+)'"#).unwrap();
@@ -183,7 +188,10 @@ async fn fetch_lanzou_page(
                 .send()
                 .await
                 .map_err(|e| format!("挑战验证后重新请求失败：{e}"))?;
-            return Ok((resp2.text().await.unwrap_or_default(), Some(cookie_val)));
+            return Ok((
+                network.text(resp2).await.unwrap_or_default(),
+                Some(cookie_val),
+            ));
         }
     }
 
@@ -194,17 +202,40 @@ pub async fn inspect_lanzou_share(
     share_url: &str,
     pass_code: Option<&str>,
 ) -> Result<LanzouShareInfo, String> {
+    let network = crate::cloud_request::CloudRequestContext::defaults(
+        LANZOU_USER_AGENT,
+        15,
+        tokio_util::sync::CancellationToken::new(),
+    )?;
+    inspect_lanzou_share_with_context(share_url, pass_code, &network).await
+}
+pub async fn inspect_lanzou_share_with_context(
+    share_url: &str,
+    pass_code: Option<&str>,
+    network: &crate::cloud_request::CloudRequestContext,
+) -> Result<LanzouShareInfo, String> {
+    let network = network
+        .with_user_agent(LANZOU_USER_AGENT)
+        .with_cookie_source(share_url);
+    network
+        .run(
+            "蓝奏云",
+            inspect_lanzou_share_impl(share_url, pass_code, &network),
+        )
+        .await
+}
+async fn inspect_lanzou_share_impl(
+    share_url: &str,
+    pass_code: Option<&str>,
+    network: &crate::cloud_request::CloudRequestContext,
+) -> Result<LanzouShareInfo, String> {
     let parsed =
         parse_lanzou_url(share_url).ok_or_else(|| "无法识别的蓝奏云分享链接".to_string())?;
     let effective_pwd = pass_code
         .map(|s| s.to_string())
         .or(parsed.pass_code.clone());
 
-    let client = reqwest::Client::builder()
-        .user_agent(LANZOU_USER_AGENT)
-        .timeout(Duration::from_secs(15))
-        .build()
-        .map_err(|e| format!("创建 HTTP 客户端失败：{e}"))?;
+    let client = network;
 
     let (html, cookie_header) = fetch_lanzou_page(&client, share_url, None, None).await?;
 
@@ -219,7 +250,6 @@ pub async fn inspect_lanzou_share(
         || html.contains("folder");
 
     if is_folder {
-        let mut files = Vec::new();
         let mut title = format!("蓝奏云分享 - {}", parsed.share_id);
 
         if let Some(caps) = RE_FILE_NAME.captures(&html) {
@@ -288,76 +318,27 @@ pub async fn inspect_lanzou_share(
             format!("https://{}{}", parsed.host, ajax_path)
         };
 
-        let mut req_post = client
-            .post(&api_url)
-            .form(&params)
-            .header("Referer", share_url)
-            .header("Accept", "application/json, text/javascript, */*");
-
-        if let Some(ref ck) = cookie_header {
-            req_post = req_post.header("Cookie", ck);
-        }
-
-        if let Ok(f_resp) = req_post.send().await {
-            if let Ok(json_text) = f_resp.text().await {
-                if let Ok(json_val) = serde_json::from_str::<serde_json::Value>(&json_text) {
-                    if let Some(text_arr) = json_val.get("text").and_then(|v| v.as_array()) {
-                        for item in text_arr {
-                            let item_id = item
-                                .get("id")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("")
-                                .to_string();
-                            if item_id.is_empty() || item_id == "-1" {
-                                continue;
-                            }
-                            let raw_name = item
-                                .get("name_all")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("")
-                                .to_string();
-                            let clean_name =
-                                raw_name.replace("<span class=\"s_ad\">推广</span>", "");
-                            let size_str = item
-                                .get("size")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("0")
-                                .to_string();
-                            let time_str = item
-                                .get("time")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("")
-                                .to_string();
-                            let parsed_size = parse_size_to_bytes(&size_str);
-
-                            let item_url = if item_id.starts_with("http") {
-                                item_id.clone()
-                            } else {
-                                format!("https://{}/{}", parsed.host, item_id)
-                            };
-
-                            files.push(LanzouFileItem {
-                                id: item_id,
-                                name: clean_name,
-                                size: parsed_size,
-                                size_formatted: size_str,
-                                time: time_str,
-                                kind: "file".to_string(),
-                                url: item_url,
-                            });
-                        }
-                    }
-                }
-            }
-        }
+        let listing = pagination::collect_folder(
+            network,
+            &api_url,
+            &params,
+            share_url,
+            cookie_header.as_deref(),
+            &parsed.host,
+            requires_pwd,
+            effective_pwd
+                .as_ref()
+                .is_some_and(|password| !password.trim().is_empty()),
+        )
+        .await?;
 
         return Ok(LanzouShareInfo {
             share_id: parsed.share_id,
             share_url: share_url.to_string(),
             title,
             is_folder: true,
-            requires_password: requires_pwd && files.is_empty(),
-            files,
+            requires_password: listing.requires_password,
+            files: listing.files,
         });
     }
 
@@ -412,6 +393,35 @@ pub async fn resolve_lanzou_file(
     file_id: &str,
     pass_code: Option<&str>,
 ) -> Result<LanzouDirectUrlResult, String> {
+    let network = crate::cloud_request::CloudRequestContext::defaults(
+        LANZOU_USER_AGENT,
+        15,
+        tokio_util::sync::CancellationToken::new(),
+    )?;
+    resolve_lanzou_file_with_context(share_url, file_id, pass_code, &network).await
+}
+pub async fn resolve_lanzou_file_with_context(
+    share_url: &str,
+    file_id: &str,
+    pass_code: Option<&str>,
+    network: &crate::cloud_request::CloudRequestContext,
+) -> Result<LanzouDirectUrlResult, String> {
+    let network = network
+        .with_user_agent(LANZOU_USER_AGENT)
+        .with_cookie_source(share_url);
+    network
+        .run(
+            "蓝奏云",
+            resolve_lanzou_file_impl(share_url, file_id, pass_code, &network),
+        )
+        .await
+}
+async fn resolve_lanzou_file_impl(
+    share_url: &str,
+    file_id: &str,
+    pass_code: Option<&str>,
+    network: &crate::cloud_request::CloudRequestContext,
+) -> Result<LanzouDirectUrlResult, String> {
     let parsed =
         parse_lanzou_url(share_url).ok_or_else(|| "无法识别的蓝奏云分享链接".to_string())?;
     let effective_pwd = pass_code
@@ -424,18 +434,12 @@ pub async fn resolve_lanzou_file(
         format!("https://{}/{}", parsed.host, file_id)
     };
 
-    let client = reqwest::Client::builder()
-        .user_agent(LANZOU_USER_AGENT)
-        .timeout(Duration::from_secs(15))
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .map_err(|e| format!("创建 HTTP 客户端失败：{e}"))?;
+    let client = network.without_redirects();
 
     let (html, cookie_opt) = fetch_lanzou_page(&client, &target_url, Some(share_url), None).await?;
     let re_find_iframe = Regex::new(r#"(?is)<iframe[^>]*\s+src=['"]?([^'"\s>]+)['"]?"#).unwrap();
 
-    let (sign_html, req_host, iframe_ref) = if let Some(iframe_cap) = re_find_iframe.captures(&html)
-    {
+    let (sign_html, iframe_ref) = if let Some(iframe_cap) = re_find_iframe.captures(&html) {
         if let Some(m) = iframe_cap.get(1) {
             let path = m.as_str();
             let iframe_url = if path.starts_with("http") {
@@ -450,12 +454,12 @@ pub async fn resolve_lanzou_file(
                 cookie_opt.as_deref(),
             )
             .await?;
-            (if_html, parsed.host.clone(), iframe_url)
+            (if_html, iframe_url)
         } else {
-            (html.clone(), parsed.host.clone(), target_url.clone())
+            (html.clone(), target_url.clone())
         }
     } else {
-        (html.clone(), parsed.host.clone(), target_url.clone())
+        (html.clone(), target_url.clone())
     };
 
     // 1. 提取变量映射
@@ -467,13 +471,8 @@ pub async fn resolve_lanzou_file(
         }
     }
 
-    // 2. 提取 AJAX 请求的 URL（如 /ajaxfile.php?file=... 或 /ajaxm.php）
-    let re_ajax_file = Regex::new(r#"url\s*:\s*['"](/ajax[^'"]*)['"]"#).unwrap();
-    let ajax_path = re_ajax_file
-        .captures(&sign_html)
-        .and_then(|c| c.get(1))
-        .map(|m| m.as_str())
-        .unwrap_or("/ajaxm.php");
+    // 2. 静态提取字面量或官方变量形式的 AJAX 地址，不执行网页脚本。
+    let ajax_full_url = endpoint::ajax_url(&sign_html, &var_map, &iframe_ref)?;
 
     // 3. 提取 data 对象参数
     let mut params: HashMap<String, String> = HashMap::new();
@@ -510,12 +509,6 @@ pub async fn resolve_lanzou_file(
         }
     }
 
-    let ajax_full_url = if ajax_path.starts_with("http") {
-        ajax_path.to_string()
-    } else {
-        format!("https://{}{}", req_host, ajax_path)
-    };
-
     let mut ajax_req = client
         .post(&ajax_full_url)
         .form(&params)
@@ -532,18 +525,15 @@ pub async fn resolve_lanzou_file(
         .await
         .map_err(|e| format!("请求蓝奏云直链接口失败：{e}"))?;
 
-    let ajax_text = ajax_resp.text().await.unwrap_or_default();
+    let ajax_text = network.text(ajax_resp).await?;
     let ajax_json: serde_json::Value = serde_json::from_str(&ajax_text)
-        .map_err(|_| format!("解析直链接口回执失败：{ajax_text}"))?;
+        .map_err(|_| "解析直链接口回执失败，服务器返回无效 JSON".to_owned())?;
 
     let zt = ajax_json.get("zt").and_then(|v| v.as_i64()).unwrap_or(0);
     if zt != 1 {
-        let info = ajax_json
-            .get("info")
-            .or_else(|| ajax_json.get("inf"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("获取下载地址失败");
-        return Err(format!("蓝奏云解析失败：{info}"));
+        return Err(format!(
+            "蓝奏云解析失败（代码 {zt}），请检查提取码和分享状态"
+        ));
     }
 
     let dom = ajax_json.get("dom").and_then(|v| v.as_str()).unwrap_or("");

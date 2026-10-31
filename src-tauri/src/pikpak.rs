@@ -7,67 +7,20 @@
 
 use md5::{Digest, Md5};
 use regex::Regex;
-use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, VecDeque};
-use std::sync::OnceLock;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::collections::HashMap;
+use std::time::{SystemTime, UNIX_EPOCH};
+#[path = "pikpak/direct_link.rs"]
+mod direct_link;
+#[path = "pikpak/listing.rs"]
+mod listing;
 
-pub const PIKPAK_CLIENT_ID: &str = "YNxT9w7GMdWvEOKa";
-pub const PIKPAK_CLIENT_VERSION: &str = "1.0.0";
-pub const PIKPAK_PACKAGE_NAME: &str = "mypikpak.com";
-pub const PIKPAK_API_HOST: &str = "https://api-drive.mypikpak.com";
-pub const PIKPAK_USER_HOST: &str = "https://user.mypikpak.com";
+#[path = "pikpak/protocol.rs"]
+mod protocol;
+pub use protocol::*;
 
-static HTTP_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
-
-fn get_http_client() -> &'static reqwest::Client {
-    HTTP_CLIENT.get_or_init(|| {
-        reqwest::Client::builder()
-            .timeout(Duration::from_secs(20))
-            .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-            .build()
-            .unwrap_or_default()
-    })
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PikPakFileItem {
-    pub id: String,
-    pub name: String,
-    pub kind: String,
-    pub size: u64,
-    pub path: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub mime_type: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub file_extension: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub thumbnail_url: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub web_content_link: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PikPakShareInfo {
-    pub share_id: String,
-    pub title: String,
-    pub files: Vec<PikPakFileItem>,
-    pub total_size: u64,
-    pub file_count: usize,
-    pub folder_count: usize,
-    pub pass_code_required: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub pass_code_token: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PikPakDirectUrlResult {
-    pub url: String,
-    pub headers: HashMap<String, String>,
-}
+#[path = "pikpak/models.rs"]
+mod models;
+pub use models::*;
 
 /// 解析 PikPak 分享 URL 结构
 pub struct ParsedPikPakUrl {
@@ -179,6 +132,28 @@ pub fn is_pikpak_direct_link(url: &str) -> bool {
 
 /// 获取/生成 Captcha Token 与 Device Sign
 pub async fn get_captcha_and_sign(device_id: &str) -> Result<(String, String), String> {
+    let network = crate::cloud_request::CloudRequestContext::defaults(
+        PIKPAK_USER_AGENT,
+        20,
+        tokio_util::sync::CancellationToken::new(),
+    )?;
+    get_captcha_and_sign_with_context(device_id, &network).await
+}
+pub async fn get_captcha_and_sign_with_context(
+    device_id: &str,
+    network: &crate::cloud_request::CloudRequestContext,
+) -> Result<(String, String), String> {
+    let network = network
+        .with_user_agent(PIKPAK_USER_AGENT)
+        .with_cookie_source(PIKPAK_API_HOST);
+    network
+        .run("PikPak", get_captcha_and_sign_impl(device_id, &network))
+        .await
+}
+async fn get_captcha_and_sign_impl(
+    device_id: &str,
+    network: &crate::cloud_request::CloudRequestContext,
+) -> Result<(String, String), String> {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|e| e.to_string())?
@@ -201,7 +176,7 @@ pub async fn get_captcha_and_sign(device_id: &str) -> Result<(String, String), S
     let sign_hex = hex::encode(hasher.finalize());
     let captcha_sign = format!("1.{}", sign_hex);
 
-    let client = get_http_client();
+    let client = network;
     let payload = serde_json::json!({
         "client_id": PIKPAK_CLIENT_ID,
         "device_id": device_id,
@@ -224,7 +199,7 @@ pub async fn get_captcha_and_sign(device_id: &str) -> Result<(String, String), S
 
     let token = match resp_res {
         Ok(resp) if resp.status().is_success() => {
-            if let Ok(text) = resp.text().await {
+            if let Ok(text) = network.text(resp).await {
                 if let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) {
                     json.get("captcha_token")
                         .and_then(|v| v.as_str())
@@ -252,219 +227,23 @@ async fn fetch_directory_tree(
     captcha_token: &str,
     device_sign: &str,
     device_id: &str,
+    network: &crate::cloud_request::CloudRequestContext,
 ) -> Result<Vec<PikPakFileItem>, String> {
-    let client = get_http_client();
-    let mut results = Vec::new();
-    let mut queue = VecDeque::new();
-    let mut visited_folders = std::collections::HashSet::new();
-    queue.push_back((initial_parent_id.to_string(), String::new()));
-
-    let mut file_count = 0;
-    let mut folder_visits = 0;
-    const MAX_FILES: usize = 200;
-    const MAX_FOLDER_VISITS: usize = 35;
-
-    while let Some((parent_id, current_path)) = queue.pop_front() {
-        if !parent_id.is_empty() && !visited_folders.insert(parent_id.clone()) {
-            continue;
-        }
-
-        folder_visits += 1;
-        if folder_visits > MAX_FOLDER_VISITS {
-            break;
-        }
-
-        let mut page_token: Option<String> = None;
-        loop {
-            let mut query = vec![
-                ("share_id", share_id.to_string()),
-                ("limit", "100".to_string()),
-            ];
-            if !parent_id.is_empty() {
-                query.push(("parent_id", parent_id.clone()));
-            }
-            if let Some(ref pt) = page_token {
-                query.push(("page_token", pt.clone()));
-            }
-            if !pass_code_token.is_empty() {
-                query.push(("pass_code_token", pass_code_token.clone()));
-            } else if let Some(pwd) = pass_code {
-                if !pwd.is_empty() {
-                    query.push(("pass_code", pwd.to_string()));
-                }
-            }
-
-            let endpoint = if parent_id.is_empty() {
-                format!("{}/drive/v1/share", PIKPAK_API_HOST)
-            } else {
-                format!("{}/drive/v1/share/detail", PIKPAK_API_HOST)
-            };
-
-            let mut req = client
-                .get(endpoint)
-                .query(&query)
-                .header("X-Client-Id", PIKPAK_CLIENT_ID)
-                .header("X-Client-Version", PIKPAK_CLIENT_VERSION)
-                .header("X-Device-Id", device_id)
-                .header("X-Device-Sign", device_sign)
-                .header("Referer", "https://mypikpak.com/");
-
-            if !captcha_token.is_empty() {
-                req = req.header("X-Captcha-Token", captcha_token);
-            }
-
-            let resp = req
-                .send()
-                .await
-                .map_err(|e| format!("拉取分享内容失败: {}", e))?;
-
-            if resp.status().as_u16() == 403 {
-                return Err("NEED_PASS_CODE".into());
-            }
-
-            let text = resp
-                .text()
-                .await
-                .map_err(|e| format!("读取分享列表响应失败: {}", e))?;
-
-            let json: serde_json::Value = serde_json::from_str(&text).unwrap_or_default();
-
-            let share_status = json
-                .get("share_status")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            if share_status == "PASS_CODE_EMPTY"
-                || json.get("error").and_then(|v| v.as_str()) == Some("need_pass_code")
-            {
-                return Err("NEED_PASS_CODE".into());
-            }
-            if share_status == "PASS_CODE_ERROR"
-                || json.get("error").and_then(|v| v.as_str()) == Some("invalid_pass_code")
-            {
-                return Err("提取码错误，请重新输入".into());
-            }
-
-            if let Some(err_code) = json.get("error").and_then(|v| v.as_str()) {
-                if err_code == "file_not_found" {
-                    break;
-                }
-            }
-            if let Some(desc) = json.get("error_description").and_then(|v| v.as_str()) {
-                if desc.contains("not found") || desc.contains("not exist") {
-                    break;
-                }
-                return Err(desc.to_string());
-            }
-
-            if pass_code_token.is_empty() {
-                if let Some(token) = json.get("pass_code_token").and_then(|v| v.as_str()) {
-                    if !token.is_empty() {
-                        *pass_code_token = token.to_string();
-                    }
-                }
-            }
-
-            let files = json
-                .get("files")
-                .and_then(|v| v.as_array())
-                .cloned()
-                .unwrap_or_default();
-
-            for item in files {
-                let id = item
-                    .get("id")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                let name = item
-                    .get("name")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                let kind = item
-                    .get("kind")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("drive#file")
-                    .to_string();
-                let size = item
-                    .get("size")
-                    .and_then(|v| v.as_str())
-                    .and_then(|s| s.parse::<u64>().ok())
-                    .unwrap_or(0);
-                let mime_type = item
-                    .get("mime_type")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string());
-                let file_extension = item
-                    .get("file_extension")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string());
-                let thumbnail_url = item
-                    .get("thumbnail_link")
-                    .or_else(|| item.get("icon_link"))
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string());
-                let web_content_link = item
-                    .get("web_content_link")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string());
-
-                let item_path = if current_path.is_empty() {
-                    name.clone()
-                } else {
-                    format!("{}/{}", current_path, name)
-                };
-
-                let is_folder = kind == "drive#folder";
-                if !is_folder {
-                    file_count += 1;
-                }
-
-                // 避免重复加入结果
-                if !results.iter().any(|r: &PikPakFileItem| r.id == id) {
-                    results.push(PikPakFileItem {
-                        id: id.clone(),
-                        name: name.clone(),
-                        kind,
-                        size,
-                        path: item_path.clone(),
-                        mime_type,
-                        file_extension,
-                        thumbnail_url,
-                        web_content_link,
-                    });
-                }
-
-                if is_folder
-                    && !visited_folders.contains(&id)
-                    && id != parent_id
-                    && file_count < MAX_FILES
-                {
-                    // DFS 深度优先：插入队列前端，优先拉取下层真实文件
-                    queue.push_front((id, item_path));
-                }
-            }
-
-            if file_count >= MAX_FILES {
-                break;
-            }
-
-            page_token = json
-                .get("next_page_token")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string());
-
-            if page_token.is_none() || page_token.as_deref() == Some("") {
-                break;
-            }
-        }
-
-        if file_count >= MAX_FILES {
-            break;
-        }
-    }
-
-    Ok(results)
+    listing::fetch(
+        network.client(),
+        PIKPAK_API_HOST,
+        share_id,
+        initial_parent_id,
+        pass_code,
+        pass_code_token,
+        captcha_token,
+        device_sign,
+        device_id,
+        network.cancel().clone(),
+        network.user_agent(),
+        network.clone(),
+    )
+    .await
 }
 
 /// 解析分享链接
@@ -473,11 +252,52 @@ pub async fn inspect_pikpak_share(
     provided_pass_code: Option<String>,
     device_id: &str,
 ) -> Result<PikPakShareInfo, String> {
+    inspect_pikpak_share_with_cancel(
+        raw_url,
+        provided_pass_code,
+        device_id,
+        &tokio_util::sync::CancellationToken::new(),
+    )
+    .await
+}
+pub async fn inspect_pikpak_share_with_cancel(
+    raw_url: &str,
+    provided_pass_code: Option<String>,
+    device_id: &str,
+    cancel: &tokio_util::sync::CancellationToken,
+) -> Result<PikPakShareInfo, String> {
+    let network =
+        crate::cloud_request::CloudRequestContext::defaults(PIKPAK_USER_AGENT, 20, cancel.clone())?;
+    inspect_pikpak_share_with_context(raw_url, provided_pass_code, device_id, &network).await
+}
+pub async fn inspect_pikpak_share_with_context(
+    raw_url: &str,
+    provided_pass_code: Option<String>,
+    device_id: &str,
+    network: &crate::cloud_request::CloudRequestContext,
+) -> Result<PikPakShareInfo, String> {
+    let network = network
+        .with_user_agent(PIKPAK_USER_AGENT)
+        .with_cookie_source(PIKPAK_API_HOST);
+    network
+        .run(
+            "PikPak",
+            inspect_pikpak_share_impl(raw_url, provided_pass_code, device_id, &network),
+        )
+        .await
+}
+async fn inspect_pikpak_share_impl(
+    raw_url: &str,
+    provided_pass_code: Option<String>,
+    device_id: &str,
+    network: &crate::cloud_request::CloudRequestContext,
+) -> Result<PikPakShareInfo, String> {
     let parsed = parse_pikpak_url(raw_url).ok_or_else(|| {
         "无效的 PikPak 分享链接，格式应为 https://mypikpak.com/s/xxxx".to_string()
     })?;
 
-    let (captcha_token, device_sign) = get_captcha_and_sign(device_id).await?;
+    let (captcha_token, device_sign) =
+        get_captcha_and_sign_with_context(device_id, network).await?;
     let mut pass_code_token = String::new();
 
     let effective_pass_code = provided_pass_code.or(parsed.pass_code);
@@ -490,40 +310,11 @@ pub async fn inspect_pikpak_share(
         &captcha_token,
         &device_sign,
         device_id,
+        network,
     )
     .await;
 
-    let tree_res = match fetch_res {
-        Ok(items) if !items.is_empty() => Ok(items),
-        Ok(_) if !initial_parent.is_empty() => {
-            // initial_parent 结果为空，自动回退到根目录重试
-            fetch_directory_tree(
-                &parsed.share_id,
-                "",
-                effective_pass_code.as_deref(),
-                &mut pass_code_token,
-                &captcha_token,
-                &device_sign,
-                device_id,
-            )
-            .await
-        }
-        Err(e) if e == "NEED_PASS_CODE" => Err(e),
-        Err(_) if !initial_parent.is_empty() => {
-            // initial_parent 抓取失败，自动回退到根目录重试
-            fetch_directory_tree(
-                &parsed.share_id,
-                "",
-                effective_pass_code.as_deref(),
-                &mut pass_code_token,
-                &captcha_token,
-                &device_sign,
-                device_id,
-            )
-            .await
-        }
-        other => other,
-    };
+    let tree_res = fetch_res;
 
     match tree_res {
         Ok(all_items) => {
@@ -586,8 +377,40 @@ pub async fn resolve_pikpak_file(
     pass_code_token: Option<&str>,
     device_id: &str,
 ) -> Result<PikPakDirectUrlResult, String> {
-    let (captcha_token, device_sign) = get_captcha_and_sign(device_id).await?;
-    let client = get_http_client();
+    let network = crate::cloud_request::CloudRequestContext::defaults(
+        PIKPAK_USER_AGENT,
+        20,
+        tokio_util::sync::CancellationToken::new(),
+    )?;
+    resolve_pikpak_file_with_context(share_id, file_id, pass_code_token, device_id, &network).await
+}
+pub async fn resolve_pikpak_file_with_context(
+    share_id: &str,
+    file_id: &str,
+    pass_code_token: Option<&str>,
+    device_id: &str,
+    network: &crate::cloud_request::CloudRequestContext,
+) -> Result<PikPakDirectUrlResult, String> {
+    let network = network
+        .with_user_agent(PIKPAK_USER_AGENT)
+        .with_cookie_source(PIKPAK_API_HOST);
+    network
+        .run(
+            "PikPak",
+            resolve_pikpak_file_impl(share_id, file_id, pass_code_token, device_id, &network),
+        )
+        .await
+}
+async fn resolve_pikpak_file_impl(
+    share_id: &str,
+    file_id: &str,
+    pass_code_token: Option<&str>,
+    device_id: &str,
+    network: &crate::cloud_request::CloudRequestContext,
+) -> Result<PikPakDirectUrlResult, String> {
+    let (captcha_token, device_sign) =
+        get_captcha_and_sign_with_context(device_id, network).await?;
+    let client = network;
 
     let mut query = vec![("share_id", share_id), ("file_id", file_id)];
     if let Some(token) = pass_code_token {
@@ -618,37 +441,15 @@ pub async fn resolve_pikpak_file(
         return Err(format!("PikPak 直链接口返回错误: {}", resp.status()));
     }
 
-    let text = resp
-        .text()
+    let text = network
+        .text(resp)
         .await
         .map_err(|e| format!("读取直链响应失败: {}", e))?;
 
     let json: serde_json::Value =
         serde_json::from_str(&text).map_err(|e| format!("解析直链响应失败: {}", e))?;
 
-    let file_info = json.get("file_info").or_else(|| json.get("file"));
-
-    let direct_url = file_info
-        .and_then(|f| {
-            f.get("medias")
-                .and_then(|m| m.as_array())
-                .and_then(|arr| arr.first())
-                .and_then(|first| first.get("link"))
-                .and_then(|link| link.get("url"))
-                .and_then(|u| u.as_str())
-                .map(|s| s.to_string())
-                .or_else(|| {
-                    f.get("web_content_link")
-                        .and_then(|w| w.as_str())
-                        .map(|s| s.to_string())
-                })
-        })
-        .or_else(|| {
-            json.get("web_content_link")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string())
-        })
-        .ok_or_else(|| "PikPak 未返回该文件的有效下载直链".to_string())?;
+    let direct_url = direct_link::select(&json)?;
 
     let mut headers = HashMap::new();
     headers.insert(
@@ -686,108 +487,78 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "显式授权的联网验收：设置 MAOBU_TEST_PIKPAK_SHARE 后单独运行"]
     async fn test_inspect_real_pikpak_share() {
-        let url = "https://mypikpak.com/s/VOveL7ZI01ViAz9VVKGgSWDlo2";
+        let url = std::env::var("MAOBU_TEST_PIKPAK_SHARE")
+            .expect("请提供自己的合法测试分享 MAOBU_TEST_PIKPAK_SHARE");
         let device_id = hex::encode(rand::random::<[u8; 16]>());
-        let res = inspect_pikpak_share(url, None, &device_id).await;
-        println!("inspect_pikpak_share result: {:?}", res);
-        if let Ok(info) = &res {
-            if let Some(first) = info.files.first() {
-                let direct = resolve_pikpak_file(
-                    &info.share_id,
-                    &first.id,
-                    info.pass_code_token.as_deref(),
-                    &device_id,
-                )
-                .await;
-                println!("resolve_pikpak_file result: {:?}", direct);
-            }
-        }
-    }
-
-    #[tokio::test]
-    #[ignore]
-    async fn test_inspect_subpath_fallback() {
-        let url =
-            "https://mypikpak.com/s/VNRmoFmoroRROhEkho_8kY_1o1/AAAAxJpd7I7-5c9AQu-d5mNlo1_VNR";
-        let device_id = hex::encode(rand::random::<[u8; 16]>());
-        let res = inspect_pikpak_share(url, None, &device_id).await;
+        let result = inspect_pikpak_share(&url, None, &device_id).await;
         assert!(
-            res.is_ok(),
-            "子目录失效时必须自动回退根目录并成功解析: {:?}",
-            res
+            result.is_ok(),
+            "PikPak 在线解析失败；不将失败记为跳过或成功"
         );
-        let info = res.unwrap();
-        assert!(!info.files.is_empty(), "必须拉取到文件");
-    }
-
-    #[tokio::test]
-    async fn test_inspect_real_protected_share() {
-        let url = "https://mypikpak.com/s/VP-UTXeeo_ba1oSDqvUqxb6Co2";
-        let device_id = hex::encode(rand::random::<[u8; 16]>());
-        // 1. 无密码时必须返回 pass_code_required = true（带网络波动重试）
-        let mut res_no_pwd = Err("初始化".into());
-        for _ in 0..3 {
-            let res = inspect_pikpak_share(url, None, &device_id).await;
-            if res.is_ok() {
-                res_no_pwd = res;
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-        }
-        if res_no_pwd.is_err() {
-            println!("网络超时跳过在线测试");
-            return;
-        }
-        let res_no_pwd = res_no_pwd.unwrap();
-        assert!(
-            res_no_pwd.pass_code_required,
-            "未提供密码时必须要求输入提取码"
-        );
-
-        // 2. 错误密码时必须返回报错
-        let res_wrong_pwd = inspect_pikpak_share(url, Some("wrong".into()), &device_id).await;
-        assert!(res_wrong_pwd.is_err(), "错误密码必须报错");
-
-        // 3. 正确密码 7kxs 必须成功解析出文件（带网络波动 3 次重试）
-        let mut res_ok = Err("初始化".into());
-        for _ in 0..3 {
-            let res = inspect_pikpak_share(url, Some("7kxs".into()), &device_id).await;
-            if res.is_ok() {
-                res_ok = res;
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-        }
-        assert!(res_ok.is_ok(), "正确密码必须成功解析: {:?}", res_ok);
-        let info = res_ok.unwrap();
-        println!(
-            ">>> PikPak 解析成功！总文件数: {}, 总大小: {} MB",
-            info.file_count,
-            info.total_size / 1024 / 1024
-        );
-        for f in &info.files {
-            println!("  - [{}] {} ({})", f.kind, f.path, f.size);
-        }
-        assert!(info.file_count > 0, "必须拉取到子真实文件");
-        assert_eq!(info.title, "91凡哥(bigfan13yo)");
-        assert!(info.pass_code_token.is_some(), "必须返回 pass_code_token");
-
-        // 4. 解析真实视频文件的直链
-        let first_file = info.files.iter().find(|f| f.kind == "drive#file").unwrap();
-        let direct_res = resolve_pikpak_file(
+        let info = result.unwrap();
+        let first = info
+            .files
+            .iter()
+            .find(|file| file.kind == "drive#file")
+            .expect("测试分享必须包含文件");
+        let result = resolve_pikpak_file(
             &info.share_id,
-            &first_file.id,
+            &first.id,
             info.pass_code_token.as_deref(),
             &device_id,
         )
-        .await
-        .unwrap();
-        assert!(!direct_res.url.is_empty(), "直链 URL 不能为空");
+        .await;
+        assert!(result.is_ok(), "PikPak 在线直链解析失败（认证信息不输出）");
+        assert!(url::Url::parse(&result.unwrap().url)
+            .is_ok_and(|url| matches!(url.scheme(), "http" | "https")));
+    }
+
+    #[tokio::test]
+    #[ignore = "需显式配置自有失效子目录，验证明确失败且不替换为根目录结果"]
+    async fn test_invalid_subpath_fails_without_returning_root_contents() {
+        let url = std::env::var("MAOBU_TEST_PIKPAK_SUBPATH_SHARE")
+            .expect("请设置包含已失效子目录的合法 MAOBU_TEST_PIKPAK_SUBPATH_SHARE");
+        let device_id = hex::encode(rand::random::<[u8; 16]>());
+        let result = inspect_pikpak_share(&url, None, &device_id).await;
         assert!(
-            direct_res.url.starts_with("http"),
-            "直链必须是 http/https 协议"
+            result.is_err(),
+            "失效子目录必须明确失败，不能返回根目录文件冒充成功"
         );
+    }
+
+    #[tokio::test]
+    #[ignore = "显式授权的联网验收：需测试分享和提取码环境变量"]
+    async fn test_inspect_real_protected_share() {
+        let url = std::env::var("MAOBU_TEST_PIKPAK_PROTECTED_SHARE")
+            .expect("请设置自己的受保护测试分享 MAOBU_TEST_PIKPAK_PROTECTED_SHARE");
+        let password = std::env::var("MAOBU_TEST_PIKPAK_PASSCODE")
+            .expect("请设置该测试分享的 MAOBU_TEST_PIKPAK_PASSCODE");
+        let device_id = hex::encode(rand::random::<[u8; 16]>());
+        let required = inspect_pikpak_share(&url, None, &device_id).await;
+        assert!(required.is_ok(), "在线密码状态探测失败；未作为成功或跳过");
+        assert!(
+            required.unwrap().pass_code_required,
+            "该样本必须是受密码保护的分享"
+        );
+        let wrong = inspect_pikpak_share(
+            &url,
+            Some(format!("invalid-{}", uuid::Uuid::new_v4())),
+            &device_id,
+        )
+        .await;
+        assert!(
+            wrong.is_err() || wrong.as_ref().is_ok_and(|info| info.pass_code_required),
+            "错误密码不能返回可下载文件列表"
+        );
+        let correct = inspect_pikpak_share(&url, Some(password), &device_id).await;
+        assert!(
+            correct.is_ok(),
+            "正确提取码的在线解析失败（认证信息不输出）"
+        );
+        let info = correct.unwrap();
+        assert!(info.file_count > 0 && info.pass_code_token.is_some());
     }
 
     /// 实机验证：PikPak 直链下载停滞熔断 + 自动刷新 + 断点续传（2026-08-21 修复）。
@@ -810,9 +581,18 @@ mod tests {
     #[tokio::test]
     #[ignore = "在线 PikPak 实机多轮下载验证（需外网与大文件下载）"]
     async fn test_live_pikpak_stall_detect_refresh_and_resume() {
-        const SHARE_ID: &str = "VOveL7ZI01ViAz9VVKGgSWDlo2";
-        const FILE_ID: &str = "VOveL6e1SyYOOMvFhQYg9pJFo2";
-        const EXPECTED_TOTAL: u64 = 132_282_395;
+        let share_id = std::env::var("MAOBU_TEST_PIKPAK_SHARE_ID").expect("请设置合法测试分享ID");
+        let SHARE_ID = share_id.as_str();
+        let file_id = std::env::var("MAOBU_TEST_PIKPAK_FILE_ID").expect("请设置合法测试文件ID");
+        let FILE_ID = file_id.as_str();
+        let EXPECTED_TOTAL: u64 = std::env::var("MAOBU_TEST_PIKPAK_BYTES")
+            .expect("请设置已知样本大小")
+            .parse()
+            .expect("样本大小必须是整数");
+        assert!(
+            (1..=64 * 1024 * 1024).contains(&EXPECTED_TOTAL),
+            "多轮联网样本上限64MiB，请使用小型合法测试文件"
+        );
         const CONNECTIONS: u8 = 8;
         const MAX_LINK_REFRESHES: u32 = 5;
         // 与 manager.rs 熔断阈值完全一致（CLOUD_LINK_DEAD 检测参数）
@@ -1385,21 +1165,25 @@ mod tests {
     #[tokio::test]
     #[ignore = "需要在线 PikPak 直链，用于真实下载验证（约 5-10 分钟）"]
     async fn test_real_user_pikpak_link_live_download() {
-        let test_url = "https://dl-a10b-1531.mypikpak.com/download/?fid=EQIcLwuIPHEqcxRAawOs8Fy9uEoKMWF1jCYTEyvTxnJ4FZhjEXlPW-TXpJT8X_JmWwdSCCtlX6We0psjRajiGWDoZzT-vUu_tJ2oJhKlEDU=&from=5&verno=3&prod=pikpak&expire=1787331519&g=15F3AD3CECA6080A30E93A7F2E68394C30E321FF&ui=888880000002138&t=0&ms=6300000&th=6300000&f=544268947&alt=0&us=0&hspu=&po=0&userid=&fileid=VOqaBNyrJ37-A251ck77c1weo2&category=original&pr=XQPkPvr9WWiIuMvELmrVehDaei5jcX83BRrfnJNq5aTz3DAnR5O5Ip2atBj7SR_u3nZCKsFHiPQJo03Q9-JiosiIOSvUJ-7bTQtF6c-BMbfzvuBT7R_DKcb2xcjIONUUTIlECuuiJqOsaqLZroKwBh1YFhVAq5HAwZOmqDDgS8hEii4wy9hkZJ9C8h2auy9kanc-z0Pz9f__wM-zo5Mi4g4Umrh19G69K0Nior8cD_eEum77rXAdR5Prxgvl1UoJbgVU_KJTwNTF7zemELvM2TcL_eqT2coMpD8gF1w-BI-Ww--2JHpPJCuFm6I5SdC7Or5MZS-6_WNtFlh1G9851Kbavcpd0U4dYXRWNzXnJUaCAy1nznG21Ep2CUNFXA6UqsE4WgawMe2YvAnY9XJCN-5leI6rNo4ZAViX5oyJGv0rbgN0NPRYhPORLrKyhw7z&sign=7117DCFF59179B05EAF32EB1FAF1F499";
+        let test_url =
+            std::env::var("MAOBU_TEST_PIKPAK_DIRECT_URL").expect("请显式提供自己的合法测试直链");
 
-        const TOTAL: u64 = 544_268_947;
+        let TOTAL: u64 = std::env::var("MAOBU_TEST_PIKPAK_BYTES")
+            .expect("请设置已知样本大小")
+            .parse()
+            .expect("样本大小必须是整数");
+        assert!((1..=64 * 1024 * 1024).contains(&TOTAL), "联网样本上限64MiB");
         const CONNECTIONS: u8 = 16;
         const LINK_DEAD_PREFIX: &str = "CLOUD_LINK_DEAD:";
 
         let client = reqwest::Client::new();
-        let temp_dir = std::env::temp_dir().join("pikpak_user_link_run");
-        let _ = std::fs::create_dir_all(&temp_dir);
-        let temp_file = temp_dir.join("user_link.bin.lumaget");
+        let directory = tempfile::tempdir().unwrap();
+        let temp_file = directory.path().join("sample.bin.lumaget");
 
         let started = std::time::Instant::now();
         let result = download_round_with_stall_detection(
             &client,
-            test_url,
+            &test_url,
             &temp_file,
             TOTAL,
             CONNECTIONS,
@@ -1410,7 +1194,7 @@ mod tests {
         )
         .await;
 
-        let downloaded: u64 = std::fs::read_dir(&temp_dir)
+        let downloaded: u64 = std::fs::read_dir(directory.path())
             .map(|entries| {
                 entries
                     .filter_map(|e| e.ok())
@@ -1440,8 +1224,10 @@ mod tests {
                     "停滞识别必须在 10 分钟内完成，不得无限空转"
                 );
             }
-            Err(e) => panic!("用户直链出现非预期错误：{e}"),
+            Err(e) => panic!(
+                "测试直链出现非预期错误：{}",
+                crate::manager::redact_sensitive(e)
+            ),
         }
-        let _ = tokio::fs::remove_dir_all(&temp_dir).await;
     }
 }

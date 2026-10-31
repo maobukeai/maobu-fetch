@@ -142,6 +142,7 @@ export interface PowerActionState {
 }
 
 export interface MediaSelection {
+  is_live?: boolean;
   extractor?: string;
   format_id?: string;
   format_label?: string;
@@ -222,6 +223,11 @@ export type TaskKind = "http" | "bt";
 
 /** BT 任务持久化元数据（后端 `BtTaskMeta` 镜像）。 */
 export interface BtTaskMeta {
+  seeding_requested?: boolean;
+  uploaded_bytes?: number;
+  output_folder?: string | null;
+  owned_files?: string[];
+  output_owned?: boolean;
   /** 40 位小写十六进制 infohash；磁力创建即知，.torrent 由 aria2 回填。 */
   info_hash: string;
   /** 用户勾选的 1 基文件索引（aria2 select-file）。空 = 全部文件。 */
@@ -241,6 +247,7 @@ export interface BtTaskMeta {
 
 /** BT 任务运行时状态（后端 `BtRuntimeStatus` 镜像，来自 aria2 真实状态）。 */
 export interface BtRuntimeStatus {
+  seeds_known?: boolean;
   num_seeds: number;
   num_peers: number;
   upload_speed: number;
@@ -436,6 +443,12 @@ export interface AppSettings {
   archive_threshold: number;
   /** Task 30.1：下载完成后发送系统通知。默认 true。 */
   notify_on_complete: boolean;
+  /** 应用内完成提醒停留秒数；0 表示手动关闭。旧设置默认 30。 */
+  completion_notice_seconds?: number;
+  /** 有活动下载时显示右下角进度悬浮窗，旧设置默认 true。 */
+  progress_window_enabled?: boolean;
+  /** 进度悬浮窗置顶偏好，旧设置默认 true；可在浮窗或设置中关闭。 */
+  progress_window_always_on_top?: boolean;
   /** Task 30.1：下载失败后发送系统通知。默认 true。 */
   notify_on_failure: boolean;
   /** Task 30.1：下载完成时播放提示音。默认 true。 */
@@ -555,7 +568,10 @@ export interface YtDlpUpdateInfo {
   /** release 页面地址，供"查看发布说明"跳转。 */
   release_url: string;
 }
-export interface MediaFormat {
+export interface MediaFormat { bitrate_kbps?: number | null;
+  file_size_approximate?: boolean;
+  original_file?: boolean;
+    audio_unknown?: boolean;
   id: string;
   label: string;
   extension?: string;
@@ -589,7 +605,7 @@ export interface MediaFormat {
  */
 export type MediaType = "video" | "audio" | "gallery" | "mixed" | "collection";
 export interface MediaEpisode { index: number; title: string; url: string; duration?: number; }
-export interface MediaProbeResult { title: string; thumbnail?: string; extractor?: string; duration?: number; formats: MediaFormat[]; subtitles: string[]; drm: boolean; media_type: MediaType; episodes?: MediaEpisode[]; }
+export interface MediaProbeResult { is_live?: boolean; ffmpeg_available?: boolean; title: string; thumbnail?: string; extractor?: string; duration?: number; formats: MediaFormat[]; subtitles: string[]; drm: boolean; media_type: MediaType; episodes?: MediaEpisode[]; }
 export interface TaskEvent { task: DownloadTask; event: string; }
 export type FilterKey = "all" | TaskStatus | "images" | "video" | "audio" | "documents" | "archives" | "apps" | "bt";
 
@@ -1187,11 +1203,20 @@ export type SupportLevel = "verified" | "experimental" | "unsupported";
  * - `last_tested_at`：最近一次回归测试时间（ISO 8601 UTC 字符串，可空）。
  */
 export interface PlatformCompatibility {
+  verification?: PlatformVerificationEvidence | null;
   platform: MediaPlatform | string;
   level: SupportLevel;
   notes?: string;
   known_issues?: string[];
   last_tested_at?: string;
+}
+
+export interface PlatformVerificationEvidence {
+  app_version: string;
+  tool_version: string;
+  sample: string;
+  scope: string;
+  result: string;
 }
 
 export interface CacheInspectResult {

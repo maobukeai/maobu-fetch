@@ -1,0 +1,1259 @@
+{
+  "date": "2026-10-31",
+  "timezone": "Asia/Shanghai",
+  "mode": "Production Rust share-list/resolve modules plus one isolated browser-observed final URL passed to the real ordinary-HTTP DownloadManager; no personal database or account credentials",
+  "schema_note": "Returned Ok, validated HTTP URL, browser-observed final download URL, and complete Manager file are separate stages. One complete transfer does not prove static share-to-file or extension interception E2E. Historical failures are retained; local HTTP fixtures are not online evidence.",
+  "unique_public_shares": 13,
+  "complete_online_downloads": 1,
+  "runs": [
+    {
+      "run": "1",
+      "evidence_temp": "%TEMP%/maobu-public-cloud-1/results.json",
+      "observations": [
+        {
+          "account_cookie": "none",
+          "download": {
+            "skipped": "listed size exceeds 8MiB; no body requested"
+          },
+          "elapsed_seconds": 6,
+          "listing": {
+            "listed_items": 1,
+            "password_required": false,
+            "smallest_files": [
+              {
+                "name": "wordsfunny_data.zip",
+                "size": 74253362
+              }
+            ]
+          },
+          "platform": "pikpak",
+          "production_list": true,
+          "production_resolve": false,
+          "public_password_supplied": false,
+          "sample": "https://mypikpak.com/s/VOEs95bTB0KGAg75t0Nrs-oOo1",
+          "selected": {
+            "name": "wordsfunny_data.zip",
+            "size": 74253362
+          },
+          "source": "https://github.com/SteveSuv/remix-words-funny",
+          "time_unix_seconds": 1793432306,
+          "time_local": "2026-10-31T15:38:26+08:00",
+          "production_resolve_returned_ok": true,
+          "historical_probe_note": "Old API returned Ok without validating a nonempty URL; follow-up schema confirmed no valid download link. This is not resolve/download success."
+        },
+        {
+          "account_cookie": "none",
+          "download": null,
+          "elapsed_seconds": 9,
+          "error": "实体HTTP状态412",
+          "listing": {
+            "listed_items": 15,
+            "password_required": false,
+            "smallest_files": [
+              {
+                "name": "使用说明.txt",
+                "size": 1962
+              },
+              {
+                "name": "SEGOEICONS.TTF",
+                "size": 463656
+              },
+              {
+                "name": "Microsoft.VCLibs.x64.14.00.appx",
+                "size": 896581
+              },
+              {
+                "name": "Microsoft.VCLibs.x64.14.00.Desktop.appx",
+                "size": 6757465
+              },
+              {
+                "name": "StarlightGUI_1.5.0.0_x64.msix",
+                "size": 11849323
+              },
+              {
+                "name": "StarlightGUI_1.6.0.0_x64.msix",
+                "size": 13339871
+              },
+              {
+                "name": "StarlightGUI_1.6.1.0_x64.msix",
+                "size": 13363735
+              },
+              {
+                "name": "StarlightGUI_1.7.0.0_x64.msix",
+                "size": 13436380
+              }
+            ]
+          },
+          "platform": "quark",
+          "production_list": true,
+          "production_resolve": true,
+          "public_password_supplied": true,
+          "sample": "https://pan.quark.cn/s/ee7a29ca2a76",
+          "selected": {
+            "name": "使用说明.txt",
+            "size": 1962
+          },
+          "source": "https://github.com/OpenStarlight/StarlightGUI",
+          "time_unix_seconds": 1793432306,
+          "time_local": "2026-10-31T15:38:26+08:00"
+        },
+        {
+          "account_cookie": "none",
+          "download": null,
+          "elapsed_seconds": 3,
+          "error": "123云盘提示：该分享设置了【仅限登录或付费用户下载】。如需下载受限分享，请在【设置 -> 平台凭证管理】中添加 123云盘 Token/Cookie，或测试公开免登录分享。",
+          "listing": {
+            "listed_items": 3,
+            "password_required": false,
+            "smallest_files": [
+              {
+                "name": "jumpvideo-extension-chrome-crx-1.1.0.zip",
+                "size": 75425
+              },
+              {
+                "name": "jumpvideo-extension-firefox-crx-1.1.0.xpi",
+                "size": 83312
+              },
+              {
+                "name": "jumpvideo-electron-1.1.0-setup.exe",
+                "size": 89752434
+              }
+            ]
+          },
+          "platform": "123",
+          "production_list": true,
+          "production_resolve": false,
+          "public_password_supplied": false,
+          "sample": "https://www.123pan.com/s/4neA-a9uUH.html",
+          "selected": {
+            "name": "jumpvideo-extension-chrome-crx-1.1.0.zip",
+            "size": 75425
+          },
+          "source": "https://github.com/GMYXDS/jumpvideo-electron/blob/main/README.md",
+          "time_unix_seconds": 1793432306,
+          "time_local": "2026-10-31T15:38:26+08:00"
+        },
+        {
+          "account_cookie": "none",
+          "download": null,
+          "elapsed_seconds": 5,
+          "error": "蓝奏云文件列表未完整：目录读取被拒绝，请检查分享状态；请重试或选择较小目录，未返回部分结果",
+          "platform": "lanzou",
+          "production_list": false,
+          "production_resolve": false,
+          "public_password_supplied": false,
+          "sample": "https://hiroi-sora.lanzoul.com/s/umi-ocr",
+          "source": "https://github.com/hiroi-sora/Umi-OCR/blob/main/README_en.md",
+          "time_unix_seconds": 1793432306,
+          "time_local": "2026-10-31T15:38:26+08:00"
+        },
+        {
+          "account_cookie": "none",
+          "download": null,
+          "elapsed_seconds": 2,
+          "error": "百度网盘文件列表未完整：百度接口拒绝目录读取，请检查分享权限和登录状态；未返回部分结果，请重试或缩小分享目录",
+          "platform": "baidu",
+          "production_list": false,
+          "production_resolve": false,
+          "public_password_supplied": false,
+          "sample": "https://pan.baidu.com/s/1fWMRzym_jh075OCX0D8y8A",
+          "source": "https://github.com/Mararsh/MyBox",
+          "time_unix_seconds": 1793432306,
+          "time_local": "2026-10-31T15:38:26+08:00"
+        }
+      ]
+    },
+    {
+      "run": "2",
+      "evidence_temp": "%TEMP%/maobu-public-cloud-2/results.json",
+      "observations": [
+        {
+          "account_cookie": "none",
+          "download": null,
+          "elapsed_seconds": 17,
+          "error": "实体请求失败：builder error",
+          "listing": {
+            "listed_items": 64,
+            "password_required": false,
+            "smallest_files": [
+              {
+                "name": "ZenFile_v3.7.0更新日志(Update log).md",
+                "size": 1858
+              },
+              {
+                "name": "ZenFile_v3.7.1更新日志(Update log).md",
+                "size": 2081
+              },
+              {
+                "name": "ZenFile_v3.6.8更新日志(Update log).md",
+                "size": 2381
+              },
+              {
+                "name": "ZenFile_v3.6.4更新日志(Update log).md",
+                "size": 2650
+              },
+              {
+                "name": "ZenFile_v3.5.8更新日志(Update log).md",
+                "size": 3248
+              },
+              {
+                "name": "ZenFile_v3.5.6 更新日志(Update log).md",
+                "size": 3742
+              },
+              {
+                "name": "ZenFile_v3.6.6更新日志(Update log).md",
+                "size": 3806
+              },
+              {
+                "name": "ZenFile_v3.6.7更新日志(Update log).md",
+                "size": 3947
+              }
+            ]
+          },
+          "platform": "pikpak",
+          "production_list": true,
+          "production_resolve": false,
+          "public_password_supplied": false,
+          "sample": "https://mypikpak.com/s/VOxGdQB3fVNO32sq_I3o2Wkmo2",
+          "selected": {
+            "name": "ZenFile_v3.7.0更新日志(Update log).md",
+            "size": 1858
+          },
+          "source": "https://github.com/l930203811/ZenFile",
+          "time_unix_seconds": 1793432387,
+          "time_local": "2026-10-31T15:39:47+08:00",
+          "production_resolve_returned_ok": true,
+          "historical_probe_note": "Old API returned Ok without validating a nonempty URL; follow-up schema confirmed no valid download link. This is not resolve/download success."
+        },
+        {
+          "account_cookie": "none",
+          "download": null,
+          "elapsed_seconds": 20,
+          "error": "实体HTTP状态412",
+          "listing": {
+            "listed_items": 105,
+            "password_required": false,
+            "smallest_files": [
+              {
+                "name": "ZenFile_v3.5.1更新日志(Update log).md",
+                "size": 2976
+              },
+              {
+                "name": "ZenFile_v3.5.3更新日志(Update log).md",
+                "size": 3094
+              },
+              {
+                "name": "ZenFile_v3.4.1更新日志(Update log).md",
+                "size": 3450
+              },
+              {
+                "name": "ZenFile_v3.5.4更新日志(Update log).md",
+                "size": 3520
+              },
+              {
+                "name": "ZenFile_v3.5.6 更新日志(Update log).md",
+                "size": 3742
+              },
+              {
+                "name": "ZenFile_v3.5.7更新日志(Update log).md",
+                "size": 4287
+              },
+              {
+                "name": "ZenFile_v3.5.5更新日志(Update log).md",
+                "size": 4344
+              },
+              {
+                "name": "ZenFile_v3.5.0更新日志(Update log).md",
+                "size": 6868
+              }
+            ]
+          },
+          "platform": "quark",
+          "production_list": true,
+          "production_resolve": true,
+          "public_password_supplied": false,
+          "sample": "https://pan.quark.cn/s/e6081a88d463",
+          "selected": {
+            "name": "ZenFile_v3.5.1更新日志(Update log).md",
+            "size": 2976
+          },
+          "source": "https://github.com/l930203811/ZenFile",
+          "time_unix_seconds": 1793432387,
+          "time_local": "2026-10-31T15:39:47+08:00"
+        },
+        {
+          "account_cookie": "none",
+          "download": null,
+          "elapsed_seconds": 75,
+          "error": "该百度网盘文件需要登录凭证，请在设置中添加或在浏览器中登录百度网盘并同步 Cookie",
+          "listing": {
+            "listed_items": 223,
+            "password_required": false,
+            "smallest_files": [
+              {
+                "name": "ZenFile_v3.2.0更新日志_zh.md",
+                "size": 1637
+              },
+              {
+                "name": "ZenFile_v3.7.0更新日志(Update log).md",
+                "size": 1858
+              },
+              {
+                "name": "ZenFile_v3.7.1更新日志(Update log).md",
+                "size": 2081
+              },
+              {
+                "name": "ZenFile_v3.6.8更新日志(Update log).md",
+                "size": 2381
+              },
+              {
+                "name": "ZenFile_v3.6.4更新日志(Update log).md",
+                "size": 2650
+              },
+              {
+                "name": "ZenFile_v3.5.2更新日志(Update log).md",
+                "size": 2976
+              },
+              {
+                "name": "ZenFile_v3.5.1更新日志(Update log).md",
+                "size": 2976
+              },
+              {
+                "name": "ZenFile_v3.5.3更新日志(Update log).md",
+                "size": 3094
+              }
+            ]
+          },
+          "platform": "baidu",
+          "production_list": true,
+          "production_resolve": false,
+          "public_password_supplied": true,
+          "sample": "https://pan.baidu.com/s/1kYSfzTriRXwQPRL_c5Awig",
+          "selected": {
+            "name": "ZenFile_v3.2.0更新日志_zh.md",
+            "size": 1637
+          },
+          "source": "https://github.com/l930203811/ZenFile",
+          "time_unix_seconds": 1793432387,
+          "time_local": "2026-10-31T15:39:47+08:00"
+        },
+        {
+          "account_cookie": "none",
+          "download": null,
+          "elapsed_seconds": 3,
+          "error": "123云盘提示：该分享设置了【仅限登录或付费用户下载】。如需下载受限分享，请在【设置 -> 平台凭证管理】中添加 123云盘 Token/Cookie，或测试公开免登录分享。",
+          "listing": {
+            "listed_items": 1,
+            "password_required": false,
+            "smallest_files": [
+              {
+                "name": "ScreenFilter_1.6.apk",
+                "size": 9592193
+              }
+            ]
+          },
+          "platform": "123",
+          "production_list": true,
+          "production_resolve": false,
+          "public_password_supplied": false,
+          "sample": "https://www.123pan.com/s/Be4Hjv-fUUtv.html",
+          "selected": {
+            "name": "ScreenFilter_1.6.apk",
+            "size": 9592193
+          },
+          "source": "https://github.com/cjyyx/ScreenFilter",
+          "time_unix_seconds": 1793432387,
+          "time_local": "2026-10-31T15:39:47+08:00"
+        }
+      ]
+    },
+    {
+      "run": "3",
+      "evidence_temp": "%TEMP%/maobu-public-cloud-3/results.json",
+      "observations": [
+        {
+          "account_cookie": "none",
+          "download": null,
+          "elapsed_seconds": 3,
+          "error": "蓝奏云文件列表未完整：提取码错误或目录访问被拒绝；请重试或选择较小目录，未返回部分结果",
+          "platform": "lanzou",
+          "production_list": false,
+          "production_resolve": false,
+          "public_password_supplied": true,
+          "sample": "https://wwaug.lanzoub.com/b0xxfmxvi",
+          "source": "https://huangder.top/",
+          "time_unix_seconds": 1793432524,
+          "time_local": "2026-10-31T15:42:04+08:00"
+        },
+        {
+          "account_cookie": "none",
+          "download": null,
+          "elapsed_seconds": 6,
+          "error": "该百度网盘文件需要登录凭证，请在设置中添加或在浏览器中登录百度网盘并同步 Cookie",
+          "listing": {
+            "listed_items": 14,
+            "password_required": false,
+            "smallest_files": [
+              {
+                "name": "LUMI-2.0.9.apk",
+                "size": 27828652
+              },
+              {
+                "name": "LUMI-2.0.9.1.apk",
+                "size": 27876060
+              },
+              {
+                "name": "lUMI-2.1.9.apk",
+                "size": 30960867
+              },
+              {
+                "name": "Lumi-1.0.01.104_Beta.apk",
+                "size": 37110790
+              },
+              {
+                "name": "Lumi-1.0.02.13_Beta.apk",
+                "size": 37161175
+              },
+              {
+                "name": "Lumi-1.0.03.apk",
+                "size": 37734758
+              },
+              {
+                "name": "Lumi-1.0.04.apk",
+                "size": 37812386
+              },
+              {
+                "name": "LUMI-1.0.05.apk",
+                "size": 40218802
+              }
+            ]
+          },
+          "platform": "baidu",
+          "production_list": true,
+          "production_resolve": false,
+          "public_password_supplied": true,
+          "sample": "https://pan.baidu.com/s/1vDdFsoqQuuZlntUTUjssZw",
+          "selected": {
+            "name": "LUMI-2.0.9.apk",
+            "size": 27828652
+          },
+          "source": "https://huangder.top/",
+          "time_unix_seconds": 1793432524,
+          "time_local": "2026-10-31T15:42:04+08:00"
+        },
+        {
+          "account_cookie": "none",
+          "download": null,
+          "elapsed_seconds": 2,
+          "error": "123云盘文件列表未完整：123云盘接口拒绝目录读取，请检查分享权限或提取码；未返回部分结果，请重试或缩小分享目录",
+          "platform": "123",
+          "production_list": false,
+          "production_resolve": false,
+          "public_password_supplied": false,
+          "sample": "https://www.123pan.com/s/1GzA-nL2PH.html",
+          "source": "https://github.com/msterzhang/onelist_app",
+          "time_unix_seconds": 1793432524,
+          "time_local": "2026-10-31T15:42:04+08:00"
+        },
+        {
+          "account_cookie": "none",
+          "download": null,
+          "elapsed_seconds": 16,
+          "error": "生产取链接口返回Ok但下载地址为空或无效，不能记为有效直链",
+          "listing": {
+            "listed_items": 64,
+            "password_required": false,
+            "smallest_files": [
+              {
+                "name": "ZenFile_v3.7.0更新日志(Update log).md",
+                "size": 1858
+              },
+              {
+                "name": "ZenFile_v3.7.1更新日志(Update log).md",
+                "size": 2081
+              },
+              {
+                "name": "ZenFile_v3.6.8更新日志(Update log).md",
+                "size": 2381
+              },
+              {
+                "name": "ZenFile_v3.6.4更新日志(Update log).md",
+                "size": 2650
+              },
+              {
+                "name": "ZenFile_v3.5.8更新日志(Update log).md",
+                "size": 3248
+              },
+              {
+                "name": "ZenFile_v3.5.6 更新日志(Update log).md",
+                "size": 3742
+              },
+              {
+                "name": "ZenFile_v3.6.6更新日志(Update log).md",
+                "size": 3806
+              },
+              {
+                "name": "ZenFile_v3.6.7更新日志(Update log).md",
+                "size": 3947
+              }
+            ]
+          },
+          "platform": "pikpak",
+          "production_list": true,
+          "production_resolve": false,
+          "production_resolve_returned_ok": true,
+          "public_password_supplied": false,
+          "sample": "https://mypikpak.com/s/VOxGdQB3fVNO32sq_I3o2Wkmo2",
+          "selected": {
+            "name": "ZenFile_v3.7.0更新日志(Update log).md",
+            "size": 1858
+          },
+          "source": "https://github.com/l930203811/ZenFile",
+          "time_unix_seconds": 1793432524,
+          "time_local": "2026-10-31T15:42:04+08:00"
+        }
+      ]
+    },
+    {
+      "run": "4",
+      "evidence_temp": "%TEMP%/maobu-public-cloud-4/results.json",
+      "observations": [
+        {
+          "account_cookie": "none",
+          "download": null,
+          "elapsed_seconds": 1,
+          "listing": {
+            "listed_items": 1,
+            "password_required": false,
+            "smallest_files": []
+          },
+          "platform": "lanzou",
+          "production_list": true,
+          "production_resolve": false,
+          "public_password_supplied": false,
+          "sample": "https://zaxtyson.lanzous.com/ic59zpg",
+          "source": "https://github.com/zaxtyson/LanZouCloud-API#v255",
+          "time_unix_seconds": 1793432650,
+          "time_local": "2026-10-31T15:44:10+08:00",
+          "complete_file_metadata": false,
+          "historical_probe_note": "Legacy sample returned one zero-size item; this does not establish a real downloadable file or live share."
+        }
+      ]
+    },
+    {
+      "run": "fixed-pikpak",
+      "evidence_temp": "%TEMP%/maobu-public-cloud-fixed-pikpak/results.json",
+      "observations": [
+        {
+          "account_cookie": "none",
+          "download": null,
+          "elapsed_seconds": 18,
+          "error": "PikPak 未返回该文件的有效下载直链，请重新解析分享或检查访问权限",
+          "listing": {
+            "listed_items": 64,
+            "password_required": false,
+            "smallest_files": [
+              {
+                "name": "ZenFile_v3.7.0更新日志(Update log).md",
+                "size": 1858
+              },
+              {
+                "name": "ZenFile_v3.7.1更新日志(Update log).md",
+                "size": 2081
+              },
+              {
+                "name": "ZenFile_v3.6.8更新日志(Update log).md",
+                "size": 2381
+              },
+              {
+                "name": "ZenFile_v3.6.4更新日志(Update log).md",
+                "size": 2650
+              },
+              {
+                "name": "ZenFile_v3.5.8更新日志(Update log).md",
+                "size": 3248
+              },
+              {
+                "name": "ZenFile_v3.5.6 更新日志(Update log).md",
+                "size": 3742
+              },
+              {
+                "name": "ZenFile_v3.6.6更新日志(Update log).md",
+                "size": 3806
+              },
+              {
+                "name": "ZenFile_v3.6.7更新日志(Update log).md",
+                "size": 3947
+              }
+            ]
+          },
+          "platform": "pikpak",
+          "production_list": true,
+          "production_resolve": false,
+          "public_password_supplied": false,
+          "sample": "https://mypikpak.com/s/VOxGdQB3fVNO32sq_I3o2Wkmo2",
+          "selected": {
+            "name": "ZenFile_v3.7.0更新日志(Update log).md",
+            "size": 1858
+          },
+          "source": "https://github.com/l930203811/ZenFile",
+          "time_unix_seconds": 1793432626,
+          "time_local": "2026-10-31T15:43:46+08:00"
+        }
+      ]
+    },
+    {
+      "run": "words-fixed",
+      "evidence_temp": "%TEMP%/maobu-public-cloud-words-fixed/results.json",
+      "observations": [
+        {
+          "account_cookie": "none",
+          "download": null,
+          "elapsed_seconds": 5,
+          "error": "PikPak 未返回该文件的有效下载直链，请重新解析分享或检查访问权限",
+          "listing": {
+            "listed_items": 1,
+            "password_required": false,
+            "smallest_files": [
+              {
+                "name": "wordsfunny_data.zip",
+                "size": 74253362
+              }
+            ]
+          },
+          "platform": "pikpak",
+          "production_list": true,
+          "production_resolve": false,
+          "public_password_supplied": false,
+          "sample": "https://mypikpak.com/s/VOEs95bTB0KGAg75t0Nrs-oOo1",
+          "selected": {
+            "name": "wordsfunny_data.zip",
+            "size": 74253362
+          },
+          "source": "https://github.com/SteveSuv/remix-words-funny",
+          "time_unix_seconds": 1793432730,
+          "time_local": "2026-10-31T15:45:30+08:00"
+        }
+      ]
+    },
+    {
+      "run": "schema-2",
+      "evidence_temp": "%TEMP%/maobu-public-cloud-schema-2/results.json",
+      "observations": [
+        {
+          "account_cookie": "none",
+          "download": null,
+          "elapsed_seconds": 11,
+          "error": "PikPak 未返回该文件的有效下载直链，请重新解析分享或检查访问权限",
+          "listing": {
+            "listed_items": 1,
+            "password_required": false,
+            "smallest_files": [
+              {
+                "name": "wordsfunny_data.zip",
+                "size": 74253362
+              }
+            ]
+          },
+          "platform": "pikpak",
+          "production_list": true,
+          "production_resolve": false,
+          "public_password_supplied": false,
+          "sample": "https://mypikpak.com/s/VOEs95bTB0KGAg75t0Nrs-oOo1",
+          "sanitized_api_schema": {
+            "app_candidate_reachability": {
+              "error": "有界实体Range HTTP状态200；未读取大文件body"
+            },
+            "apps": [
+              {
+                "id": "decompress-share",
+                "keys": [
+                  "access",
+                  "ad_scene_type",
+                  "category_ids",
+                  "icon_link",
+                  "id",
+                  "is_default",
+                  "link",
+                  "links",
+                  "name",
+                  "need_more_quota",
+                  "params",
+                  "redirect_link",
+                  "space",
+                  "vip_types"
+                ],
+                "name": "decompress-share"
+              }
+            ],
+            "business": {
+              "share_status": "OK",
+              "share_status_text": ""
+            },
+            "data_file_info_keys": null,
+            "data_keys": null,
+            "file_info_keys": [
+              "apps",
+              "audit",
+              "created_time",
+              "delete_time",
+              "file_extension",
+              "folder_type",
+              "hash",
+              "icon_link",
+              "id",
+              "kind",
+              "links",
+              "medias",
+              "mime_type",
+              "modified_time",
+              "name",
+              "params",
+              "parent_id",
+              "phase",
+              "reference_events",
+              "revision",
+              "size",
+              "space",
+              "starred",
+              "tags",
+              "thumbnail_link",
+              "trashed",
+              "user_id",
+              "user_modified_time",
+              "web_content_link",
+              "writable"
+            ],
+            "file_keys": null,
+            "http_status": 200,
+            "links_keys": [],
+            "medias_count": 0,
+            "top_keys": [
+              "file_info",
+              "share_status",
+              "share_status_text"
+            ],
+            "url_candidates": [
+              {
+                "characters": 0,
+                "embedded_credentials": false,
+                "empty": true,
+                "http_url": false,
+                "path": "file_info.apps[0].icon_link"
+              },
+              {
+                "characters": 850,
+                "embedded_credentials": false,
+                "empty": false,
+                "http_url": true,
+                "path": "file_info.apps[0].link"
+              },
+              {
+                "characters": 0,
+                "embedded_credentials": false,
+                "empty": true,
+                "http_url": false,
+                "path": "file_info.apps[0].redirect_link"
+              },
+              {
+                "characters": 45,
+                "embedded_credentials": false,
+                "empty": false,
+                "http_url": true,
+                "path": "file_info.icon_link"
+              },
+              {
+                "characters": 49,
+                "embedded_credentials": false,
+                "empty": false,
+                "http_url": true,
+                "path": "file_info.params.platform_icon"
+              },
+              {
+                "characters": 0,
+                "embedded_credentials": false,
+                "empty": true,
+                "http_url": false,
+                "path": "file_info.thumbnail_link"
+              },
+              {
+                "characters": 0,
+                "embedded_credentials": false,
+                "empty": true,
+                "http_url": false,
+                "path": "file_info.web_content_link"
+              }
+            ]
+          },
+          "selected": {
+            "name": "wordsfunny_data.zip",
+            "size": 74253362
+          },
+          "source": "https://github.com/SteveSuv/remix-words-funny",
+          "time_unix_seconds": 1793432955,
+          "time_local": "2026-10-31T15:49:15+08:00"
+        },
+        {
+          "account_cookie": "none",
+          "download": null,
+          "elapsed_seconds": 19,
+          "error": "PikPak 未返回该文件的有效下载直链，请重新解析分享或检查访问权限",
+          "listing": {
+            "listed_items": 64,
+            "password_required": false,
+            "smallest_files": [
+              {
+                "name": "ZenFile_v3.7.0更新日志(Update log).md",
+                "size": 1858
+              },
+              {
+                "name": "ZenFile_v3.7.1更新日志(Update log).md",
+                "size": 2081
+              },
+              {
+                "name": "ZenFile_v3.6.8更新日志(Update log).md",
+                "size": 2381
+              },
+              {
+                "name": "ZenFile_v3.6.4更新日志(Update log).md",
+                "size": 2650
+              },
+              {
+                "name": "ZenFile_v3.5.8更新日志(Update log).md",
+                "size": 3248
+              },
+              {
+                "name": "ZenFile_v3.5.6 更新日志(Update log).md",
+                "size": 3742
+              },
+              {
+                "name": "ZenFile_v3.6.6更新日志(Update log).md",
+                "size": 3806
+              },
+              {
+                "name": "ZenFile_v3.6.7更新日志(Update log).md",
+                "size": 3947
+              }
+            ]
+          },
+          "platform": "pikpak",
+          "production_list": true,
+          "production_resolve": false,
+          "public_password_supplied": false,
+          "sample": "https://mypikpak.com/s/VOxGdQB3fVNO32sq_I3o2Wkmo2",
+          "sanitized_api_schema": {
+            "apps": [],
+            "business": {
+              "share_status": "OK",
+              "share_status_text": ""
+            },
+            "data_file_info_keys": null,
+            "data_keys": null,
+            "file_info_keys": [
+              "apps",
+              "audit",
+              "created_time",
+              "delete_time",
+              "file_extension",
+              "folder_type",
+              "hash",
+              "icon_link",
+              "id",
+              "kind",
+              "links",
+              "medias",
+              "mime_type",
+              "modified_time",
+              "name",
+              "params",
+              "parent_id",
+              "phase",
+              "reference_events",
+              "revision",
+              "size",
+              "space",
+              "starred",
+              "tags",
+              "thumbnail_link",
+              "trashed",
+              "user_id",
+              "user_modified_time",
+              "web_content_link",
+              "writable"
+            ],
+            "file_keys": null,
+            "http_status": 200,
+            "links_keys": [],
+            "medias_count": 0,
+            "top_keys": [
+              "file_info",
+              "share_status",
+              "share_status_text"
+            ],
+            "url_candidates": [
+              {
+                "characters": 37,
+                "embedded_credentials": false,
+                "empty": false,
+                "http_url": true,
+                "path": "file_info.icon_link"
+              },
+              {
+                "characters": 49,
+                "embedded_credentials": false,
+                "empty": false,
+                "http_url": true,
+                "path": "file_info.params.platform_icon"
+              },
+              {
+                "characters": 0,
+                "embedded_credentials": false,
+                "empty": true,
+                "http_url": false,
+                "path": "file_info.thumbnail_link"
+              },
+              {
+                "characters": 0,
+                "embedded_credentials": false,
+                "empty": true,
+                "http_url": false,
+                "path": "file_info.web_content_link"
+              }
+            ]
+          },
+          "selected": {
+            "name": "ZenFile_v3.7.0更新日志(Update log).md",
+            "size": 1858
+          },
+          "source": "https://github.com/l930203811/ZenFile",
+          "time_unix_seconds": 1793432955,
+          "time_local": "2026-10-31T15:49:15+08:00"
+        }
+      ]
+    },
+    {
+      "run": "lumi-schema",
+      "evidence_temp": "%TEMP%/maobu-public-cloud-lumi-schema/results.json",
+      "observations": [
+        {
+          "account_cookie": "none",
+          "download": null,
+          "elapsed_seconds": 8,
+          "error": "蓝奏云文件列表未完整：提取码错误或目录访问被拒绝（第2页，状态4）；请重试或选择较小目录，未返回部分结果",
+          "platform": "lanzou",
+          "production_list": false,
+          "production_resolve": false,
+          "public_password_supplied": true,
+          "sample": "https://wwaug.lanzoub.com/b0xxfmxvi",
+          "sanitized_api_schema": {
+            "page_challenge": false,
+            "pages": [
+              {
+                "items": 5,
+                "message": {
+                  "info": "sucess"
+                },
+                "page": 1,
+                "zt": 1
+              },
+              {
+                "items": null,
+                "message": {
+                  "info": "请刷新，重试0"
+                },
+                "page": 2,
+                "zt": 4
+              }
+            ],
+            "param_keys": [
+              "fid",
+              "k",
+              "ls",
+              "lx",
+              "pg",
+              "puid",
+              "pwd",
+              "rep",
+              "t",
+              "uid",
+              "up"
+            ]
+          },
+          "source": "https://huangder.top/",
+          "time_unix_seconds": 1793433928,
+          "time_local": "2026-10-31T16:05:28+08:00"
+        }
+      ]
+    },
+    {
+      "run": "fixed-lanzou",
+      "evidence_temp": "%TEMP%/maobu-public-cloud-fixed-lanzou/results.json",
+      "observations": [
+        {
+          "account_cookie": "none",
+          "download": null,
+          "elapsed_seconds": 13,
+          "error": "蓝奏云解析失败（代码 0），请检查提取码和分享状态",
+          "listing": {
+            "listed_items": 2,
+            "password_required": false,
+            "smallest_files": [
+              {
+                "name": "Umi-OCR_Rapid_v2.1.5.7z.exe",
+                "size": 103389593
+              },
+              {
+                "name": "Umi-OCR_Paddle_v2.1.5.7z.exe",
+                "size": 134322585
+              }
+            ]
+          },
+          "platform": "lanzou",
+          "production_list": true,
+          "production_resolve": false,
+          "public_password_supplied": false,
+          "sample": "https://hiroi-sora.lanzoul.com/s/umi-ocr",
+          "selected": {
+            "name": "Umi-OCR_Rapid_v2.1.5.7z.exe",
+            "size": 103389593
+          },
+          "source": "https://github.com/hiroi-sora/Umi-OCR/blob/main/README_en.md",
+          "time_unix_seconds": 1793433360,
+          "time_local": "2026-10-31T15:56:00+08:00"
+        }
+      ]
+    },
+    {
+      "run": "fixed-lumi-2",
+      "evidence_temp": "%TEMP%/maobu-public-cloud-fixed-lumi-2/results.json",
+      "observations": [
+        {
+          "account_cookie": "none",
+          "download": null,
+          "elapsed_seconds": 2,
+          "error": "蓝奏云文件列表未完整：提取码错误或目录访问被拒绝（第2页，状态4）；请重试或选择较小目录，未返回部分结果",
+          "platform": "lanzou",
+          "production_list": false,
+          "production_resolve": false,
+          "public_password_supplied": true,
+          "sample": "https://wwaug.lanzoub.com/b0xxfmxvi",
+          "source": "https://huangder.top/",
+          "time_unix_seconds": 1793433825,
+          "time_local": "2026-10-31T16:03:45+08:00"
+        }
+      ]
+    },
+    {
+      "run": "fixed-lanzou-endpoint",
+      "evidence_temp": "%TEMP%/maobu-public-cloud-fixed-lanzou-endpoint/results.json",
+      "observations": [
+        {
+          "account_cookie": "none",
+          "download": null,
+          "elapsed_seconds": 6,
+          "error": "蓝奏云文件列表未完整：目录读取被拒绝，请检查分享状态（第2页，状态4）；请重试或选择较小目录，未返回部分结果",
+          "platform": "lanzou",
+          "production_list": false,
+          "production_resolve": false,
+          "public_password_supplied": false,
+          "sample": "https://hiroi-sora.lanzoul.com/s/umi-ocr",
+          "sanitized_api_schema": {
+            "page_challenge": false,
+            "pages": [
+              {
+                "items": 2,
+                "message": {
+                  "info": "sucess"
+                },
+                "page": 1,
+                "zt": 1
+              },
+              {
+                "items": null,
+                "message": {
+                  "info": "请刷新，重试0"
+                },
+                "page": 2,
+                "zt": 4
+              }
+            ],
+            "param_keys": [
+              "fid",
+              "k",
+              "lx",
+              "pg",
+              "puid",
+              "rep",
+              "t",
+              "uid",
+              "up"
+            ]
+          },
+          "source": "https://github.com/hiroi-sora/Umi-OCR/blob/main/README_en.md",
+          "time_unix_seconds": 1793434231,
+          "time_local": "2026-10-31T16:10:31+08:00"
+        }
+      ]
+    },
+    {
+      "run": "single-umi-after-natural-cooldown",
+      "evidence_temp": "%TEMP%/maobu-public-cloud-single-umi/results.json",
+      "observations": [
+        {
+          "account_cookie": "none",
+          "elapsed_seconds": 36,
+          "error": "实体HEAD失败：error sending request",
+          "mode": "single designated file; production resolve once, HEAD and at most 64KiB in-memory Range; no listing/retry/full download",
+          "platform": "lanzou",
+          "production_resolve": true,
+          "reachability": null,
+          "sample": "https://hiroi-sora.lanzoul.com/s/umi-ocr",
+          "source": "https://github.com/hiroi-sora/Umi-OCR/blob/main/README_en.md",
+          "time_unix_seconds": 1793434925,
+          "time_local": "2026-10-31T16:22:05+08:00"
+        }
+      ]
+    },
+    {
+      "run": "single-umi-get-range-contrast",
+      "evidence_temp": "%TEMP%/maobu-public-cloud-single-get-umi/results.json",
+      "observations": [
+        {
+          "account_cookie": "none",
+          "elapsed_seconds": 6,
+          "error": "GET_HEADERS:HTTP200，已立即drop且不读取body，无重试",
+          "failure_phase": "GET_HEADERS",
+          "method": "GET",
+          "mode": "single designated file; production resolve once, GET Range only; no HEAD/listing/retry/full download",
+          "platform": "lanzou",
+          "production_resolve": true,
+          "range": "bytes=0-65535",
+          "reachability": null,
+          "route": "default-existing-env-proxy",
+          "sample": "https://hiroi-sora.lanzoul.com/s/umi-ocr",
+          "source": "https://github.com/hiroi-sora/Umi-OCR/blob/main/README_en.md",
+          "time_unix_seconds": 1793435700,
+          "time_local": "2026-10-31T16:35:00+08:00"
+        }
+      ]
+    },
+    {
+      "run": "single-umi-paddle-browser-final-url-to-real-manager",
+      "evidence_temp": "%TEMP%/maobu-cloud-manager-file-e4ea808114ad45149cb08fac7e937947/manager-file-result.log",
+      "observations": [
+        {
+          "platform": "lanzou",
+          "sample": "https://hiroi-sora.lanzoul.com/s/umi-ocr",
+          "source": "https://github.com/hiroi-sora/Umi-OCR/releases/tag/v2.1.5",
+          "file_id": "ivZ6e2rmu0bi",
+          "publisher_file_name": "Umi-OCR_Paddle_v2.1.5.7z.exe",
+          "mode": "One normal anonymous browser navigation obtained the final file URL; then the real ordinary-HTTP Manager queued, transferred, published, and independently fingerprinted the file",
+          "account_credentials_used": false,
+          "static_resolver_intermediate": {
+            "host": "developer4.lanrar.com",
+            "http_status": 200,
+            "content_type": "text/html",
+            "compressed_bytes": 2714,
+            "decoded_bytes": 4321,
+            "entity_complete_download": false
+          },
+          "browser_observation": {
+            "time_utc": "2026-10-31T08:42:26.425Z",
+            "evidence_temp": "%TEMP%/maobu-lanzou-browser-single-j2vHzX/private-browser-manifest.json",
+            "normal_navigations": 1,
+            "route": "default-existing-env-proxy",
+            "final_download_host": "exe2.webgetstore.com",
+            "http_status": 200,
+            "mime_type": "application/octet-stream",
+            "download_events": 1,
+            "reported_total_bytes": 134293725,
+            "final_state": "canceled",
+            "received_bytes": 0,
+            "anonymous_cookies_created": 4,
+            "final_host_cookie_matches": 0,
+            "cookie_forwarded_to_manager": false,
+            "manager_request_header_names": [
+              "User-Agent"
+            ],
+            "final_request_referer_observed": false
+          },
+          "manager_transfer": {
+            "passed": true,
+            "complete_download": true,
+            "bytes": 134293725,
+            "sha256": "abe00248d6e68dda75029739751ad7258f0ecc14d720b19240a844f5341859b2",
+            "official_sha256_match": true,
+            "network": "explicit-existing-environment-proxy",
+            "connections": 1,
+            "per_task_bytes_per_second": 1048576,
+            "max_retries": 0,
+            "deadline_seconds": 240,
+            "elapsed_test_seconds": 134.79,
+            "test_passed": 1,
+            "test_failed": 0,
+            "exit_code": 0,
+            "saved_extension": ".bin",
+            "executed": false
+          },
+          "unverified": [
+            "desktop static share resolver automatically traverses the HTML/JS intermediate page",
+            "native share-paste UI to completed file",
+            "real browser extension interception to Manager for this share",
+            "expired final URL refresh",
+            "other files or templates"
+          ],
+          "private_values_saved_in_repository": false
+        }
+      ]
+    }
+  ],
+  "lanzou_static_endpoint_diagnosis": {
+    "time_local": "2026-10-31T16:09:22.728699+08:00",
+    "mode": "Independent read-only replay of current page-declared endpoint using the same nonce/form values; not full production resolver/DownloadManager E2E",
+    "page_challenge": false,
+    "old_endpoint": "same-origin /ajaxm.php fallback",
+    "declared_endpoint_host": "apifile.lanzouw.com",
+    "declared_endpoint_path": "/ajaxfile.php",
+    "query_field_names": [
+      "file"
+    ],
+    "default_branch": "typeof(killdnsweb)==undefined -> dom_ajaxs=domain2",
+    "kd_sent": 1,
+    "http_success": true,
+    "business_zt": 1,
+    "dom_present": true,
+    "url_present": true,
+    "private_values_saved_in_repository": false
+  },
+  "final_local_regression": {
+    "round": 10,
+    "log": "%TEMP%/maobu-final-cargo-round10.log",
+    "exit_code": 0,
+    "lib": {
+      "passed": 1471,
+      "failed": 0,
+      "ignored": 16,
+      "elapsed_seconds": 97.61
+    },
+    "range_integration": {
+      "passed": 9,
+      "failed": 0,
+      "elapsed_seconds": 5.07
+    },
+    "included_test_groups": {
+      "pikpak::direct_link": 3,
+      "lanzou::endpoint": 2,
+      "lanzou::pagination": 5
+    },
+    "production_source_snapshot_files": 274,
+    "source_changed_during_gate": 0,
+    "online_cloud_complete_downloads_implied": false,
+    "scope_note": "Historical Round10 gate for that frozen source snapshot; later startup-failure source changes require the root task to record a newer unified gate."
+  },
+  "complete_online_downloads_scope": {
+    "lanzou_browser_observed_final_url_to_real_manager": 1,
+    "desktop_share_paste_to_file_e2e": 0,
+    "real_extension_interception_e2e": 0,
+    "other_four_clouds_complete_files": 0
+  }
+}

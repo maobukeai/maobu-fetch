@@ -1,36 +1,28 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import vm from "node:vm";
+import { readFileSync } from "node:fs";
+import { isLanDiskHost as isTailscaleOrLanHost } from "./landisk-security.js";
 
-function isTailscaleOrLanHost(hostname = "") {
-  const h = String(hostname || "").toLowerCase();
-  if (h === "localhost" || h === "127.0.0.1" || h.endsWith(".local") || h.endsWith(".lan")) return true;
-  if (h.endsWith(".ts.net") || h.endsWith(".tailscale.net")) return true;
-  const m = h.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
-  if (m) {
-    const b0 = parseInt(m[1], 10);
-    const b1 = parseInt(m[2], 10);
-    if (b0 === 100 && b1 >= 64 && b1 <= 127) return true; // Tailscale CGNAT
-    if (b0 === 10 || b0 === 127 || (b0 === 172 && b1 >= 16 && b1 <= 31) || (b0 === 192 && b1 === 168)) return true; // LAN
-  }
-  return false;
+// 直接运行经典脚本中的原始函数；避免测试重写同一份产品逻辑。
+const productSource = readFileSync(new URL("landisk-adapter.js", import.meta.url), "utf8");
+const functionStart = productSource.indexOf("  function buildBatchRequestPayload(");
+const functionEnd = productSource.indexOf("  // ── 1.5", functionStart);
+assert.ok(functionStart >= 0 && functionEnd > functionStart);
+function buildActualRequest(filesArr, folderName, pin) {
+  const build = vm.runInNewContext(`(${productSource.slice(functionStart, functionEnd).trim()})`, {
+    URL, URLSearchParams, window: { location: { href: "http://192.168.1.2/files" } },
+    getPin: () => pin, getAuthQuery: () => "",
+  });
+  return build(filesArr, folderName, null);
 }
 
 function buildBatchParams(filesArr, folderName, pin) {
-  const bodyParams = new URLSearchParams();
-  bodyParams.append("folderName", folderName);
-  filesArr.forEach((f) => bodyParams.append("files", f));
-  if (pin) bodyParams.append("pin", pin);
-  return bodyParams.toString();
+  return buildActualRequest(filesArr, folderName, pin).body;
 }
 
 function resolveFolderName(filesArr, customFolderName) {
-  if (customFolderName && customFolderName !== "batch_download") {
-    return customFolderName;
-  }
-  if (filesArr.length === 1) {
-    return filesArr[0].split(/[\\/]/).filter(Boolean).pop() || "batch_download";
-  }
-  return `batch_download_${filesArr.length}_items`;
+  return new URLSearchParams(buildActualRequest(filesArr, customFolderName, "").body).get("folderName");
 }
 
 test("LanDisk: Tailscale 与本地局域网主机名识别", () => {

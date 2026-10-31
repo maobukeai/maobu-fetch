@@ -37,22 +37,22 @@ fn main() {
         }
     };
 
-    match command {
+    let exit_code = match command {
         CliCommand::Run { .. } | CliCommand::Play { .. } | CliCommand::ViewImage { .. } => {
             // 正常启动 GUI 或唤起播放器/看图器窗口。
-            maobu_fetch_lib::run();
+            maobu_fetch_lib::run()
         }
         other => {
             // CLI 子命令：若 GUI 正在运行，启动 run() 触发单实例插件将参数转发给运行中的首实例；
             // 若无实例运行，附加控制台后直接操作 SQLite 数据库。
+            #[cfg(windows)]
+            attach_parent_console();
             if maobu_fetch_lib::is_gui_running() {
-                maobu_fetch_lib::run();
+                maobu_fetch_lib::run_for_cli()
             } else {
-                #[cfg(windows)]
-                attach_parent_console();
-                let exit_code = maobu_fetch_lib::run_cli(other);
-                std::process::exit(exit_code);
+                maobu_fetch_lib::run_cli(other)
             }
         }
-    }
+    };
+    std::process::exit(exit_code);
 }

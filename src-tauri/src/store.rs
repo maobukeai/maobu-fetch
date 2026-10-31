@@ -1,13 +1,25 @@
 use crate::models::{
     AppSettings, BackupBundle, CategoryRule, CategoryRuleType, CollisionPolicy, CompletionAction,
     DownloadPreset, DownloadSegment, DownloadTask, FilenameCleanupRule, MediaCredential,
-    MediaSelection, PlatformCompatibility, PlatformNamingTemplate, RestoreStats, SavedView,
-    SupportLevel, Tag, TaskStatus, TaskTemplate, UrlHistoryEntry,
+    MediaSelection, PlatformNamingTemplate, RestoreStats, SavedView, SupportLevel, Tag, TaskStatus,
+    TaskTemplate, UrlHistoryEntry,
 };
 use crate::secure_storage::{decrypt_password, encrypt_password};
 use rusqlite::{params, Connection, OptionalExtension, Row};
 use std::{collections::HashMap, path::PathBuf};
 use tokio::sync::Mutex;
+
+mod bt_progress;
+mod error_redaction;
+mod http_progress;
+mod media_live;
+mod platform_compatibility;
+#[cfg(test)]
+mod settings_compatibility;
+mod task_name;
+mod task_options;
+mod verification;
+mod worker_state;
 
 pub struct Store {
     connection: Mutex<Connection>,
@@ -68,7 +80,8 @@ impl Store {
         seed_builtin_platform_naming_templates(&migration)?;
         // Task 44: 平台兼容性矩阵。表通过 SCHEMA 中 CREATE TABLE IF NOT EXISTS 创建；
         // 此处仅插入内置 6 条默认记录（INSERT OR IGNORE 不覆盖用户改动）。
-        seed_builtin_platform_compatibility(&migration)?;
+        platform_compatibility::migrate_and_seed(&migration)?;
+        error_redaction::redact_persisted_errors(&migration)?;
         migration.commit().map_err(|e| e.to_string())?;
         let store = Self {
             connection: Mutex::new(connection),
@@ -215,7 +228,7 @@ impl Store {
                     task.speed as i64,
                     task.eta_seconds.map(|v| v as i64),
                     task.status.as_str(),
-                    task.error,
+                    task.error.as_deref().map(crate::manager::redact_sensitive),
                     task.created_at as i64,
                     task.completed_at.map(|v| v as i64),
                     task.scheduled_at.map(|v| v as i64),
@@ -265,11 +278,15 @@ impl Store {
     }
 
     pub async fn remove_task(&self, id: &str) -> Result<(), String> {
-        self.connection
-            .lock()
-            .await
+        let mut connection = self.connection.lock().await;
+        let transaction = connection.transaction().map_err(|e| e.to_string())?;
+        transaction
             .execute("DELETE FROM tasks WHERE id=?1", [id])
             .map_err(|e| e.to_string())?;
+        transaction
+            .execute("DELETE FROM app_state WHERE key=?1", [task_name::key(id)])
+            .map_err(|e| e.to_string())?;
+        transaction.commit().map_err(|e| e.to_string())?;
         Ok(())
     }
 
@@ -311,15 +328,12 @@ impl Store {
                 .optional()
                 .map_err(|e| e.to_string())?
         };
-        let mut settings: AppSettings = json
-            .and_then(|v| serde_json::from_str(&v).ok())
-            .unwrap_or_default();
-        // 迁移旧版默认值：若 min_file_size_mb 为 1（旧版硬编码默认值导致低于 1MB 的正常下载如 zip/exe 无法被接管），
-        // 自动平滑迁移为 0（不限大小），保证小文件与安装包正常接管。
-        if settings.min_file_size_mb == 1 {
-            settings.min_file_size_mb = 0;
-            let _ = self.save_settings(&settings).await;
-        }
+        let mut settings: AppSettings = match json {
+            Some(value) => serde_json::from_str(&value).map_err(|_| {
+                "保存的设置格式损坏，已保留原内容且未重置；请恢复设置备份或检查数据库中的settings记录".to_string()
+            })?,
+            None => AppSettings::default(),
+        };
         // 自动迁移旧版硬编码下载目录：
         // 若当前保存的路径为空，或是旧版硬编码的 USERPROFILE\Downloads（但在本机系统已被重定向到如 D:\Downloads），
         // 自动平滑迁移为系统真实的下载目录并落库，避免在 C 盘强行创建无效目录。
@@ -332,7 +346,7 @@ impl Store {
                 "检测到系统真实下载目录（如 Win11 重定向路径）与原配置不一致，自动平滑迁移"
             );
             settings.download_dir = new_dir;
-            let _ = self.save_settings(&settings).await;
+            self.save_settings(&settings).await?;
         }
         // Task 31.3：全局代理密码以 DPAPI 密文形式落库。
         // 读取后尝试解密；解密失败说明是旧版本明文（或跨用户迁移），保留原值
@@ -399,11 +413,12 @@ impl Store {
         } else {
             "DELETE FROM tasks WHERE status='cancelled'"
         };
-        self.connection
-            .lock()
-            .await
-            .execute(sql, [])
-            .map_err(|e| e.to_string())?;
+        let mut connection = self.connection.lock().await;
+        let transaction = connection.transaction().map_err(|e| e.to_string())?;
+        transaction.execute(sql, []).map_err(|e| e.to_string())?;
+        transaction.execute("DELETE FROM app_state WHERE key LIKE 'task-name-intent:%' AND substr(key,18) NOT IN (SELECT id FROM tasks)",[])
+            .map_err(|e|e.to_string())?;
+        transaction.commit().map_err(|e| e.to_string())?;
         Ok(())
     }
 
@@ -1220,100 +1235,6 @@ impl Store {
         Ok(list)
     }
 
-    // ===== Task 44: 平台兼容性矩阵 =====
-
-    /// Task 44：列出全部平台兼容性记录，按 platform 升序返回。
-    ///
-    /// 内置 6 条默认数据（YouTube/哔哩哔哩=Verified，抖音/TikTok/Twitter/微博
-    /// =Experimental）在打开数据库时通过 `INSERT OR IGNORE` 写入，用户对内置
-    /// 记录的修改（同 platform）不会被覆盖。`known_issues_json` 反序列化失败时
-    /// 视为空数组，保证损坏数据不阻塞列表返回。
-    pub async fn platform_compatibility_list(&self) -> Result<Vec<PlatformCompatibility>, String> {
-        let connection = self.connection.lock().await;
-        let mut stmt = connection
-            .prepare(
-                "SELECT platform,level,notes,known_issues_json,last_tested_at \
-                 FROM platform_compatibility ORDER BY platform ASC",
-            )
-            .map_err(|e| e.to_string())?;
-        let rows = stmt
-            .query_map([], |r| {
-                Ok((
-                    r.get::<_, String>(0)?,
-                    r.get::<_, String>(1)?,
-                    r.get::<_, String>(2)?,
-                    r.get::<_, String>(3)?,
-                    r.get::<_, String>(4)?,
-                ))
-            })
-            .map_err(|e| e.to_string())?;
-        let mut list = Vec::new();
-        for row in rows {
-            let (platform, level_str, notes, known_issues_json, last_tested_at) =
-                row.map_err(|e| e.to_string())?;
-            let level = match level_str.as_str() {
-                "verified" => SupportLevel::Verified,
-                "unsupported" => SupportLevel::Unsupported,
-                // 旧数据库或未知值默认 Experimental（SupportLevel::default）
-                _ => SupportLevel::Experimental,
-            };
-            // known_issues_json 损坏时降级为空数组，不阻塞列表
-            let known_issues: Vec<String> =
-                serde_json::from_str(&known_issues_json).unwrap_or_default();
-            list.push(PlatformCompatibility {
-                platform,
-                level,
-                notes,
-                known_issues,
-                last_tested_at,
-            });
-        }
-        Ok(list)
-    }
-
-    /// Task 44：按 platform 查询单条兼容性记录。不存在时返回 `None`。
-    pub async fn platform_compatibility_get(
-        &self,
-        platform: &str,
-    ) -> Result<Option<PlatformCompatibility>, String> {
-        let connection = self.connection.lock().await;
-        let row: Option<(String, String, String, String)> = connection
-            .query_row(
-                "SELECT level,notes,known_issues_json,last_tested_at \
-                 FROM platform_compatibility WHERE platform=?1",
-                [platform],
-                |r| {
-                    Ok((
-                        r.get::<_, String>(0)?,
-                        r.get::<_, String>(1)?,
-                        r.get::<_, String>(2)?,
-                        r.get::<_, String>(3)?,
-                    ))
-                },
-            )
-            .optional()
-            .map_err(|e| e.to_string())?;
-        match row {
-            None => Ok(None),
-            Some((level_str, notes, known_issues_json, last_tested_at)) => {
-                let level = match level_str.as_str() {
-                    "verified" => SupportLevel::Verified,
-                    "unsupported" => SupportLevel::Unsupported,
-                    _ => SupportLevel::Experimental,
-                };
-                let known_issues: Vec<String> =
-                    serde_json::from_str(&known_issues_json).unwrap_or_default();
-                Ok(Some(PlatformCompatibility {
-                    platform: platform.to_string(),
-                    level,
-                    notes,
-                    known_issues,
-                    last_tested_at,
-                }))
-            }
-        }
-    }
-
     // ===== Task 43: 平台命名模板 CRUD =====
 
     /// Task 43: 新增一条平台命名模板。
@@ -1603,6 +1524,11 @@ impl Store {
                 .map_err(|e| e.to_string())?;
 
                 stats.added_tasks += 1;
+                tx.execute(
+                    "DELETE FROM app_state WHERE key=?1",
+                    [task_name::key(&task.id)],
+                )
+                .map_err(|e| e.to_string())?;
                 restored_tasks.push(task);
             }
         }
@@ -1841,46 +1767,6 @@ fn seed_builtin_platform_naming_templates(connection: &Connection) -> Result<(),
             "UPDATE platform_naming_templates SET template = ?1 WHERE id = ?2 AND template = ?3",
             rusqlite::params![new_val, id, old_val],
         );
-    }
-    Ok(())
-}
-
-/// Task 44：在打开数据库时按 `INSERT OR IGNORE` 写入 6 条内置平台兼容性记录。
-///
-/// 内置记录：
-/// - 哔哩哔哩 / 抖音 / Twitter：`Verified`（经过完整回归测试，预期可用）
-/// - TikTok / 微博 / YouTube：`Experimental`（基本可用但成功率受
-///   平台变更影响，可能需要用户手动提供 Cookie）
-///
-/// `INSERT OR IGNORE` 保证用户对内置记录的修改（同 platform）不会被覆盖；
-/// 旧版本数据库首次升级时会一次性插入全部内置记录。
-/// `known_issues_json` 使用 JSON 数组文本存储以保持与现有 JSON 列一致。
-fn seed_builtin_platform_compatibility(connection: &Connection) -> Result<(), String> {
-    // 双引号在 SQL 字符串里需要双写（`""` 表示一个双引号）。
-    // 这里使用 raw string + format! 便于阅读，并预转义中文 notes 中的双引号。
-    // 各平台 known_issues 为空数组（暂无已知问题，后续可由前端编辑补充）。
-    let rows: [(&str, &str, &str); 11] = [
-        ("baidupan", "experimental", "百度网盘公开与加密分享解析，自动转存提取直链与多线程下载，需提供 Cookie"),
-        ("bilibili", "verified", "哔哩哔哩普通视频、多P合集、番剧剧集与实时直播流均可正常下载"),
-        ("douyin", "verified", "抖音短链、图集、单视频及实时直播流全功能正常支持"),
-        ("lanzou", "verified", "蓝奏云单文件与目录树分享解析，免登录提取 32 线程高速直链"),
-        ("pan123", "experimental", "123云盘公开与受限分享解析，目录树多选，公开免登录/受限需提供凭证，支持 32 线程并发下载"),
-        ("pikpak", "verified", "PikPak 公开与加密分享、海量目录树解析，支持 16/32 线程极速并发下载"),
-        ("quark", "verified", "夸克网盘公开与加密分享、目录树解析，支持 16/32 线程并发下载"),
-        ("tiktok", "experimental", "TikTok 普通视频、图集可下载，部分内容受地区限制"),
-        ("twitter", "verified", "Twitter/X 普通推文、图集及 Spaces 音频可下载，敏感内容需提供 Cookie"),
-        ("weibo", "experimental", "微博普通视频、图集可下载，需提供 Cookie"),
-        ("youtube", "experimental", "YouTube 普通视频、直播回放、短视频受反爬机制影响"),
-    ];
-    for (platform, level, notes) in rows {
-        connection
-            .execute(
-                "INSERT INTO platform_compatibility(platform,level,notes,known_issues_json,last_tested_at) \
-                 VALUES(?1,?2,?3,'[]','') \
-                 ON CONFLICT(platform) DO UPDATE SET level=?2, notes=?3 WHERE notes = '哔哩哔哩普通视频、番剧、直播回放可正常下载' OR notes = '抖音短链、图集、单视频全功能正常支持' OR notes = 'YouTube 普通视频、直播回放、短视频可正常下载' OR notes = 'Twitter/X 普通推文视频可下载，需提供 Cookie' OR platform = 'pan123' OR platform = 'lanzou'",
-                params![platform, level, notes],
-            )
-            .map_err(|e| e.to_string())?;
     }
     Ok(())
 }
@@ -2350,6 +2236,7 @@ mod tests {
                 // 拖放创建的种子内容必须随任务持久化，重启后恢复添加仍可用。
                 torrent_data_base64: Some("ZDRpbmZvAAAAAAAA".into()),
                 streaming_priority: false,
+                ..crate::models::BtTaskMeta::default()
             });
             store.upsert_task(&bt_task).await.unwrap();
         });
@@ -3913,14 +3800,14 @@ mod tests {
                 .unwrap()
                 .expect("douyin record should exist");
             assert_eq!(douyin.platform, "douyin");
-            assert_eq!(douyin.level, SupportLevel::Verified);
+            assert_eq!(douyin.level, SupportLevel::Experimental);
 
             let lanzou = store
                 .platform_compatibility_get("lanzou")
                 .await
                 .unwrap()
                 .expect("lanzou record should exist");
-            assert_eq!(lanzou.level, SupportLevel::Verified);
+            assert_eq!(lanzou.level, SupportLevel::Experimental);
 
             let pan123 = store
                 .platform_compatibility_get("pan123")
@@ -3982,7 +3869,7 @@ mod tests {
                 .await
                 .unwrap()
                 .expect("bilibili record should exist");
-            assert_eq!(bilibili.level, SupportLevel::Verified);
+            assert_eq!(bilibili.level, SupportLevel::Experimental);
         });
     }
 
@@ -4012,7 +3899,7 @@ mod tests {
                 .expect("douyin record should exist");
             assert_eq!(
                 douyin.notes,
-                "抖音短链、图集、单视频及实时直播流全功能正常支持"
+                "提供抖音短链、视频、图集和直播解析入口；登录状态和风控可能影响结果。"
             );
         });
     }
@@ -4020,7 +3907,7 @@ mod tests {
     /// Twitter 提升为 Verified：旧版本数据库中未修改的 experimental 记录
     /// （旧文案）在重新打开时应升级为 verified 新文案；用户修改过的记录不受影响。
     #[test]
-    fn platform_compatibility_seed_upgrades_old_twitter_record() {
+    fn platform_compatibility_seed_replaces_unproven_old_twitter_claim() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().to_path_buf();
         {
@@ -4043,10 +3930,10 @@ mod tests {
                 .await
                 .unwrap()
                 .expect("twitter record should exist");
-            assert_eq!(twitter.level, SupportLevel::Verified);
+            assert_eq!(twitter.level, SupportLevel::Experimental);
             assert_eq!(
                 twitter.notes,
-                "Twitter/X 普通推文、图集及 Spaces 音频可下载，敏感内容需提供 Cookie"
+                "提供Twitter/X媒体与Spaces解析入口；不同媒体类型和登录权限需分别验证。"
             );
         });
     }

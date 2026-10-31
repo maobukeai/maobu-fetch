@@ -6,7 +6,7 @@
   <b>专为 Windows 10/11 设计的本地优先、高效紧凑型多线程下载管理器</b>
 </p>
 
-[![Version](https://img.shields.io/badge/version-0.10.11-blue.svg)](https://github.com/maobukeai/maobu-fetch/releases/tag/v0.10.11)
+[![Version](https://img.shields.io/badge/version-0.10.12-blue.svg)](https://github.com/maobukeai/maobu-fetch/releases/tag/v0.10.12)
 [![Tauri](https://img.shields.io/badge/Tauri-v2.0-24C8D8.svg?logo=tauri&logoColor=white)](https://tauri.app)
 [![React](https://img.shields.io/badge/React-v19.0-61DAFB.svg?logo=react&logoColor=black)](https://react.dev)
 [![Rust](https://img.shields.io/badge/Rust-v1.80+-000000.svg?logo=rust&logoColor=white)](https://www.rust-lang.org)
@@ -34,8 +34,8 @@
 - ⚡ **HTTP Range 并发切片下载**：支持 `1 / 2 / 4 / 8 / 16 / 32` 多线程并发 Range 请求，无缝动态分片与原子合并，充分吃满带宽。
 - 🛡️ **数据一致性校验**：续传自动校验 ETag 与 Last-Modified 标头，支持完成后自动 SHA-256 完整性哈希比对。
 - 🌐 **本地安全桥与 MV3 扩展**：提供 Chrome & Edge 原生 Manifest V3 扩展，采用本地 `127.0.0.1` HMAC-SHA256 签名与一次性配对码机制安全接管下载。
-- 🎬 **按需媒体增强内核**：解耦组件设计，提供 `yt-dlp` 与 `FFmpeg` 安全按需安装与版本校验，支持 Bilibili 1080P/4K、YouTube Dash 流视频智能抓取。
-- 🧲 **BT/磁力下载**：基于未修改官方 aria2 的按需安装 BT 内核，支持磁力链接与 `.torrent`，元数据获取、文件勾选、做种策略（默认关闭）与全局限速联动。
+- 🎬 **按需媒体增强内核**：解耦组件设计，提供 `yt-dlp` 与 `FFmpeg` 安全按需安装与版本校验，支持媒体格式分析与分离音视频合并；可用清晰度、登录要求及站点风控以实际返回结果为准，DRM 内容拒绝处理。
+- 🧲 **BT/磁力下载**：基于进程内纯 Rust librqbit 内核，开箱即用；支持磁力链接与 `.torrent`、元数据获取、文件勾选、持久化恢复、做种策略（默认关闭）与上下行限速。引擎的必要修复及来源校验见 `src-tauri/vendor/librqbit/MAOBU-PATCHES.md`。
 - 🎨 **Windows 11 效率型原生 UI**：融入 Win11 Acrylic 亚克力磨砂玻璃视效，184px 分类导航、40px 命令栏与全宽切片进度条，支持深浅色及高 DPI 自适应。
 - ⚡ **智能断点续传与重试**：网络波动、系统休眠后自动挂起并安全续接，保护半成品分片不损坏。
 

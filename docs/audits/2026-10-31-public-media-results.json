@@ -1,0 +1,503 @@
+{
+  "date": "2026-10-31",
+  "timezone": "Asia/Shanghai",
+  "layer": "Actual isolated Wry DownloadManager queue/worker, real source re-probe, publication and final AV validation",
+  "personal_cookies_used": false,
+  "test_only": true,
+  "cases": 17,
+  "complete_downloads": 8,
+  "batch_exit_codes": [
+    101,
+    101,
+    101,
+    0
+  ],
+  "batch_scope": "17 Manager executions across 11 distinct URLs. Eight completed executions include repeated Douyin routes; six distinct URLs completed. Initial and pre-fix failures remain historical, not current unresolved Douyin failures.",
+  "error_messages_scope": "Observed messages precede subsequent diagnostic wording fixes. A 403 is not proof of expired login or PO Token failure.",
+  "results": [
+    {
+      "anonymous": true,
+      "error": "传输阶段：YouTube 反爬虫验证失败（PO Token）。这是 YouTube 强制的反机器人机制，不是软件 bug。\n可尝试：1) 在「设置 → 媒体工具/高级」配置 YouTube PO Token 凭证；\n2) 用无痕窗口登录 YouTube 后访问 https://www.youtube.com/robots.txt%EF%BC%8C%E5%AF%BC%E5%87%BA Cookie 到「设置 → 媒体凭证」（此 Cookie 不会被轮换）；\n3) 稍后重试（PO Token 有时效，12 小时后可能自动恢复）；\n4) 升级 yt-dlp 到最新版（「设置 → 媒体工具 → 检查更新」）。",
+      "id": "youtube-bbb-proxy",
+      "network": "explicit-environment-proxy",
+      "passed": false,
+      "seconds": 29.4708623,
+      "url": "https://www.youtube.com/watch?v=YE7VzlLtp-4",
+      "used_personal_cookie": false,
+      "source_log": "positive-final.log"
+    },
+    {
+      "anonymous": true,
+      "complete_decode": true,
+      "complete_download": true,
+      "duration_evidence": "production-metadata",
+      "expected_duration": 53.0,
+      "ffprobe": {
+        "format": {
+          "duration": "53.173991",
+          "size": "1126415"
+        },
+        "programs": [],
+        "stream_groups": [],
+        "streams": [
+          {
+            "codec_name": "h264",
+            "codec_type": "video",
+            "duration": "53.166667",
+            "height": 360,
+            "width": 360
+          },
+          {
+            "codec_name": "aac",
+            "codec_type": "audio",
+            "duration": "53.173991"
+          }
+        ]
+      },
+      "format": "mp4_ld",
+      "id": "weibo-public-manager",
+      "metadata": {
+        "duration": 53.0,
+        "formats": 2,
+        "layer": "production-probe",
+        "title": "柴犬柴犬的秒拍视频"
+      },
+      "network": "direct",
+      "output_bytes": 1126415,
+      "output_sha256": "e69ecdaef96d71dcc8b8bee467a432088090da906a310502e62f0e442d5f7d02",
+      "passed": true,
+      "seconds": 6.4681324,
+      "url": "https://m.weibo.cn/status/4189191225395228",
+      "used_personal_cookie": false,
+      "source_log": "positive-final.log"
+    },
+    {
+      "anonymous": true,
+      "complete_decode": true,
+      "complete_download": true,
+      "duration_evidence": "production-metadata",
+      "expected_duration": 324.484,
+      "ffprobe": {
+        "format": {
+          "duration": "324.501333",
+          "size": "2664147"
+        },
+        "programs": [],
+        "stream_groups": [],
+        "streams": [
+          {
+            "codec_name": "h264",
+            "codec_type": "video",
+            "duration": "324.490833",
+            "height": 270,
+            "width": 480
+          },
+          {
+            "codec_name": "aac",
+            "codec_type": "audio",
+            "duration": "324.501333"
+          }
+        ]
+      },
+      "format": "http-288",
+      "id": "twitter-nets-proxy",
+      "metadata": {
+        "duration": 324.484,
+        "formats": 9,
+        "layer": "production-probe",
+        "title": "Brooklyn Nets - WATCH: Sean Marks' full media session after our acquisition of 8-time..."
+      },
+      "network": "explicit-environment-proxy",
+      "output_bytes": 2664147,
+      "output_sha256": "71431b4e9eb32d59d89b35d941f1d4235cc90427629c4cf13d747859277694b0",
+      "passed": true,
+      "seconds": 14.4893149,
+      "url": "https://twitter.com/BrooklynNets/status/1349794411333394432",
+      "used_personal_cookie": false,
+      "source_log": "positive-final.log"
+    },
+    {
+      "anonymous": true,
+      "complete_decode": true,
+      "complete_download": true,
+      "duration_evidence": "explicit-independent-oracle",
+      "expected_duration": 287.3,
+      "ffprobe": {
+        "format": {
+          "duration": "287.300000",
+          "size": "58715162"
+        },
+        "programs": [],
+        "stream_groups": [],
+        "streams": [
+          {
+            "codec_name": "h264",
+            "codec_type": "video",
+            "duration": "287.300000",
+            "height": 2160,
+            "width": 3840
+          },
+          {
+            "codec_name": "aac",
+            "codec_type": "audio",
+            "duration": "287.299002"
+          }
+        ]
+      },
+      "format": "0",
+      "id": "xiaohongshu-official-doc",
+      "metadata": {
+        "duration": null,
+        "formats": 1,
+        "layer": "production-probe",
+        "title": "云服务 AI 工作台使用指南 (1)"
+      },
+      "network": "direct",
+      "output_bytes": 58715162,
+      "output_sha256": "a4c0ce31f9e4a3f894c03ef508f34a556775b5010ecb473e0d918cee6a0e7efc",
+      "passed": true,
+      "seconds": 81.3977625,
+      "url": "https://miniapp.xiaohongshu.com/doc/DC431239",
+      "used_personal_cookie": false,
+      "source_log": "positive-final.log"
+    },
+    {
+      "anonymous": true,
+      "error": "传输阶段：抖音登录已失效，请重新获取 Cookie",
+      "id": "douyin-native-public",
+      "network": "direct",
+      "passed": false,
+      "seconds": 1.7550884,
+      "url": "https://www.douyin.com/video/7694589931460594953",
+      "used_personal_cookie": false,
+      "source_log": "secondary-final.log"
+    },
+    {
+      "anonymous": true,
+      "error": "传输阶段：抖音登录已失效，请重新获取 Cookie",
+      "id": "douyin-official-kennys",
+      "network": "direct",
+      "passed": false,
+      "seconds": 1.5998807,
+      "url": "https://www.douyin.com/video/7408129200156101907",
+      "used_personal_cookie": false,
+      "source_log": "secondary-final.log"
+    },
+    {
+      "anonymous": true,
+      "error": "元数据阶段：该平台暂不支持下载此类型内容",
+      "id": "xiaohongshu-upstream-new",
+      "network": "direct",
+      "passed": false,
+      "seconds": 1.0766734,
+      "url": "https://www.xiaohongshu.com/discovery/item/674051740000000007027a15",
+      "used_personal_cookie": false,
+      "source_log": "secondary-final.log"
+    },
+    {
+      "anonymous": true,
+      "error": "元数据阶段：登录已失效，请重新获取认证信息",
+      "id": "ixigua-creator",
+      "network": "direct",
+      "passed": false,
+      "seconds": 0.7631859,
+      "url": "https://www.ixigua.com/7355478885854773823/",
+      "used_personal_cookie": false,
+      "source_log": "secondary-final.log"
+    },
+    {
+      "anonymous": true,
+      "error": "元数据阶段：该平台暂不支持下载此类型内容",
+      "id": "kuaishou-official-research",
+      "network": "direct",
+      "passed": false,
+      "seconds": 1.9066692,
+      "url": "https://www.kuaishou.com/short-video/3xwwuqndapzs6nu",
+      "used_personal_cookie": false,
+      "source_log": "secondary-final.log"
+    },
+    {
+      "anonymous": true,
+      "error": "元数据阶段：下载失败，请稍后重试",
+      "id": "tiktok-patrox",
+      "network": "direct",
+      "passed": false,
+      "seconds": 15.7022175,
+      "url": "https://www.tiktok.com/@patroxofficial/video/6742501081818877190",
+      "used_personal_cookie": false,
+      "source_log": "secondary-final.log"
+    },
+    {
+      "anonymous": true,
+      "complete_decode": true,
+      "complete_download": true,
+      "duration_evidence": "production-metadata",
+      "expected_duration": 21.0,
+      "ffprobe": {
+        "format": {
+          "duration": "21.268005",
+          "size": "1790611"
+        },
+        "programs": [],
+        "stream_groups": [],
+        "streams": [
+          {
+            "codec_name": "hevc",
+            "codec_type": "video",
+            "duration": "21.266667",
+            "height": 1024,
+            "width": 576
+          },
+          {
+            "codec_name": "aac",
+            "codec_type": "audio",
+            "duration": "21.268005"
+          }
+        ]
+      },
+      "format": "bytevc1_540p_668450-0",
+      "id": "tiktok-hankgreen",
+      "metadata": {
+        "duration": 21.0,
+        "formats": 9,
+        "layer": "production-probe",
+        "title": "TikTok video #7047596209028074758"
+      },
+      "network": "explicit-environment-proxy",
+      "output_bytes": 1790611,
+      "output_sha256": "c3352e4c1ebe4f7b5898121137caa23b616c341ec47c9f224a3c798bfc550f7e",
+      "passed": true,
+      "seconds": 10.0658415,
+      "url": "https://www.tiktok.com/@hankgreen1/video/7047596209028074758",
+      "used_personal_cookie": false,
+      "source_log": "secondary-final.log"
+    },
+    {
+      "anonymous": true,
+      "error": "传输阶段：抖音登录已失效，请重新获取 Cookie",
+      "id": "douyin-native-proxy",
+      "network": "explicit-environment-proxy",
+      "passed": false,
+      "seconds": 3.9281753999999998,
+      "url": "https://www.douyin.com/video/7694589931460594953",
+      "used_personal_cookie": false,
+      "source_log": "douyin-proxy-comparison.log"
+    },
+    {
+      "anonymous": true,
+      "error": "传输阶段：抖音登录已失效，请重新获取 Cookie",
+      "id": "douyin-kennys-proxy",
+      "network": "explicit-environment-proxy",
+      "passed": false,
+      "seconds": 4.9781223,
+      "url": "https://www.douyin.com/video/7408129200156101907",
+      "used_personal_cookie": false,
+      "source_log": "douyin-proxy-comparison.log"
+    },
+    {
+      "anonymous": true,
+      "complete_decode": true,
+      "complete_download": true,
+      "duration_evidence": "production-metadata",
+      "expected_duration": 35.767,
+      "ffprobe": {
+        "format": {
+          "duration": "35.766667",
+          "size": "9921329"
+        },
+        "programs": [],
+        "stream_groups": [],
+        "streams": [
+          {
+            "codec_name": "aac",
+            "codec_type": "audio",
+            "duration": "35.753991"
+          },
+          {
+            "codec_name": "h264",
+            "codec_type": "video",
+            "duration": "35.766667",
+            "height": 1080,
+            "width": 1922
+          }
+        ]
+      },
+      "format": "play-0",
+      "id": "douyin-native-direct-fixed",
+      "metadata": {
+        "duration": 35.767,
+        "formats": 1,
+        "layer": "production-probe",
+        "title": "在吗？？帽兜跟你借个寿？？#洛克王国世界  #洛克创作激励计划  #洛克王国S4月涌狂想新赛季 #帽兜"
+      },
+      "network": "direct",
+      "output_bytes": 9921329,
+      "output_sha256": "abc97e15776b15cead6dbe5e456d4fb2279e35d8ad9bc120a5b2d9e67332260d",
+      "passed": true,
+      "seconds": 12.7161331,
+      "url": "https://www.douyin.com/video/7694589931460594953",
+      "used_personal_cookie": false,
+      "source_log": "douyin-source-fixed.log"
+    },
+    {
+      "anonymous": true,
+      "complete_decode": true,
+      "complete_download": true,
+      "duration_evidence": "production-metadata",
+      "expected_duration": 60.667,
+      "ffprobe": {
+        "format": {
+          "duration": "60.666667",
+          "size": "16340971"
+        },
+        "programs": [],
+        "stream_groups": [],
+        "streams": [
+          {
+            "codec_name": "aac",
+            "codec_type": "audio",
+            "duration": "60.627007"
+          },
+          {
+            "codec_name": "h264",
+            "codec_type": "video",
+            "duration": "60.666667",
+            "height": 1920,
+            "width": 1080
+          }
+        ]
+      },
+      "format": "play-0",
+      "id": "douyin-kennys-direct-fixed",
+      "metadata": {
+        "duration": 60.667,
+        "formats": 1,
+        "layer": "production-probe",
+        "title": "中国的朋友们，大家好，我是kennyS，这是我唯一的抖音官方账号，以后的视频更新都会在这里，#狙神kennyS入驻抖音"
+      },
+      "network": "direct",
+      "output_bytes": 16340971,
+      "output_sha256": "25522797bee906aee4984f4c2b99ce7d73d9ad08c60c38b36b085f9d15fd3377",
+      "passed": true,
+      "seconds": 20.0024366,
+      "url": "https://www.douyin.com/video/7408129200156101907",
+      "used_personal_cookie": false,
+      "source_log": "douyin-source-fixed.log"
+    },
+    {
+      "anonymous": true,
+      "complete_decode": true,
+      "complete_download": true,
+      "duration_evidence": "production-metadata",
+      "expected_duration": 35.767,
+      "ffprobe": {
+        "format": {
+          "duration": "35.766667",
+          "size": "9921329"
+        },
+        "programs": [],
+        "stream_groups": [],
+        "streams": [
+          {
+            "codec_name": "aac",
+            "codec_type": "audio",
+            "duration": "35.753991"
+          },
+          {
+            "codec_name": "h264",
+            "codec_type": "video",
+            "duration": "35.766667",
+            "height": 1080,
+            "width": 1922
+          }
+        ]
+      },
+      "format": "play-0",
+      "id": "douyin-native-proxy-fixed",
+      "metadata": {
+        "duration": 35.767,
+        "formats": 1,
+        "layer": "production-probe",
+        "title": "在吗？？帽兜跟你借个寿？？#洛克王国世界  #洛克创作激励计划  #洛克王国S4月涌狂想新赛季 #帽兜"
+      },
+      "network": "explicit-environment-proxy",
+      "output_bytes": 9921329,
+      "output_sha256": "abc97e15776b15cead6dbe5e456d4fb2279e35d8ad9bc120a5b2d9e67332260d",
+      "passed": true,
+      "seconds": 18.5406019,
+      "url": "https://www.douyin.com/video/7694589931460594953",
+      "used_personal_cookie": false,
+      "source_log": "douyin-source-fixed.log"
+    },
+    {
+      "anonymous": true,
+      "complete_decode": true,
+      "complete_download": true,
+      "duration_evidence": "production-metadata",
+      "expected_duration": 60.667,
+      "ffprobe": {
+        "format": {
+          "duration": "60.666667",
+          "size": "16340971"
+        },
+        "programs": [],
+        "stream_groups": [],
+        "streams": [
+          {
+            "codec_name": "aac",
+            "codec_type": "audio",
+            "duration": "60.627007"
+          },
+          {
+            "codec_name": "h264",
+            "codec_type": "video",
+            "duration": "60.666667",
+            "height": 1920,
+            "width": 1080
+          }
+        ]
+      },
+      "format": "play-0",
+      "id": "douyin-kennys-proxy-fixed",
+      "metadata": {
+        "duration": 60.667,
+        "formats": 1,
+        "layer": "production-probe",
+        "title": "中国的朋友们，大家好，我是kennyS，这是我唯一的抖音官方账号，以后的视频更新都会在这里，#狙神kennyS入驻抖音"
+      },
+      "network": "explicit-environment-proxy",
+      "output_bytes": 16340971,
+      "output_sha256": "25522797bee906aee4984f4c2b99ce7d73d9ad08c60c38b36b085f9d15fd3377",
+      "passed": true,
+      "seconds": 28.7189841,
+      "url": "https://www.douyin.com/video/7408129200156101907",
+      "used_personal_cookie": false,
+      "source_log": "douyin-source-fixed.log"
+    }
+  ],
+  "initial_cases": 11,
+  "initial_complete_downloads": 4,
+  "unique_source_urls": 11,
+  "phases": [
+    {
+      "failed": 7,
+      "executions": 11,
+      "complete": 4,
+      "phase": "initial-public-batches"
+    },
+    {
+      "failed": 2,
+      "executions": 2,
+      "complete": 0,
+      "phase": "before-source-fix-explicit-proxy-comparison"
+    },
+    {
+      "phase": "after-source-fix-direct-and-proxy",
+      "complete": 4,
+      "failed": 0,
+      "seconds": 80.01,
+      "executions": 4,
+      "exit": 0
+    }
+  ]
+}

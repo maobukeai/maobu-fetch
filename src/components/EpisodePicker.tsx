@@ -4,7 +4,7 @@ import { MediaEpisode } from "../types";
 import { Select } from "./Select";
 
 const QUALITY_OPTIONS = [
-  { value: "best", label: "最高画质 (1080P/4K)" },
+  { value: "best", label: "最佳可用画质" },
   { value: "720p", label: "高清 (720P)" },
   { value: "480p", label: "标清 (480P)" },
 ];
@@ -15,6 +15,7 @@ export interface EpisodePickerProps {
   onChange: (newSelected: Set<number>) => void;
   qualityPreference: string;
   onQualityChange: (quality: string) => void;
+  ffmpegAvailable?: boolean;
 }
 
 export function formatDuration(seconds?: number): string {
@@ -35,6 +36,7 @@ export const EpisodePicker: React.FC<EpisodePickerProps> = ({
   onChange,
   qualityPreference,
   onQualityChange,
+  ffmpegAvailable = false,
 }) => {
   const allSelected = episodes.length > 0 && selectedIndices.size === episodes.length;
 
@@ -165,6 +167,10 @@ export const EpisodePicker: React.FC<EpisodePickerProps> = ({
         </div>
       </div>
 
+      {!ffmpegAvailable && (
+        <div className="media-empty-hint">当前仅下载带音轨的单文件画质；更高清的分离音视频需要安装 FFmpeg。</div>
+      )}
+
       <div
         className="episode-picker-list"
         style={{
@@ -183,6 +189,18 @@ export const EpisodePicker: React.FC<EpisodePickerProps> = ({
           return (
             <div
               key={ep.index}
+              role="checkbox"
+              aria-checked={isSelected}
+              aria-label={`P${ep.index} ${ep.title}`}
+              tabIndex={0}
+              onKeyDown={(event) => {
+                if (event.key !== " " && event.key !== "Enter") return;
+                event.preventDefault();
+                const next = new Set(selectedIndices);
+                if (next.has(ep.index)) next.delete(ep.index);
+                else next.add(ep.index);
+                onChange(next);
+              }}
               onMouseDown={(e) => handleMouseDownItem(e, ep.index)}
               onMouseEnter={() => handleMouseEnterItem(ep.index)}
               style={{

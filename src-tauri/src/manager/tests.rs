@@ -1,5 +1,5 @@
 use super::*;
-fn test_task(directory: &Path, file_name: &str, policy: CollisionPolicy) -> DownloadTask {
+pub(super) fn test_task(directory: &Path, file_name: &str, policy: CollisionPolicy) -> DownloadTask {
     DownloadTask {
         id: "task".into(),
         url: "https://example.com/file".into(),
@@ -338,14 +338,14 @@ fn accepts_32_connections_and_rejects_other_values() {
     assert!(validate_settings(&settings).is_err());
 }
 #[test]
-fn low_memory_mode_caps_runtime_concurrency_without_changing_preferences() {
+fn low_memory_mode_caps_tasks_but_preserves_explicit_connection_count() {
     let mut settings = AppSettings::default();
     settings.concurrent_downloads = 8;
     settings.connections_per_download = 16;
     settings.low_memory_mode = true;
 
     assert_eq!(effective_concurrent_downloads(&settings), 1);
-    assert_eq!(effective_connection_count(&settings, 16), 2);
+    assert_eq!(effective_connection_count(&settings, 16), 16);
     assert_eq!(settings.concurrent_downloads, 8);
     assert_eq!(settings.connections_per_download, 16);
 }
@@ -627,7 +627,7 @@ fn selfcheck_segment(
 }
 
 #[test]
-fn selfcheck_marks_downloading_tasks_as_interrupted_and_drops_mismatched_shards() {
+fn selfcheck_recovers_real_partial_lengths_without_deleting_shards() {
     let directory = tempfile::tempdir().unwrap();
     let store = Store::open(directory.path().to_path_buf()).unwrap();
     let runtime = tokio::runtime::Runtime::new().unwrap();
@@ -652,10 +652,10 @@ fn selfcheck_marks_downloading_tasks_as_interrupted_and_drops_mismatched_shards(
         std::fs::write(format!("{}.part0", temp.to_string_lossy()), vec![0u8; 100]).unwrap();
         std::fs::write(format!("{}.part1", temp.to_string_lossy()), vec![0u8; 30]).unwrap();
 
-        let report = execute_selfcheck(&store).await;
+        let report = execute_selfcheck(&store).await.unwrap();
 
         assert_eq!(report.interrupted_count, 1);
-        assert_eq!(report.dropped_shards, 1);
+        assert_eq!(report.dropped_shards, 0);
         assert_eq!(report.recovered_tasks, vec!["selfcheck-mixed".to_string()]);
 
         let restored = store.get_task("selfcheck-mixed").await.unwrap().unwrap();
@@ -663,16 +663,16 @@ fn selfcheck_marks_downloading_tasks_as_interrupted_and_drops_mismatched_shards(
         assert_eq!(restored.speed, 0);
         assert_eq!(restored.eta_seconds, None);
         assert_eq!(restored.active_connections, 0);
-        assert_eq!(restored.downloaded_bytes, 100); // only segment 0 survives
+        assert_eq!(restored.downloaded_bytes, 130); // both durable prefixes survive
 
         assert_eq!(restored.segments.len(), 2);
         assert_eq!(restored.segments[0].downloaded_bytes, 100);
         assert_eq!(restored.segments[0].status, "pending");
-        assert_eq!(restored.segments[1].downloaded_bytes, 0);
+        assert_eq!(restored.segments[1].downloaded_bytes, 30);
         assert_eq!(restored.segments[1].status, "pending");
 
         assert!(PathBuf::from(format!("{}.part0", temp.to_string_lossy())).exists());
-        assert!(!PathBuf::from(format!("{}.part1", temp.to_string_lossy())).exists());
+        assert!(PathBuf::from(format!("{}.part1", temp.to_string_lossy())).exists());
     });
 }
 
@@ -703,7 +703,7 @@ fn selfcheck_preserves_consistent_windowed_shards() {
         )
         .unwrap();
 
-        let report = execute_selfcheck(&store).await;
+        let report = execute_selfcheck(&store).await.unwrap();
 
         assert_eq!(report.interrupted_count, 1);
         assert_eq!(report.dropped_shards, 0);
@@ -724,7 +724,7 @@ fn selfcheck_preserves_consistent_windowed_shards() {
 }
 
 #[test]
-fn selfcheck_drops_single_stream_shard_when_lumaget_file_is_shorter() {
+fn selfcheck_preserves_shorter_single_stream_prefix() {
     let directory = tempfile::tempdir().unwrap();
     let store = Store::open(directory.path().to_path_buf()).unwrap();
     let runtime = tokio::runtime::Runtime::new().unwrap();
@@ -745,17 +745,17 @@ fn selfcheck_drops_single_stream_shard_when_lumaget_file_is_shorter() {
         let temp = PathBuf::from(format!("{}.lumaget", output.to_string_lossy()));
         std::fs::write(&temp, vec![0u8; 40]).unwrap();
 
-        let report = execute_selfcheck(&store).await;
+        let report = execute_selfcheck(&store).await.unwrap();
 
         assert_eq!(report.interrupted_count, 1);
-        assert_eq!(report.dropped_shards, 1);
+        assert_eq!(report.dropped_shards, 0);
 
         let restored = store.get_task("selfcheck-stream").await.unwrap().unwrap();
         assert_eq!(restored.status, TaskStatus::Interrupted);
-        assert_eq!(restored.segments[0].downloaded_bytes, 0);
+        assert_eq!(restored.segments[0].downloaded_bytes, 40);
         assert_eq!(restored.segments[0].status, "pending");
-        assert_eq!(restored.downloaded_bytes, 0);
-        assert!(!temp.exists());
+        assert_eq!(restored.downloaded_bytes, 40);
+        assert!(temp.exists());
     });
 }
 
@@ -782,7 +782,7 @@ fn selfcheck_skips_non_downloading_tasks() {
         store.upsert_task(&queued).await.unwrap();
         store.upsert_task(&paused).await.unwrap();
 
-        let report = execute_selfcheck(&store).await;
+        let report = execute_selfcheck(&store).await.unwrap();
 
         assert_eq!(report.interrupted_count, 0);
         assert_eq!(report.dropped_shards, 0);
@@ -824,7 +824,7 @@ fn selfcheck_preserves_shards_in_hidden_temp_dir() {
         )
         .unwrap();
 
-        let report = execute_selfcheck(&store).await;
+        let report = execute_selfcheck(&store).await.unwrap();
 
         assert_eq!(report.interrupted_count, 1);
         assert_eq!(report.dropped_shards, 0);
@@ -846,7 +846,7 @@ fn selfcheck_handles_empty_task_list_without_failing() {
     let store = Store::open(directory.path().to_path_buf()).unwrap();
     let runtime = tokio::runtime::Runtime::new().unwrap();
     runtime.block_on(async {
-        let report = execute_selfcheck(&store).await;
+        let report = execute_selfcheck(&store).await.unwrap();
 
         assert_eq!(report.interrupted_count, 0);
         assert_eq!(report.dropped_shards, 0);
@@ -855,7 +855,7 @@ fn selfcheck_handles_empty_task_list_without_failing() {
 }
 
 #[test]
-fn selfcheck_recalculates_task_downloaded_bytes_after_dropping_shards() {
+fn selfcheck_recalculates_progress_from_durable_shards() {
     let directory = tempfile::tempdir().unwrap();
     let store = Store::open(directory.path().to_path_buf()).unwrap();
     let runtime = tokio::runtime::Runtime::new().unwrap();
@@ -885,16 +885,16 @@ fn selfcheck_recalculates_task_downloaded_bytes_after_dropping_shards() {
         // Segment 2 on disk is 10 bytes (mismatch — recorded 50).
         std::fs::write(format!("{}.part2", temp.to_string_lossy()), vec![0u8; 10]).unwrap();
 
-        let report = execute_selfcheck(&store).await;
+        let report = execute_selfcheck(&store).await.unwrap();
 
-        assert_eq!(report.dropped_shards, 1);
+        assert_eq!(report.dropped_shards, 0);
         let restored = store
             .get_task("selfcheck-recompute")
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(restored.downloaded_bytes, 100); // 50 + 50, segment 2 reset
-        assert_eq!(restored.segments[2].downloaded_bytes, 0);
+        assert_eq!(restored.downloaded_bytes, 110); // all three durable prefixes
+        assert_eq!(restored.segments[2].downloaded_bytes, 10);
     });
 }
 
@@ -921,10 +921,9 @@ fn remote_resource_changed_allows_matching_etag_to_resume() {
 }
 
 #[test]
-fn remote_resource_changed_compares_etag_case_insensitively() {
-    // HTTP headers are case-insensitive; same ETag with different casing
-    // must not be treated as a change.
-    assert!(!remote_resource_changed(
+fn remote_resource_changed_detects_case_sensitive_etag_change() {
+    // Header names are case-insensitive; the opaque ETag value is not.
+    assert!(remote_resource_changed(
         Some("\"ABC123\""),
         Some("\"abc123\""),
         None,
@@ -1873,6 +1872,7 @@ fn wait_reason_returns_waiting_media_tools_when_yt_dlp_missing() {
     let mut task = wait_reason_task(directory.path(), "media", TaskStatus::Queued, 0, 0);
     task.media = Some(MediaSelection {
         extractor: Some("youtube".into()),
+        is_live: false,
         format_id: Some("137+140".into()), // 含 + 需要 ffmpeg
         format_label: None,
         subtitles: Vec::new(),
@@ -1898,6 +1898,7 @@ fn wait_reason_returns_waiting_media_tools_when_ffmpeg_missing_for_merge_format(
     task.media = Some(MediaSelection {
         extractor: None,
         format_id: Some("137+140".into()),
+        is_live: false,
         format_label: None,
         subtitles: Vec::new(),
         thumbnail: None,
@@ -1917,6 +1918,7 @@ fn wait_reason_returns_waiting_media_tools_when_requires_ffmpeg_flag_set() {
     task.media = Some(MediaSelection {
         extractor: None,
         format_id: Some("22".into()),
+        is_live: false,
         format_label: None,
         subtitles: Vec::new(),
         thumbnail: None,
@@ -2089,6 +2091,7 @@ fn wait_reason_media_check_takes_precedence_over_concurrency() {
         thumbnail: None,
         requires_ffmpeg: false,
         url: None,
+        is_live: false,
     });
     // active_count = 5, max_concurrent = 3（满），且 yt_dlp 缺失
     let reason = compute_wait_reason(&task, &[], 5, 3, false, true);
@@ -3126,6 +3129,9 @@ fn is_safe_path_component_rejects_traversal() {
     assert!(!is_safe_path_component("a/b"));
     assert!(!is_safe_path_component("a\\b"));
     assert!(!is_safe_path_component("..\\evil.exe"));
+    for invalid in ["CON", "nul.txt", "LPT1.bin", "COM9", "file.", "file ", "stream:name", "bad\nname"] {
+        assert!(!is_safe_path_component(invalid));
+    }
 }
 
 #[test]
@@ -3165,12 +3171,12 @@ async fn temp_dir_removal_refuses_to_escape_tmp_root() {
     .unwrap();
 
     // 伪造 task_id = ".."：必须拒绝删除，否则会递归删除整个下载目录（§7）
-    remove_task_temp_dir_safely(dest.to_str().unwrap(), "..").await;
+    assert!(remove_task_temp_dir_safely(dest.to_str().unwrap(), "..").await.is_err());
     assert!(dest.join("marker.txt").exists());
     assert!(dest.join("_maobu_tmp").exists());
 
     // 正常 task_id：允许删除任务专属目录，但不波及下载目录其他内容
-    remove_task_temp_dir_safely(dest.to_str().unwrap(), "real-task").await;
+    remove_task_temp_dir_safely(dest.to_str().unwrap(), "real-task").await.unwrap();
     assert!(!dest.join("_maobu_tmp").join("real-task").exists());
     assert!(dest.join("marker.txt").exists());
 

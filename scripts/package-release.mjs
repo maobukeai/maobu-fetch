@@ -2,7 +2,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { execSync } from 'node:child_process';
+import { execSync, execFileSync } from 'node:child_process';
+import { validateExeMetadata, installerNameMatches, validateArtifactTimes } from './release-metadata.mjs';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -63,26 +64,12 @@ if (refName && /^v\d/.test(refName) && refName.replace(/^v/, '') !== version) {
 console.log(`✔ 版本一致性校验通过：五处版本均为 ${version}`);
 
 const outDir = path.join(rootDir, 'releases_out');
+if (path.dirname(outDir) !== rootDir) throw new Error('发布产物目录超出项目范围，未清理');
 if (fs.existsSync(outDir)) {
+  if (fs.lstatSync(outDir).isSymbolicLink()) throw new Error('发布产物目录是链接，未清理');
   fs.rmSync(outDir, { recursive: true, force: true });
 }
 fs.mkdirSync(outDir, { recursive: true });
-
-// 递归查找文件的辅助函数
-function findFileRecursive(dir, predicate) {
-  if (!fs.existsSync(dir)) return null;
-  const entries = fs.readdirSync(dir, { withFileTypes: true });
-  for (const entry of entries) {
-    const fullPath = path.join(dir, entry.name);
-    if (entry.isDirectory()) {
-      const found = findFileRecursive(fullPath, predicate);
-      if (found) return found;
-    } else if (entry.isFile() && predicate(entry.name, fullPath)) {
-      return fullPath;
-    }
-  }
-  return null;
-}
 
 // 2. 查找并拷贝 NSIS 安装程序
 const targetDir = path.join(rootDir, 'src-tauri', 'target');
@@ -97,7 +84,7 @@ for (const dir of candidateNsisDirs) {
     const files = fs.readdirSync(dir);
     // 门禁：只接受文件名含精确版本号的产物，禁止"任意 setup.exe 回退"，
     // 防止把旧版本安装包重命名成新版本发布。
-    const exact = files.find(f => f.includes(version) && f.endsWith('.exe'));
+    const exact = files.find(f => installerNameMatches(f, version, 'exe'));
     if (exact) {
       srcSetupPath = path.join(dir, exact);
       break;
@@ -127,7 +114,7 @@ for (const dir of candidateMsiDirs) {
   if (fs.existsSync(dir)) {
     const files = fs.readdirSync(dir);
     // 门禁：MSI 同样只接受精确版本匹配，禁止任意回退（同 NSIS）。
-    const exact = files.find(f => f.includes(version) && f.endsWith('.msi'));
+    const exact = files.find(f => installerNameMatches(f, version, 'msi'));
     if (exact) {
       srcMsiPath = path.join(dir, exact);
       break;
@@ -160,14 +147,16 @@ for (const p of candidateExePaths) {
   }
 }
 
-if (!srcPortablePath) {
-  srcPortablePath = findFileRecursive(targetDir, (name, full) => name === 'maobu-fetch.exe' && !full.includes('deps') && !full.includes('incremental'));
-}
 
 if (!srcPortablePath) {
   throw new Error(`在 ${targetDir} 中未找到主程序 maobu-fetch.exe`);
 }
 
+const portableStat = fs.statSync(srcPortablePath);
+const appBuildTime = (Number.isFinite(portableStat.birthtimeMs) && portableStat.birthtimeMs > 0)
+  ? Math.min(portableStat.birthtimeMs, portableStat.mtimeMs)
+  : portableStat.mtimeMs;
+validateArtifactTimes(appBuildTime, [srcSetupPath, srcMsiPath].map(file => fs.statSync(file).mtimeMs));
 const dstPortablePath = path.join(outDir, `maobu-fetch-v${version}-portable.exe`);
 fs.copyFileSync(srcPortablePath, dstPortablePath);
 console.log(`✔ 便携版程序已就绪: maobu-fetch-v${version}-portable.exe`);
@@ -197,33 +186,11 @@ for (const [label, file] of [
 console.log('✔ 体积门禁通过：NSIS/MSI 均低于 30 MB');
 
 function assertExeMetadata(exePath, expectedVersion) {
-  const out = execSync(
-    `powershell -NoProfile -Command "(Get-Item -LiteralPath '${exePath}').VersionInfo | Format-List ProductVersion,ProductName,FileDescription,OriginalFilename | Out-String"`,
-    { encoding: 'utf8' }
-  );
-  const pick = name => {
-    const m = out.match(new RegExp(`${name}\\s*:\\s*(.*)`));
-    return m ? m[1].trim() : '';
-  };
-  const productVersion = pick('ProductVersion');
-  const productName = pick('ProductName');
-  const fileDescription = pick('FileDescription');
-  const originalFilename = pick('OriginalFilename');
-  if (!productVersion.includes(expectedVersion)) {
-    throw new Error(
-      `EXE 的 ProductVersion "${productVersion}" 不含目标版本 ${expectedVersion}，Windows 版本资源可能损坏或版本不一致，拒绝发布`
-    );
-  }
-  if (!productName.toLowerCase().includes('maobu') && !fileDescription.toLowerCase().includes('maobu')) {
-    throw new Error(
-      `EXE 的 ProductName "${productName}" 异常，Windows 版本资源可能损坏，拒绝发布`
-    );
-  }
-  if (originalFilename && !originalFilename.toLowerCase().endsWith('.exe')) {
-    throw new Error(
-      `EXE 的 OriginalFilename "${originalFilename}" 异常，Windows 版本资源可能损坏，拒绝发布`
-    );
-  }
+  const output = execFileSync('powershell.exe', [
+    '-NoProfile', '-Command',
+    '(Get-Item -LiteralPath $env:MAOBU_RELEASE_EXE_PATH -ErrorAction Stop).VersionInfo | Select-Object ProductVersion,ProductName,OriginalFilename | ConvertTo-Json -Compress',
+  ], { encoding: 'utf8', windowsHide: true, env: { ...process.env, MAOBU_RELEASE_EXE_PATH: exePath } });
+  validateExeMetadata(JSON.parse(output), expectedVersion);
 }
 assertExeMetadata(dstPortablePath, version);
 console.log('✔ EXE 版本资源门禁通过（ProductVersion / ProductName / OriginalFilename）');

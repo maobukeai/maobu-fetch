@@ -22,12 +22,24 @@ export function BtDetailsPanel({ task, notify }: { task: DownloadTask; notify?: 
   const runtime = task.bt_runtime ?? null;
   const metadataReady = task.bt_meta?.metadata_ready ?? false;
   const isDownloading = ["downloading", "connecting", "verifying", "extracting"].includes(task.status);
-  const statsStale = !isDownloading;
+  const statsStale = !isDownloading && !runtime?.seeding;
   const [files, setFiles] = useState<BtFileEntry[] | null>(null);
   const [filesError, setFilesError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [pending, setPending] = useState<Set<number> | null>(null);
   const [saving, setSaving] = useState(false);
+  const [seedingBusy, setSeedingBusy] = useState(false);
+
+  const changeSeeding = async () => {
+    setSeedingBusy(true);
+    try {
+      await api.btRequestSeeding(task.id, !task.bt_meta?.seeding_requested);
+    } catch (reason) {
+      notify?.(String(reason), "error");
+    } finally {
+      setSeedingBusy(false);
+    }
+  };
 
   const loadFiles = useCallback(async (silent = false) => {
     if (!silent) setLoading(true);
@@ -106,8 +118,14 @@ export function BtDetailsPanel({ task, notify }: { task: DownloadTask; notify?: 
       <div className="connections-header">
         <span className="connections-title">{t("bt.connectionsTitle")}</span>
         <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+          {task.status === "completed" && (
+            <button type="button" className="bt-files-save" disabled={seedingBusy}
+              title={t("bt.seedActionHint")} onClick={() => void changeSeeding()}>
+              {seedingBusy ? t("bt.seedChecking") : task.bt_meta?.seeding_requested ? t("bt.seedStop") : t("bt.seedStart")}
+            </button>
+          )}
           <span className="connections-summary">
-            {`${runtime?.num_seeds ?? 0} ${t("bt.seedsUnit")} · ${runtime?.num_peers ?? 0} ${t("bt.peersUnit")}`}
+            {`${runtime?.seeds_known ? runtime.num_seeds : "—"} ${t("bt.seedsUnit")} · ${runtime?.num_peers ?? 0} ${t("bt.peersUnit")}`}
           </span>
           <button
             type="button"
@@ -131,7 +149,7 @@ export function BtDetailsPanel({ task, notify }: { task: DownloadTask; notify?: 
         <div className="bt-stats-row">
           <div className="bt-stat">
             <span className="bt-stat-label">{t("bt.seedsLabel")}</span>
-            <span className="bt-stat-value">{runtime?.num_seeds ?? 0}</span>
+            <span className="bt-stat-value">{runtime?.seeds_known ? runtime.num_seeds : "—"}</span>
           </div>
           <div className="bt-stat">
             <span className="bt-stat-label">{t("bt.peersLabel")}</span>
@@ -189,7 +207,7 @@ export function BtDetailsPanel({ task, notify }: { task: DownloadTask; notify?: 
             {files.map((entry) => {
               const selected = pending.has(entry.index);
               const isMedia = /\.(mp4|mkv|avi|mov|flv|wmv|ts|webm|mp3|flac|wav|m4a|aac)$/i.test(entry.path);
-              const downloaded = entry.downloaded_bytes ?? (task.status === "completed" ? entry.length_bytes : 0);
+              const downloaded = entry.downloaded_bytes ?? 0;
               const pct = entry.length_bytes > 0 ? Math.min(100, Math.round((downloaded / entry.length_bytes) * 100)) : 0;
 
               return (

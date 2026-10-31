@@ -122,6 +122,16 @@ impl WorkStealingCoordinator {
     /// 2. 若无 Pending 窗口，则尝试从当前运行中最慢/剩余最大的活跃窗口执行工作窃取（Work-Stealing）；
     /// 3. 若无可窃取的任务且无活跃任务，返回 None。
     pub async fn claim_or_steal_work(&self) -> Option<(RangeWindow, Arc<WindowTransferHandle>)> {
+        self.claim_work(true).await
+    }
+
+    /// 生产请求仅领取已规划的互不重叠窗口；不切分仍在请求中的 Range。
+    /// 旧布局仍可按已持久化窗口安全续传。
+    pub async fn claim_pending_work(&self) -> Option<(RangeWindow, Arc<WindowTransferHandle>)> {
+        self.claim_work(false).await
+    }
+
+    async fn claim_work(&self, allow_stealing: bool) -> Option<(RangeWindow, Arc<WindowTransferHandle>)> {
         let mut state = self.state.lock().await;
 
         // 1. 优先领取 Pending 窗口（自动过滤并标记已写满的无效窗口）
@@ -156,7 +166,8 @@ impl WorkStealingCoordinator {
             return Some((window, handle));
         }
 
-        // 2. 尝试从活跃传输中窃取最长剩余分片的后半段（按 window_id 稳定遍历，保证确定性）
+        if !allow_stealing { return None; }
+        // 旧动态布局的兼容性测试保留历史窃取算法；生产路径不启动重叠请求。
         let mut best_target: Option<(u64, u64, u64, u64, u8, u32)> = None; // (window_id, current_cursor, current_end, remaining, segment_index, ordinal)
 
         let mut active_list: Vec<(u64, Arc<WindowTransferHandle>)> = state
@@ -347,6 +358,20 @@ pub fn window_part_path(temp: &Path, segment_index: u8, start: u64) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn production_claim_does_not_split_an_active_network_range() {
+        let temp = Path::new("planned.tmp");
+        let initial = vec![RangeWindow { id: 1, segment_index: 0, ordinal: 0,
+            start_byte: 0, end_byte: 100_000_000, existing_bytes: 0,
+            path: window_part_path(temp, 0, 0), status: WindowStatus::Pending }];
+        let coordinator = WorkStealingCoordinator::new(temp, initial);
+        let (_, active) = coordinator.claim_pending_work().await.unwrap();
+        active.downloaded_bytes.store(10_000_000, Ordering::Relaxed);
+        assert!(coordinator.claim_pending_work().await.is_none());
+        assert_eq!(active.current_end(), 100_000_000);
+        assert_eq!(coordinator.snapshot_windows().await.len(), 1);
+    }
 
     #[tokio::test]
     async fn test_work_stealing_coordinator_initial_claim() {

@@ -1,6 +1,7 @@
-import React, { useState, useRef, useEffect, useLayoutEffect, ReactNode } from "react";
+import React, { useState, useRef, useEffect, useLayoutEffect, useId, ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { ChevronDown, Check } from "lucide-react";
+import { nextEnabledIndex } from "./select-navigation";
 
 export interface SelectOption<T extends string | number = string | number> {
   value: T;
@@ -30,6 +31,8 @@ export function Select<T extends string | number = string | number>({
   ariaLabel,
 }: SelectProps<T>) {
   const [isOpen, setIsOpen] = useState(false);
+  const [activeIndex, setActiveIndex] = useState(-1);
+  const listId = useId();
   const triggerRef = useRef<HTMLButtonElement>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
@@ -41,6 +44,15 @@ export function Select<T extends string | number = string | number>({
   });
 
   const selectedOption = options.find((opt) => opt.value === value);
+  const open = () => {
+    const selected = options.findIndex((option) => option.value === value && !option.disabled);
+    setActiveIndex(selected >= 0 ? selected : nextEnabledIndex(options, -1, 1));
+    setIsOpen(true);
+  };
+
+  useEffect(() => {
+    if (isOpen && activeIndex >= 0) document.getElementById(`${listId}-${activeIndex}`)?.scrollIntoView({ block: "nearest" });
+  }, [activeIndex, isOpen, listId]);
 
   // 计算定位（更新 top/left/width 以及是否向上弹出）
   const updateCoords = () => {
@@ -112,6 +124,7 @@ export function Select<T extends string | number = string | number>({
 
   const handleSelect = (option: SelectOption<T>) => {
     if (option.disabled) return;
+    triggerRef.current?.focus();
     onChange(option.value);
     setIsOpen(false);
   };
@@ -122,10 +135,34 @@ export function Select<T extends string | number = string | number>({
         ref={triggerRef}
         type="button"
         disabled={disabled}
+        role="combobox"
+        aria-haspopup="listbox"
+        aria-expanded={isOpen}
+        aria-controls={isOpen ? listId : undefined}
+        aria-activedescendant={isOpen && activeIndex >= 0 ? `${listId}-${activeIndex}` : undefined}
         aria-label={ariaLabel}
         className={`custom-select-trigger ${isOpen ? "active" : ""} ${className}`}
         style={style}
-        onClick={() => setIsOpen((prev) => !prev)}
+        onClick={() => isOpen ? setIsOpen(false) : open()}
+        onBlur={() => setIsOpen(false)}
+        onKeyDown={(event) => {
+          if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+            event.preventDefault();
+            if (!isOpen) open();
+            else setActiveIndex(nextEnabledIndex(options, activeIndex, event.key === "ArrowDown" ? 1 : -1));
+          } else if (isOpen && (event.key === "Home" || event.key === "End")) {
+            event.preventDefault();
+            setActiveIndex(event.key === "Home" ? nextEnabledIndex(options, -1, 1) : nextEnabledIndex(options, 0, -1));
+          } else if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            if (!isOpen) open();
+            else if (activeIndex >= 0 && options[activeIndex]) handleSelect(options[activeIndex]);
+          } else if (isOpen && event.key === "Escape") {
+            event.preventDefault();
+            event.stopPropagation();
+            setIsOpen(false);
+          } else if (event.key === "Tab") setIsOpen(false);
+        }}
       >
         <span className="custom-select-label">
           {selectedOption ? selectedOption.label : placeholder}
@@ -137,6 +174,10 @@ export function Select<T extends string | number = string | number>({
         createPortal(
           <div
             ref={dropdownRef}
+            id={listId}
+            role="listbox"
+            aria-label={ariaLabel}
+            onMouseDown={(event) => event.preventDefault()}
             className={`custom-select-dropdown ${coords.placeAbove ? "place-above" : ""}`}
             style={{
               position: "fixed",
@@ -148,15 +189,20 @@ export function Select<T extends string | number = string | number>({
             }}
           >
             <div className="custom-select-options">
-              {options.map((opt) => {
+              {options.map((opt, index) => {
                 const isSelected = opt.value === value;
                 return (
                   <div
                     key={String(opt.value)}
+                    id={`${listId}-${index}`}
+                    role="option"
+                    aria-selected={isSelected}
+                    aria-disabled={Boolean(opt.disabled)}
                     className={`custom-select-option ${isSelected ? "selected" : ""} ${
-                      opt.disabled ? "disabled" : ""
+                      opt.disabled ? "disabled" : activeIndex === index ? "keyboard-active" : ""
                     }`}
                     onClick={() => handleSelect(opt)}
+                    onMouseEnter={() => { if (!opt.disabled) setActiveIndex(index); }}
                   >
                     <span className="custom-select-option-label">{opt.label}</span>
                     {isSelected && <Check size={13} className="custom-select-check" />}

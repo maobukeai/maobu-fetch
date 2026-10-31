@@ -5,6 +5,8 @@ import { t, useLocale } from "../../i18n";
 import type { DownloadTask, Tag } from "../../types";
 import { formatBytes, formatDate, formatDuration, getStatusText, hostOf } from "../../formatters";
 import { FileIcon, inferCategory, TaskTagChips } from "./EmptyState";
+import { FinishRecordingButton } from "./FinishRecordingButton";
+import { canFinishRecording } from "./recording-control";
 
 export function isImageFile(fileName: string): boolean {
   const lower = fileName.toLowerCase();
@@ -117,6 +119,13 @@ export function TaskRow({
     "failed",
     "cancelled",
   ].includes(task.status);
+  const statusLabel = task.status === "downloading" && isMediaTask(task) &&
+    task.downloaded_bytes === 0 && task.active_connections === 0 && !task.error
+    ? statusText.parsing
+    : task.status === "downloading" && task.task_kind === "bt" &&
+      (!task.bt_meta?.metadata_ready || task.total_bytes === 0)
+    ? t("table.btMetadataFetching")
+    : canFinishRecording(task) ? t("table.recordingLive") : statusText[task.status];
 
   const handleAction = async (event: React.MouseEvent) => {
     event.stopPropagation();
@@ -194,17 +203,7 @@ export function TaskRow({
           : "—"}
       </span>
       <span className={`task-status ${task.status}`}>
-        {task.status === "downloading" &&
-        isMediaTask(task) &&
-        task.downloaded_bytes === 0 &&
-        task.active_connections === 0 &&
-        !task.error
-          ? statusText.parsing
-          : task.status === "downloading" &&
-            task.task_kind === "bt" &&
-            (!task.bt_meta?.metadata_ready || task.total_bytes === 0)
-          ? t("table.btMetadataFetching")
-          : statusText[task.status]}
+        <span className="task-status-label" title={statusLabel} aria-label={statusLabel}>{statusLabel}</span>
         {btRuntimeActive(task) && task.bt_runtime?.seeding && (
           <span className="bt-seed-badge" title={t("table.seedingTitle")}>
             {t("table.seeding")}
@@ -227,6 +226,7 @@ export function TaskRow({
             )}
           </button>
         )}
+        <FinishRecordingButton task={task} notify={notify} />
       </span>
       <span className="connection-count">
         {task.task_kind === "bt" ? (
@@ -303,7 +303,9 @@ export function TaskRow({
             ? task.bt_meta?.metadata_ready
               ? "0%"
               : t("table.btMetadataPending")
-            : `${progress.toFixed(0)}%`}
+            : task.media?.is_live || task.downloaded_bytes > 0
+            ? formatBytes(task.downloaded_bytes)
+            : "—"}
         </span>
       </div>
       <span

@@ -14,73 +14,9 @@
     typeof chrome !== "undefined" && chrome?.runtime?.id && typeof chrome?.runtime?.sendMessage === "function"
   );
 
-  // ── 1. Isolated World 桥接层：接收来自 Main World 的 postMessage 并转发至 background.js ──
-  if (hasChromeRuntime && !window.__maobuLanDiskBridgeListening) {
-    window.__maobuLanDiskBridgeListening = true;
-    window.addEventListener("message", (event) => {
-      if (event.source !== window) return;
-      const data = event.data;
-      if (!data || data.source !== "maobu-landisk-main" || data.type !== "SEND_LANDISK_BATCH_TASK") {
-        return;
-      }
-      const { reqId, payload } = data;
-      try {
-        chrome.runtime.sendMessage(
-          {
-            type: "send-landisk-batch-task",
-            url: payload.url,
-            fileName: payload.fileName,
-            body: payload.body,
-            pin: payload.pin || "",
-            contentType: payload.contentType || "application/x-www-form-urlencoded",
-          },
-          (response) => {
-            const err = chrome?.runtime?.lastError;
-            const ok = Boolean(!err && response && response.ok);
-            window.postMessage(
-              {
-                source: "maobu-landisk-isolated",
-                type: "LANDISK_BATCH_RESULT",
-                reqId,
-                ok,
-                error: err?.message || response?.error || "",
-              },
-              "*"
-            );
-          }
-        );
-      } catch (e) {
-        window.postMessage(
-          {
-            source: "maobu-landisk-isolated",
-            type: "LANDISK_BATCH_RESULT",
-            reqId,
-            ok: false,
-            error: String(e?.message || e || "extension context invalidated"),
-          },
-          "*"
-        );
-      }
-    });
-  }
-
   // 防止同一执行环境重复注入钩子
   if (window.__maobuLanDiskHookInstalled) return;
   window.__maobuLanDiskHookInstalled = true;
-
-  const isTailscaleOrLanHost = (hostname = "") => {
-    const h = (hostname || window.location.hostname || "").toLowerCase();
-    if (h === "localhost" || h === "127.0.0.1" || h === "::1" || h.startsWith("[") || h.endsWith(".local") || h.endsWith(".lan")) return true;
-    if (h.endsWith(".ts.net") || h.endsWith(".tailscale.net")) return true;
-    const m = h.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
-    if (m) {
-      const b0 = parseInt(m[1], 10);
-      const b1 = parseInt(m[2], 10);
-      if (b0 === 100 && b1 >= 64 && b1 <= 127) return true; // Tailscale CGNAT
-      if (b0 === 10 || b0 === 127 || (b0 === 172 && b1 >= 16 && b1 <= 31) || (b0 === 192 && b1 === 168)) return true; // Private LAN
-    }
-    return false;
-  };
 
   const getPin = () => {
     try {
@@ -140,10 +76,10 @@
       settled = true;
       window.removeEventListener("message", onMsg);
       callback(false, "timeout");
-    }, 3500);
+    }, 65_000);
 
     function onMsg(event) {
-      if (event.source !== window) return;
+      if (event.source !== window || event.origin !== window.location.origin) return;
       const d = event.data;
       if (!d || d.source !== "maobu-landisk-isolated" || d.type !== "LANDISK_BATCH_RESULT" || d.reqId !== reqId) {
         return;
@@ -163,7 +99,7 @@
         reqId,
         payload,
       },
-      "*"
+      window.location.origin
     );
   }
 
@@ -260,9 +196,9 @@
 
       dispatchBatchTask(payload, (ok) => {
         if (ok) {
-          showFloatingToast(`⚡ 猫步下载器已接管：${payload.fileName}（16 路并发 · 支持随时断点续传）`, true);
+          showFloatingToast(`⚡ 猫步下载器已接管：${payload.fileName}（已添加打包任务）`, true);
           if (window.LanDiskUI && typeof window.LanDiskUI.toast === "function") {
-            window.LanDiskUI.toast(`⚡ 猫步下载器已接管：${payload.fileName}（16 路并发 · 支持随时断点续传）`, "success");
+            window.LanDiskUI.toast(`⚡ 猫步下载器已接管：${payload.fileName}（已添加打包任务）`, "success");
           }
         } else {
           window.__maobuBypassFormSubmit = true;
@@ -291,7 +227,8 @@
       }
       try {
         const actionUrl = this.action || "";
-        if (actionUrl.includes("/api/download/batch")) {
+        const action = new URL(actionUrl, window.location.href);
+        if (action.origin === window.location.origin && action.pathname === "/api/download/batch") {
           const formData = new FormData(this);
           const bodyParams = new URLSearchParams();
           for (const [k, v] of formData.entries()) {
@@ -321,9 +258,9 @@
             },
             (ok) => {
               if (ok) {
-                showFloatingToast(`⚡ 猫步下载器已接管：${folderName}.zip（16 路并发 · 支持随时断点续传）`, true);
+                showFloatingToast(`⚡ 猫步下载器已接管：${folderName}.zip（已添加打包任务）`, true);
                 if (window.LanDiskUI && typeof window.LanDiskUI.toast === "function") {
-                  window.LanDiskUI.toast(`⚡ 猫步下载器已接管：${folderName}.zip（16 路并发 · 支持随时断点续传）`, "success");
+                  window.LanDiskUI.toast(`⚡ 猫步下载器已接管：${folderName}.zip（已添加打包任务）`, "success");
                 }
               } else {
                 originalSubmit.call(this);
@@ -337,103 +274,14 @@
     };
   }
 
-  // ── 4. 在 #apple-floating-batch-bar 注入“⚡ 猫步并发极速下载”按钮 ──
-  function injectTurboButton() {
-    // 仅在一个环境中注入 DOM 按钮（优先 Isolated World，避免双环境重复创建）
-    if (!hasChromeRuntime && typeof chrome !== "undefined") return;
-    const bar = document.getElementById("apple-floating-batch-bar");
-    if (!bar) return;
-    if (document.getElementById("btn-maobu-batch-turbo")) return;
-
-    const zipBtn = document.getElementById("btn-batch-zip");
-    if (!zipBtn) return;
-
-    const turboBtn = document.createElement("button");
-    turboBtn.id = "btn-maobu-batch-turbo";
-    turboBtn.className = "apple-btn apple-btn-sm";
-    turboBtn.innerHTML = "⚡ 猫步并发极速下载";
-    turboBtn.style.cssText =
-      "background: linear-gradient(135deg, #10b981 0%, #059669 100%);" +
-      "color: #ffffff;" +
-      "font-weight: 600;" +
-      "margin-left: 6px;" +
-      "border: none;" +
-      "cursor: pointer;" +
-      "border-radius: 6px;" +
-      "padding: 5px 12px;" +
-      "display: inline-flex;" +
-      "align-items: center;" +
-      "gap: 4px;" +
-      "font-size: 13px;" +
-      "box-shadow: 0 2px 6px rgba(16, 185, 129, 0.3);" +
-      "transition: all 0.2s ease;";
-    turboBtn.title = "【Tailscale/IPv6 远程加速】单任务 16 路并发分桶加速下载为单个 ZIP，支持随时暂停与断点续传！";
-
-    turboBtn.onclick = async () => {
-      let selectedPaths = [];
-      if (window.FileExplorerComponent?.batchManager?.selectedFiles) {
-        selectedPaths = Array.from(window.FileExplorerComponent.batchManager.selectedFiles);
-      } else if (window.fileBatchManager?.selectedFiles) {
-        selectedPaths = Array.from(window.fileBatchManager.selectedFiles);
-      } else {
-        document
-          .querySelectorAll(".file-select-checkbox:checked, input[type='checkbox'][data-path]:checked, .file-item.selected[data-path]")
-          .forEach((el) => {
-            const p = el.getAttribute("data-path") || el.value;
-            if (p) selectedPaths.push(p);
-          });
-      }
-
-      selectedPaths = selectedPaths.filter(Boolean);
-      if (selectedPaths.length === 0) {
-        // 如果 DOM checkbox 未挂 data-path，直接触发已 Hook 的 #btn-batch-zip
-        zipBtn.click();
-        return;
-      }
-
-      const payload = buildBatchRequestPayload(selectedPaths, "batch_download", null);
-      if (!payload) {
-        zipBtn.click();
-        return;
-      }
-
-      turboBtn.textContent = "正在下发…";
-      turboBtn.disabled = true;
-      dispatchBatchTask(payload, (ok, errMsg) => {
-        turboBtn.disabled = false;
-        if (ok) {
-          turboBtn.textContent = "✓ 已添加至猫步 (16路极速)";
-          turboBtn.style.background = "linear-gradient(135deg, #059669 0%, #047857 100%)";
-          showFloatingToast(`⚡ 猫步下载器已接管：${payload.fileName}（16 路并发 · 支持随时断点续传）`, true);
-          if (window.LanDiskUI?.toast) {
-            window.LanDiskUI.toast(`⚡ 猫步已接管：${payload.fileName}（16 路并发 · 支持续传）`, "success");
-          }
-          setTimeout(() => {
-            turboBtn.textContent = "⚡ 猫步并发极速下载";
-            turboBtn.style.background = "linear-gradient(135deg, #10b981 0%, #059669 100%)";
-          }, 3500);
-        } else {
-          turboBtn.textContent = "⚡ 猫步并发极速下载";
-          const msg = errMsg || "请确保猫步下载器已运行并完成配对";
-          showFloatingToast(msg, false);
-          if (window.LanDiskUI?.toast) window.LanDiskUI.toast(msg, "error");
-        }
-      });
-    };
-
-    zipBtn.insertAdjacentElement("afterend", turboBtn);
-  }
-
   const observer = new MutationObserver(() => {
     hookBatchManager();
     hookFormSubmit();
-    injectTurboButton();
   });
 
   const init = () => {
     hookBatchManager();
     hookFormSubmit();
-    injectTurboButton();
 
     if (document.body) {
       observer.observe(document.body, { childList: true, subtree: true });
@@ -448,7 +296,6 @@
     setInterval(() => {
       hookBatchManager();
       hookFormSubmit();
-      injectTurboButton();
     }, 1000);
   };
 

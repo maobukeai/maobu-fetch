@@ -55,7 +55,6 @@ import type {
   UpdateProgressPayload,
   YtDlpUpdateInfo,
 } from "../../types";
-import { supportLevelColor, supportLevelLabel } from "../../types";
 import {
   DEFAULT_SHORTCUTS,
   formatBytes,
@@ -85,6 +84,8 @@ import {
   ProxyTestButton,
 } from "./MediaSettingsGroup";
 import { PlatformNamingTemplatePanel } from "./PlatformNamingTemplatePanel";
+import { PlatformCompatibilitySection } from "./PlatformCompatibilitySection";
+import { ProgressWindowSettings } from "./ProgressWindowSettings";
 import { PresetsPanel } from "./PresetsPanel";
 import { ShortcutSettingsSection } from "./ShortcutSettingsSection";
 import { TagManagementPanel } from "./TagManagementPanel";
@@ -209,9 +210,9 @@ export function SettingsPage({
     if (!trimmed) {
       setExtResult({
         compatible: false,
-        app_version: appInfo?.version || "0.10.11",
+        app_version: appInfo?.version || "0.10.12",
         extension_version: "未输入",
-        message: "请先在左侧输入框填写扩展版本号（如 0.10.11，可在浏览器扩展管理页查看）",
+        message: "请先在左侧输入框填写扩展版本号（如 0.10.12，可在浏览器扩展管理页查看）",
       });
       notify("请先填写扩展版本号", "error");
       return;
@@ -671,6 +672,16 @@ export function SettingsPage({
               </SettingsGroup>
               <SettingsGroup title={t("settings.groupNotifications")}>
                 <div className="settings-group-content">
+                  <SettingRow label={t("settings.completionNoticeDuration")} sub={t("settings.completionNoticeHint")}>
+                    <select
+                      aria-label={t("settings.completionNoticeDuration")}
+                      value={draft.completion_notice_seconds ?? 30}
+                      onChange={(event) => set("completion_notice_seconds", Number(event.target.value))}
+                    >
+                      {[15, 30, 60].map((seconds) => <option key={seconds} value={seconds}>{t("format.seconds", { n: seconds })}</option>)}
+                      <option value={0}>{t("settings.noticeManualClose")}</option>
+                    </select>
+                  </SettingRow>
                   <Toggle
                     label={t("settings.notifyOnComplete")}
                     checked={draft.notify_on_complete}
@@ -694,6 +705,7 @@ export function SettingsPage({
                 </div>
                 <p className="settings-note">{t("settings.notifySoundDesc")}</p>
               </SettingsGroup>
+              <ProgressWindowSettings value={draft} savedEnabled={value.progress_window_enabled ?? true} onChange={(patch) => setDraft((current) => ({ ...current, ...patch }))} notify={notify} />
               <SettingsGroup title={t("settings.groupHistoryArchive")}>
                 <div className="settings-group-content">
                   <SettingRow label={t("settings.archiveDaysLabel")}>
@@ -2669,171 +2681,7 @@ export function SettingsPage({
                   </div>
                 </div>
 
-                <div
-                  style={{
-                    borderTop: "1px solid var(--border)",
-                    paddingTop: "14px",
-                    display: "flex",
-                    flexDirection: "column",
-                    gap: "10px",
-                  }}
-                >
-                  <h3
-                    style={{
-                      margin: "0",
-                      fontSize: "12px",
-                      fontWeight: 600,
-                      color: "var(--text)",
-                    }}
-                  >
-                    平台兼容性
-                  </h3>
-                  <p
-                    style={{
-                      margin: 0,
-                      fontSize: "11px",
-                      color: "var(--muted)",
-                      lineHeight: 1.5,
-                    }}
-                  >
-                    以下是各媒体平台的支持级别，新建任务时将根据匹配到的平台展示对应状态徽章。
-                  </p>
-                  {platformCompatList.length === 0 ? (
-                    <div
-                      style={{
-                        fontSize: "11px",
-                        color: "var(--muted)",
-                        padding: "8px 10px",
-                        background: "var(--bg-alt, rgba(0,0,0,0.03))",
-                        borderRadius: "6px",
-                        border: "1px solid var(--border)",
-                      }}
-                    >
-                      暂无平台兼容性数据
-                    </div>
-                  ) : (
-                    <div
-                      style={{
-                        display: "grid",
-                        gridTemplateColumns:
-                          "repeat(auto-fill, minmax(220px, 1fr))",
-                        gap: "8px",
-                      }}
-                    >
-                      {platformCompatList.map((item) => {
-                        const platformLabel = (() => {
-                          switch (item.platform) {
-                            case "douyin":
-                              return "抖音";
-                            case "tiktok":
-                              return "TikTok";
-                            case "twitter":
-                              return "Twitter/X";
-                            case "youtube":
-                              return "YouTube";
-                            case "bilibili":
-                              return "哔哩哔哩";
-                            case "weibo":
-                              return "微博";
-                            case "pikpak":
-                              return "PikPak";
-                            case "quark":
-                              return "夸克网盘";
-                            case "baidupan":
-                            case "baidu":
-                              return "百度网盘";
-                            case "lanzou":
-                              return "蓝奏云";
-                            case "pan123":
-                            case "123pan":
-                              return "123云盘";
-                            default:
-                              return item.platform;
-                          }
-                        })();
-                        return (
-                          <div
-                            key={item.platform}
-                            style={{
-                              display: "flex",
-                              flexDirection: "column",
-                              gap: "4px",
-                              padding: "8px 10px",
-                              borderRadius: "6px",
-                              border: "1px solid var(--border)",
-                              background: "var(--bg-alt, rgba(0,0,0,0.02))",
-                            }}
-                          >
-                            <div
-                              style={{
-                                display: "flex",
-                                alignItems: "center",
-                                gap: "6px",
-                                flexWrap: "wrap",
-                              }}
-                            >
-                              <Globe2 size={12} color="var(--muted)" />
-                              <strong
-                                style={{
-                                  fontSize: "11px",
-                                  color: "var(--text)",
-                                }}
-                              >
-                                {platformLabel}
-                              </strong>
-                              <span
-                                title={supportLevelLabel(item.level)}
-                                style={{
-                                  marginLeft: "auto",
-                                  padding: "1px 6px",
-                                  borderRadius: 4,
-                                  fontSize: 10,
-                                  color: "#fff",
-                                  backgroundColor: supportLevelColor(
-                                    item.level
-                                  ),
-                                  border: `1px solid ${supportLevelColor(
-                                    item.level
-                                  )}`,
-                                }}
-                              >
-                                {supportLevelLabel(item.level)}
-                              </span>
-                            </div>
-                            {item.notes && (
-                              <p
-                                style={{
-                                  margin: 0,
-                                  fontSize: "10px",
-                                  color: "var(--muted)",
-                                  lineHeight: 1.4,
-                                }}
-                              >
-                                {item.notes}
-                              </p>
-                            )}
-                            {item.known_issues &&
-                              item.known_issues.length > 0 && (
-                                <ul
-                                  style={{
-                                    margin: "2px 0 0",
-                                    paddingLeft: "14px",
-                                    fontSize: "10px",
-                                    color: "var(--muted)",
-                                    lineHeight: 1.4,
-                                  }}
-                                >
-                                  {item.known_issues.map((issue, idx) => (
-                                    <li key={idx}>{issue}</li>
-                                  ))}
-                                </ul>
-                              )}
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
-                </div>
+                <PlatformCompatibilitySection items={platformCompatList} appVersion={appInfo?.version} />
               </div>
             </SettingsGroup>
           )}
