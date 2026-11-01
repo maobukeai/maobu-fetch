@@ -258,6 +258,21 @@ async fn probe_inner(
     //
     // 抖音直播（live.douyin.com）yt-dlp 官方不支持，需要直连请求直播页面 HTML，
     // 从中提取 HLS/FLV 流地址和元数据（标题、主播名），交给 yt-dlp 录制 HLS 流。
+    let (referer, user_agent) = match platform {
+        MediaPlatform::Kuaishou => (
+            referer.or(Some(crate::media_platforms::KUAISHOU_DEFAULT_REFERER)),
+            user_agent.or(Some(crate::media_platforms::KUAISHOU_DESKTOP_UA)),
+        ),
+        MediaPlatform::Xigua => (
+            referer.or(Some(crate::media_platforms::XIGUA_DEFAULT_REFERER)),
+            user_agent.or(Some(crate::media_platforms::KUAISHOU_DESKTOP_UA)),
+        ),
+        MediaPlatform::Xiaohongshu => (
+            referer.or(Some("https://www.xiaohongshu.com/")),
+            user_agent.or(Some(crate::media_platforms::XHS_DESKTOP_UA)),
+        ),
+        _ => (referer, user_agent),
+    };
     let session = ProbeSession {
         app,
         settings,
@@ -277,6 +292,9 @@ async fn probe_inner(
         MediaPlatform::Douyin => super::probe_platforms::douyin(&session, &effective_url).await?,
         MediaPlatform::Twitter if !is_twitter_space(&effective_url) => {
             super::probe_platforms::twitter(&session, &effective_url).await?
+        }
+        MediaPlatform::Xiaohongshu => {
+            super::probe_platforms::xiaohongshu(&session, &effective_url).await?
         }
         MediaPlatform::PikPak => {
             return super::probe_platforms::pikpak(&session, &effective_url, ffmpeg_available).await

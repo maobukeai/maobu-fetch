@@ -120,6 +120,9 @@ pub fn classify_platform_error(platform: MediaPlatform, stderr: &str) -> MediaPl
         MediaPlatform::BaiduPan => MediaPlatformError::Unknown,
         MediaPlatform::Lanzou => MediaPlatformError::Unknown,
         MediaPlatform::Pan123 => MediaPlatformError::Unknown,
+        MediaPlatform::Xiaohongshu => crate::media_platforms::classify_xiaohongshu_error(&lower),
+        MediaPlatform::Kuaishou => crate::media_platforms::classify_kuaishou_error(&lower),
+        MediaPlatform::Xigua => crate::media_platforms::classify_xigua_error(&lower),
         MediaPlatform::Unknown => MediaPlatformError::Unknown,
     };
     if platform_result != MediaPlatformError::Unknown {
@@ -152,6 +155,9 @@ pub fn classify_platform_error(platform: MediaPlatform, stderr: &str) -> MediaPl
         // Task 40.2：B 站会员/付费内容限制
         || lower.contains("premium only")
         || lower.contains("vip")
+        // 网盘与通用风控拦截（夸克 412 / 123云盘 5112）
+        || lower.contains("412")
+        || lower.contains("5112")
     {
         return MediaPlatformError::LoginExpired;
     }

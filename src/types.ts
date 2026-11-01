@@ -1077,6 +1077,9 @@ export type MediaPlatform =
   | "baidupan"
   | "lanzou"
   | "pan123"
+  | "xiaohongshu"
+  | "kuaishou"
+  | "xigua"
   | "unknown";
 
 /**
@@ -1120,6 +1123,9 @@ export function mediaPlatformDisplayName(platform: MediaPlatform): string {
     case "baidupan": return "百度网盘";
     case "lanzou": return "蓝奏云";
     case "pan123": return "123云盘";
+    case "xiaohongshu": return "小红书";
+    case "kuaishou": return "快手";
+    case "xigua": return "西瓜视频";
     case "unknown": return "";
   }
 }

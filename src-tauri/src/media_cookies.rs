@@ -201,6 +201,9 @@ fn normalize_cookie_domain(domain: &str) -> String {
         crate::media_platforms::MediaPlatform::BaiduPan => ".baidu.com".to_string(),
         crate::media_platforms::MediaPlatform::Lanzou => ".lanzoux.com".to_string(),
         crate::media_platforms::MediaPlatform::Pan123 => ".123pan.com".to_string(),
+        crate::media_platforms::MediaPlatform::Xiaohongshu => ".xiaohongshu.com".to_string(),
+        crate::media_platforms::MediaPlatform::Kuaishou => ".kuaishou.com".to_string(),
+        crate::media_platforms::MediaPlatform::Xigua => ".ixigua.com".to_string(),
         crate::media_platforms::MediaPlatform::Unknown => {
             let platforms = [
                 ("douyin.com", ".douyin.com"),
@@ -212,6 +215,9 @@ fn normalize_cookie_domain(domain: &str) -> String {
                 ("x.com", ".twitter.com"),
                 ("weibo.com", ".weibo.com"),
                 ("weibo.cn", ".weibo.cn"),
+                ("xiaohongshu.com", ".xiaohongshu.com"),
+                ("kuaishou.com", ".kuaishou.com"),
+                ("ixigua.com", ".ixigua.com"),
             ];
             for &(p, target) in &platforms {
                 if lower == p || lower.ends_with(&format!(".{}", p)) {

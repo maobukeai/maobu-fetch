@@ -132,7 +132,11 @@ fn build_naming_vars(value: &Value, platform: MediaPlatform) -> NamingVars {
 /// 提取为纯函数以便单元测试，无需启动 yt-dlp 子进程即可验证识别逻辑。
 /// AGENTS.md §3：识别基于真实 URL 模式，不使用模拟数据。
 fn determine_media_type(url: &str) -> MediaType {
-    if is_douyin_gallery(url) || is_tiktok_gallery(url) || is_weibo_gallery(url) {
+    if is_douyin_gallery(url)
+        || is_tiktok_gallery(url)
+        || is_weibo_gallery(url)
+        || crate::media_platforms::is_xiaohongshu_gallery(url)
+    {
         MediaType::Gallery
     } else if is_twitter_space(url) {
         MediaType::Audio

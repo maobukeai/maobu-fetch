@@ -13,6 +13,9 @@ const BUILTINS: &[(&str, &str, &[&str])] = &[
     ("twitter", "提供Twitter/X媒体与Spaces解析入口；不同媒体类型和登录权限需分别验证。", &["Twitter/X 普通推文、图集及 Spaces 音频可下载，敏感内容需提供 Cookie", "Twitter/X 普通推文视频可下载，需提供 Cookie"]),
     ("weibo", "提供微博媒体解析入口；登录权限和内容类型需分别验证。", &["微博普通视频、图集可下载，需提供 Cookie"]),
     ("youtube", "提供YouTube媒体解析入口；登录、地区与反爬策略可能影响结果。", &["YouTube 普通视频、直播回放、短视频受反爬机制影响", "YouTube 普通视频、直播回放、短视频可正常下载"]),
+    ("xiaohongshu", "提供小红书短链、图文笔记与视频解析入口；图集支持批量下载，风控可能影响未登录访问。", &[]),
+    ("kuaishou", "提供快手短链与视频解析入口；登录状态和风控可能影响未登录访问。", &[]),
+    ("xigua", "提供西瓜视频短链与视频解析入口；部分高清画质需登录凭证。", &[]),
 ];
 
 pub(super) fn seed(connection: &Connection) -> Result<(), String> {

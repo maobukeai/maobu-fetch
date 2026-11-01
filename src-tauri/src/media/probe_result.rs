@@ -28,6 +28,10 @@ pub(super) fn parse(
         || value
             .get("_is_twitter_gallery")
             .and_then(Value::as_bool)
+            .unwrap_or(false)
+        || value
+            .get("_is_xiaohongshu_gallery")
+            .and_then(Value::as_bool)
             .unwrap_or(false))
         && media_type == MediaType::Video
     {

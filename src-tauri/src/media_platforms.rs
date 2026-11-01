@@ -53,6 +53,9 @@ pub enum MediaPlatform {
     BaiduPan,
     Lanzou,
     Pan123,
+    Xiaohongshu,
+    Kuaishou,
+    Xigua,
 }
 
 impl MediaPlatform {
@@ -70,6 +73,9 @@ impl MediaPlatform {
             Self::BaiduPan => "百度网盘",
             Self::Lanzou => "蓝奏云",
             Self::Pan123 => "123云盘",
+            Self::Xiaohongshu => "小红书",
+            Self::Kuaishou => "快手",
+            Self::Xigua => "西瓜视频",
             Self::Unknown => "未知平台",
         }
     }
@@ -89,6 +95,9 @@ impl MediaPlatform {
             Self::BaiduPan => "baidupan",
             Self::Lanzou => "lanzou",
             Self::Pan123 => "pan123",
+            Self::Xiaohongshu => "xiaohongshu",
+            Self::Kuaishou => "kuaishou",
+            Self::Xigua => "xigua",
         }
     }
 
@@ -126,6 +135,9 @@ impl MediaPlatform {
                 "lanzou.com",
             ],
             Self::Pan123 => &["123pan.com", "123pan.cn", "123684.com"],
+            Self::Xiaohongshu => &["xiaohongshu.com", "xhslink.com", "redbook.com"],
+            Self::Kuaishou => &["kuaishou.com", "v.kuaishou.com", "chenzhongtech.com", "kwai.com"],
+            Self::Xigua => &["ixigua.com", "v.ixigua.com"],
             Self::Unknown => &[],
         }
     }
@@ -246,6 +258,25 @@ pub fn detect_platform(url: &str) -> MediaPlatform {
     if host.contains("123pan") || host.contains("123684") || host.contains("123952") {
         return MediaPlatform::Pan123;
     }
+    if host == "xiaohongshu.com"
+        || host == "xhslink.com"
+        || host.ends_with(".xiaohongshu.com")
+        || host.ends_with(".xhslink.com")
+    {
+        return MediaPlatform::Xiaohongshu;
+    }
+    if host == "kuaishou.com"
+        || host == "v.kuaishou.com"
+        || host == "chenzhongtech.com"
+        || host == "kwai.com"
+        || host.ends_with(".kuaishou.com")
+        || host.ends_with(".kwai.com")
+    {
+        return MediaPlatform::Kuaishou;
+    }
+    if host == "ixigua.com" || host == "v.ixigua.com" || host.ends_with(".ixigua.com") {
+        return MediaPlatform::Xigua;
+    }
     MediaPlatform::Unknown
 }
 
@@ -273,6 +304,9 @@ pub fn is_short_url(url: &str) -> bool {
             | "bit.ly"
             | "tinyurl.com"
             | "goo.gl"
+            | "xhslink.com"
+            | "v.kuaishou.com"
+            | "v.ixigua.com"
     )
 }
 
@@ -291,6 +325,9 @@ const KNOWN_SHORT_DOMAINS: &[&str] = &[
     "bit.ly",
     "tinyurl.com",
     "goo.gl",
+    "xhslink.com",
+    "v.kuaishou.com",
+    "v.ixigua.com",
 ];
 
 /// 编译并缓存 URL 提取正则。
@@ -2768,6 +2805,14 @@ mod credential_check;
 mod native_tracks;
 mod url_normalization;
 mod douyin_ssr;
+
+pub mod xiaohongshu;
+
+pub use xiaohongshu::*;
+
+pub mod kuaishou_xigua;
+
+pub use kuaishou_xigua::*;
 #[cfg(test)]
 mod douyin_share_tests;
 pub use url_normalization::normalize_bilibili_video_url;
@@ -3245,6 +3290,78 @@ mod tests {
     }
 
     // ---- is_short_url ----
+
+    #[test]
+    fn detect_xiaohongshu_platform() {
+        assert_eq!(
+            detect_platform("https://www.xiaohongshu.com/explore/64df8a01000000000800fa12"),
+            MediaPlatform::Xiaohongshu
+        );
+        assert_eq!(
+            detect_platform("https://xhslink.com/a/ABCDEF"),
+            MediaPlatform::Xiaohongshu
+        );
+        assert_eq!(
+            detect_platform("https://xiaohongshu.com/discovery/item/64df8a01000000000800fa12"),
+            MediaPlatform::Xiaohongshu
+        );
+    }
+
+    #[test]
+    fn detect_kuaishou_platform() {
+        assert_eq!(
+            detect_platform("https://www.kuaishou.com/short-video/3xabcdef123"),
+            MediaPlatform::Kuaishou
+        );
+        assert_eq!(
+            detect_platform("https://v.kuaishou.com/3xabcdef"),
+            MediaPlatform::Kuaishou
+        );
+        assert_eq!(
+            detect_platform("https://chenzhongtech.com/f/kuaishou_code"),
+            MediaPlatform::Kuaishou
+        );
+    }
+
+    #[test]
+    fn detect_xigua_platform() {
+        assert_eq!(
+            detect_platform("https://www.ixigua.com/7123456789012345678"),
+            MediaPlatform::Xigua
+        );
+        assert_eq!(
+            detect_platform("https://v.ixigua.com/ABC1234/"),
+            MediaPlatform::Xigua
+        );
+    }
+
+    #[test]
+    fn is_short_url_detects_expanded_domains() {
+        assert!(is_short_url("https://xhslink.com/a/ABCDEF"));
+        assert!(is_short_url("https://v.kuaishou.com/3xabcdef"));
+        assert!(is_short_url("https://v.ixigua.com/ABC1234/"));
+    }
+
+    #[test]
+    fn extract_url_from_share_text_with_new_platforms() {
+        let xhs_text = "【精选笔记】 快来看看 http://xhslink.com/a/ABCDEF 复制链接";
+        assert_eq!(
+            extract_url_from_share_text(xhs_text),
+            Some("http://xhslink.com/a/ABCDEF".to_string())
+        );
+
+        let ks_text = "快手热门 https://v.kuaishou.com/3xabcdef 点击观看";
+        assert_eq!(
+            extract_url_from_share_text(ks_text),
+            Some("https://v.kuaishou.com/3xabcdef".to_string())
+        );
+
+        let xg_text = "西瓜好片 https://v.ixigua.com/ABC1234/ 赶紧来看";
+        assert_eq!(
+            extract_url_from_share_text(xg_text),
+            Some("https://v.ixigua.com/ABC1234/".to_string())
+        );
+    }
 
     #[test]
     fn is_short_url_detects_known_short_domains() {

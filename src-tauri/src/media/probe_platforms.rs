@@ -227,3 +227,32 @@ pub(super) async fn pikpak(
     };
     return original_file::result(&file, &effective_url, ffmpeg_available);
 }
+
+pub(super) async fn xiaohongshu(
+    session: &ProbeSession<'_>,
+    effective_url: &str,
+) -> Result<Value, String> {
+    let client = session.client;
+    let cookie = session.cookie;
+    let referer = session.referer;
+    let user_agent = session.user_agent;
+    match crate::media_platforms::fetch_xiaohongshu_note_detail_with_client(
+        effective_url,
+        cookie,
+        referer,
+        user_agent,
+        client,
+    )
+    .await
+    {
+        Ok(mut json) => {
+            json["webpage_url"] = Value::String(effective_url.to_owned());
+            tracing::info!(url = %effective_url, "小红书直连解析成功，跳过 yt-dlp 调用");
+            Ok(json)
+        }
+        Err(err) => {
+            tracing::warn!(url = %effective_url, error = %err, "小红书直连解析未命中或失败，回退到 yt-dlp 流程");
+            session.yt_dlp(effective_url).await
+        }
+    }
+}

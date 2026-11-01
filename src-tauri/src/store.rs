@@ -3753,8 +3753,8 @@ mod tests {
             let list = store.platform_compatibility_list().await.unwrap();
             assert_eq!(
                 list.len(),
-                11,
-                "expected 11 builtin records, got {}",
+                14,
+                "expected 14 builtin records, got {}",
                 list.len()
             );
             // 包含所有内置平台
@@ -3770,6 +3770,9 @@ mod tests {
             assert!(platforms.contains(&"twitter"));
             assert!(platforms.contains(&"weibo"));
             assert!(platforms.contains(&"youtube"));
+            assert!(platforms.contains(&"xiaohongshu"));
+            assert!(platforms.contains(&"kuaishou"));
+            assert!(platforms.contains(&"xigua"));
             // notes 不为空（含中文说明）
             assert!(!list[0].notes.is_empty());
             // known_issues 默认为空数组
@@ -3957,7 +3960,7 @@ mod tests {
         let runtime = tokio::runtime::Runtime::new().unwrap();
         runtime.block_on(async {
             let list = store.platform_compatibility_list().await.unwrap();
-            assert_eq!(list.len(), 11);
+            assert_eq!(list.len(), 14);
             // 损坏 JSON 降级为空数组，不报错
             let youtube = list.iter().find(|r| r.platform == "youtube").unwrap();
             assert!(youtube.known_issues.is_empty());

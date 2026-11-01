@@ -1,11 +1,24 @@
-import { StrictMode } from "react";
+import { StrictMode, lazy, Suspense } from "react";
 import { createRoot } from "react-dom/client";
-import App from "./App";
-import { MediaPlayerView } from "./components/player/MediaPlayerView";
-import { ImageViewerView } from "./components/viewer/ImageViewerView";
-import { DownloadProgressView } from "./components/progress/DownloadProgressView";
 import { ErrorBoundary } from "./ErrorBoundary";
 import "./styles.css";
+
+const App = lazy(() => import("./App"));
+const MediaPlayerView = lazy(() =>
+  import("./components/player/MediaPlayerView").then((m) => ({
+    default: m.MediaPlayerView,
+  }))
+);
+const ImageViewerView = lazy(() =>
+  import("./components/viewer/ImageViewerView").then((m) => ({
+    default: m.ImageViewerView,
+  }))
+);
+const DownloadProgressView = lazy(() =>
+  import("./components/progress/DownloadProgressView").then((m) => ({
+    default: m.DownloadProgressView,
+  }))
+);
 
 const viewType = new URLSearchParams(window.location.search).get("view");
 const isPlayerView = viewType === "player";
@@ -15,16 +28,17 @@ const isDownloadProgressView = viewType === "download-progress";
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <ErrorBoundary>
-      {isDownloadProgressView ? (
-        <DownloadProgressView />
-      ) : isPlayerView ? (
-        <MediaPlayerView />
-      ) : isImageView ? (
-        <ImageViewerView />
-      ) : (
-        <App />
-      )}
+      <Suspense fallback={null}>
+        {isDownloadProgressView ? (
+          <DownloadProgressView />
+        ) : isPlayerView ? (
+          <MediaPlayerView />
+        ) : isImageView ? (
+          <ImageViewerView />
+        ) : (
+          <App />
+        )}
+      </Suspense>
     </ErrorBoundary>
   </StrictMode>
 );
-

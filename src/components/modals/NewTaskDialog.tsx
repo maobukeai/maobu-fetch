@@ -2925,7 +2925,33 @@ export function NewTaskDialog({
                 <strong>{media.title}</strong>
               </div>
               {mediaSelectionNotice && !format && (
-                <div className="media-empty-hint" role="status">{mediaSelectionNotice}</div>
+                <div className="media-empty-hint" role="status" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "8px" }}>
+                  <span>{mediaSelectionNotice}</span>
+                  {(() => {
+                    const fallbackFormat = media.formats.find(
+                      (item) => item.audio_unknown && (!item.requires_ffmpeg || (toolStatus?.ffmpeg_available ?? media.ffmpeg_available ?? false))
+                    );
+                    if (!fallbackFormat) return null;
+                    return (
+                      <button
+                        type="button"
+                        style={{
+                          whiteSpace: "nowrap",
+                          cursor: "pointer",
+                          fontSize: "12px",
+                          color: "var(--accent)",
+                          background: "transparent",
+                          border: "none",
+                          padding: "2px 6px",
+                          textDecoration: "underline",
+                        }}
+                        onClick={() => setFormat(fallbackFormat.id)}
+                      >
+                        选择此原片
+                      </button>
+                    );
+                  })()}
+                </div>
               )}
               {media.media_type === "gallery" ? (
                 <GalleryPicker
