@@ -37,6 +37,44 @@ export async function checkCompact(context) {
   record('Empty snapshot does not fabricate progress');
 }
 
+export async function checkSummaryActivation(context) {
+  const { page, record } = context;
+  await load(context);
+  await open(page);
+  await page.click('.progress-window-summary');
+  await delay(350);
+  await revealed(page, true);
+  assert.equal(await page.evaluate(() => window.audit.calls.some(call => call[0] === 'reveal' && call[1] === false)), false);
+  record('First click preserves the details already opened by pointer enter and focus');
+
+  await load(context);
+  await page.focus('.progress-window-summary');
+  await revealed(page, true);
+  for (const key of ['Enter', 'Space']) {
+    await page.keyboard.press(key);
+    await delay(200);
+    await revealed(page, true);
+  }
+  await page.keyboard.press('Escape');
+  await revealed(page, false);
+  await page.keyboard.press('Enter');
+  await delay(200);
+  await revealed(page, true);
+  record('Enter and Space reliably reveal details, including after Escape without moving focus');
+
+  await load(context);
+  await page.evaluate(() => { window.audit.holdReveal = true; });
+  await page.hover('.progress-window-summary');
+  await page.waitForFunction(() => Boolean(window.audit.releaseReveal));
+  await page.click('.progress-window-summary');
+  await page.evaluate(() => { window.audit.holdReveal = false; window.audit.releaseReveal(); });
+  await revealed(page, true);
+  assert.deepEqual(await page.evaluate(() => window.audit.calls.filter(call => call[0] === 'reveal').map(call => call[1])), [true]);
+  await page.click('#audit-external-focus');
+  await revealed(page, false);
+  record('Click during pending reveal preserves one reveal request; leaving still collapses');
+}
+
 export async function checkControls(context) {
   const { page, record, output } = context;
   await load(context);

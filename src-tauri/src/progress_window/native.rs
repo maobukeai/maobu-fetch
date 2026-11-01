@@ -31,9 +31,11 @@ pub(super) fn apply(app: &AppHandle, state: &Arc<ProgressWindowState>) -> Result
     position(
         app,
         &window,
-        snapshot.total_count,
+        snapshot.total_count.max(snapshot.completed_count),
         snapshot.expanded,
         snapshot.revealed,
+        snapshot.total_count > 0 && snapshot.completed_count > 0,
+        snapshot.total_count == 0 && snapshot.completed_count > 0,
     )?;
     window
         .emit(UPDATED, snapshot)
@@ -48,6 +50,8 @@ fn position(
     count: usize,
     expanded: bool,
     revealed: bool,
+    mixed: bool,
+    completed_only: bool,
 ) -> Result<(), String> {
     let monitor = window
         .current_monitor()
@@ -59,7 +63,7 @@ fn position(
         .or_else(|| app.primary_monitor().ok().flatten())
         .ok_or_else(|| "无法取得可用屏幕工作区，请在主窗口查看下载进度".to_string())?;
     let work = monitor.work_area();
-    let bounds = layout::placement(
+    let bounds = layout::placement_with_completions(
         work.position.x,
         work.position.y,
         work.size.width,
@@ -68,6 +72,8 @@ fn position(
         count,
         expanded,
         revealed,
+        mixed,
+        completed_only,
     );
     os::place(window, &bounds)
 }

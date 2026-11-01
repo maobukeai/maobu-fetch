@@ -5,14 +5,20 @@ import { ProgressDetails } from "./ProgressDetails";
 import { ProgressSummary } from "./ProgressSummary";
 import { useDownloadProgress } from "./useDownloadProgress";
 import { useProgressReveal } from "./useProgressReveal";
+import { useProgressInteraction } from "./useProgressInteraction";
+import { completedCount } from "./progress-model";
+import { CompletedSummary } from "./CompletedSummary";
 import "./progress-window.css";
 
 export function DownloadProgressView() {
   const locale = useLocale();
   const { snapshot, error, busy, perform, reconnect, accept, revealFailed } = useDownloadProgress();
   const revealed = snapshot?.revealed ?? false;
-  const active = !snapshot || Boolean(snapshot.enabled && !snapshot.loading && snapshot.total_count > 0);
+  const completions = completedCount(snapshot);
+  const active = !snapshot || Boolean(snapshot.enabled && !snapshot.loading && (snapshot.total_count > 0 || completions > 0));
   const reveal = useProgressReveal(revealed, accept, revealFailed, active);
+  const completionProtocol = snapshot?.completed_count !== undefined || snapshot?.completed_tasks !== undefined;
+  const interaction = useProgressInteraction(active && completionProtocol, Boolean(busy), accept, revealFailed);
 
   useLayoutEffect(() => {
     const page = document.documentElement;
@@ -50,11 +56,17 @@ export function DownloadProgressView() {
   }, [revealed, reveal.collapse, dismiss]);
 
   return <main ref={reveal.root} className="download-progress-window" data-revealed={revealed}
+    data-completed-only={Boolean(snapshot && snapshot.total_count === 0 && completions > 0)}
     aria-label={t("progressWindow.title")} aria-busy={Boolean(busy)}
-    onPointerEnter={reveal.onPointerEnter} onPointerLeave={reveal.onPointerLeave}
-    onFocusCapture={reveal.onFocusCapture} onBlurCapture={reveal.onBlurCapture}>
-    <ProgressSummary snapshot={snapshot} revealed={revealed} hasError={Boolean(error || snapshot?.error)}
-      buttonRef={reveal.summary} onToggle={revealed ? reveal.collapse : reveal.reveal} />
+    onPointerEnter={() => { reveal.onPointerEnter(); interaction.onPointerEnter(); }}
+    onPointerLeave={() => { reveal.onPointerLeave(); interaction.onPointerLeave(); }}
+    onFocusCapture={event => { reveal.onFocusCapture(event); interaction.onFocusCapture(); }}
+    onBlurCapture={event => { reveal.onBlurCapture(event); interaction.onBlurCapture(event); }}>
+    {snapshot && snapshot.total_count === 0 && completions > 0
+      ? <CompletedSummary snapshot={snapshot} revealed={revealed} busy={busy} hasError={Boolean(error || snapshot.error)} buttonRef={reveal.summary}
+        onReveal={reveal.reveal} onDismiss={dismiss} perform={perform} />
+      : <ProgressSummary snapshot={snapshot} revealed={revealed} hasError={Boolean(error || snapshot?.error)}
+        buttonRef={reveal.summary} onReveal={reveal.reveal} />}
     {revealed && <ProgressDetails snapshot={snapshot} error={error} busy={busy} perform={perform}
       reconnect={reconnect} onDismiss={dismiss} />}
   </main>;

@@ -6,7 +6,11 @@ import path from "node:path";
 import puppeteer from "puppeteer-core";
 import { createAuditServer } from "./ui-server.mjs";
 import { progressUiFixture } from "./progress-ui-fixture.mjs";
-import { checkCompact, checkControls, checkRevealRaces, checkRecovery, checkSettings, checkMatrix, checkEntryScope } from "./progress-ui-checks.mjs";
+import { checkCompact, checkSummaryActivation, checkControls, checkRevealRaces, checkRecovery, checkSettings, checkMatrix, checkEntryScope } from "./progress-ui-checks.mjs";
+import { checkCompletionLifetime, checkCompletionActions, checkCompletionBatches } from "./progress-completion-checks.mjs";
+import { checkCompletionMatrix } from "./progress-completion-matrix.mjs";
+import { checkCompletionMountRecovery } from "./progress-completion-recovery.mjs";
+import { checkCompletionPolish } from "./progress-completion-polish.mjs";
 
 const output = await mkdtemp(path.join(tmpdir(), "maobu-compact-ui-"));
 const server = await createAuditServer(output);
@@ -19,6 +23,7 @@ server.middlewares.stack.unshift(server.middlewares.stack.pop());
 let browser;
 const results = [], errors = [];
 const record = name => { results.push({ name, passed: true }); console.log("PASS", name); };
+const recoveryOnly = process.argv.includes('--completion-recovery-only');
 try {
   await server.listen();
   const executablePath = ["C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe", "C:/Program Files/Google/Chrome/Application/chrome.exe"].find(existsSync);
@@ -29,17 +34,26 @@ try {
   await page.setViewport({ width: 1280, height: 720, deviceScaleFactor: 1 });
   const base = `http://127.0.0.1:${server.httpServer.address().port}/__progress-audit.html`;
   const context = { page, base, output, record };
+  await checkCompletionMountRecovery(context);
+  if (!recoveryOnly) {
   await checkCompact(context);
+  await checkSummaryActivation(context);
   await checkControls(context);
   await checkRevealRaces(context);
   await checkRecovery(context);
+  await checkCompletionLifetime(context);
+  await checkCompletionActions(context);
+  await checkCompletionBatches(context);
   await checkSettings(context);
   await checkMatrix(context);
+  await checkCompletionMatrix(context);
+  await checkCompletionPolish(context);
   await checkEntryScope(context);
+  }
   assert.deepEqual(errors, []);
 } finally {
   await writeFile(path.join(output, "results.json"), JSON.stringify({
-    scope: "Actual React in an isolated browser; native HWND sizing is simulated with 250ms delay. Native transparency/topmost/focus remain unverified.",
+    scope: "Actual React in an isolated browser; native HWND sizing and visibility are simulated with 250ms delay. Completion expiry uses an explicit virtual 180000ms backend model, not real native time. Rust tests validate the real retention state. Native transparency/topmost/focus/file opening remain unverified here.",
     results, errors,
   }, null, 2));
   await browser?.close();

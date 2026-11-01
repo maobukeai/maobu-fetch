@@ -56,6 +56,8 @@ await progress.action("synthetic-task","pause");
 await progress.showMain("synthetic-task");
 await progress.dismiss();
 await progress.restore();
+await progress.interacting(true);
+await progress.openCompleted("synthetic-task","folder");
 await progress.subscribe(()=>{});
 assert.deepEqual(JSON.parse(JSON.stringify(payloads.slice(4))),[
   {command:"progress_window_snapshot"},
@@ -66,6 +68,8 @@ assert.deepEqual(JSON.parse(JSON.stringify(payloads.slice(4))),[
   {command:"progress_window_show_main",args:{taskId:"synthetic-task"}},
   {command:"progress_window_dismiss"},
   {command:"progress_window_restore"},
+  {command:"progress_window_set_interacting",args:{interacting:true}},
+  {command:"progress_window_open_completed",args:{taskId:"synthetic-task",target:"folder"}},
 ]);
 assert.equal(events.at(-1),"download-progress-updated");
 

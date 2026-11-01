@@ -4,13 +4,14 @@ import ts from "typescript";
 
 const rust=await fs.readFile(new URL("../../src-tauri/src/lib.rs",import.meta.url),"utf8");
 const progressCommands=await fs.readFile(new URL("../../src-tauri/src/progress_window/commands.rs",import.meta.url),"utf8");
+const completionCommands=await fs.readFile(new URL("../../src-tauri/src/progress_window/completion_commands.rs",import.meta.url),"utf8");
 const typescript=await fs.readFile(new URL("../../src/api.ts",import.meta.url),"utf8");
 const progressTypescript=await fs.readFile(new URL("../../src/components/progress/progress-api.ts",import.meta.url),"utf8");
 const camel=value=>value.replace(/_([a-z])/g,(_,letter)=>letter.toUpperCase());
 const commands=new Map();
 const resultTypes=new Map();
 const pattern=/#\[tauri::command([^\]]*)\](?:\s*#\[[^\]]*\])*\s*(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?fn\s+(\w+)\s*\(/g;
-const commandSources=rust+"\n"+progressCommands;
+const commandSources=rust+"\n"+progressCommands+"\n"+completionCommands;
 const stateAliases=[...commandSources.matchAll(/^type\s+(\w+)(?:<[^=]+>)?\s*=\s*(?:tauri::)?State\s*</gm)].map(match=>match[1]);
 for(const match of commandSources.matchAll(pattern)){
   let start=match.index+match[0].length,position=start,depth=1;

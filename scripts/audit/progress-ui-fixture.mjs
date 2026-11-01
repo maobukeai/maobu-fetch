@@ -7,6 +7,7 @@ import { createRoot } from 'react-dom/client';
 import { DownloadProgressView } from '/src/components/progress/DownloadProgressView.tsx';
 import { progressApi } from '/src/components/progress/progress-api.ts';
 import { ProgressWindowSettings } from '/src/components/settings/ProgressWindowSettings.tsx';
+import { installCompletionFixture } from '/scripts/audit/progress-completion-fixture.mjs';
 import '/src/styles.css';
 const params = new URLSearchParams(location.search);
 const count = Number(params.get('count') ?? 8);
@@ -36,8 +37,10 @@ const resizeNativeFixture = () => {
   if (params.get('mode') === 'settings') return;
   clearTimeout(sizeTimer);
   sizeTimer = setTimeout(() => {
-    const rows = Math.max(1, Math.min(snapshot.total_count, snapshot.expanded ? 6 : 3));
-    rootElement.style.height = (snapshot.revealed ? 82 + rows * 36 : 28) + 'px';
+    const rows = Math.max(1, Math.min(Math.max(snapshot.total_count, snapshot.completed_count ?? 0), snapshot.expanded ? 6 : 3));
+    const tabs = snapshot.total_count && snapshot.completed_count ? 24 : 0;
+    const completedOnly = snapshot.total_count === 0 && (snapshot.completed_count ?? 0) > 0;
+    rootElement.style.height = (snapshot.revealed ? 82 + rows * 36 + tabs - (completedOnly ? 24 : 0) : 28) + 'px';
   }, Number(params.get('resizeDelay') ?? 250));
 };
 const emit = () => { snapshot.revision++; resizeNativeFixture(); listeners.forEach(fn => fn(copy())); return copy(); };
@@ -72,6 +75,10 @@ progressApi.action = async (id, action) => {
 progressApi.showMain = async id => { calls.push(['main', id ?? null]); return copy(); };
 progressApi.dismiss = async () => { calls.push(['dismiss']); return copy(); };
 progressApi.restore = async () => { calls.push(['restore']); return emit(); };
+installCompletionFixture({audit:window.audit,api:progressApi,read:()=>snapshot,
+  change:patch=>{snapshot={...snapshot,...patch};},publish:emit,root:rootElement,
+  enabled:params.get('completion')==='1',initiallyHeld:params.get('held')==='1',
+  initialCompleted:Number(params.get('completed') ?? 0)});
 function SettingsHarness() {
   const savedEnabled = params.get('saved') === '1';
   const [draft, setDraft] = React.useState({progress_window_enabled: savedEnabled, progress_window_always_on_top: true});

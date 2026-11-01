@@ -21,6 +21,9 @@ export interface ProgressWindowSnapshot {
   tasks: ProgressWindowTask[];
   total_count: number;
   total_speed_bps: number;
+  /** Current-session completions only; older backends/fixtures may omit these. */
+  completed_tasks?: ProgressWindowTask[];
+  completed_count?: number;
   always_on_top: boolean;
   enabled: boolean;
   expanded: boolean;
@@ -35,11 +38,15 @@ export interface ProgressWindowSnapshot {
   error?: string | null;
 }
 
+export type ProgressOperation = (key: string, action: () => Promise<ProgressWindowSnapshot>, errorKey?: string) => Promise<void>;
+
 export const progressApi = {
   snapshot: () => invoke<ProgressWindowSnapshot>("progress_window_snapshot"),
   pinned: (pinned: boolean) => invoke<ProgressWindowSnapshot>("progress_window_set_pinned", { pinned }),
   expanded: (expanded: boolean) => invoke<ProgressWindowSnapshot>("progress_window_set_expanded", { expanded }),
   revealed: (revealed: boolean) => invoke<ProgressWindowSnapshot>("progress_window_set_revealed", { revealed }),
+  interacting: (interacting: boolean) => invoke<ProgressWindowSnapshot>("progress_window_set_interacting", { interacting }),
+  openCompleted: (taskId: string, target: "file" | "folder") => invoke<ProgressWindowSnapshot>("progress_window_open_completed", { taskId, target }),
   action: (taskId: string, action: "pause" | "resume") => invoke<ProgressWindowSnapshot>("progress_window_task_action", { taskId, action }),
   showMain: (taskId?: string) => invoke<ProgressWindowSnapshot>("progress_window_show_main", { taskId }),
   dismiss: () => invoke<ProgressWindowSnapshot>("progress_window_dismiss"),

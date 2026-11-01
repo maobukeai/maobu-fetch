@@ -112,10 +112,12 @@ test("wiring: manifest content_scripts 与 background 兜底注入保持一致",
   const manifest = JSON.parse(read("../manifest.json"));
   const manifestFiles = manifest.content_scripts[0].js;
   const bg = read("background.js");
-  const injectMatch = bg.match(/files:\s*\[([^\]]+)\]/);
-  assert.ok(injectMatch, "background.js 应包含 executeScript files 列表");
-  const bgFiles = [...injectMatch[1].matchAll(/"([^"]+)"/g)].map((m) => m[1]);
-  assert.deepEqual(bgFiles, manifestFiles, "兜底注入与 manifest 的注入顺序/文件必须一致");
+  const injectMatches = [...bg.matchAll(/files:\s*\[([^\]]+)\]/g)];
+  assert.ok(injectMatches.length > 0, "background.js 应包含 executeScript files 列表");
+  for (const injectMatch of injectMatches) {
+    const bgFiles = [...injectMatch[1].matchAll(/"([^"]+)"/g)].map((m) => m[1]);
+    assert.deepEqual(bgFiles, manifestFiles, "每处兜底注入与 manifest 的注入顺序/文件必须一致");
+  }
   for (const file of manifestFiles) {
     assert.ok(existsSync(join(__dirname, file.replace(/^src\//, ""))), `注入文件不存在：${file}`);
   }

@@ -139,157 +139,11 @@
     return isVideoSite ? 84 : 28;
   }
 
-  function findDouyinDirectStream(activeVideo) {
-    // 1. 检查 <video> 当前播放源（非 blob 直链）
-    const rawSrc = activeVideo?.currentSrc || activeVideo?.src || "";
-    if (rawSrc && /^https?:\/\//i.test(rawSrc) && !rawSrc.startsWith("blob:")) {
-      return rawSrc;
-    }
-
-    // 2. 检查 <video> 内部的 <source> 标签
-    if (activeVideo) {
-      const sources = activeVideo.querySelectorAll("source");
-      for (const s of sources) {
-        const src = s.src || s.getAttribute("src") || "";
-        if (src && /^https?:\/\//i.test(src) && !src.startsWith("blob:")) {
-          return src;
-        }
-      }
-    }
-
-    // 3. 从 sniffer 捕获列表中寻找
-    try {
-      const sniffed = latestSniffedTarget();
-      if (sniffed && (sniffed.includes("douyinvod.com") || sniffed.includes("byteplusvod.com") || sniffed.includes("/video/tos/"))) {
-        return sniffed;
-      }
-    } catch {}
-
-    // 4. 从已发现媒体集合中寻找
-    for (const item of found.values()) {
-      const u = item?.url || "";
-      if (u.includes("douyinvod.com") || u.includes("byteplusvod.com") || u.includes("ibytedtos.com")) {
-        return u;
-      }
-    }
-
-    return "";
-  }
-
   function extractDouyinActiveMedia() {
-    if (!location.hostname.includes("douyin.com")) return null;
-
-    // 1. 优先检查当前浏览器 URL 是否已包含具体 ID
-    const currentUrl = location.href;
-    const urlMatch = currentUrl.match(/(?:douyin\.com\/(?:video|note)\/(\d{10,}))|[?&](?:modal_id|aweme_id|vid)=(\d{10,})/i);
-    const urlAwemeId = urlMatch ? (urlMatch[1] || urlMatch[2]) : "";
-
-    // 2. 找到当前正在播放或视口中央最活跃的 video
-    const videos = Array.from(document.querySelectorAll("video"));
-    let activeVideo = videos.find((v) => !v.paused && v.currentTime > 0) || videos[0];
-    if (videos.length > 1) {
-      let maxArea = 0;
-      const vh = window.innerHeight;
-      const vw = window.innerWidth;
-      for (const v of videos) {
-        const r = v.getBoundingClientRect();
-        const w = Math.max(0, Math.min(r.right, vw) - Math.max(r.left, 0));
-        const h = Math.max(0, Math.min(r.bottom, vh) - Math.max(r.top, 0));
-        const area = w * h;
-        if (area > maxArea) {
-          maxArea = area;
-          activeVideo = v;
-        }
-      }
-    }
-
-    // 3. 从 activeVideo 或当前活跃卡片中寻找真实的 video/note 链接
-    let activeCard = activeVideo ? (
-      activeVideo.closest('[data-e2e="feed-active-video"]') ||
-      activeVideo.closest('.swiper-slide-active') ||
-      activeVideo.closest('[data-e2e="video-player"]') ||
-      activeVideo.closest('[data-e2e="feed-video"]') ||
-      activeVideo.parentElement?.parentElement
-    ) : null;
-
-    if (!activeCard) {
-      activeCard = document.querySelector('[data-e2e="feed-active-video"], .swiper-slide-active, [data-e2e="video-player"]');
-    }
-
-    let cardAwemeId = "";
-    let cardTitle = "";
-    if (activeCard) {
-      const descEl = activeCard.querySelector('[data-e2e="video-desc"], [data-e2e="video-title"], .title, h1');
-      if (descEl) cardTitle = descEl.textContent?.trim() || "";
-
-      // 检查属性与链接
-      const idAttr = activeCard.getAttribute("data-aweme-id") || activeCard.getAttribute("data-id");
-      if (idAttr && /^\d{10,}$/.test(idAttr)) {
-        cardAwemeId = idAttr;
-      } else {
-        const links = Array.from(activeCard.querySelectorAll('a[href*="/video/"], a[href*="/note/"], a[href*="modal_id="]'));
-        for (const a of links) {
-          const m = a.href.match(/(?:\/(?:video|note)\/(\d{10,}))|[?&]modal_id=(\d{10,})/i);
-          if (m) {
-            cardAwemeId = m[1] || m[2];
-            break;
-          }
-        }
-      }
-    }
-
-    // 如果还没找到 ID，全局扫描最近的激活 slide
-    if (!cardAwemeId && !urlAwemeId) {
-      const allLinks = Array.from(document.querySelectorAll('a[href*="/video/"], a[href*="/note/"]'));
-      for (const a of allLinks) {
-        const rect = a.getBoundingClientRect();
-        if (rect.top >= 0 && rect.bottom <= window.innerHeight + 200) {
-          const m = a.href.match(/(?:\/(?:video|note)\/(\d{10,}))/i);
-          if (m) {
-            cardAwemeId = m[1];
-            break;
-          }
-        }
-      }
-    }
-
-    const effectiveId = cardAwemeId || urlAwemeId;
-    const finalTitle = cardTitle || document.title.replace(/\s*-\s*抖音.*$/i, "").trim() || "抖音视频";
-
-    // 4. 关键：优先检测是否有正在播放的直链媒体流！
-    const directStream = findDouyinDirectStream(activeVideo);
-    if (directStream) {
-      const cleanTitle = (finalTitle || "抖音视频")
-        .replace(/[\\/:*?"<>|\r\n\t]/g, "_")
-        .replace(/\s+/g, " ")
-        .trim()
-        .slice(0, 120);
-      const fileName = effectiveId ? `${cleanTitle}_${effectiveId}.mp4` : `${cleanTitle}.mp4`;
-      return {
-        url: directStream,
-        title: finalTitle,
-        type: "video",
-        isDirect: true,
-        fileName,
-        awemeId: effectiveId,
-      };
-    }
-
-    // 5. 若无直链（如尚未加载或为纯图文 note），回退到页面/图文 URL
-    if (effectiveId) {
-      const isNote = Boolean(activeCard?.querySelector('a[href*="/note/"]') || currentUrl.includes("/note/"));
-      const path = isNote ? "note" : "video";
-      return {
-        url: `https://www.douyin.com/${path}/${effectiveId}`,
-        title: finalTitle,
-        type: isNote ? "gallery" : "video",
-        isDirect: false,
-        awemeId: effectiveId,
-      };
-    }
-
-    return null;
+    return window.MaobuDouyinMedia?.extract?.() || null;
   }
+
+  const isDouyinPage = () => Boolean(window.MaobuDouyinMedia?.isHost?.(location.hostname));
 
   function syncFab() {
     let hasMediaElement = false;
@@ -301,7 +155,7 @@
     const isPikPakShare = window.MaobuPikPak?.isPikPakSharePage?.() ||
       ((location.hostname.includes("mypikpak.com") || location.hostname.includes("mypikpak.net")) &&
        (location.pathname.includes("/s/") || location.hash.includes("/s/")));
-    const isDouyin = location.hostname.includes("douyin.com");
+    const isDouyin = isDouyinPage();
     const douyinActive = extractDouyinActiveMedia();
 
     if (pikpakCaptured?.url) {
@@ -315,11 +169,12 @@
         fabUrl = douyinActive.url;
         fabMode = douyinActive.isDirect ? "direct" : "page";
       } else {
-        fabUrl = ""; // 抖音页面未识别到具体视频前不显示或不绑定裸主页
+        fabUrl = "";
+        fabMode = douyinActive?.unavailable ? "douyin-unavailable" : "page";
       }
     } else {
       const direct = sniffed
-        || (hasMediaElement ? [...found.values()].reverse().find((item) => item.type === "video" || item.type === "audio") : null);
+        || (hasMediaElement ? [...found.values()].reverse().find((item) => item.type === "video" || item.type === "audio")?.url : "");
       if (direct) {
         fabUrl = direct;
         fabMode = "direct";
@@ -330,7 +185,7 @@
         fabUrl = "";
       }
     }
-    if (!fabUrl || !isContextValid() || isFabHiddenHere()) {
+    if ((!fabUrl && fabMode !== "douyin-unavailable") || !isContextValid() || isFabHiddenHere()) {
       if (fabElement) { fabElement.remove(); fabElement = null; }
       return;
     }
@@ -338,8 +193,9 @@
       fabElement = createFab();
       (document.body || document.documentElement).appendChild(fabElement);
     }
-    if (fabLabel) {
-      fabLabel.textContent = FAB_LABEL;
+    if (fabLabel && !fabStatusTimer) fabLabel.textContent = FAB_LABEL;
+    if (fabElement && fabMode === "douyin-unavailable" && !fabStatusTimer) {
+      fabElement.title = "当前推荐视频尚未提供作品链接，点击查看操作提示";
     }
   }
 
@@ -457,12 +313,24 @@
     fab.addEventListener("contextmenu", (event) => {
       event.preventDefault();
       event.stopPropagation();
-      if (!fabUrl || !isContextValid()) return;
-      void openFabMenu();
+      if (!isContextValid()) return;
+      void openFabMenu(sendToDesktop);
     });
 
     const sendToDesktop = (connectionCount = 16) => {
-      if (!fabUrl || !isContextValid()) return;
+      if (!isContextValid()) return;
+      if (isDouyinPage()) {
+        const current = extractDouyinActiveMedia();
+        if (!current?.url) {
+          const text = "请打开当前视频的分享链接或作品详情页，再点击下载";
+          showBadge("info", text);
+          showFabStatus("请先打开作品页", "normal", text);
+          return;
+        }
+        fabUrl = current.url;
+        fabMode = current.isDirect ? "direct" : "page";
+      }
+      if (!fabUrl) return;
 
       // 针对 PikPak：在点击的瞬间实时检测是否有捕获到的直链或正在播放的 video
       const isPikPak = location.hostname.includes("mypikpak.com") || location.hostname.includes("mypikpak.net");
@@ -491,7 +359,6 @@
         const ok = Boolean(response?.ok);
         const errorText = String(response?.error || "发送失败");
         if (!ok) {
-          console.error("[Maobu Fetch 发送失败详情]", errorText, response);
           showBadge("error", `猫步下载失败：${errorText}`);
           showFabStatus(`✕ ${truncate(errorText, 32)}`, "error", errorText);
         } else {
@@ -515,7 +382,7 @@
       }
 
       // 针对抖音：在点击瞬间实时提取当前视口正播放的具体视频
-      const isDouyin = location.hostname.includes("douyin.com");
+      const isDouyin = isDouyinPage();
       if (isDouyin) {
         const douyinActive = extractDouyinActiveMedia();
         if (douyinActive?.url) {
@@ -575,20 +442,18 @@
     return fab;
   }
 
-  async function openFabMenu() {
+  async function openFabMenu(sendToDesktop) {
     const items = [
       { label: "⬇ 下载当前媒体", value: "send-current" },
     ];
-    if (fabMode === "pikpak" || location.hostname.includes("douyin.com")) {
+    if (fabUrl && (fabMode === "pikpak" || isDouyinPage())) {
       items.push(
         { label: "⚡ 16 线程极速并发下载", value: "send-16" },
         { label: "⚡ 32 线程极限加速下载", value: "send-32" }
       );
     }
-    items.push(
-      { label: "📋 复制下载链接", value: "copy" },
-      { label: "📦 抓取本页全部资源与链接", value: "grab-resources" },
-    );
+    if (fabUrl) items.push({ label: "📋 复制下载链接", value: "copy" });
+    items.push({ label: "📦 抓取本页全部资源与链接", value: "grab-resources" });
     if (fabMode === "page") {
       let mediaQuality = "best";
       try {
@@ -639,7 +504,7 @@
     if (fabElement) {
       if (status === "success") {
         fabElement.title = "已成功推送到猫步下载器";
-        fabElement.style.background = "linear-gradient(135deg, #059669 0%, #10b981 100%)";
+        fabElement.style.background = "#147d4d";
         fabElement.style.color = "#ffffff";
         fabElement.style.boxShadow = "0 6px 18px rgba(16, 185, 129, 0.45)";
         try {
@@ -656,15 +521,17 @@
         fabElement.style.boxShadow = "0 6px 18px rgba(229, 62, 62, 0.45)";
       }
     }
+    if (fabElement && status === "normal") fabElement.title = detail || text;
     clearTimeout(fabStatusTimer);
     const duration = status === "error" ? 10000 : status === "success" ? 3500 : 3000;
     fabStatusTimer = setTimeout(() => {
+      fabStatusTimer = 0;
       if (fabLabel) fabLabel.textContent = FAB_LABEL;
       if (fabElement) {
         fabElement.title = "猫步下载器：点击推送到桌面端下载";
-        fabElement.style.background = "";
-        fabElement.style.color = "";
-        fabElement.style.boxShadow = "";
+        fabElement.style.background = "rgba(29, 29, 31, 0.88)";
+        fabElement.style.color = "#f5f5f7";
+        fabElement.style.boxShadow = "0 8px 24px rgba(0, 0, 0, 0.3)";
       }
     }, duration);
   }
@@ -759,7 +626,7 @@
       return false;
     }
     if (message?.type === "get-active-media") {
-      if (location.hostname.includes("douyin.com")) {
+      if (isDouyinPage()) {
         const douyinActive = extractDouyinActiveMedia();
         if (douyinActive?.url) {
           sendResponse({
@@ -786,7 +653,7 @@
         items.push({ url: raw, title: String(title || "").trim() || raw, type: type || "link" });
       };
 
-      if (location.hostname.includes("douyin.com")) {
+      if (isDouyinPage()) {
         const douyinActive = extractDouyinActiveMedia();
         if (douyinActive?.url) {
           pushItem(douyinActive.url, douyinActive.title || "抖音视频", "video");
@@ -852,7 +719,9 @@
         childList: true,
         subtree: true,
         attributes: true,
-        attributeFilter: ["src", "href"],
+        attributeFilter: isDouyinPage()
+          ? ["src", "href", "class", "data-aweme-id", "data-item-id", "data-id"]
+          : ["src", "href"],
       });
     }
     const timer = setInterval(() => {
@@ -878,7 +747,7 @@
     }, { passive: true });
 
     window.addEventListener("keydown", (e) => {
-      if (e.key === "ArrowDown" || e.key === "ArrowUp" || e.key === "PageDown" || e.key === "PageUp" || e.key === "Space") {
+      if (e.key === "ArrowDown" || e.key === "ArrowUp" || e.key === "PageDown" || e.key === "PageUp" || e.key === " ") {
         setTimeout(() => {
           if (isContextValid()) collectMedia(true);
         }, 350);

@@ -57,6 +57,11 @@ export function useProgressReveal(
     summary.current?.focus({ preventScroll: true });
     queue.current?.request(false);
   }, [clearTimer]);
+  const reveal = useCallback(() => {
+    clearTimer();
+    suppressed.current = false;
+    queue.current?.request(true);
+  }, [clearTimer]);
   const onFocusCapture = useCallback((event: FocusEvent<HTMLElement>) => {
     focused.current = true;
     if (!(event.relatedTarget instanceof Node && event.currentTarget.contains(event.relatedTarget))) suppressed.current = false;
@@ -72,6 +77,6 @@ export function useProgressReveal(
     root, summary, collapse, reset, onFocusCapture, onBlurCapture,
     onPointerEnter: () => { hover.current = true; suppressed.current = false; reconcile(); },
     onPointerLeave: () => { hover.current = false; if (!focused.current) suppressed.current = false; reconcile(); },
-    reveal: () => { suppressed.current = false; queue.current?.request(true); },
+    reveal,
   };
 }

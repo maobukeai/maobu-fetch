@@ -21,6 +21,18 @@ export function visibleTasks(snapshot: ProgressWindowSnapshot): ProgressWindowTa
   return snapshot.tasks.slice(0, snapshot.expanded ? EXPANDED_ROWS : COLLAPSED_ROWS);
 }
 
+export function completedTasks(snapshot: ProgressWindowSnapshot | null): ProgressWindowTask[] {
+  return (snapshot?.completed_tasks ?? []).slice(0, EXPANDED_ROWS);
+}
+
+export function completedCount(snapshot: ProgressWindowSnapshot | null): number {
+  return Math.min(EXPANDED_ROWS, nonNegative(snapshot?.completed_count ?? completedTasks(snapshot).length));
+}
+
+export function visibleCompleted(snapshot: ProgressWindowSnapshot): ProgressWindowTask[] {
+  return completedTasks(snapshot).slice(0, snapshot.expanded ? EXPANDED_ROWS : COLLAPSED_ROWS);
+}
+
 /** Listening starts before the initial invoke; a late initial result must not undo an event. */
 export function newestSnapshot(current: ProgressWindowSnapshot | null, incoming: ProgressWindowSnapshot): ProgressWindowSnapshot {
   return current && incoming.revision < current.revision ? current : incoming;

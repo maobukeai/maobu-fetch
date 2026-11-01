@@ -28,6 +28,22 @@ export function selectDefaultVideoFormat(formats: MediaFormat[], ffmpegAvailable
   throw new Error("未找到已确认带音轨的视频格式；如需确定无声的视频或纯音频，请明确选择对应格式");
 }
 
+/** 解析成功但原片音轨未知时，保留手动确认，不将其当作解析失败或默认有声格式。 */
+export function selectInitialVideoFormat(formats: MediaFormat[], ffmpegAvailable: boolean): {
+  formatId: string;
+  notice?: string;
+} {
+  const hasConfirmedAudio = formats.some((format) => format.has_video && format.has_audio && !format.audio_unknown);
+  if (!hasConfirmedAudio) {
+    const unknownVideos = formats.filter((format) => format.has_video && format.audio_unknown);
+    if (unknownVideos.some((format) => ffmpegAvailable || !format.requires_ffmpeg)) {
+      return { formatId: "", notice: "已找到原片，来源未提供音轨信息，请选择原片后下载" };
+    }
+    if (unknownVideos.length) throw new Error("当前原片需要 FFmpeg 组件，请先安装后重试");
+  }
+  return { formatId: selectDefaultVideoFormat(formats, ffmpegAvailable).id };
+}
+
 export function formatTrackDescription(format: MediaFormat): string {
   if (format.original_file) return "";
   if (format.audio_unknown) return " · 音轨未确认（可手动下载原文件）";

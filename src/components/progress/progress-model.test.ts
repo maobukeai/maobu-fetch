@@ -1,4 +1,4 @@
-import { newestSnapshot, nonNegative, summaryPercent, taskPercent, visibleTasks } from "./progress-model";
+import { completedCount, completedTasks, newestSnapshot, nonNegative, summaryPercent, taskPercent, visibleCompleted, visibleTasks } from "./progress-model";
 import { createRevealQueue } from "./reveal-queue";
 import type { ProgressWindowSnapshot, ProgressWindowTask } from "./progress-api";
 
@@ -37,6 +37,16 @@ equal(summaryPercent({ ...snapshot, summary_percent: 42.5 }), 42.5, "overall pro
 equal(summaryPercent({ ...snapshot, summary_percent: null }), null, "an unknown member keeps the overall progress unknown");
 equal(summaryPercent({ ...snapshot, summary_percent: 101 }), null, "invalid overall progress is not drawn as complete");
 equal(summaryPercent({ ...snapshot, summary_percent: Number.NaN }), null, "non-finite overall progress stays unknown");
+equal(completedCount(snapshot), 0, "older snapshots have no synthetic recent completions");
+equal(completedTasks(snapshot).length, 0, "completed rows are optional for compatibility");
+const recent = { ...snapshot, completed_tasks: Array.from({ length: 8 }, (_, i) => ({ ...task, id: `completed-${i}`, status: "completed" as const })), completed_count: 8 };
+equal(completedCount(recent), 6, "recent count describes at most the six retained files");
+equal(completedTasks(recent).length, 6, "completion preview cannot grow without bounds");
+equal(visibleCompleted(recent).length, 3, "recent completions start with three rows");
+equal(visibleCompleted({ ...recent, expanded: true }).length, 6, "recent completions expand to six rows");
+equal(completedCount({ ...recent, completed_count: undefined }), 6, "rows supply a safe count when optional counter is absent");
+equal(completedCount({ ...recent, completed_count: -1 }), 0, "negative recent telemetry is not shown");
+equal(summaryPercent({ ...recent, summary_percent: 12.5 }), 12.5, "completion previews never distort active progress");
 
 const tick = () => new Promise<void>(resolve => setTimeout(resolve, 0));
 const pending: Array<{ value: boolean; resolve: (snapshot: boolean) => void; reject: () => void }> = [];
@@ -78,4 +88,23 @@ denied.adopt(false);
 await tick();
 equal(deniedCalls.length, 1, "an observed collapsed server state alone is not new user intent");
 denied.dispose();
+
+const bootPending: Array<{ value: boolean; resolve: (value: boolean) => void }> = [];
+let backendHold = true;
+const boot = createRevealQueue<boolean>(value => new Promise(resolve => bootPending.push({ value, resolve })), value => { backendHold = value; }, () => {}, null);
+boot.request(false);
+equal(bootPending[0]?.value, false, "a reloaded interaction client explicitly releases an inherited backend hold");
+boot.request(true);
+equal(bootPending.length, 1, "new hover intent waits behind the initial release rather than racing it");
+bootPending[0].resolve(false);
+await tick();
+equal(backendHold, false, "the acknowledged initial release clears the old backend hold");
+equal(bootPending[1]?.value, true, "hover arriving during startup is serialized after the release");
+bootPending[1].resolve(true);
+await tick();
+equal(backendHold, true, "the latest user interaction wins after startup release");
+boot.request(false);
+bootPending[2].resolve(false);
+await tick();
+boot.dispose();
 console.log(`download progress display: ${checks} behavioral checks passed`);

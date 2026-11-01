@@ -21,7 +21,8 @@ import {
 } from "lucide-react";
 import { open as pickPath } from "@tauri-apps/plugin-dialog";
 import { api } from "../../api";
-import { collectionFormatSelector, formatTrackDescription, selectDefaultVideoFormat, selectOriginalFileFormat } from "../../media-format-selection";
+import { collectionFormatSelector, formatTrackDescription, selectInitialVideoFormat, selectOriginalFileFormat } from "../../media-format-selection";
+import { isDouyinMediaPage } from "../../media-page-url";
 import { t, useLocale } from "../../i18n";
 import type {
   AppSettings,
@@ -187,6 +188,7 @@ export function NewTaskDialog({
   );
   const [media, setMedia] = useState<MediaProbeResult>();
   const [format, setFormat] = useState("");
+  const [mediaSelectionNotice, setMediaSelectionNotice] = useState<string>();
   const [subtitleLangs, setSubtitleLangs] = useState<string[]>([]);
   const [selectedImageIds, setSelectedImageIds] = useState<Set<string>>(new Set());
   const [selectedEpisodeIndices, setSelectedEpisodeIndices] = useState<Set<number>>(new Set());
@@ -960,6 +962,7 @@ export function NewTaskDialog({
     setError(undefined);
     setFormat("");
     setMedia(undefined);
+    setMediaSelectionNotice(undefined);
     try {
       const result = await api.probeMedia(lines[0], {
         cookie: cookie || undefined,
@@ -998,8 +1001,9 @@ export function NewTaskDialog({
         if (!fileName) setFileName(`${safeDisplayName(result.title)}.${selected.extension || "m4a"}`);
       } else {
         const hasFfmpeg = result.ffmpeg_available ?? toolStatus?.ffmpeg_available ?? false;
-        const selected = selectDefaultVideoFormat(result.formats, hasFfmpeg);
-        setFormat(selected?.id ?? "");
+        const selection = selectInitialVideoFormat(result.formats, hasFfmpeg);
+        setFormat(selection.formatId);
+        setMediaSelectionNotice(selection.notice);
         if (!fileName) setFileName(`${safeDisplayName(result.title)}.mp4`);
       }
     } catch (reason) {
@@ -1017,6 +1021,14 @@ export function NewTaskDialog({
     ignoreDiskSpace = false
   ) => {
     if (!lines.length) return;
+    if (!media && lines.some(isDouyinMediaPage)) {
+      if (lines.length !== 1) {
+        setError("抖音作品请逐条添加，先分析媒体并选择原片后下载");
+        return;
+      }
+      await probe();
+      return;
+    }
     setBusy(true);
     setError(undefined);
     const activeFileName =
@@ -1073,7 +1085,7 @@ export function NewTaskDialog({
     if (authorization) headers.Authorization = authorization;
     const selectedFormat = media?.formats.find((item) => item.id === format);
     if (media && ["video", "mixed", "audio"].includes(media.media_type) && !selectedFormat) {
-      setError("请先选择带音轨的视频格式，或明确选择无声视频/纯音频格式");
+      setError("请先选择要下载的原片或音视频格式");
       setBusy(false);
       return;
     }
@@ -2912,6 +2924,9 @@ export function NewTaskDialog({
                 <span className="media-tag">已探测媒体</span>
                 <strong>{media.title}</strong>
               </div>
+              {mediaSelectionNotice && !format && (
+                <div className="media-empty-hint" role="status">{mediaSelectionNotice}</div>
+              )}
               {media.media_type === "gallery" ? (
                 <GalleryPicker
                   formats={media.formats}

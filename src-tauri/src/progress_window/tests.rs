@@ -1,7 +1,7 @@
 use super::{authorized, layout::placement, state::Cache};
 use crate::models::{AppSettings, BtRuntimeStatus, DownloadTask, TaskKind, TaskStatus};
 
-fn task(id: usize, status: TaskStatus) -> DownloadTask {
+pub(super) fn task(id: usize, status: TaskStatus) -> DownloadTask {
     let mut task: DownloadTask = serde_json::from_value(serde_json::json!({
         "id":format!("task-{id}"),"url":"https://source.invalid/file?token=synthetic-url-secret",
         "file_name":format!("download-{id}.bin"),"destination":"C:/synthetic-private-path",

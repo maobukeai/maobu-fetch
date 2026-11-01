@@ -1,5 +1,6 @@
 @echo off
 setlocal
+set "MAOBU_FETCH_SKIP_SYSTEM_INTEGRATION=1"
 
 set "VSDEVCMD="
 set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"

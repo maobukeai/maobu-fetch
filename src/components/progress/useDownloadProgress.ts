@@ -36,7 +36,7 @@ export function useDownloadProgress() {
     if (snapshot) setLocale(snapshot.language);
   }, [snapshot?.language]);
 
-  const perform = useCallback(async (key: string, operation: () => Promise<ProgressWindowSnapshot>) => {
+  const perform = useCallback(async (key: string, operation: () => Promise<ProgressWindowSnapshot>, errorKey = "progressWindow.actionError") => {
     if (busyRef.current) return;
     busyRef.current = true;
     setBusy(key);
@@ -46,7 +46,7 @@ export function useDownloadProgress() {
       if (mounted.current) accept(next);
     } catch {
       // The small window never echoes arbitrary backend strings or credential-bearing URLs.
-      if (mounted.current) setError(t("progressWindow.actionError"));
+      if (mounted.current) setError(t(errorKey));
     } finally {
       busyRef.current = false;
       if (mounted.current) setBusy(null);

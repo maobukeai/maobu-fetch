@@ -1252,54 +1252,7 @@ pub fn normalize_douyin_ssr_detail(detail: &serde_json::Value) -> serde_json::Va
 
 /// 从抖音 `/note/{aweme_id}` SSR HTML 中提取 `self.__pace_f.push([1, "..."])` 内的 `aweme.detail`。
 pub fn extract_douyin_ssr_aweme_detail(html: &str) -> Option<serde_json::Value> {
-    let marker = "__pace_f.push([1,";
-    let mut search_from = 0;
-    while let Some(rel_pos) = html[search_from..].find(marker) {
-        let chunk_start = search_from + rel_pos + marker.len();
-        search_from = chunk_start;
-        let rest = html[chunk_start..].trim_start();
-        if !rest.starts_with('"') {
-            continue;
-        }
-        let script_end = rest.find("</script>").unwrap_or(rest.len());
-        let script_slice = &rest[..script_end];
-        if !script_slice.contains("aweme") && !script_slice.contains("detail") {
-            continue;
-        }
-        let mut str_de = serde_json::Deserializer::from_str(script_slice).into_iter::<String>();
-        let Some(Ok(inner)) = str_de.next() else {
-            continue;
-        };
-        for aweme_marker in ["\"aweme\":{", "\"detail\":{"] {
-            let mut inner_from = 0;
-            while let Some(m_pos) = inner[inner_from..].find(aweme_marker) {
-                let brace_offset = aweme_marker
-                    .rfind('{')
-                    .expect("aweme_marker 必含 '{'（构建期不变量）");
-                let obj_start = inner_from + m_pos + brace_offset;
-                inner_from = obj_start + 1;
-                let mut val_de = serde_json::Deserializer::from_str(&inner[obj_start..])
-                    .into_iter::<serde_json::Value>();
-                if let Some(Ok(obj)) = val_de.next() {
-                    let target_detail = obj.get("detail").unwrap_or(&obj);
-                    let has_id = target_detail
-                        .get("awemeId")
-                        .or_else(|| target_detail.get("aweme_id"))
-                        .and_then(serde_json::Value::as_str)
-                        .is_some_and(|s| !s.is_empty());
-                    let has_media = target_detail.get("video").is_some()
-                        || target_detail
-                            .get("images")
-                            .and_then(serde_json::Value::as_array)
-                            .is_some_and(|a| !a.is_empty());
-                    if has_id && has_media {
-                        return Some(normalize_douyin_ssr_detail(target_detail));
-                    }
-                }
-            }
-        }
-    }
-    None
+    douyin_ssr::extract(html, None)
 }
 
 fn extract_cookie_pair_value(cookie_str: &str, key: &str) -> Option<String> {
@@ -1359,7 +1312,7 @@ async fn fetch_douyin_aweme_via_note_ssr(
             nonce_opt = extract_ac_nonce_from_headers(resp.headers());
             if resp.status().is_success() {
                 if let Ok(html) = resp.text().await {
-                    if let Some(detail) = extract_douyin_ssr_aweme_detail(&html) {
+                    if let Some(detail) = douyin_ssr::extract(&html, Some(aweme_id)) {
                         return Ok(detail);
                     }
                 }
@@ -1383,7 +1336,7 @@ async fn fetch_douyin_aweme_via_note_ssr(
         nonce_opt = extract_ac_nonce_from_headers(resp.headers());
         if resp.status().is_success() {
             if let Ok(html) = resp.text().await {
-                if let Some(detail) = extract_douyin_ssr_aweme_detail(&html) {
+                if let Some(detail) = douyin_ssr::extract(&html, Some(aweme_id)) {
                     return Ok(detail);
                 }
             }
@@ -1421,7 +1374,7 @@ async fn fetch_douyin_aweme_via_note_ssr(
         .text()
         .await
         .map_err(|e| format!("抖音 SSR 响应读取失败：{e}"))?;
-    extract_douyin_ssr_aweme_detail(&html2)
+    douyin_ssr::extract(&html2, Some(aweme_id))
         .ok_or_else(|| "抖音 SSR 页面未包含作品详情（可能作品已删除或受限）".into())
 }
 
@@ -2814,6 +2767,9 @@ fn sanitize_weibo_segment(segment: &str) -> String {
 mod credential_check;
 mod native_tracks;
 mod url_normalization;
+mod douyin_ssr;
+#[cfg(test)]
+mod douyin_share_tests;
 pub use url_normalization::normalize_bilibili_video_url;
 pub use credential_check::target as media_credential_check_target;
 pub use credential_check::{check_media_credential, check_media_credential_with_client};

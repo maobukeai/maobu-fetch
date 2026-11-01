@@ -116,7 +116,7 @@ async function openResourceGrabberForTab(tab) {
   } catch {
     try {
       if (chrome.scripting?.executeScript) {
-        await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["src/content-ui.js", "src/pikpak-adapter.js", "src/landisk-bridge.js", "src/content.js"] });
+        await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["src/content-ui.js", "src/pikpak-adapter.js", "src/landisk-bridge.js", "src/douyin-media.js", "src/content.js"] });
         const res = await chrome.tabs.sendMessage(tab.id, { type: "grab-page-resources" });
         if (res?.items) items = res.items;
       }
@@ -522,7 +522,7 @@ export async function confirmTakeoverWithOverlay(item, settings, deps = {}) {
   } catch {
     try {
       if (chrome.scripting?.executeScript) {
-        await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["src/content-ui.js", "src/pikpak-adapter.js", "src/landisk-bridge.js", "src/content.js"] });
+        await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["src/content-ui.js", "src/pikpak-adapter.js", "src/landisk-bridge.js", "src/douyin-media.js", "src/content.js"] });
         response = await askOverlay();
       }
     } catch {}

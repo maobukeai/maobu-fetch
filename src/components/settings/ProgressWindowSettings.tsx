@@ -22,7 +22,8 @@ export function ProgressWindowSettings({ value, savedEnabled, onChange, notify }
       if (snapshot.error || !snapshot.enabled) {
         notify(t("progressWindow.restoreError"), "error");
       } else {
-        notify(t(snapshot.total_count > 0 ? "progressWindow.restored" : "progressWindow.emptyRestore"));
+        const hasTasks = snapshot.total_count > 0 || (snapshot.completed_count ?? 0) > 0;
+        notify(t(hasTasks ? "progressWindow.restored" : "progressWindow.emptyRestore"));
       }
     } catch {
       notify(t("progressWindow.restoreError"), "error");

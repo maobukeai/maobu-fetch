@@ -6,6 +6,7 @@ import path from "node:path";
 import puppeteer from "puppeteer-core";
 import { createAuditServer } from "./ui-server.mjs";
 import { mediaUiFixture } from "./media-ui-fixture.mjs";
+import { checkDouyinSubmit } from "./media-submit-checks.mjs";
 
 const output = await mkdtemp(path.join(tmpdir(), "maobu-media-ui-"));
 const server = await createAuditServer(output);
@@ -36,6 +37,7 @@ try {
   const errors = [];
   page.on("pageerror", error => { errors.push(String(error)); console.error(String(error)); });
   const base = `http://127.0.0.1:${server.httpServer.address().port}/__media-audit.html`;
+  await checkDouyinSubmit(page, base, results);
   const analyze = async () => {
     await page.waitForSelector(".new-task-form");
     await page.evaluate(() => [...document.querySelectorAll("button")].find(button => button.textContent.trim() === "分析媒体").click());
@@ -91,7 +93,9 @@ try {
 
   await page.goto(base + "?mode=unknown");
   await analyze();
-  await page.waitForFunction(() => document.querySelector('.inline-error')?.textContent.includes('未确认'));
+  assert.ok(!(await page.$('.inline-error')), 'Resolved unknown-audio metadata is a successful manual-choice state');
+  await page.waitForFunction(() => document.querySelector('.media-result-card [role="status"]')?.textContent.includes('已找到原片'));
+  assert.ok((await page.$eval('.media-result-card [role="status"]', element => element.textContent)).includes('来源未提供音轨信息，请选择原片后下载'));
   await page.click('.confirm-btn');
   assert.equal(await page.evaluate(() => window.audit.calls.length),0);
   await page.focus('[aria-label="视频格式选择"]');
@@ -100,10 +104,25 @@ try {
   const description=await page.$eval('[aria-label="视频格式选择"]',element=>element.textContent);
   assert.ok(description.includes('音轨未确认'));
   assert.ok(!description.includes('无声'));
+  assert.equal(await page.$('.media-result-card [role="status"]'), null);
   await page.click('.confirm-btn');
   await page.waitForFunction(() => window.audit.calls.length===1);
   assert.equal(await page.evaluate(()=>window.audit.calls[0].media.format_id),'unknown-4k');
-  results.push('Unknown audio blocks automatic submission, remains explicitly selectable without a silent label');
+  results.push('Resolved unknown audio shows neutral manual-choice guidance; explicit selection is required and does not label it silent');
+
+  for (const [formats, expected] of [
+    [[{id:'merge-only',label:'merge-only',has_video:true,has_audio:true,requires_ffmpeg:true}], 'FFmpeg'],
+    [[], '未找到'],
+  ]) {
+    await page.goto(base + '?ffmpeg=false');
+    await page.evaluate(formats => { window.audit.result = {...window.audit.result,formats}; }, formats);
+    await analyze();
+    await page.waitForFunction(text => document.querySelector('.inline-error')?.textContent.includes(text), {}, expected);
+    assert.equal(await page.$('.media-result-card [role="status"]'), null);
+    await page.click('.confirm-btn');
+    assert.equal(await page.evaluate(() => window.audit.calls.length), 0);
+  }
+  results.push('Missing FFmpeg and empty format results remain actionable errors and cannot submit');
 
   for (const [width,height] of [[1280,720],[1440,900]]) for (const scale of [1,1.25]) for (const theme of ["light","dark"]) {
     await page.setViewport({width,height,deviceScaleFactor:scale});

@@ -1819,7 +1819,11 @@ fn register_deep_link_handler(app: &tauri::AppHandle, manager: SharedManager) {
     use tauri_plugin_deep_link::DeepLinkExt;
 
     // 在 Windows/Linux 上动态注册 maobu:// 协议以支持开发/便携模式下的深链唤醒。
-    let _ = app.deep_link().register("maobu");
+    if system_integration::allowed() {
+        if let Err(error) = app.deep_link().register("maobu") {
+            tracing::warn!(reason=%manager::redact_sensitive(&error.to_string()), "注册 maobu 深链失败，可在设置中重试");
+        }
+    }
 
     // 监听运行时 deep-link 事件（插件 emit "deep-link://new-url"，payload 为 Vec<url::Url>）。
     let event_app = app.clone();
@@ -4525,7 +4529,9 @@ fn run_with_presentation(presentation: startup_failure::Presentation) -> i32 {
             progress_window::commands::progress_window_task_action,
             progress_window::commands::progress_window_show_main,
             progress_window::commands::progress_window_dismiss,
-            progress_window::commands::progress_window_restore
+            progress_window::commands::progress_window_restore,
+            progress_window::completion_commands::progress_window_set_interacting,
+            progress_window::completion_commands::progress_window_open_completed
         ])
         .build(tauri::generate_context!());
     startup_failure::finish_build(

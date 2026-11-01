@@ -1,7 +1,9 @@
+use super::completions::Completions;
 use crate::models::{AppSettings, ColorScheme, DownloadTask, TaskStatus};
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, MutexGuard};
+use std::time::Instant;
 use tokio::sync::{Mutex as AsyncMutex, Notify};
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
@@ -23,6 +25,8 @@ pub(crate) struct Snapshot {
     pub revision: u64,
     pub tasks: Vec<ProgressTask>,
     pub total_count: usize,
+    pub completed_tasks: Vec<ProgressTask>,
+    pub completed_count: usize,
     pub total_speed_bps: u64,
     pub always_on_top: bool,
     pub enabled: bool,
@@ -37,73 +41,7 @@ pub(crate) struct Snapshot {
     pub error: Option<String>,
 }
 
-#[derive(Clone)]
-pub(super) struct CachedTask {
-    pub view: ProgressTask,
-    priority: i32,
-    position: i64,
-    created_at: u64,
-}
-
-impl CachedTask {
-    pub fn from_task(task: &DownloadTask) -> Option<Self> {
-        if !matches!(
-            task.status,
-            TaskStatus::Queued
-                | TaskStatus::Downloading
-                | TaskStatus::Verifying
-                | TaskStatus::WaitingNetwork
-        ) {
-            return None;
-        }
-        let fetching_metadata = task
-            .bt_runtime
-            .as_ref()
-            .is_some_and(|value| value.fetching_metadata);
-        let downloading = task.status == TaskStatus::Downloading;
-        let file_name = if fetching_metadata {
-            "待获取".into()
-        } else {
-            crate::manager::redact_sensitive(&task.file_name)
-                .chars()
-                .filter(|character| !character.is_control())
-                .take(512)
-                .collect()
-        };
-        Some(Self {
-            view: ProgressTask {
-                id: task.id.clone(),
-                file_name,
-                status: task.status.clone(),
-                downloaded_bytes: if fetching_metadata {
-                    0
-                } else {
-                    task.downloaded_bytes
-                },
-                total_bytes: if fetching_metadata {
-                    0
-                } else {
-                    task.total_bytes
-                },
-                speed_bps: if downloading { task.speed } else { 0 },
-                eta_seconds: if downloading && !fetching_metadata && task.total_bytes > 0 {
-                    task.eta_seconds
-                } else {
-                    None
-                },
-                fetching_metadata,
-                can_pause: matches!(
-                    task.status,
-                    TaskStatus::Queued | TaskStatus::Downloading | TaskStatus::WaitingNetwork
-                ),
-                can_resume: false,
-            },
-            priority: task.priority,
-            position: task.queue_position,
-            created_at: task.created_at,
-        })
-    }
-}
+pub(super) use super::task_view::CachedTask;
 
 pub(super) struct Cache {
     tasks: HashMap<String, CachedTask>,
@@ -116,6 +54,7 @@ pub(super) struct Cache {
     pub enabled: bool,
     pub pinned: bool,
     pub pin_inflight: bool,
+    completions: Completions,
     theme: String,
     color_scheme: ColorScheme,
     language: String,
@@ -137,6 +76,7 @@ impl Default for Cache {
             enabled: true,
             pinned: true,
             pin_inflight: false,
+            completions: Completions::default(),
             theme: "system".into(),
             color_scheme: ColorScheme::System,
             language: "zh-CN".into(),
@@ -168,17 +108,38 @@ impl Cache {
             self.preferences(settings);
         }
         self.initialized = true;
-        if self.tasks.is_empty() {
+        if self.tasks.is_empty() && self.completions.is_empty() {
             self.revealed = false;
         }
         self.revision = self.revision.saturating_add(1);
     }
 
     pub fn update(&mut self, task: &DownloadTask) {
-        self.update_id(task.id.clone(), CachedTask::from_task(task));
+        self.update_at(task, Instant::now());
+    }
+
+    pub(super) fn update_at(&mut self, task: &DownloadTask, now: Instant) {
+        self.expire_completions(now);
+        if task.status == TaskStatus::Completed {
+            // Only an observed transition may create a notice. Startup history,
+            // repeated terminal/seeding updates and expired IDs cannot reappear.
+            if self.enabled && self.tasks.contains_key(&task.id) {
+                self.completions
+                    .insert(super::task_view::completed(task), now);
+                self.dismissed = None;
+            }
+        } else {
+            self.completions.remove(&task.id);
+        }
+        self.update_active(task.id.clone(), CachedTask::from_task(task));
     }
 
     pub fn update_id(&mut self, id: String, task: Option<CachedTask>) {
+        self.completions.remove(&id);
+        self.update_active(id, task);
+    }
+
+    fn update_active(&mut self, id: String, task: Option<CachedTask>) {
         if !self.initialized {
             self.pending.insert(id.clone(), task.clone());
         }
@@ -190,7 +151,7 @@ impl Cache {
                 self.tasks.remove(&id);
             }
         }
-        if self.initialized && self.tasks.is_empty() {
+        if self.initialized && self.tasks.is_empty() && self.completions.is_empty() {
             self.dismissed = None;
             self.revealed = false;
         }
@@ -204,6 +165,7 @@ impl Cache {
         self.enabled = settings.progress_window_enabled;
         if !self.enabled {
             self.revealed = false;
+            self.completions.clear(Instant::now());
         }
         self.pinned = settings.progress_window_always_on_top;
         self.theme = settings.theme.clone();
@@ -216,6 +178,7 @@ impl Cache {
 
     pub fn dismiss(&mut self) {
         self.dismissed = Some(self.tasks.keys().cloned().collect());
+        self.completions.clear(Instant::now());
         self.revealed = false;
         self.revision = self.revision.saturating_add(1);
     }
@@ -225,7 +188,7 @@ impl Cache {
         let revealed = requested
             && self.initialized
             && self.enabled
-            && !self.tasks.is_empty()
+            && (!self.tasks.is_empty() || !self.completions.is_empty())
             && self.dismissed.is_none();
         if self.revealed == revealed {
             return false;
@@ -236,7 +199,7 @@ impl Cache {
     }
 
     pub fn should_show(&mut self) -> bool {
-        if self.tasks.is_empty() {
+        if self.tasks.is_empty() && self.completions.is_empty() {
             self.dismissed = None;
             self.revealed = false;
             return false;
@@ -249,6 +212,45 @@ impl Cache {
             self.dismissed = None;
         }
         self.initialized && self.enabled && self.dismissed.is_none()
+    }
+
+    pub(super) fn expire_completions(&mut self, now: Instant) {
+        let expired = self.completions.advance(now);
+        let collapse = self.tasks.is_empty() && self.completions.is_empty() && self.revealed;
+        if expired || collapse {
+            if self.tasks.is_empty() && self.completions.is_empty() {
+                self.revealed = false;
+                self.dismissed = None;
+            }
+            self.revision = self.revision.saturating_add(1);
+        }
+    }
+
+    pub(super) fn completion_deadline(&self) -> Option<Instant> {
+        self.completions.deadline()
+    }
+
+    pub(super) fn set_interacting(&mut self, value: bool, now: Instant) {
+        let permitted = self.initialized
+            && self.enabled
+            && self.dismissed.is_none()
+            && (!self.tasks.is_empty() || !self.completions.is_empty());
+        if self.completions.interacting(value && permitted, now) {
+            self.revision = self.revision.saturating_add(1);
+        }
+    }
+
+    pub(super) fn begin_completion_open(&mut self, id: &str, now: Instant) -> Result<(), String> {
+        self.expire_completions(now);
+        if !self.enabled || self.dismissed.is_some() {
+            return Err("完成提醒已关闭，请在主窗口打开任务文件".into());
+        }
+        self.completions.begin_open(id, now)
+    }
+
+    pub(super) fn finish_completion_open(&mut self, id: &str, failed: bool, now: Instant) {
+        self.completions.finish_open(id, failed, now);
+        self.revision = self.revision.saturating_add(1);
     }
 
     pub fn snapshot(&self) -> Snapshot {
@@ -269,6 +271,8 @@ impl Cache {
         Snapshot {
             revision: self.revision,
             total_count: tasks.len(),
+            completed_tasks: self.completions.tasks(),
+            completed_count: self.completions.len(),
             total_speed_bps: tasks
                 .iter()
                 .fold(0u64, |sum, task| sum.saturating_add(task.view.speed_bps)),
@@ -312,6 +316,8 @@ impl ProgressWindowState {
             .map_err(|_| "下载进度状态暂时不可用，请重新打开主窗口".into())
     }
     pub(super) fn snapshot(&self) -> Result<Snapshot, String> {
-        Ok(self.lock()?.snapshot())
+        let mut cache = self.lock()?;
+        cache.expire_completions(Instant::now());
+        Ok(cache.snapshot())
     }
 }

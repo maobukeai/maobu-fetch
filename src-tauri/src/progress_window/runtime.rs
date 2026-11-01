@@ -3,7 +3,7 @@ use crate::{
     manager::SharedManager,
     models::{AppSettings, TaskProgressEvent},
 };
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Listener, Manager};
 
 /// Register after SharedManager has been managed. Initial DB snapshot is read once;
@@ -66,10 +66,23 @@ pub(crate) fn register(app: &AppHandle, manager: SharedManager) {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         loop {
-            state.notify.notified().await;
+            let deadline = state
+                .lock()
+                .ok()
+                .and_then(|cache| cache.completion_deadline());
+            match deadline {
+                Some(deadline) => tokio::select! {
+                    _ = state.notify.notified() => {},
+                    _ = tokio::time::sleep_until(deadline.into()) => {},
+                },
+                None => state.notify.notified().await,
+            }
             // One event-driven, coalesced update. No permanent polling timer and
             // no per-progress-event scan of the user's SQLite task history.
             tokio::time::sleep(Duration::from_millis(250)).await;
+            if let Ok(mut cache) = state.lock() {
+                cache.expire_completions(Instant::now());
+            }
             if let Err(error) = creation::prepare(&app, &state).await {
                 report(&app, &state, error);
                 continue;

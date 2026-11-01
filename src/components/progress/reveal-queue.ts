@@ -3,11 +3,12 @@ export function createRevealQueue<T>(
   send: (revealed: boolean) => Promise<T>,
   accept: (value: T) => void,
   failed: () => void,
+  initialLastSent: boolean | null = false,
 ) {
   let active = true;
   let running = false;
   let desired = false;
-  let lastSent: boolean | null = false;
+  let lastSent: boolean | null = initialLastSent;
   let attempted = false;
 
   const flush = async () => {
