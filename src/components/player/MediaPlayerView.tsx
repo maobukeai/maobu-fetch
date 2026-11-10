@@ -39,6 +39,17 @@ import { api, isDesktop } from "../../api";
 import { formatBytes, formatDuration } from "../../formatters";
 import type { PlaylistItem, SubtitleItem, SubtitleStyleConfig } from "../../types";
 import { getActiveCueText, parseAnySubtitles, type SubtitleCue } from "./SubtitleParser";
+import type { ChapterMatch, SkipIntroOutroConfig } from "./skip/SkipTypes";
+import {
+  canSkipIntro,
+  canSkipOutro,
+  detectChaptersFromVideo,
+  loadSkipConfig,
+  resolveSkipSettings,
+  saveSkipConfig,
+} from "./skip/SkipIntroOutroManager";
+import { SkipIntroOutroPanel } from "./skip/SkipIntroOutroPanel";
+import { SkipNoticeToast } from "./skip/SkipNoticeToast";
 import "./MediaPlayer.css";
 
 interface MediaPlayerProps {
@@ -144,6 +155,74 @@ export function MediaPlayerView({ initialFile, initialTitle }: MediaPlayerProps)
     if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
     toastTimerRef.current = setTimeout(() => setToastMessage(""), 2500);
   }, []);
+
+  // 跳过片头片尾与剧集识别状态
+  const [showSkipMenu, setShowSkipMenu] = useState<boolean>(false);
+  const [skipConfig, setSkipConfig] = useState<SkipIntroOutroConfig>(loadSkipConfig);
+  const [chapterMarks, setChapterMarks] = useState<ChapterMatch | null>(null);
+  const [skipToast, setSkipToast] = useState<{
+    type: "intro" | "outro" | null;
+    seconds?: number;
+    countdown?: number;
+  }>({ type: null });
+
+  const hasSkippedIntroRef = useRef<boolean>(false);
+  const hasSkippedOutroRef = useRef<boolean>(false);
+  const outroTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const introToastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const updateSkipConfig = useCallback(
+    (updater: (prev: SkipIntroOutroConfig) => SkipIntroOutroConfig) => {
+      setSkipConfig((prev) => {
+        const next = updater(prev);
+        saveSkipConfig(next);
+        return next;
+      });
+    },
+    []
+  );
+
+  const resolvedSkip = useMemo(
+    () =>
+      resolveSkipSettings(
+        filePath,
+        videoTitle,
+        skipConfig,
+        playlist.length,
+        chapterMarks
+      ),
+    [filePath, videoTitle, skipConfig, playlist.length, chapterMarks]
+  );
+  const resolvedSkipRef = useRef(resolvedSkip);
+  resolvedSkipRef.current = resolvedSkip;
+
+  const applySeriesSetting = useCallback(
+    (introSeconds: number, outroSeconds: number) => {
+      if (!resolvedSkip.seriesKey) return;
+      updateSkipConfig((prev) => ({
+        ...prev,
+        seriesSettings: {
+          ...prev.seriesSettings,
+          [resolvedSkip.seriesKey]: {
+            introSeconds,
+            outroSeconds,
+            updatedAt: Date.now(),
+          },
+        },
+      }));
+    },
+    [resolvedSkip.seriesKey, updateSkipConfig]
+  );
+
+  const clearSeriesSetting = useCallback(() => {
+    if (!resolvedSkip.seriesKey) return;
+    updateSkipConfig((prev) => {
+      const copy = { ...prev.seriesSettings };
+      delete copy[resolvedSkip.seriesKey];
+      return { ...prev, seriesSettings: copy };
+    });
+    triggerToast("已重置当前剧集专属记忆，恢复全局预设");
+  }, [resolvedSkip.seriesKey, triggerToast, updateSkipConfig]);
 
   // 手动选择本地字幕文件导入
   const handleSelectSubtitleFile = useCallback(
@@ -307,6 +386,12 @@ export function MediaPlayerView({ initialFile, initialTitle }: MediaPlayerProps)
     setActiveSubtitlePath("");
     setCurrentTime(0);
     setBufferedEnd(0);
+    hasSkippedIntroRef.current = false;
+    hasSkippedOutroRef.current = false;
+    setChapterMarks(null);
+    setSkipToast({ type: null });
+    if (outroTimerRef.current) clearInterval(outroTimerRef.current);
+    if (introToastTimerRef.current) clearTimeout(introToastTimerRef.current);
     refreshFolderPlaylist(path);
     refreshMatchedSubtitles(path);
   }, [refreshFolderPlaylist, refreshMatchedSubtitles]);
@@ -377,23 +462,46 @@ export function MediaPlayerView({ initialFile, initialTitle }: MediaPlayerProps)
     const dur = video.duration;
     setDuration(dur);
 
+    // 探测内嵌章节
+    const marks = detectChaptersFromVideo(video);
+    setChapterMarks(marks);
+
+    let willResume = false;
     if (filePath) {
       const resumeKey = `maobu_resume_${filePath}`;
       const savedTime = parseFloat(localStorage.getItem(resumeKey) || "0");
       if (savedTime > 5 && savedTime < dur - 5) {
         video.currentTime = savedTime;
         triggerToast(`已从上次记忆位置 ${formatDuration(Math.floor(savedTime))} 继续`);
+        willResume = true;
       }
+    }
+
+    // 若无需从历史位置继续，且启用了跳过片头，则自动跳过片头
+    const curResolved = resolvedSkipRef.current;
+    if (
+      !willResume &&
+      curResolved.enabled &&
+      canSkipIntro(0, curResolved.introSeconds, dur, hasSkippedIntroRef.current)
+    ) {
+      video.currentTime = curResolved.introSeconds;
+      hasSkippedIntroRef.current = true;
+      setSkipToast({ type: "intro", seconds: curResolved.introSeconds });
+      if (introToastTimerRef.current) clearTimeout(introToastTimerRef.current);
+      introToastTimerRef.current = setTimeout(() => {
+        setSkipToast((prev) => (prev.type === "intro" ? { type: null } : prev));
+      }, 5000);
     }
 
     video.play().then(() => setIsPlaying(true)).catch(() => setIsPlaying(false));
   }, [filePath, triggerToast]);
 
-  // 定时记录播放进度
+  // 定时记录播放进度与自动跳过片头片尾
   const handleTimeUpdate = useCallback(() => {
     const video = videoRef.current;
     if (!video) return;
     const ct = video.currentTime;
+    const dur = video.duration || duration;
     setCurrentTime(ct);
 
     if (video.buffered.length > 0) {
@@ -403,7 +511,45 @@ export function MediaPlayerView({ initialFile, initialTitle }: MediaPlayerProps)
     if (filePath && ct > 3) {
       localStorage.setItem(`maobu_resume_${filePath}`, ct.toString());
     }
-  }, [filePath]);
+
+    const curResolved = resolvedSkipRef.current;
+    // 片头自动跳过兜底触发（在开头前 3 秒内）
+    if (
+      curResolved.enabled &&
+      canSkipIntro(ct, curResolved.introSeconds, dur, hasSkippedIntroRef.current)
+    ) {
+      video.currentTime = curResolved.introSeconds;
+      hasSkippedIntroRef.current = true;
+      setSkipToast({ type: "intro", seconds: curResolved.introSeconds });
+      if (introToastTimerRef.current) clearTimeout(introToastTimerRef.current);
+      introToastTimerRef.current = setTimeout(() => {
+        setSkipToast((prev) => (prev.type === "intro" ? { type: null } : prev));
+      }, 5000);
+    }
+
+    // 片尾自动跳过触发
+    if (
+      curResolved.enabled &&
+      canSkipOutro(ct, curResolved.outroSeconds, dur, hasSkippedOutroRef.current)
+    ) {
+      hasSkippedOutroRef.current = true;
+      if (curResolved.autoPlayNextOnOutro && playlist.length > 1) {
+        if (outroTimerRef.current) clearInterval(outroTimerRef.current);
+        let count = 5;
+        setSkipToast({ type: "outro", countdown: count });
+        outroTimerRef.current = setInterval(() => {
+          count -= 1;
+          if (count <= 0) {
+            if (outroTimerRef.current) clearInterval(outroTimerRef.current);
+            setSkipToast({ type: null });
+            playNextVideoRef.current(true);
+          } else {
+            setSkipToast({ type: "outro", countdown: count });
+          }
+        }, 1000);
+      }
+    }
+  }, [duration, filePath, playlist.length]);
 
   // 控制栏自动隐藏
   const resetHideControlsTimer = useCallback(() => {
@@ -415,6 +561,7 @@ export function MediaPlayerView({ initialFile, initialTitle }: MediaPlayerProps)
         setShowSpeedMenu(false);
         setShowSubtitleMenu(false);
         setShowVolumeMenu(false);
+        setShowSkipMenu(false);
       }
     }, 2500);
   }, [isPlaying, showPlaylist]);
@@ -530,6 +677,35 @@ export function MediaPlayerView({ initialFile, initialTitle }: MediaPlayerProps)
       triggerOverlay("next", "下一视频");
     }
   }, [filePath, loadAndPlayVideo, playMode, playlist, triggerOverlay, triggerToast]);
+
+  const playNextVideoRef = useRef(playNextVideo);
+  playNextVideoRef.current = playNextVideo;
+
+  // 撤销跳过片头
+  const handleUndoIntro = useCallback(() => {
+    if (videoRef.current) {
+      videoRef.current.currentTime = 0;
+      videoRef.current.play().catch(() => {});
+    }
+    hasSkippedIntroRef.current = true;
+    if (introToastTimerRef.current) clearTimeout(introToastTimerRef.current);
+    setSkipToast({ type: null });
+    triggerToast("已撤销跳过片头，返回开头播放");
+  }, [triggerToast]);
+
+  // 立即跳过片尾
+  const handleSkipOutroNow = useCallback(() => {
+    if (outroTimerRef.current) clearInterval(outroTimerRef.current);
+    setSkipToast({ type: null });
+    playNextVideoRef.current(true);
+  }, []);
+
+  // 取消跳过片尾
+  const handleCancelOutroSkip = useCallback(() => {
+    if (outroTimerRef.current) clearInterval(outroTimerRef.current);
+    setSkipToast({ type: null });
+    triggerToast("已取消跳过片尾，继续播放当前视频");
+  }, [triggerToast]);
 
   // 循环切换播放模式
   const cyclePlayMode = useCallback(() => {
@@ -896,6 +1072,13 @@ export function MediaPlayerView({ initialFile, initialTitle }: MediaPlayerProps)
             return !prev;
           });
           break;
+        case "z":
+        case "Z":
+          if (skipToast.type === "intro") {
+            e.preventDefault();
+            handleUndoIntro();
+          }
+          break;
         case "[":
           e.preventDefault();
           changePlaybackRate(Math.max(0.5, parseFloat((playbackRate - 0.25).toFixed(2))));
@@ -909,11 +1092,12 @@ export function MediaPlayerView({ initialFile, initialTitle }: MediaPlayerProps)
             e.preventDefault();
             setShowPlaylist(false);
             setShowSortMenu(false);
-          } else if (showSpeedMenu || showSubtitleMenu || showVolumeMenu) {
+          } else if (showSpeedMenu || showSubtitleMenu || showVolumeMenu || showSkipMenu) {
             e.preventDefault();
             setShowSpeedMenu(false);
             setShowSubtitleMenu(false);
             setShowVolumeMenu(false);
+            setShowSkipMenu(false);
           } else if (isFullscreen) {
             e.preventDefault();
             toggleFullscreen();
@@ -938,11 +1122,18 @@ export function MediaPlayerView({ initialFile, initialTitle }: MediaPlayerProps)
     captureScreenshot,
     changePlaybackRate,
     duration,
+    handleUndoIntro,
     isMuted,
     playNextVideo,
     playPrevVideo,
     playbackRate,
     seekRelative,
+    showPlaylist,
+    showSkipMenu,
+    showSpeedMenu,
+    showSubtitleMenu,
+    showVolumeMenu,
+    skipToast.type,
     toggleFullscreen,
     togglePiP,
     togglePlay,
@@ -1175,6 +1366,16 @@ export function MediaPlayerView({ initialFile, initialTitle }: MediaPlayerProps)
             <span>{overlayFeedback.text}</span>
           </div>
         )}
+
+        {/* 跳过片头/片尾浮动提示胶囊 */}
+        <SkipNoticeToast
+          type={skipToast.type}
+          seconds={skipToast.seconds}
+          countdown={skipToast.countdown}
+          onUndoIntro={handleUndoIntro}
+          onSkipOutroNow={handleSkipOutroNow}
+          onCancelOutroSkip={handleCancelOutroSkip}
+        />
       </div>
 
       {/* 底部浮动控制栏面板 */}
@@ -1200,6 +1401,24 @@ export function MediaPlayerView({ initialFile, initialTitle }: MediaPlayerProps)
           onMouseLeave={() => setHoverProgress(null)}
         >
           <div className="maobu-player-progress-rail">
+            {resolvedSkip.enabled && duration > 0 && resolvedSkip.introSeconds > 0 && (
+              <div
+                className="maobu-player-progress-intro-marker"
+                style={{
+                  width: `${Math.min(50, (resolvedSkip.introSeconds / duration) * 100)}%`,
+                }}
+                title={`片头跳过区间: 00:00 - ${formatPlayerTime(resolvedSkip.introSeconds)}`}
+              />
+            )}
+            {resolvedSkip.enabled && duration > 0 && resolvedSkip.outroSeconds > 0 && (
+              <div
+                className="maobu-player-progress-outro-marker"
+                style={{
+                  width: `${Math.min(50, (resolvedSkip.outroSeconds / duration) * 100)}%`,
+                }}
+                title={`片尾跳过区间: 倒数 ${formatPlayerTime(resolvedSkip.outroSeconds)}`}
+              />
+            )}
             <div
               className="maobu-player-progress-buffered"
               style={{ width: `${(bufferedEnd / (duration || 1)) * 100}%` }}
@@ -1428,6 +1647,7 @@ export function MediaPlayerView({ initialFile, initialTitle }: MediaPlayerProps)
                   setShowSubtitleMenu(false);
                   setShowPlaylist(false);
                   setShowVolumeMenu(false);
+                  setShowSkipMenu(false);
                 }}
                 className="maobu-player-icon-btn"
                 style={{ fontSize: "12px", fontFamily: "monospace", padding: "4px 8px" }}
@@ -1452,6 +1672,40 @@ export function MediaPlayerView({ initialFile, initialTitle }: MediaPlayerProps)
               )}
             </div>
 
+            {/* 跳过片头片尾设置菜单 */}
+            <div style={{ position: "relative" }}>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowSkipMenu((prev) => !prev);
+                  setShowSubtitleMenu(false);
+                  setShowSpeedMenu(false);
+                  setShowPlaylist(false);
+                  setShowVolumeMenu(false);
+                }}
+                title={
+                  resolvedSkip.enabled
+                    ? `跳过片头片尾 (${resolvedSkip.sourceLabel} - 片头 ${resolvedSkip.introSeconds}s / 片尾 ${resolvedSkip.outroSeconds}s)`
+                    : "跳过片头片尾设置 (已关闭)"
+                }
+                className={`maobu-player-icon-btn ${resolvedSkip.enabled ? "active" : ""}`}
+              >
+                <FastForward size={16} />
+              </button>
+              {showSkipMenu && (
+                <SkipIntroOutroPanel
+                  config={skipConfig}
+                  resolved={resolvedSkip}
+                  currentTime={currentTime}
+                  duration={duration}
+                  onUpdateConfig={updateSkipConfig}
+                  onApplyToSeries={applySeriesSetting}
+                  onClearSeriesSetting={clearSeriesSetting}
+                  onToast={triggerToast}
+                />
+              )}
+            </div>
+
             {/* 字幕菜单 */}
             <div style={{ position: "relative" }}>
               <button
@@ -1461,6 +1715,7 @@ export function MediaPlayerView({ initialFile, initialTitle }: MediaPlayerProps)
                   setShowSpeedMenu(false);
                   setShowPlaylist(false);
                   setShowVolumeMenu(false);
+                  setShowSkipMenu(false);
                 }}
                 title="字幕设置"
                 className={`maobu-player-icon-btn ${subtitles.length > 0 ? "active" : ""}`}
@@ -1710,6 +1965,7 @@ export function MediaPlayerView({ initialFile, initialTitle }: MediaPlayerProps)
                 setShowSubtitleMenu(false);
                 setShowSpeedMenu(false);
                 setShowVolumeMenu(false);
+                setShowSkipMenu(false);
               }}
               title="播放列表 (L)"
               className={`maobu-player-icon-btn ${showPlaylist ? "active" : ""}`}

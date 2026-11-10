@@ -1,7 +1,7 @@
 {
   "name": "maobu-fetch",
   "private": true,
-  "version": "0.10.14",
+  "version": "0.10.15",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -13,7 +13,7 @@
     "audit:ui": "node scripts/audit/ui.mjs",
     "audit:select": "node scripts/audit/select-ui.mjs",
     "version:bump": "node scripts/bump-version.mjs",
-    "check": "node scripts/release-metadata.test.mjs && node scripts/audit/app-contract.mjs && node scripts/audit/tauri-contracts.mjs && npx tsx src/i18n.test.ts && npx tsx src/media-format-selection.test.ts && npx tsx src/components/progress/progress-model.test.ts && npx tsx src/components/settings/platform-compatibility.test.ts && npx tsx src/url-sequence.test.ts && npx tsx src/drag-drop.test.ts && npx tsx src/task-headers.test.ts && npx tsx src/delete-summary.test.ts && npx tsx src/components/player/SubtitleParser.test.ts && npx tsx src/components/viewer/image-viewer.test.ts && npx tsx src/pikpak.test.ts && npx tsx src/quark.test.ts && npx tsx src/baidupan.test.ts && npx tsx src/lanzou.test.ts && npx tsx src/pan123.test.ts && tsc --noEmit && npm --prefix extension run check",
+    "check": "node scripts/release-metadata.test.mjs && node scripts/audit/app-contract.mjs && node scripts/audit/tauri-contracts.mjs && npx tsx src/i18n.test.ts && npx tsx src/media-format-selection.test.ts && npx tsx src/components/progress/progress-model.test.ts && npx tsx src/components/settings/platform-compatibility.test.ts && npx tsx src/url-sequence.test.ts && npx tsx src/drag-drop.test.ts && npx tsx src/task-headers.test.ts && npx tsx src/delete-summary.test.ts && npx tsx src/components/player/SubtitleParser.test.ts && npx tsx src/components/player/skip/SkipIntroOutro.test.ts && npx tsx src/components/viewer/image-viewer.test.ts && npx tsx src/pikpak.test.ts && npx tsx src/quark.test.ts && npx tsx src/baidupan.test.ts && npx tsx src/lanzou.test.ts && npx tsx src/pan123.test.ts && tsc --noEmit && npm --prefix extension run check",
     "clean": "cargo clean --manifest-path src-tauri/Cargo.toml"
   },
   "dependencies": {

@@ -1,7 +1,7 @@
 import type { PlatformCompatibility } from "../../types";
 import { compatibilityBadge, verificationScopeLabel } from "./platform-compatibility";
 
-const names: Record<string, string> = { bilibili: "哔哩哔哩", douyin: "抖音", tiktok: "TikTok", twitter: "Twitter/X", youtube: "YouTube", weibo: "微博", pikpak: "PikPak", quark: "夸克网盘", baidupan: "百度网盘", baidu: "百度网盘", lanzou: "蓝奏云", pan123: "123云盘", "123pan": "123云盘" };
+const names: Record<string, string> = { bilibili: "哔哩哔哩", douyin: "抖音", tiktok: "TikTok", twitter: "Twitter/X", youtube: "YouTube", weibo: "微博", pikpak: "PikPak", quark: "夸克网盘", baidupan: "百度网盘", baidu: "百度网盘", lanzou: "蓝奏云", pan123: "123云盘", "123pan": "123云盘", xiaohongshu: "小红书", kuaishou: "快手", xigua: "西瓜视频" };
 const cell = { padding: "7px 8px", borderBottom: "1px solid var(--border)", verticalAlign: "top" } as const;
 
 export function PlatformCompatibilitySection({ items, appVersion }: { items: PlatformCompatibility[]; appVersion?: string }) {

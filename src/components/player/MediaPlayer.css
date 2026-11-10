@@ -1597,4 +1597,282 @@
   }
 }
 
+/* ==========================================================================
+   跳过片头片尾与剧集看剧助手样式（超清透玻璃科技风）
+   ========================================================================== */
+
+/* 进度条轨道上的片头/片尾跳过区间指示高亮细条 */
+.maobu-player-progress-intro-marker {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 100%;
+  background: rgba(245, 158, 11, 0.4);
+  border-right: 1.5px solid #f59e0b;
+  pointer-events: none;
+  z-index: 1;
+  transition: opacity 0.2s ease;
+}
+
+.maobu-player-progress-outro-marker {
+  position: absolute;
+  top: 0;
+  right: 0;
+  height: 100%;
+  background: rgba(245, 158, 11, 0.4);
+  border-left: 1.5px solid #f59e0b;
+  pointer-events: none;
+  z-index: 1;
+  transition: opacity 0.2s ease;
+}
+
+/* 跳过片头片尾设置面板微调 */
+.maobu-player-skip-panel {
+  min-width: 290px;
+  max-width: min(340px, calc(100vw - 20px));
+}
+
+.maobu-player-skip-status-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 6px 10px;
+  background: rgba(56, 189, 248, 0.08);
+  border: 1px solid rgba(56, 189, 248, 0.2);
+  border-radius: 6px;
+  font-size: 11px;
+}
+
+.maobu-player-skip-status-left {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  flex: 1;
+}
+
+.maobu-player-skip-status-text {
+  color: #bae6fd;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.maobu-player-skip-reset-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 6px;
+  background: transparent;
+  border: 1px solid rgba(148, 163, 184, 0.3);
+  border-radius: 4px;
+  color: #94a3b8;
+  font-size: 10px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.maobu-player-skip-reset-btn:hover {
+  color: #f1f5f9;
+  border-color: rgba(248, 113, 113, 0.6);
+  background: rgba(248, 113, 113, 0.15);
+}
+
+.maobu-player-skip-presets {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.maobu-player-skip-preset-chip {
+  padding: 2px 8px;
+  border-radius: 9999px;
+  font-size: 11px;
+  font-family: monospace;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: #cbd5e1;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.maobu-player-skip-preset-chip:hover:not(:disabled) {
+  background: rgba(56, 189, 248, 0.15);
+  border-color: rgba(56, 189, 248, 0.4);
+  color: #38bdf8;
+}
+
+.maobu-player-skip-preset-chip.active {
+  background: rgba(56, 189, 248, 0.25);
+  border-color: #38bdf8;
+  color: #38bdf8;
+  font-weight: 600;
+}
+
+.maobu-player-skip-preset-chip:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.maobu-player-skip-mark-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: 100%;
+  margin-top: 6px;
+  padding: 5px 8px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px dashed rgba(255, 255, 255, 0.16);
+  border-radius: 6px;
+  font-size: 11px;
+  color: #94a3b8;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.maobu-player-skip-mark-btn:hover:not(:disabled) {
+  background: rgba(56, 189, 248, 0.12);
+  border-color: rgba(56, 189, 248, 0.5);
+  color: #38bdf8;
+}
+
+.maobu-player-skip-mark-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* 跳过片头/片尾浮动通知胶囊 (HUD Toast) */
+.maobu-player-skip-toast {
+  position: absolute;
+  z-index: 45;
+  display: flex;
+  align-items: center;
+  padding: 8px 14px;
+  background: rgba(15, 23, 42, 0.88);
+  backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.15);
+  color: #f1f5f9;
+  font-size: 13px;
+  pointer-events: auto;
+  animation: maobu-player-skip-fade-in 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+  user-select: none;
+}
+
+.maobu-player-skip-toast.intro {
+  bottom: 80px;
+  left: 24px;
+  border-left: 3px solid #38bdf8;
+}
+
+.maobu-player-skip-toast.outro {
+  bottom: 80px;
+  right: 24px;
+  border-right: 3px solid #f59e0b;
+}
+
+@keyframes maobu-player-skip-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.maobu-player-skip-toast-content {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.maobu-player-skip-icon {
+  color: #38bdf8;
+  flex-shrink: 0;
+}
+
+.maobu-player-skip-toast.outro .maobu-player-skip-icon {
+  color: #f59e0b;
+}
+
+.maobu-player-skip-text {
+  font-size: 12px;
+  color: #e2e8f0;
+}
+
+.maobu-player-skip-text strong {
+  color: #38bdf8;
+  font-family: monospace;
+  font-weight: 600;
+  margin: 0 2px;
+}
+
+.maobu-player-skip-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: 4px;
+}
+
+.maobu-player-skip-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 9px;
+  border-radius: 5px;
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  border: none;
+}
+
+.maobu-player-skip-btn.undo {
+  background: rgba(56, 189, 248, 0.2);
+  color: #38bdf8;
+  border: 1px solid rgba(56, 189, 248, 0.4);
+}
+
+.maobu-player-skip-btn.undo:hover {
+  background: rgba(56, 189, 248, 0.35);
+  border-color: #38bdf8;
+}
+
+.maobu-player-skip-btn.action-now {
+  background: #f59e0b;
+  color: #0f172a;
+  font-weight: 600;
+}
+
+.maobu-player-skip-btn.action-now:hover {
+  background: #fbbf24;
+}
+
+.maobu-player-skip-btn.cancel {
+  background: rgba(255, 255, 255, 0.1);
+  color: #cbd5e1;
+}
+
+.maobu-player-skip-btn.cancel:hover {
+  background: rgba(255, 255, 255, 0.2);
+  color: #ffffff;
+}
+
+@media (max-width: 640px) {
+  .maobu-player-skip-toast.intro,
+  .maobu-player-skip-toast.outro {
+    bottom: 60px;
+    left: 12px;
+    right: 12px;
+    justify-content: center;
+  }
+}
+
 
