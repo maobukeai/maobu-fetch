@@ -1,0 +1,147 @@
+/*
+ * 全应用通用「改版 B · 流光水滴短轨」按钮切换动效样式。
+ * - rail 模式（主工作区侧栏 / 设置侧栏 / [data-magnetic-group="rail"]）：
+ *   悬停预瞄底块 + 2D 自适应滑行背板 + 上限 34px WAAPI 水滴短轨 + 图标微弹
+ * - pill 模式（SegmentedControl / DetailsTabs / ProgressTabs / [role="tablist"]）：
+ *   悬停预瞄底块 + 2D 自适应滑行背板 + 图标微弹（无左竖轨）
+ */
+
+[data-ms-ready] {
+  position: relative;
+}
+
+[data-ms-ready="rail"] .nav-item,
+[data-ms-ready="pill"] > button,
+[data-ms-ready="pill"] [role="tab"] {
+  position: relative;
+  z-index: 2;
+  transition: color 130ms ease, transform 80ms ease;
+}
+
+[data-ms-ready="rail"] .nav-item:active:not(:disabled),
+[data-ms-ready="pill"] > button:active:not(:disabled),
+[data-ms-ready="pill"] [role="tab"]:active:not(:disabled) {
+  transform: scale(0.97);
+}
+
+/* 接管 rail 容器内原静态背景与静态左竖线，避免磨砂/实色下叠出双层重影 */
+[data-ms-ready="rail"] .nav-item:hover,
+[data-ms-ready="rail"] .nav-item.active,
+[data-ms-ready="rail"] .nav-item.active:hover {
+  background: transparent;
+}
+
+[data-ms-ready="rail"] .nav-item.active::before {
+  display: none;
+}
+
+/* 1. 悬停预瞄底块 */
+.ms-hover-pill {
+  position: absolute;
+  left: 0;
+  top: 0;
+  border-radius: 4px;
+  background: var(--surface-hover);
+  pointer-events: none;
+  z-index: 0;
+  opacity: 0;
+  will-change: transform, width, height;
+  transition:
+    transform 120ms cubic-bezier(0.22, 1, 0.36, 1),
+    width 120ms cubic-bezier(0.22, 1, 0.36, 1),
+    height 120ms cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 100ms ease;
+}
+
+/* 2. 2D 自适应滑行背板 */
+.ms-active-pill {
+  position: absolute;
+  left: 0;
+  top: 0;
+  border-radius: 4px;
+  background: var(--surface-selected);
+  pointer-events: none;
+  z-index: 1;
+  opacity: 0;
+  will-change: transform, width, height;
+  transition:
+    transform 255ms cubic-bezier(0.22, 1, 0.36, 1),
+    width 255ms cubic-bezier(0.22, 1, 0.36, 1),
+    height 255ms cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 140ms ease;
+}
+
+/* 3. 流光水滴短轨（仅 rail 模式创建，由 WAAPI 驱动 transform 与 height） */
+.ms-worm-rail {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 2.5px;
+  height: 16px;
+  border-radius: 2px;
+  background: var(--accent);
+  pointer-events: none;
+  z-index: 3;
+  opacity: 0;
+  transform-origin: center;
+  will-change: transform, height;
+  transition: opacity 140ms ease;
+}
+
+/* pill 模式各控件特化：无左竖轨，背板与原视觉语言无缝契合 */
+.fluent-segmented-control[data-ms-ready="pill"] button:hover,
+.fluent-segmented-control[data-ms-ready="pill"] button.active {
+  background: transparent;
+  box-shadow: none;
+}
+
+.fluent-segmented-control[data-ms-ready="pill"] .ms-active-pill {
+  background: var(--surface-solid);
+  border-radius: 4px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08), 0 1px 1px rgba(0, 0, 0, 0.04);
+}
+
+.details-tabs[data-ms-ready="pill"] button[role="tab"]:hover,
+.details-tabs[data-ms-ready="pill"] button[role="tab"].active {
+  background: transparent;
+  border-bottom-color: transparent;
+}
+
+.details-tabs[data-ms-ready="pill"] .ms-hover-pill {
+  border-radius: 4px 4px 0 0;
+}
+
+.details-tabs[data-ms-ready="pill"] .ms-active-pill {
+  border-radius: 4px 4px 0 0;
+  background: var(--accent-light);
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+
+.progress-window-tabs[data-ms-ready="pill"] button:hover,
+.progress-window-tabs[data-ms-ready="pill"] button[aria-selected="true"] {
+  background: transparent;
+}
+
+.progress-window-tabs[data-ms-ready="pill"] .ms-hover-pill,
+.progress-window-tabs[data-ms-ready="pill"] .ms-active-pill {
+  border-radius: 3px;
+}
+
+.progress-window-tabs[data-ms-ready="pill"] .ms-active-pill {
+  background: var(--accent-light);
+}
+
+.nav-item.active > svg {
+  color: var(--accent);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-ms-ready="rail"] .nav-item,
+  [data-ms-ready="pill"] > button,
+  [data-ms-ready="pill"] [role="tab"],
+  .ms-hover-pill,
+  .ms-active-pill,
+  .ms-worm-rail {
+    transition-duration: 0.01ms !important;
+  }
+}

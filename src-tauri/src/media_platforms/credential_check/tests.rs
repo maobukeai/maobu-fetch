@@ -93,3 +93,58 @@ async fn connection_failure_is_distinct_from_rejected_credentials() {
     assert!(error.contains("尚未判定"));
     assert!(!error.contains("synthetic"));
 }
+
+#[tokio::test]
+async fn baidu_check_diagnoses_missing_bduss_and_http_400_errno_minus6() {
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    let missing_bduss = check_target(
+        "pan.baidu.com",
+        Some("BAIDUID=12345"),
+        None,
+        None,
+        &client,
+        "http://127.0.0.1:9/",
+    )
+    .await
+    .unwrap();
+    assert!(!missing_bduss.valid);
+    assert!(missing_bduss.message.contains("BDUSS"));
+
+    let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+        .await
+        .unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut bytes = Vec::new();
+        let mut byte = [0; 1];
+        while !bytes.ends_with(b"\r\n\r\n") {
+            stream.read_exact(&mut byte).await.unwrap();
+            bytes.push(byte[0]);
+        }
+        let text = String::from_utf8(bytes).unwrap().to_lowercase();
+        assert!(text.contains("referer: https://pan.baidu.com/disk/home"));
+        assert!(text.contains("cookie: bduss=expired"));
+        let body = r#"{"errmsg":"用户未登录","errno":-6}"#;
+        let resp = format!(
+            "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        stream.write_all(resp.as_bytes()).await.unwrap();
+    });
+    let expired = check_target(
+        "pan.baidu.com",
+        Some("BDUSS=expired"),
+        None,
+        None,
+        &client,
+        &format!("http://{address}/"),
+    )
+    .await
+    .unwrap();
+    assert!(!expired.valid);
+    assert!(expired.message.contains("errno -6"));
+    assert!(expired.message.contains("同步到媒体凭证"));
+    server.await.unwrap();
+}

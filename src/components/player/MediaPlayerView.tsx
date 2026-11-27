@@ -1,15 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  ArrowUpDown,
   Camera,
   Check,
-  Copy,
   ExternalLink,
   FastForward,
   Film,
-  FolderOpen,
   ListVideo,
-  LocateFixed,
   Maximize2,
   Minimize2,
   Minus,
@@ -18,17 +14,14 @@ import {
   Pin,
   PinOff,
   Play,
-  Plus,
   Repeat,
   Repeat1,
   Rewind,
-  Search,
   Shuffle,
   SkipBack,
   SkipForward,
   Sliders,
   Subtitles,
-  Trash2,
   Volume2,
   VolumeX,
   X,
@@ -36,7 +29,7 @@ import {
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { api, isDesktop } from "../../api";
-import { formatBytes, formatDuration } from "../../formatters";
+import { formatDuration } from "../../formatters";
 import type { PlaylistItem, SubtitleItem, SubtitleStyleConfig } from "../../types";
 import { getActiveCueText, parseAnySubtitles, type SubtitleCue } from "./SubtitleParser";
 import type { ChapterMatch, SkipIntroOutroConfig } from "./skip/SkipTypes";
@@ -50,32 +43,22 @@ import {
 } from "./skip/SkipIntroOutroManager";
 import { SkipIntroOutroPanel } from "./skip/SkipIntroOutroPanel";
 import { SkipNoticeToast } from "./skip/SkipNoticeToast";
+import { PlayerPlaylistDrawer } from "./PlayerPlaylistDrawer";
+import { PlayerSubtitlePopover } from "./PlayerSubtitlePopover";
+import {
+  PLAYBACK_RATES,
+  computeSeekHover,
+  formatPlaybackRateLabel,
+  formatPlayerTime,
+  type PlayMode,
+  type PlaylistSortType,
+} from "./player-ui-model";
 import "./MediaPlayer.css";
+import "./player-cinema-dock.css";
 
 interface MediaPlayerProps {
   initialFile?: string;
   initialTitle?: string;
-}
-
-type PlayMode = "sequence" | "loop" | "single" | "shuffle";
-
-function formatPlayerTime(seconds: number, forceHours = false): string {
-  if (!seconds || isNaN(seconds) || seconds < 0) {
-    return forceHours ? "00:00:00" : "00:00";
-  }
-  const total = Math.floor(seconds);
-  const h = Math.floor(total / 3600);
-  const m = Math.floor((total % 3600) / 60);
-  const s = total % 60;
-
-  const mm = m.toString().padStart(2, "0");
-  const ss = s.toString().padStart(2, "0");
-
-  if (h > 0 || forceHours) {
-    const hh = h.toString().padStart(2, "0");
-    return `${hh}:${mm}:${ss}`;
-  }
-  return `${mm}:${ss}`;
 }
 
 export function MediaPlayerView({ initialFile, initialTitle }: MediaPlayerProps) {
@@ -100,7 +83,7 @@ export function MediaPlayerView({ initialFile, initialTitle }: MediaPlayerProps)
   const [showPlaylist, setShowPlaylist] = useState<boolean>(false);
   const [playMode, setPlayMode] = useState<PlayMode>("loop");
   const [searchKeyword, setSearchKeyword] = useState<string>("");
-  const [sortType, setSortType] = useState<"default" | "name-asc" | "name-desc" | "size-desc" | "size-asc">("default");
+  const [sortType, setSortType] = useState<PlaylistSortType>("default");
   const [showSortMenu, setShowSortMenu] = useState<boolean>(false);
   const activeItemRef = useRef<HTMLDivElement | null>(null);
 
@@ -139,8 +122,9 @@ export function MediaPlayerView({ initialFile, initialTitle }: MediaPlayerProps)
     });
   }, []);
 
-  // 进度条 Hover 预览
+  // 进度条 Hover 预览与指针拖拽
   const [hoverProgress, setHoverProgress] = useState<{ x: number; time: number } | null>(null);
+  const [isScrubbing, setIsScrubbing] = useState<boolean>(false);
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -1383,22 +1367,41 @@ export function MediaPlayerView({ initialFile, initialTitle }: MediaPlayerProps)
         className={`maobu-player-controls-panel ${!showControls && !showPlaylist ? "hidden" : ""}`}
         onClick={(e) => e.stopPropagation()}
       >
-        {/* 进度条与 Hover 预览 */}
+        {/* 进度条与 Hover 预览 / 拖拽 Scrubbing */}
         <div
-          className="maobu-player-progress-wrap"
-          onClick={(e) => {
+          className={`maobu-player-progress-wrap ${isScrubbing ? "is-scrubbing" : ""}`}
+          onPointerDown={(e) => {
+            if (e.button !== 0) return;
+            e.currentTarget.setPointerCapture(e.pointerId);
             const rect = e.currentTarget.getBoundingClientRect();
-            const pos = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+            const seek = computeSeekHover(e.clientX, rect.left, rect.width, duration);
+            setIsScrubbing(true);
+            setHoverProgress({ x: seek.clampedX, time: seek.time });
             if (videoRef.current && duration > 0) {
-              videoRef.current.currentTime = duration * pos;
+              videoRef.current.currentTime = seek.time;
             }
           }}
-          onMouseMove={(e) => {
+          onPointerMove={(e) => {
             const rect = e.currentTarget.getBoundingClientRect();
-            const pos = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
-            setHoverProgress({ x: e.clientX, time: pos * duration });
+            const seek = computeSeekHover(e.clientX, rect.left, rect.width, duration);
+            setHoverProgress({ x: seek.clampedX, time: seek.time });
+            if (isScrubbing && videoRef.current && duration > 0) {
+              videoRef.current.currentTime = seek.time;
+            }
           }}
-          onMouseLeave={() => setHoverProgress(null)}
+          onPointerUp={(e) => {
+            if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+              e.currentTarget.releasePointerCapture(e.pointerId);
+            }
+            setIsScrubbing(false);
+          }}
+          onPointerCancel={() => {
+            setIsScrubbing(false);
+            setHoverProgress(null);
+          }}
+          onPointerLeave={() => {
+            if (!isScrubbing) setHoverProgress(null);
+          }}
         >
           <div className="maobu-player-progress-rail">
             {resolvedSkip.enabled && duration > 0 && resolvedSkip.introSeconds > 0 && (
@@ -1437,7 +1440,7 @@ export function MediaPlayerView({ initialFile, initialTitle }: MediaPlayerProps)
           {hoverProgress && (
             <div
               className="maobu-player-progress-tooltip"
-              style={{ left: hoverProgress.x }}
+              style={{ left: `${hoverProgress.x}px` }}
             >
               {formatPlayerTime(hoverProgress.time, duration >= 3600)}
             </div>
@@ -1579,7 +1582,7 @@ export function MediaPlayerView({ initialFile, initialTitle }: MediaPlayerProps)
                       }}
                       className="maobu-player-volume-slider-bar"
                       style={{
-                        background: `linear-gradient(to right, #38bdf8 0%, #38bdf8 ${((isMuted ? 0 : volume) / 2) * 100}%, rgba(255, 255, 255, 0.18) ${((isMuted ? 0 : volume) / 2) * 100}%, rgba(255, 255, 255, 0.18) 100%)`,
+                        background: `linear-gradient(to right, ${volume > 1.0 && !isMuted ? "#f59e0b" : "#3b82f6"} 0%, ${volume > 1.0 && !isMuted ? "#f59e0b" : "#3b82f6"} ${((isMuted ? 0 : volume) / 2) * 100}%, rgba(255, 255, 255, 0.18) ${((isMuted ? 0 : volume) / 2) * 100}%, rgba(255, 255, 255, 0.18) 100%)`,
                       }}
                       title={`音量: ${Math.round((isMuted ? 0 : volume) * 100)}%`}
                     />
@@ -1649,15 +1652,14 @@ export function MediaPlayerView({ initialFile, initialTitle }: MediaPlayerProps)
                   setShowVolumeMenu(false);
                   setShowSkipMenu(false);
                 }}
-                className="maobu-player-icon-btn"
-                style={{ fontSize: "12px", fontFamily: "monospace", padding: "4px 8px" }}
+                className={`maobu-player-icon-btn maobu-player-rate-btn ${playbackRate !== 1.0 ? "active" : ""}`}
                 title="播放速度 ([ / ])"
               >
-                {playbackRate === 1.0 ? "倍速" : `${playbackRate}x`}
+                {formatPlaybackRateLabel(playbackRate)}
               </button>
               {showSpeedMenu && (
                 <div className="maobu-player-popup-menu">
-                  {[0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0].map((rate) => (
+                  {PLAYBACK_RATES.map((rate) => (
                     <button
                       key={rate}
                       type="button"
@@ -1723,218 +1725,28 @@ export function MediaPlayerView({ initialFile, initialTitle }: MediaPlayerProps)
                 <Subtitles size={16} />
               </button>
               {showSubtitleMenu && (
-                <div
-                  className="maobu-player-popup-menu maobu-player-subtitle-panel"
-                  onClick={(e) => e.stopPropagation()}
-                  onMouseDown={(e) => e.stopPropagation()}
-                >
-                  {/* 头部标题与操作 */}
-                  <div className="maobu-player-subtitle-header">
-                    <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-                      <Subtitles size={14} style={{ color: "#38bdf8" }} />
-                      <span style={{ fontWeight: 600, color: "#f1f5f9" }}>字幕设置</span>
-                      {subtitles.length > 0 && (
-                        <span className="maobu-player-sub-badge">{subtitles.length} 条</span>
-                      )}
-                    </div>
-                    <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-                      <button
-                        type="button"
-                        onClick={() => subtitleInputRef.current?.click()}
-                        className="maobu-player-sub-import-btn"
-                        title="选择本地字幕文件导入 (.srt / .vtt / .ass / .ssa / .txt)"
-                      >
-                        <Plus size={11} style={{ marginRight: "2px" }} />
-                        导入字幕
-                      </button>
-                      {subtitleName && (
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setSubtitles([]);
-                            setSubtitleName("");
-                            setActiveSubtitlePath("");
-                            triggerToast("已关闭外挂字幕");
-                          }}
-                          className="maobu-player-sub-remove-btn"
-                          title="关闭外挂字幕"
-                        >
-                          关闭
-                        </button>
-                      )}
-                    </div>
-                  </div>
-
-                  {/* 发现的同名/匹配字幕列表 */}
-                  {matchedSubtitles.length > 0 ? (
-                    <div className="maobu-player-subtitle-section">
-                      <div className="maobu-player-subtitle-section-title">
-                        <span>字幕源选择 ({matchedSubtitles.length})</span>
-                      </div>
-                      <div className="maobu-player-subtitle-list">
-                        {matchedSubtitles.map((sub) => {
-                          const isActive = activeSubtitlePath === sub.path || subtitleName === sub.name;
-                          return (
-                            <button
-                              key={sub.path}
-                              type="button"
-                              onClick={() => loadSubtitleFile(sub)}
-                              className={`maobu-player-subtitle-item ${isActive ? "active" : ""}`}
-                              title={sub.path}
-                            >
-                              <span className="maobu-player-subtitle-item-ext">{sub.ext.toUpperCase()}</span>
-                              <span className="maobu-player-subtitle-item-name">{sub.name}</span>
-                              {isActive && <Check size={12} style={{ color: "#38bdf8", flexShrink: 0 }} />}
-                            </button>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  ) : (
-                    <div
-                      className="maobu-player-subtitle-empty-box"
-                      onClick={() => subtitleInputRef.current?.click()}
-                      title="点击选择本地字幕文件"
-                    >
-                      <FolderOpen size={14} style={{ color: "#38bdf8", marginBottom: "4px" }} />
-                      <span style={{ fontSize: "11px", color: "#cbd5e1" }}>点击选择本地字幕文件</span>
-                      <span style={{ fontSize: "10px", color: "#64748b" }}>支持 .srt / .vtt / .ass / .txt 或直接拖入</span>
-                    </div>
-                  )}
-
-                  {/* 字号大小调节 */}
-                  <div className="maobu-player-subtitle-section">
-                    <div className="maobu-player-subtitle-section-title">
-                      <span>字号大小</span>
-                      <span style={{ fontFamily: "monospace", color: "#38bdf8" }}>{subStyle.fontSize}px</span>
-                    </div>
-                    <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                      <span style={{ fontSize: "11px", color: "#64748b" }}>小</span>
-                      <input
-                        type="range"
-                        min="14"
-                        max="36"
-                        step="1"
-                        value={subStyle.fontSize}
-                        onChange={(e) => {
-                          const v = parseInt(e.target.value, 10) || 20;
-                          updateSubStyle((prev) => ({ ...prev, fontSize: v }));
-                        }}
-                        className="maobu-player-sub-slider"
-                      />
-                      <span style={{ fontSize: "11px", color: "#64748b" }}>大</span>
-                    </div>
-                  </div>
-
-                  {/* 字体颜色选择器 */}
-                  <div className="maobu-player-subtitle-section">
-                    <div className="maobu-player-subtitle-section-title">
-                      <span>字体颜色</span>
-                    </div>
-                    <div className="maobu-player-color-palette">
-                      {[
-                        { color: "#ffffff", label: "纯白" },
-                        { color: "#fde047", label: "暖黄" },
-                        { color: "#38bdf8", label: "晴空" },
-                        { color: "#4ade80", label: "翠绿" },
-                        { color: "#f472b6", label: "珊瑚" },
-                      ].map((item) => (
-                        <button
-                          key={item.color}
-                          type="button"
-                          onClick={() => updateSubStyle((prev) => ({ ...prev, color: item.color }))}
-                          className={`maobu-player-color-dot ${subStyle.color === item.color ? "active" : ""}`}
-                          style={{ backgroundColor: item.color }}
-                          title={item.label}
-                        >
-                          {subStyle.color === item.color && (
-                            <span className="maobu-player-color-check" />
-                          )}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-
-                  {/* 微晶底衬与垂直高度 */}
-                  <div className="maobu-player-subtitle-section">
-                    <div className="maobu-player-subtitle-section-title">
-                      <span>微晶底衬</span>
-                      <button
-                        type="button"
-                        onClick={() =>
-                          updateSubStyle((prev) => ({
-                            ...prev,
-                            bgOpacity: prev.bgOpacity > 0 ? 0 : 0.5,
-                          }))
-                        }
-                        className={`maobu-player-chip-btn ${subStyle.bgOpacity > 0 ? "active" : ""}`}
-                      >
-                        {subStyle.bgOpacity > 0 ? "已开启" : "已关闭"}
-                      </button>
-                    </div>
-                  </div>
-
-                  <div className="maobu-player-subtitle-section">
-                    <div className="maobu-player-subtitle-section-title">
-                      <span>垂直位置 (距底)</span>
-                      <span style={{ fontFamily: "monospace", color: "#38bdf8" }}>{subStyle.bottomOffset}%</span>
-                    </div>
-                    <input
-                      type="range"
-                      min="3"
-                      max="28"
-                      step="1"
-                      value={subStyle.bottomOffset}
-                      onChange={(e) => {
-                        const v = parseInt(e.target.value, 10) || 7;
-                        updateSubStyle((prev) => ({ ...prev, bottomOffset: v }));
-                      }}
-                      className="maobu-player-sub-slider"
-                    />
-                  </div>
-
-                  {/* 时轴微调 */}
-                  {subtitles.length > 0 && (
-                    <div className="maobu-player-subtitle-section" style={{ borderBottom: "none", marginBottom: 0, paddingBottom: 0 }}>
-                      <div className="maobu-player-subtitle-section-title">
-                        <span>时轴微调</span>
-                        <span style={{ fontSize: "11px", fontFamily: "monospace", color: subtitleOffset !== 0 ? "#38bdf8" : "#94a3b8" }}>
-                          {subtitleOffset > 0 ? `+${subtitleOffset}` : subtitleOffset}s
-                        </span>
-                      </div>
-                      <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-                        <button
-                          type="button"
-                          onClick={() => setSubtitleOffset((prev) => parseFloat((prev - 0.5).toFixed(1)))}
-                          className="maobu-player-offset-btn"
-                          title="字幕提前 0.5s"
-                        >
-                          -0.5s
-                        </button>
-                        {subtitleOffset !== 0 && (
-                          <button
-                            type="button"
-                            onClick={() => setSubtitleOffset(0)}
-                            className="maobu-player-offset-btn"
-                            title="重置时轴偏移"
-                          >
-                            重置
-                          </button>
-                        )}
-                        <button
-                          type="button"
-                          onClick={() => setSubtitleOffset((prev) => parseFloat((prev + 0.5).toFixed(1)))}
-                          className="maobu-player-offset-btn"
-                          title="字幕延后 0.5s"
-                        >
-                          +0.5s
-                        </button>
-                      </div>
-                    </div>
-                  )}
-                </div>
+                <PlayerSubtitlePopover
+                  subtitles={subtitles}
+                  subtitleName={subtitleName}
+                  subtitleOffset={subtitleOffset}
+                  matchedSubtitles={matchedSubtitles}
+                  activeSubtitlePath={activeSubtitlePath}
+                  subStyle={subStyle}
+                  onImportClick={() => subtitleInputRef.current?.click()}
+                  onClearSubtitle={() => {
+                    setSubtitles([]);
+                    setSubtitleName("");
+                    setActiveSubtitlePath("");
+                    triggerToast("已关闭外挂字幕");
+                  }}
+                  onLoadSubtitle={loadSubtitleFile}
+                  onUpdateSubStyle={updateSubStyle}
+                  onChangeOffset={setSubtitleOffset}
+                />
               )}
             </div>
+
+            <span className="maobu-player-control-divider" aria-hidden="true" />
 
             {/* 单帧截图 */}
             <button
@@ -2000,256 +1812,41 @@ export function MediaPlayerView({ initialFile, initialTitle }: MediaPlayerProps)
         </div>
       </div>
 
-      {/* 播放列表右侧极简超晶抽屉 */}
-      <div
-        ref={drawerRef}
-        className={`maobu-player-playlist-drawer ${showPlaylist ? "open" : ""}`}
-        onClick={(e) => e.stopPropagation()}
-        onMouseDown={(e) => e.stopPropagation()}
-      >
-        {/* 头部标题与操作 */}
-        <div className="maobu-player-playlist-header">
-          <div className="maobu-player-playlist-title">
-            <ListVideo size={16} style={{ color: "#38bdf8" }} />
-            <span>播放列表</span>
-            <span className="maobu-player-playlist-count">{playlist.length}</span>
-          </div>
-
-          <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
-            <button
-              type="button"
-              onClick={scrollToActiveItem}
-              title="定位当前播放视频"
-              className="maobu-player-icon-btn"
-            >
-              <LocateFixed size={14} />
-            </button>
-            <button
-              type="button"
-              onClick={() => fileInputRef.current?.click()}
-              title="添加视频文件"
-              className="maobu-player-icon-btn"
-            >
-              <Plus size={14} />
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setPlaylist([]);
-                triggerToast("已清空播放列表");
-              }}
-              title="清空列表"
-              className="maobu-player-icon-btn"
-            >
-              <Trash2 size={14} />
-            </button>
-            <button
-              type="button"
-              onClick={() => setShowPlaylist(false)}
-              title="关闭列表 (L)"
-              className="maobu-player-icon-btn"
-            >
-              <X size={14} />
-            </button>
-          </div>
-        </div>
-
-        {/* 搜索过滤栏 */}
-        <div className="maobu-player-playlist-search-wrap">
-          <Search size={13} className="maobu-player-playlist-search-icon" />
-          <input
-            type="text"
-            value={searchKeyword}
-            onChange={(e) => setSearchKeyword(e.target.value)}
-            placeholder="搜索当前列表中的视频..."
-            className="maobu-player-playlist-search-input"
-          />
-          {searchKeyword && (
-            <button
-              type="button"
-              onClick={() => setSearchKeyword("")}
-              className="maobu-player-playlist-search-clear"
-              title="清除搜索"
-            >
-              <X size={12} />
-            </button>
-          )}
-        </div>
-
-        {/* 播放模式与排序工具栏 */}
-        <div className="maobu-player-playlist-toolbar">
-          <button
-            type="button"
-            onClick={cyclePlayMode}
-            className="maobu-player-playlist-mode-btn"
-            title="点击切换播放模式"
-          >
-            {renderModeIcon()}
-            <span>{modeLabel[playMode]}</span>
-          </button>
-
-          <div style={{ position: "relative" }}>
-            <button
-              type="button"
-              onClick={() => setShowSortMenu((prev) => !prev)}
-              className={`maobu-player-playlist-mode-btn ${sortType !== "default" ? "active" : ""}`}
-              title="列表排序"
-            >
-              <ArrowUpDown size={12} />
-              <span>
-                {sortType === "name-asc" && "名称 ↑"}
-                {sortType === "name-desc" && "名称 ↓"}
-                {sortType === "size-desc" && "大小 ↓"}
-                {sortType === "size-asc" && "大小 ↑"}
-                {sortType === "default" && "智能默认"}
-              </span>
-            </button>
-
-            {showSortMenu && (
-              <div className="maobu-player-sort-menu">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setSortType("default");
-                    setShowSortMenu(false);
-                  }}
-                  className={`maobu-player-menu-item ${sortType === "default" ? "active" : ""}`}
-                >
-                  <span>智能默认排序</span>
-                  {sortType === "default" && <Check size={12} />}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setSortType("name-asc");
-                    setShowSortMenu(false);
-                  }}
-                  className={`maobu-player-menu-item ${sortType === "name-asc" ? "active" : ""}`}
-                >
-                  <span>文件名升序 (A ➔ Z)</span>
-                  {sortType === "name-asc" && <Check size={12} />}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setSortType("name-desc");
-                    setShowSortMenu(false);
-                  }}
-                  className={`maobu-player-menu-item ${sortType === "name-desc" ? "active" : ""}`}
-                >
-                  <span>文件名降序 (Z ➔ A)</span>
-                  {sortType === "name-desc" && <Check size={12} />}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setSortType("size-desc");
-                    setShowSortMenu(false);
-                  }}
-                  className={`maobu-player-menu-item ${sortType === "size-desc" ? "active" : ""}`}
-                >
-                  <span>按文件大小 (从大到小)</span>
-                  {sortType === "size-desc" && <Check size={12} />}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setSortType("size-asc");
-                    setShowSortMenu(false);
-                  }}
-                  className={`maobu-player-menu-item ${sortType === "size-asc" ? "active" : ""}`}
-                >
-                  <span>按文件大小 (从小到大)</span>
-                  {sortType === "size-asc" && <Check size={12} />}
-                </button>
-              </div>
-            )}
-          </div>
-        </div>
-
-        {/* 视频条目列表 */}
-        <div className="maobu-player-playlist-items">
-          {displayPlaylist.length > 0 ? (
-            displayPlaylist.map((item, idx) => {
-              const isActive = item.path === filePath;
-              return (
-                <div
-                  key={item.path}
-                  ref={isActive ? activeItemRef : undefined}
-                  className={`maobu-player-playlist-item ${isActive ? "active" : ""}`}
-                  onClick={() => loadAndPlayVideo(item.path, item.name)}
-                >
-                  <div className="maobu-player-item-left">
-                    {isActive ? (
-                      <div className="maobu-wave-icon">
-                        <div className="maobu-wave-bar" />
-                        <div className="maobu-wave-bar" />
-                        <div className="maobu-wave-bar" />
-                      </div>
-                    ) : (
-                      <span className="maobu-player-item-index">{idx + 1}</span>
-                    )}
-
-                    <div className="maobu-player-item-details">
-                      <span className="maobu-player-item-name" title={item.name}>
-                        {item.name}
-                      </span>
-                      {item.size_bytes > 0 && (
-                        <span className="maobu-player-item-meta">
-                          {formatBytes(item.size_bytes)}
-                        </span>
-                      )}
-                    </div>
-                  </div>
-
-                  <div className="maobu-player-item-actions">
-                    <button
-                      type="button"
-                      onClick={(e) => copyItemPath(e, item.path)}
-                      title="复制完整文件路径"
-                      className="maobu-player-icon-btn"
-                      style={{ padding: "4px" }}
-                    >
-                      <Copy size={13} />
-                    </button>
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        api.openPathDirect(item.path).catch(console.error);
-                      }}
-                      title="打开所在文件夹"
-                      className="maobu-player-icon-btn"
-                      style={{ padding: "4px" }}
-                    >
-                      <FolderOpen size={13} />
-                    </button>
-                    <button
-                      type="button"
-                      onClick={(e) => handleRemovePlaylistItem(e, item.path)}
-                      title="从列表移除"
-                      className="maobu-player-icon-btn"
-                      style={{ padding: "4px" }}
-                    >
-                      <X size={13} />
-                    </button>
-                  </div>
-                </div>
-              );
-            })
-          ) : (
-            <div style={{ textAlign: "center", padding: "40px 20px", color: "#64748b", fontSize: "12px" }}>
-              {searchKeyword ? "未找到匹配的视频" : "暂无视频，点击右上角 + 或拖入视频文件"}
-            </div>
-          )}
-        </div>
-
-        {/* 底部统计栏 */}
-        <div className="maobu-player-playlist-footer">
-          <span>共 {playlist.length} 个视频{searchKeyword ? ` (已过滤出 ${displayPlaylist.length} 个)` : ""}</span>
-          <span>支持拖拽文件加入</span>
-        </div>
-      </div>
+      <PlayerPlaylistDrawer
+        drawerRef={drawerRef}
+        activeItemRef={activeItemRef}
+        open={showPlaylist}
+        playlist={playlist}
+        displayPlaylist={displayPlaylist}
+        filePath={filePath}
+        searchKeyword={searchKeyword}
+        playMode={playMode}
+        sortType={sortType}
+        showSortMenu={showSortMenu}
+        modeLabel={modeLabel}
+        renderModeIcon={renderModeIcon}
+        onClose={() => setShowPlaylist(false)}
+        onLocateActive={scrollToActiveItem}
+        onAddClick={() => fileInputRef.current?.click()}
+        onClearPlaylist={() => {
+          setPlaylist([]);
+          triggerToast("已清空播放列表");
+        }}
+        onSearchChange={setSearchKeyword}
+        onCyclePlayMode={cyclePlayMode}
+        onToggleSortMenu={() => setShowSortMenu((prev) => !prev)}
+        onSelectSort={(nextSort) => {
+          setSortType(nextSort);
+          setShowSortMenu(false);
+        }}
+        onPlayItem={loadAndPlayVideo}
+        onCopyItemPath={copyItemPath}
+        onOpenItemFolder={(e, path) => {
+          e.stopPropagation();
+          api.openPathDirect(path).catch(console.error);
+        }}
+        onRemoveItem={handleRemovePlaylistItem}
+      />
 
       {/* 轻量浮动 Toast 提示 */}
       {toastMessage && (

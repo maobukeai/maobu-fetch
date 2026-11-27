@@ -28,6 +28,7 @@ const {
   isDesktopOfflineError,
   confirmTakeoverWithOverlay,
   findSourceTab,
+  prepareSendTaskExtra,
   inferMediaFilename,
   getTabDownloadHeaders,
   handleContextMenuDownload,
@@ -1126,4 +1127,62 @@ test("handleContextMenuDownload: 桌面端离线或鉴权失败时安全回退�
   assert.equal(downloadCalls[0].filename, "file_kitten_403.png");
   assert.equal(notifications.length, 1);
   assert.equal(notifications[0].title, "已转由浏览器下载");
+});
+
+test("findSourceTab: 优先按 item.tabId 定位源标签，即使 CDN 下载缺少 referrer 也能匹配", async () => {
+  const cdnItem = {
+    id: 901,
+    tabId: 77,
+    url: "https://cdn-edge.othercdn.net/files/pkg.zip",
+    finalUrl: "https://cdn-edge.othercdn.net/files/pkg.zip",
+    referrer: "",
+    incognito: false,
+  };
+  const found = await findSourceTab(cdnItem, {
+    getTab: async (id) => (id === 77 ? { id: 77, url: "https://portal.example.com/release", incognito: false } : null),
+    queryTabs: async () => [],
+  });
+  assert.equal(found?.id, 77);
+
+  // 无痕状态不一致时不得错配
+  const mismatch = await findSourceTab({ ...cdnItem, incognito: true }, {
+    getTab: async () => ({ id: 77, url: "https://portal.example.com/release", incognito: false }),
+    queryTabs: async () => [],
+  });
+  assert.equal(mismatch, null);
+});
+
+test("prepareSendTaskExtra: 弹窗通过 tabId 发送时自动注入目标 URL 的 Cookie、UA 与同站 Referer", async () => {
+  const cookiesApi = {
+    getAllCookieStores: async () => [{ id: "normal", tabIds: [12] }],
+    getAll: async ({ url }) => (url.includes("example.com") ? [{ name: "sid", value: "tok_popup" }] : []),
+  };
+  const getTab = async (id) => (id === 12 ? { id: 12, url: "https://app.example.com/list#frag", incognito: false } : null);
+
+  // 1. 同站媒体/放行重试（caller 仅传 Referer 时仍需补齐 Cookie 与 UA）
+  const extraSameSite = await prepareSendTaskExtra(
+    {
+      type: "send",
+      url: "https://dl.example.com/archive.zip",
+      tabId: 12,
+      extra: { headers: { Referer: "https://app.example.com/list" } },
+    },
+    {},
+    { cookies: cookiesApi, getTab },
+  );
+  assert.equal(extraSameSite.headers.Cookie, "sid=tok_popup");
+  assert.equal(extraSameSite.headers.Referer, "https://app.example.com/list");
+  assert.ok(extraSameSite.headers["User-Agent"]);
+
+  // 2. 弹窗在其它站点手动粘贴外站链接时，不泄露无关页面的 Referer，但仍带出目标站自身 Cookie
+  const extraCrossSite = await prepareSendTaskExtra(
+    { type: "send", url: "https://dl.example.com/file.zip", tabId: 12 },
+    {},
+    {
+      cookies: cookiesApi,
+      getTab: async () => ({ id: 12, url: "https://search.other.test/query?q=secret", incognito: false }),
+    },
+  );
+  assert.equal(extraCrossSite.headers.Cookie, "sid=tok_popup");
+  assert.equal(extraCrossSite.headers.Referer, undefined);
 });

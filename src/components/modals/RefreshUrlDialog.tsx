@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Clipboard, ExternalLink, RefreshCw } from "lucide-react";
+import { AlertCircle, Clipboard, ExternalLink, Link2, RefreshCw } from "lucide-react";
 import { readText } from "@tauri-apps/plugin-clipboard-manager";
 import { api } from "../../api";
 import { t, useLocale } from "../../i18n";
@@ -100,134 +100,106 @@ export function RefreshUrlDialog({
     <Modal
       title={t("dialogs.refreshUrlTitle") || "刷新下载链接"}
       onClose={onClose}
-      style={{ maxWidth: "540px" }}
+      dialogClassName="lm-dialog"
+      headerAction={
+        <span className="lm-eyebrow">{t("dialogs.refreshResumeBadge")}</span>
+      }
     >
-      <div className="dialog-content" style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
-        <div style={{ fontSize: "12px", color: "var(--muted)", lineHeight: 1.5 }}>
-          {t("dialogs.refreshUrlDesc") || "针对过期或失效的临时直链（如网盘、CDN），更新地址后将保留已下载分片并原地续传。"}
-        </div>
-
-        <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
-          <label style={{ fontSize: "12px", fontWeight: 600, color: "var(--fg)" }}>
-            {t("table.fileName") || "文件名"}
-          </label>
-          <div
-            style={{
-              padding: "7px 10px",
-              background: "var(--bg-subtle)",
-              borderRadius: "6px",
-              fontSize: "12px",
-              color: "var(--fg)",
-              wordBreak: "break-all",
-            }}
-          >
+      <div className="lm-body">
+        <div className="lm-file-pill">
+          <Link2 size={13} aria-hidden="true" />
+          <span className="lm-file-pill-name" title={task.file_name}>
             {task.file_name}
-          </div>
+          </span>
         </div>
 
-        <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-            <label style={{ fontSize: "12px", fontWeight: 600, color: "var(--fg)" }}>
-              {t("dialogs.originalUrl") || "原下载链接"}
-            </label>
+        <div className="lm-field">
+          <div className="lm-field-header">
+            <span className="lm-field-label">
+              {t("dialogs.originalUrl") || "原链接"}
+            </span>
             {task.url.startsWith("http") && (
               <button
                 type="button"
-                className="ghost-button"
-                style={{ fontSize: "11px", padding: "2px 6px", display: "inline-flex", alignItems: "center", gap: "4px" }}
+                className="lm-ghost-btn"
                 onClick={handleOpenSource}
-                title={t("dialogs.openOriginalInBrowser") || "在浏览器中打开原网页"}
+                title={
+                  t("dialogs.openOriginalInBrowser") || "在浏览器中打开原网页"
+                }
               >
                 <ExternalLink size={11} />
                 {t("dialogs.openInBrowser") || "打开原链接"}
               </button>
             )}
           </div>
-          <div
-            style={{
-              padding: "6px 10px",
-              background: "var(--bg-subtle)",
-              borderRadius: "6px",
-              fontSize: "11px",
-              color: "var(--muted)",
-              wordBreak: "break-all",
-              maxHeight: "60px",
-              overflowY: "auto",
-            }}
-          >
-            {task.url}
-          </div>
+          <div className="lm-url-box">{task.url}</div>
         </div>
 
-        <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-            <label style={{ fontSize: "12px", fontWeight: 600, color: "var(--fg)" }}>
-              {t("dialogs.newUrl") || "新下载链接"}
+        <div className="lm-field">
+          <div className="lm-field-header">
+            <label htmlFor="refresh-url-input" className="lm-field-label">
+              {t("dialogs.newUrl") || "新链接"}
             </label>
             <button
               type="button"
-              className="ghost-button"
-              style={{ fontSize: "11px", padding: "2px 6px", display: "inline-flex", alignItems: "center", gap: "4px" }}
+              className="lm-ghost-btn"
               onClick={handlePasteClipboard}
             >
               <Clipboard size={11} />
-              {t("common.paste") || "粘贴剪贴板"}
+              {t("common.paste") || "粘贴"}
             </button>
           </div>
           <input
+            id="refresh-url-input"
             ref={inputRef}
-            className="input-text"
+            className="lm-input"
             type="text"
             placeholder="https://..."
             value={newUrl}
-            onChange={(e) => setNewUrl(e.target.value)}
+            onChange={(e) => {
+              setNewUrl(e.target.value);
+              setError(undefined);
+            }}
             onKeyDown={(e) => {
               if (e.key === "Enter" && !busy) {
                 void submit(true);
               }
             }}
             disabled={busy}
-            style={{ width: "100%", fontSize: "12px" }}
           />
         </div>
 
         {error && (
-          <div style={{ fontSize: "12px", color: "var(--danger)", marginTop: "2px" }}>
-            {error}
+          <div className="lm-error" role="alert">
+            <AlertCircle size={13} />
+            <span>{error}</span>
           </div>
         )}
+      </div>
 
-        <div
-          className="dialog-actions"
-          style={{
-            display: "flex",
-            justifyContent: "flex-end",
-            gap: "8px",
-            marginTop: "8px",
-          }}
+      <div className="dialog-actions">
+        <button type="button" onClick={onClose} disabled={busy}>
+          {t("common.cancel")}
+        </button>
+        <button
+          type="button"
+          onClick={() => void submit(false)}
+          disabled={busy || !newUrl.trim()}
         >
-          <button className="button-secondary" type="button" onClick={onClose} disabled={busy}>
-            {t("common.cancel")}
-          </button>
-          <button
-            className="button-secondary"
-            type="button"
-            onClick={() => void submit(false)}
-            disabled={busy || !newUrl.trim()}
-          >
-            {t("dialogs.updateOnly") || "仅更新链接"}
-          </button>
-          <button
-            className="button-primary"
-            type="button"
-            onClick={() => void submit(true)}
-            disabled={busy || !newUrl.trim()}
-            style={{ display: "inline-flex", alignItems: "center", gap: "6px" }}
-          >
-            <RefreshCw size={13} className={busy ? "spin" : ""} />
-            {busy ? t("common.saving") : t("dialogs.updateAndResume") || "更新并继续下载"}
-          </button>
-        </div>
+          {t("dialogs.updateOnly") || "仅更新链接"}
+        </button>
+        <button
+          type="button"
+          className="primary"
+          onClick={() => void submit(true)}
+          disabled={busy || !newUrl.trim()}
+          style={{ display: "inline-flex", alignItems: "center", gap: "6px" }}
+        >
+          <RefreshCw size={13} className={busy ? "spin" : ""} />
+          {busy
+            ? t("common.saving")
+            : t("dialogs.updateAndResume") || "更新并继续下载"}
+        </button>
       </div>
     </Modal>
   );

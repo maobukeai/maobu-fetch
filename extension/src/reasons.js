@@ -21,6 +21,10 @@ export const IGNORE_REASONS = {
   offline: "桌面端离线，已回退浏览器下载",
   "post-method": "表单导出或 POST 请求（由浏览器直接下载）",
   "landisk-batch-without-body": "局域网互联流式表单下载（由原生流式处理）",
+  "baidu-unverified-target": "百度网盘下载地址尚未确认，已由浏览器下载",
+  "baidu-size-unknown": "百度网盘文件大小尚未确认，已由浏览器下载",
+  "baidu-browser-only": "此百度网盘下载由浏览器处理",
+  "baidu-verification-failed": "桌面端未能接管百度网盘下载，已由浏览器继续",
 };
 
 /// 把 evaluateDownload 的 reason 转为用户可读文案。
@@ -54,6 +58,10 @@ export const SHORT_IGNORE_REASONS = {
   offline: "桌面端离线",
   "post-method": "POST导出",
   "landisk-batch-without-body": "局域网表单流",
+  "baidu-unverified-target": "百度网盘地址待确认",
+  "baidu-size-unknown": "百度网盘大小待确认",
+  "baidu-browser-only": "百度网盘浏览器下载",
+  "baidu-verification-failed": "百度网盘接管失败",
 };
 
 /// 分组统计的短标签：`error:` 前缀统一归为"发送失败"；未知 reason 原样返回。

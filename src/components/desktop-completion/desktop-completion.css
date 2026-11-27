@@ -1,0 +1,149 @@
+:root.desktop-completion-page,
+:root.desktop-completion-page body,
+:root.desktop-completion-page #root { background: transparent !important; }
+.desktop-completion-surface {
+  --dc-success: #16a34a;
+  --dc-success-soft: rgba(22, 163, 74, 0.13);
+  --dc-edge: rgba(35, 48, 62, 0.14);
+  --dc-highlight: rgba(255, 255, 255, 0.45);
+  --dc-shadow: 0 6px 18px rgba(15, 23, 42, 0.14);
+  width: 100%;
+  padding: 4px;
+  color: var(--text);
+}
+:root[data-theme="dark"] .desktop-completion-surface {
+  --dc-success: #22c55e;
+  --dc-success-soft: rgba(34, 197, 94, 0.18);
+  --dc-edge: rgba(225, 234, 244, 0.16);
+  --dc-highlight: rgba(255, 255, 255, 0.06);
+  --dc-shadow: 0 8px 22px rgba(0, 0, 0, 0.42);
+}
+.desktop-completion-card {
+  position: relative;
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr) 20px;
+  align-items: start;
+  gap: 9px;
+  width: 100%;
+  padding: 10px 10px 11px;
+  overflow: hidden;
+  border: 1px solid var(--border-strong);
+  border-radius: 9px;
+  background: var(--surface-solid);
+  box-shadow: var(--dc-shadow), inset 0 1px 0 var(--dc-highlight);
+  font-size: 11px;
+  line-height: 1.45;
+}
+.desktop-completion-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 999px;
+  background: var(--dc-success-soft);
+  color: var(--dc-success);
+  flex-shrink: 0;
+}
+.desktop-completion-body { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.desktop-completion-title, .desktop-completion-location {
+  display: -webkit-box;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+}
+.desktop-completion-title { -webkit-line-clamp: 3; font-size: 11px; font-weight: 600; }
+.desktop-completion-location { -webkit-line-clamp: 2; color: var(--muted); font-size: 10px; }
+.desktop-completion-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; margin-top: 1px; }
+.desktop-completion-card button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-width: 0;
+  min-height: 23px;
+  padding: 3px 7px;
+  border: 1px solid var(--dc-edge);
+  border-radius: 5px;
+  background: var(--surface-hover);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 10px;
+  font-weight: 500;
+  line-height: 15px;
+  cursor: pointer;
+  transition: background 0.14s ease, border-color 0.14s ease;
+}
+.desktop-completion-card button:hover:not(:disabled) { background: var(--surface-selected); }
+.desktop-completion-card button.desktop-completion-primary {
+  border-color: transparent;
+  background: var(--accent);
+  color: #ffffff;
+}
+.desktop-completion-card button.desktop-completion-primary:hover:not(:disabled) { background: var(--accent-hover); }
+.desktop-completion-card button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.desktop-completion-card button:disabled { opacity: .55; cursor: default; }
+.desktop-completion-card .desktop-completion-close {
+  align-self: start;
+  width: 20px;
+  min-height: 20px;
+  padding: 0;
+  border-color: transparent;
+  background: transparent;
+  color: var(--muted);
+}
+.desktop-completion-card .desktop-completion-close:hover:not(:disabled) {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+.desktop-completion-pending {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  max-width: 100%;
+  padding: 1px 6px;
+  border: 1px solid var(--dc-edge);
+  border-radius: 999px;
+  background: var(--surface-hover);
+  color: var(--muted);
+  font-size: 10px;
+}
+.desktop-completion-error { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; color: var(--danger); font-size: 10px; overflow-wrap: anywhere; }
+.desktop-completion-countdown {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 2px;
+  background: var(--surface-hover);
+  pointer-events: none;
+}
+.desktop-completion-countdown-fill {
+  display: block;
+  width: 100%;
+  height: 100%;
+  background: var(--dc-success);
+  transform-origin: left center;
+  animation-name: desktopCompletionCountdown;
+  animation-timing-function: linear;
+  animation-fill-mode: forwards;
+  transition: opacity 0.16s ease, background 0.16s ease;
+}
+.desktop-completion-card.is-countdown-paused .desktop-completion-countdown-fill {
+  background: var(--muted);
+  opacity: 0.42;
+}
+@keyframes desktopCompletionCountdown {
+  from { transform: scaleX(1); }
+  to { transform: scaleX(0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .desktop-completion-card button,
+  .desktop-completion-countdown-fill { transition: none !important; }
+}
+@media (forced-colors: active) {
+  .desktop-completion-card { border-color: CanvasText; box-shadow: none; }
+  .desktop-completion-card button { border-color: ButtonText; }
+  .desktop-completion-icon { background: Canvas; color: Highlight; border: 1px solid CanvasText; }
+  .desktop-completion-countdown-fill { background: Highlight; }
+}

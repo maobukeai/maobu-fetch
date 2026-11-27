@@ -7,6 +7,7 @@ import { formatBytes, formatDate, formatDuration, getStatusText, hostOf } from "
 import { FileIcon, inferCategory, TaskTagChips } from "./EmptyState";
 import { FinishRecordingButton } from "./FinishRecordingButton";
 import { canFinishRecording } from "./recording-control";
+import { computeActiveConnDots } from "./workspace-telemetry";
 
 export function isImageFile(fileName: string): boolean {
   const lower = fileName.toLowerCase();
@@ -119,13 +120,16 @@ export function TaskRow({
     "failed",
     "cancelled",
   ].includes(task.status);
-  const statusLabel = task.status === "downloading" && isMediaTask(task) &&
+  const statusLabel = task.status === "downloading" && task.retry_count > 0 && task.error
+    ? t("connectionState.retrying")
+    : task.status === "downloading" && isMediaTask(task) &&
     task.downloaded_bytes === 0 && task.active_connections === 0 && !task.error
     ? statusText.parsing
     : task.status === "downloading" && task.task_kind === "bt" &&
       (!task.bt_meta?.metadata_ready || task.total_bytes === 0)
     ? t("table.btMetadataFetching")
     : canFinishRecording(task) ? t("table.recordingLive") : statusText[task.status];
+  const activeConnDots = computeActiveConnDots(task, 4);
 
   const handleAction = async (event: React.MouseEvent) => {
     event.stopPropagation();
@@ -203,7 +207,7 @@ export function TaskRow({
           : "—"}
       </span>
       <span className={`task-status ${task.status}`}>
-        <span className="task-status-label" title={statusLabel} aria-label={statusLabel}>{statusLabel}</span>
+        <span className="task-status-label" title={task.error || statusLabel} aria-label={statusLabel}>{statusLabel}</span>
         {btRuntimeActive(task) && task.bt_runtime?.seeding && (
           <span className="bt-seed-badge" title={t("table.seedingTitle")}>
             {t("table.seeding")}
@@ -229,6 +233,14 @@ export function TaskRow({
         <FinishRecordingButton task={task} notify={notify} />
       </span>
       <span className="connection-count">
+        <span
+          className={isDownloading && activeConnDots > 0 ? "conn-dots live" : "conn-dots"}
+          aria-hidden="true"
+        >
+          {[0, 1, 2, 3].map((dotIndex) => (
+            <i key={dotIndex} className={dotIndex < activeConnDots ? "on" : ""} />
+          ))}
+        </span>
         {task.task_kind === "bt" ? (
           <span
             title={t("table.btConnTitle", {
@@ -240,12 +252,12 @@ export function TaskRow({
             <small> {t("table.btPeerUnit")}</small>
           </span>
         ) : (
-          <>
+          <span>
             {task.status === "downloading"
               ? `${task.active_connections}/${task.connection_count}`
               : task.connection_count}
             <small> {t("table.connectionUnit")}</small>
-          </>
+          </span>
         )}
       </span>
       <div className="progress-cell">

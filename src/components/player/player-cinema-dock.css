@@ -1,0 +1,495 @@
+/* ==========================================================================
+   Page 7: MediaPlayerView — Scheme A · 精密影院浮岛 (Precision Cinema Dock)
+   Imported after MediaPlayer.css; preserves 100% existing controls, Mini PiP,
+   and breakpoints while removing neon cyan glow and fixing heavy scrolling blur.
+   ========================================================================== */
+
+.maobu-player-root {
+  --player-accent: #3b82f6;
+  --player-accent-hover: #2563eb;
+  --player-accent-fg: #60a5fa;
+  --player-accent-soft: rgba(59, 130, 246, 0.18);
+  --player-accent-border: rgba(59, 130, 246, 0.38);
+  --player-surface: rgba(16, 19, 26, 0.90);
+  --player-surface-pop: rgba(18, 21, 29, 0.96);
+  --player-surface-drawer: rgba(15, 18, 25, 0.96);
+  --player-border: rgba(255, 255, 255, 0.12);
+}
+
+/* 顶部极简标题渐隐条 */
+.maobu-player-titlebar {
+  height: 42px;
+  padding: 0 14px;
+  background: linear-gradient(180deg, rgba(7, 9, 13, 0.80) 0%, rgba(7, 9, 13, 0.34) 62%, transparent 100%);
+  transition: opacity 180ms cubic-bezier(0.22, 1, 0.36, 1), transform 180ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.maobu-player-title-icon {
+  color: var(--player-accent-fg);
+  filter: none;
+}
+
+.maobu-player-title-text {
+  font-size: 13px;
+  font-weight: 500;
+  color: #f3f4f6;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.65);
+}
+
+/* 图标按钮统一收紧：去上跳，改稳重蓝激活 */
+.maobu-player-icon-btn {
+  padding: 6px;
+  border-radius: 7px;
+  color: #cbd5e1;
+  transition: background-color 120ms ease, color 120ms ease, border-color 120ms ease;
+}
+
+.maobu-player-icon-btn:hover {
+  background: rgba(255, 255, 255, 0.11);
+  border-color: rgba(255, 255, 255, 0.08);
+  color: #ffffff;
+  transform: none;
+}
+
+.maobu-player-icon-btn:active {
+  transform: scale(0.95);
+}
+
+.maobu-player-icon-btn.active {
+  color: var(--player-accent-fg);
+  background: var(--player-accent-soft);
+  border-color: var(--player-accent-border);
+}
+
+/* 底部悬浮精密影院控制岛 */
+.maobu-player-controls-panel {
+  left: 16px;
+  right: 16px;
+  bottom: 14px;
+  padding: 9px 14px 10px;
+  border-radius: 12px;
+  gap: 8px;
+  background: var(--player-surface);
+  border: 1px solid var(--player-border);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.54), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  transition: opacity 180ms cubic-bezier(0.22, 1, 0.36, 1), transform 180ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.maobu-player-controls-panel.hidden {
+  opacity: 0;
+  transform: translateY(10px);
+}
+
+/* 进度条与精确坐标 Tooltip */
+.maobu-player-progress-wrap {
+  height: 16px;
+}
+
+.maobu-player-progress-rail {
+  height: 4px;
+  background: rgba(255, 255, 255, 0.20);
+}
+
+.maobu-player-progress-wrap:hover .maobu-player-progress-rail,
+.maobu-player-progress-wrap.is-scrubbing .maobu-player-progress-rail {
+  height: 6px;
+}
+
+.maobu-player-progress-played {
+  background: var(--player-accent);
+  box-shadow: none;
+}
+
+.maobu-player-progress-thumb {
+  width: 12px;
+  height: 12px;
+  background: #ffffff;
+  box-shadow: 0 1px 6px rgba(0, 0, 0, 0.55);
+}
+
+.maobu-player-progress-wrap:hover .maobu-player-progress-thumb,
+.maobu-player-progress-wrap.is-scrubbing .maobu-player-progress-thumb {
+  transform: translateY(-50%) scale(1);
+}
+
+.maobu-player-progress-tooltip {
+  bottom: 20px;
+  background: rgba(16, 19, 26, 0.94);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  padding: 3px 8px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+}
+
+/* 主播放按钮 & 分组竖线 */
+.maobu-player-main-play-btn {
+  width: 34px;
+  height: 34px;
+  background: var(--player-accent);
+  border: none;
+  box-shadow: 0 2px 10px rgba(37, 99, 235, 0.35);
+  backdrop-filter: none;
+}
+
+.maobu-player-main-play-btn:hover {
+  background: var(--player-accent-hover);
+  border-color: transparent;
+  transform: scale(1.04);
+  box-shadow: 0 4px 14px rgba(37, 99, 235, 0.44);
+}
+
+.maobu-player-control-divider {
+  width: 1px;
+  height: 15px;
+  background: rgba(255, 255, 255, 0.13);
+  margin: 0 3px;
+  flex-shrink: 0;
+}
+
+/* 去盒化清晰时间码 */
+.maobu-player-time-display {
+  background: transparent;
+  border: none;
+  padding: 0 4px;
+  margin-left: 4px;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.maobu-player-rate-btn {
+  font-size: 11.5px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-variant-numeric: tabular-nums;
+  padding: 4px 7px;
+}
+
+/* 浮层统一为高对比 WebView2 友好微卡（移除重模糊） */
+.maobu-player-popup-menu,
+.maobu-player-volume-popover,
+.maobu-player-sort-menu {
+  background: var(--player-surface-pop);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  border: 1px solid rgba(255, 255, 255, 0.13);
+  border-radius: 10px;
+  box-shadow: 0 16px 36px rgba(0, 0, 0, 0.62);
+}
+
+.maobu-player-popup-menu,
+.maobu-player-volume-popover {
+  bottom: 72px;
+  max-height: calc(100vh - 128px);
+}
+
+.maobu-player-menu-item.active {
+  color: var(--player-accent-fg);
+  background: var(--player-accent-soft);
+  border-color: var(--player-accent-border);
+  box-shadow: none;
+  text-shadow: none;
+}
+
+.maobu-player-volume-popover-badge {
+  color: var(--player-accent-fg);
+  font-variant-numeric: tabular-nums;
+}
+
+.maobu-player-volume-preset-btn.active {
+  background: var(--player-accent-soft);
+  border-color: var(--player-accent-border);
+  color: var(--player-accent-fg);
+}
+
+/* 字幕 & 跳过浮层语义类（替代内联 #38bdf8） */
+.maobu-player-accent-icon {
+  color: var(--player-accent-fg);
+  flex-shrink: 0;
+}
+
+.maobu-player-sub-title-row,
+.maobu-player-sub-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.maobu-player-sub-heading {
+  font-weight: 600;
+  color: #f1f5f9;
+}
+
+.maobu-player-sub-badge {
+  background: var(--player-accent-soft);
+  color: var(--player-accent-fg);
+  border-color: var(--player-accent-border);
+}
+
+.maobu-player-sub-import-btn {
+  gap: 2px;
+  background: var(--player-accent-soft);
+  border-color: var(--player-accent-border);
+  color: var(--player-accent-fg);
+}
+
+.maobu-player-sub-import-btn:hover {
+  background: rgba(59, 130, 246, 0.28);
+  border-color: var(--player-accent);
+  transform: none;
+}
+
+.maobu-player-sub-empty-title {
+  font-size: 11px;
+  color: #cbd5e1;
+}
+
+.maobu-player-sub-empty-hint {
+  font-size: 10px;
+  color: #64748b;
+}
+
+.maobu-player-val-mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-variant-numeric: tabular-nums;
+  color: var(--player-accent-fg);
+}
+
+.maobu-player-val-mono.muted {
+  color: #94a3b8;
+}
+
+.maobu-player-slider-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.maobu-player-slider-edge {
+  font-size: 11px;
+  color: #64748b;
+}
+
+.maobu-player-sub-slider {
+  accent-color: var(--player-accent);
+}
+
+.maobu-player-subtitle-item.active {
+  background: var(--player-accent-soft);
+  border-color: var(--player-accent-border);
+  color: var(--player-accent-fg);
+}
+
+.maobu-player-chip-btn.active {
+  background: var(--player-accent-soft);
+  border-color: var(--player-accent-border);
+  color: var(--player-accent-fg);
+}
+
+.maobu-player-subtitle-section-last {
+  border-bottom: none;
+  margin-bottom: 0;
+  padding-bottom: 0;
+}
+
+.maobu-player-offset-row,
+.maobu-player-skip-step-group {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.maobu-player-skip-step-group {
+  margin-left: auto;
+}
+
+.maobu-player-skip-status-bar {
+  background: rgba(59, 130, 246, 0.10);
+  border-color: rgba(59, 130, 246, 0.24);
+}
+
+.maobu-player-skip-status-text {
+  color: #bfdbfe;
+}
+
+.maobu-player-skip-preset-chip:hover:not(:disabled),
+.maobu-player-skip-preset-chip.active {
+  background: var(--player-accent-soft);
+  border-color: var(--player-accent-border);
+  color: var(--player-accent-fg);
+}
+
+.maobu-player-skip-mark-btn:hover:not(:disabled) {
+  background: rgba(59, 130, 246, 0.12);
+  border-color: var(--player-accent-border);
+  color: var(--player-accent-fg);
+}
+
+/* 跳过提示胶囊 & HUD / Toast 位置避让控制岛 */
+.maobu-player-skip-toast {
+  background: var(--player-surface);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  border: 1px solid var(--player-border);
+}
+
+.maobu-player-skip-toast.intro,
+.maobu-player-skip-toast.outro {
+  bottom: 92px;
+}
+
+.maobu-player-skip-toast.intro {
+  border-left: 2px solid var(--player-accent);
+}
+
+.maobu-player-skip-toast.outro {
+  border-right: 2px solid #f59e0b;
+}
+
+.maobu-player-skip-icon,
+.maobu-player-skip-text strong {
+  color: var(--player-accent-fg);
+}
+
+.maobu-player-skip-toast.outro .maobu-player-skip-icon {
+  color: #f59e0b;
+}
+
+.maobu-player-skip-btn.undo {
+  background: var(--player-accent-soft);
+  color: var(--player-accent-fg);
+  border-color: var(--player-accent-border);
+}
+
+.maobu-player-skip-btn.undo:hover {
+  background: rgba(59, 130, 246, 0.30);
+  border-color: var(--player-accent);
+}
+
+.maobu-player-hud,
+.maobu-player-toast {
+  background: var(--player-surface);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  border-color: rgba(255, 255, 255, 0.14);
+}
+
+/* 右侧播放列表抽屉（316px 高对比暗面，移除滚动重模糊卡顿） */
+.maobu-player-playlist-drawer {
+  width: 316px;
+  max-width: 88vw;
+  background: var(--player-surface-drawer);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  border-left: 1px solid var(--player-border);
+  box-shadow: -16px 0 42px rgba(0, 0, 0, 0.65);
+  transition: transform 220ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.maobu-player-playlist-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.maobu-player-rel {
+  position: relative;
+}
+
+.maobu-player-playlist-count {
+  color: var(--player-accent-fg);
+  background: var(--player-accent-soft);
+  border-color: var(--player-accent-border);
+  font-variant-numeric: tabular-nums;
+}
+
+.maobu-player-playlist-search-input:focus {
+  border-color: var(--player-accent-border);
+  box-shadow: 0 0 0 2px var(--player-accent-soft);
+}
+
+.maobu-player-playlist-item.active {
+  background: var(--player-accent-soft);
+  border-color: var(--player-accent-border);
+  box-shadow: none;
+}
+
+.maobu-player-playlist-item.active .maobu-player-item-index,
+.maobu-player-playlist-item.active .maobu-player-item-name {
+  color: var(--player-accent-fg);
+  text-shadow: none;
+}
+
+.maobu-player-item-btn {
+  padding: 4px;
+}
+
+.maobu-player-playlist-empty {
+  text-align: center;
+  padding: 40px 20px;
+  color: #64748b;
+  font-size: 12px;
+}
+
+.maobu-player-btn-badge {
+  background: var(--player-accent);
+  color: #ffffff;
+}
+
+.maobu-player-wave-bar {
+  background: var(--player-accent-fg);
+}
+
+/* 迷你画中画与窄窗适配 */
+.maobu-player-root.mini-mode .maobu-player-controls-panel {
+  left: 8px;
+  right: 8px;
+  bottom: 8px;
+  padding: 6px 9px;
+  border-radius: 9px;
+  gap: 4px;
+}
+
+.maobu-player-root.mini-mode .maobu-player-control-divider {
+  display: none;
+}
+
+@media (max-width: 620px) {
+  .maobu-player-controls-panel {
+    left: 10px;
+    right: 10px;
+    bottom: 10px;
+    padding: 8px 10px;
+  }
+  .maobu-player-control-divider {
+    display: none;
+  }
+}
+
+@media (max-width: 420px) {
+  .maobu-player-controls-panel {
+    left: 8px;
+    right: 8px;
+    bottom: 8px;
+    padding: 7px 8px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .maobu-player-titlebar,
+  .maobu-player-controls-panel,
+  .maobu-player-playlist-drawer,
+  .maobu-player-icon-btn,
+  .maobu-player-hud,
+  .maobu-player-toast,
+  .maobu-player-popup-menu,
+  .maobu-player-volume-popover,
+  .maobu-player-sort-menu,
+  .maobu-player-skip-toast,
+  .maobu-player-wave-bar {
+    animation: none !important;
+    transition: none !important;
+  }
+}

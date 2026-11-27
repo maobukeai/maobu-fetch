@@ -50,6 +50,11 @@ async fn partial_old_json_defaults_missing_fields_without_losing_explicit_prefer
     let saved = store.get_settings().await.unwrap();
     assert_eq!(saved.min_file_size_mb, 1);
     assert_eq!(saved.theme, "dark");
+    assert_eq!(
+        saved.completion_notice_mode,
+        crate::models::CompletionNoticeMode::Desktop
+    );
+    assert_eq!(saved.completion_notice_seconds, 30);
     assert!(
         !saved.frosted_glass,
         "old per-field defaults remain authoritative"
@@ -61,6 +66,25 @@ async fn partial_old_json_defaults_missing_fields_without_losing_explicit_prefer
         saved.connections_per_download,
         AppSettings::default().connections_per_download
     );
+}
+
+#[tokio::test]
+async fn notification_mode_survives_restart_without_losing_desktop_duration() {
+    use crate::models::CompletionNoticeMode;
+    let (directory, store) = fixture().await;
+    let mut settings = store.get_settings().await.unwrap();
+    settings.completion_notice_seconds = 0;
+    settings.completion_notice_mode = CompletionNoticeMode::System;
+    store.save_settings(&settings).await.unwrap();
+    drop(store);
+    let path = directory.path().to_owned();
+    let reopened = tokio::task::spawn_blocking(move || Store::open(path))
+        .await
+        .unwrap()
+        .unwrap();
+    let saved = reopened.get_settings().await.unwrap();
+    assert_eq!(saved.completion_notice_mode, CompletionNoticeMode::System);
+    assert_eq!(saved.completion_notice_seconds, 0);
 }
 #[tokio::test]
 async fn invalid_json_or_field_types_fail_without_replacing_the_stored_value() {

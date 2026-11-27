@@ -45,12 +45,14 @@ const TRACKER_PRESETS = [
 export function BtSettingsSection({
   settings,
   toolStatus,
+  flashingAnchor = null,
   onUpdate,
   disabled,
   notify,
 }: {
   settings: AppSettings;
   toolStatus: ToolStatus | null | undefined;
+  flashingAnchor?: string | null;
   onUpdate: (patch: Partial<AppSettings>) => void;
   disabled?: boolean;
   notify?: (text: string, kind?: "ok" | "error") => void;
@@ -104,7 +106,12 @@ export function BtSettingsSection({
 
   return (
     <>
-      <SettingsGroup title={t("bt.componentGroup") || "内核与基础设置"}>
+      <SettingsGroup
+        title={t("bt.componentGroup") || "内核与基础设置"}
+        anchorId="bt-core"
+        badge={toolStatus?.aria2_version || "librqbit"}
+        flashing={flashingAnchor === "bt-core"}
+      >
         <div className="settings-group-content">
           <SettingRow
             label={t("bt.componentLabel")}
@@ -133,7 +140,12 @@ export function BtSettingsSection({
         </div>
       </SettingsGroup>
 
-      <SettingsGroup title={t("bt.seedGroup") || "做种与上传策略"}>
+      <SettingsGroup
+        title={t("bt.seedGroup") || "做种与上传策略"}
+        anchorId="bt-seed"
+        badge={seedEnabled ? t("settings.badgeOn") : t("settings.badgeOff")}
+        flashing={flashingAnchor === "bt-seed"}
+      >
         <div className="settings-group-content">
           <Toggle
             label={t("bt.seedToggle")}
@@ -187,7 +199,12 @@ export function BtSettingsSection({
         </div>
       </SettingsGroup>
 
-      <SettingsGroup title={t("bt.trackersGroup") || "Tracker 订阅与加速"}>
+      <SettingsGroup
+        title={t("bt.trackersGroup") || "Tracker 订阅与加速"}
+        anchorId="bt-trackers"
+        span="full"
+        flashing={flashingAnchor === "bt-trackers"}
+      >
         <div
           className="settings-group-content"
           style={{
@@ -315,7 +332,11 @@ export function BtSettingsSection({
         </div>
       </SettingsGroup>
 
-      <SettingsGroup title={t("bt.trackersLabel") || "额外 Tracker 列表"}>
+      <SettingsGroup
+        title={t("bt.trackersLabel") || "额外 Tracker 列表"}
+        span="full"
+        badge={validTrackerCount > 0 ? `${validTrackerCount}` : undefined}
+      >
         <div
           className="settings-group-content"
           style={{

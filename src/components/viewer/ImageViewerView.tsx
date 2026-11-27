@@ -4,18 +4,13 @@ import {
   useRef,
   useState,
   type MouseEvent as ReactMouseEvent,
-  type WheelEvent as ReactWheelEvent,
 } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import {
   ChevronLeft,
   ChevronRight,
-  Copy,
-  FlipHorizontal,
-  FolderOpen,
-  Grid,
-  Image as ImageIcon,
+  Film,
   Info,
   Maximize2,
   Minimize2,
@@ -23,18 +18,25 @@ import {
   MoreHorizontal,
   Pin,
   PinOff,
-  Play,
-  Pause,
   Plus,
   RotateCw,
-  Sliders,
-  Sun,
   X,
 } from "lucide-react";
 import { api, isDesktop } from "../../api";
 import type { ImageFileInfo, ImageItem } from "../../types";
-import { formatBytes, formatDate } from "../../formatters";
 import { calculateOptimalViewerSize } from "./image-viewer-utils";
+import {
+  clampScale,
+  computeCursorAnchoredZoom,
+  computeViewerImageUrl,
+  nextFilterMode,
+  VIEWER_FILTER_LABELS,
+  type ViewerFilterMode,
+  type ViewerPosition,
+} from "./image-viewer-model";
+import { ViewerThumbnailStrip } from "./ViewerThumbnailStrip";
+import { ViewerInfoDrawer } from "./ViewerInfoDrawer";
+import { ViewerMoreMenu } from "./ViewerMoreMenu";
 import "./ImageViewer.css";
 
 interface ImageViewerProps {
@@ -42,7 +44,10 @@ interface ImageViewerProps {
   initialTitle?: string;
 }
 
-type FilterMode = "none" | "contrast" | "grayscale" | "invert";
+interface ViewportTransform {
+  scale: number;
+  position: ViewerPosition;
+}
 
 export function ImageViewerView({ initialFile, initialTitle }: ImageViewerProps) {
   const [currentPath, setCurrentPath] = useState<string>(() => {
@@ -57,25 +62,23 @@ export function ImageViewerView({ initialFile, initialTitle }: ImageViewerProps)
     return params.get("title") || "";
   });
 
-  // 同目录图集列表
   const [gallery, setGallery] = useState<ImageItem[]>([]);
   const [currentIndex, setCurrentIndex] = useState<number>(0);
 
-  // 变换状态：缩放、位移、旋转、翻转
-  const [scale, setScale] = useState<number>(1);
-  const [position, setPosition] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
+  const [viewport, setViewport] = useState<ViewportTransform>({
+    scale: 1,
+    position: { x: 0, y: 0 },
+  });
   const [rotation, setRotation] = useState<number>(0);
   const [flipH, setFlipH] = useState<boolean>(false);
-  const [filterMode, setFilterMode] = useState<FilterMode>("none");
+  const [filterMode, setFilterMode] = useState<ViewerFilterMode>("none");
   const [isCheckerboard, setIsCheckerboard] = useState<boolean>(false);
 
-  // 拖拽平移与单击判定
   const [isDragging, setIsDragging] = useState<boolean>(false);
   const dragStartRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
-  const posStartRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
+  const posStartRef = useRef<ViewerPosition>({ x: 0, y: 0 });
   const clickStartRef = useRef<{ time: number; x: number; y: number }>({ time: 0, x: 0, y: 0 });
 
-  // 窗口与交互状态
   const [isAlwaysOnTop, setIsAlwaysOnTop] = useState<boolean>(false);
   const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
   const [showControls, setShowControls] = useState<boolean>(true);
@@ -93,87 +96,73 @@ export function ImageViewerView({ initialFile, initialTitle }: ImageViewerProps)
   const imgRef = useRef<HTMLImageElement | null>(null);
   const hideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const slideshowTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const slideshowTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const isInitialLoadRef = useRef<boolean>(true);
+  const isLoadedRef = useRef<boolean>(false);
 
   const triggerToast = useCallback((msg: string) => {
     setToastMessage(msg);
     if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
-    toastTimerRef.current = setTimeout(() => setToastMessage(""), 2200);
+    toastTimerRef.current = setTimeout(() => setToastMessage(""), 2000);
   }, []);
 
-  // 重置/适应窗口
   const resetFit = useCallback(() => {
-    setScale(1);
-    setPosition({ x: 0, y: 0 });
+    setViewport({ scale: 1, position: { x: 0, y: 0 } });
   }, []);
 
-  // 滤镜循环切换
+  const stepScale = useCallback((factor: number) => {
+    setViewport((prev) => ({
+      ...prev,
+      scale: clampScale(prev.scale * factor),
+    }));
+  }, []);
+
   const cycleFilter = useCallback(() => {
     setFilterMode((prev) => {
-      if (prev === "none") {
-        triggerToast("滤镜: 高对比度增强");
-        return "contrast";
-      }
-      if (prev === "contrast") {
-        triggerToast("滤镜: 经典黑白");
-        return "grayscale";
-      }
-      if (prev === "grayscale") {
-        triggerToast("滤镜: 反色底片");
-        return "invert";
-      }
-      triggerToast("滤镜: 原始色彩");
-      return "none";
+      const next = nextFilterMode(prev);
+      triggerToast(next.toast);
+      return next.mode;
     });
   }, [triggerToast]);
 
-  // 加载图片并扫描同目录图集
-  const loadImage = useCallback(
-    async (filePath: string, title?: string) => {
-      if (!filePath) return;
-      setCurrentPath(filePath);
-      setLoadFallback(false);
-      const name = filePath.split(/[\\/]/).pop() || filePath;
-      setImageTitle(title || name);
-      setRotation(0);
-      setFlipH(false);
-      setPosition({ x: 0, y: 0 });
-      setNaturalSize(null);
+  const loadImage = useCallback(async (filePath: string, title?: string) => {
+    if (!filePath) return;
+    setCurrentPath(filePath);
+    setLoadFallback(false);
+    const name = filePath.split(/[\\/]/).pop() || filePath;
+    setImageTitle(title || name);
+    setRotation(0);
+    setFlipH(false);
+    setViewport({ scale: 1, position: { x: 0, y: 0 } });
+    setNaturalSize(null);
 
-      if (isDesktop()) {
-        void api.imageViewerNotifyFileChanged(filePath, title || name);
-      }
+    if (!isDesktop()) return;
 
-      // 加载物理元信息
-      try {
-        const info = await api.imageViewerGetInfo(filePath);
-        setImageInfo(info);
-      } catch {
-        setImageInfo(null);
-      }
+    void api.imageViewerNotifyFileChanged(filePath, title || name);
 
-      // 扫描图集
-      try {
-        const items = await api.imageViewerGetFolderImages(filePath);
-        setGallery(items);
-        const idx = items.findIndex((it) => it.path === filePath);
-        setCurrentIndex(idx >= 0 ? idx : 0);
-      } catch (e) {
-        console.error("扫描同目录图片失败:", e);
-      }
-    },
-    []
-  );
+    try {
+      const info = await api.imageViewerGetInfo(filePath);
+      setImageInfo(info);
+    } catch {
+      setImageInfo(null);
+    }
 
-  const isLoadedRef = useRef(false);
-  // 初始化加载
+    try {
+      const items = await api.imageViewerGetFolderImages(filePath);
+      setGallery(items);
+      const idx = items.findIndex((it) => it.path === filePath);
+      setCurrentIndex(idx >= 0 ? idx : 0);
+    } catch (e) {
+      console.error("扫描同目录图片失败:", e);
+    }
+  }, []);
+
   useEffect(() => {
     if (isLoadedRef.current) return;
     if (currentPath) {
       isLoadedRef.current = true;
       void loadImage(currentPath, imageTitle);
-    } else {
+    } else if (isDesktop()) {
       void api.imageViewerGetCurrentFile().then((res) => {
         if (res && res[0]) {
           isLoadedRef.current = true;
@@ -183,17 +172,14 @@ export function ImageViewerView({ initialFile, initialTitle }: ImageViewerProps)
     }
   }, [currentPath, imageTitle, loadImage]);
 
-  // 监听切图事件
   useEffect(() => {
+    if (!isDesktop()) return;
     let unlistenFn: (() => void) | undefined;
-    void listen<{ file: string; title?: string }>(
-      "image-viewer-load-file",
-      (event) => {
-        if (event.payload?.file) {
-          void loadImage(event.payload.file, event.payload.title);
-        }
+    void listen<{ file: string; title?: string }>("image-viewer-load-file", (event) => {
+      if (event.payload?.file) {
+        void loadImage(event.payload.file, event.payload.title);
       }
-    ).then((fn) => {
+    }).then((fn) => {
       unlistenFn = fn;
     });
 
@@ -202,54 +188,49 @@ export function ImageViewerView({ initialFile, initialTitle }: ImageViewerProps)
     };
   }, [loadImage]);
 
-  // 切上一张
   const handlePrev = useCallback(() => {
     if (gallery.length <= 1) return;
     const nextIdx = (currentIndex - 1 + gallery.length) % gallery.length;
     const target = gallery[nextIdx];
-    if (target) {
-      void loadImage(target.path, target.name);
-    }
+    if (target) void loadImage(target.path, target.name);
   }, [gallery, currentIndex, loadImage]);
 
-  // 切下一张
   const handleNext = useCallback(() => {
     if (gallery.length <= 1) return;
     const nextIdx = (currentIndex + 1) % gallery.length;
     const target = gallery[nextIdx];
-    if (target) {
-      void loadImage(target.path, target.name);
-    }
+    if (target) void loadImage(target.path, target.name);
   }, [gallery, currentIndex, loadImage]);
 
-  // 幻灯片自动轮播
   useEffect(() => {
     if (!isPlayingSlideshow) {
       if (slideshowTimerRef.current) clearInterval(slideshowTimerRef.current);
       return;
     }
-    slideshowTimerRef.current = setInterval(() => {
-      handleNext();
-    }, 3000);
-
+    slideshowTimerRef.current = setInterval(handleNext, 3000);
     return () => {
       if (slideshowTimerRef.current) clearInterval(slideshowTimerRef.current);
     };
   }, [isPlayingSlideshow, handleNext]);
 
-  // 隐藏控制栏计时器（鼠标静止 1.5 秒后自动渐隐）
+  const clearHideTimer = useCallback(() => {
+    if (hideTimerRef.current) {
+      clearTimeout(hideTimerRef.current);
+      hideTimerRef.current = null;
+    }
+  }, []);
+
   const resetHideControlsTimer = useCallback(() => {
     if (isManualHidden) return;
     setShowControls(true);
-    if (hideTimerRef.current) clearTimeout(hideTimerRef.current);
+    clearHideTimer();
     hideTimerRef.current = setTimeout(() => {
       if (!showThumbnailStrip && !showInfoModal && !showMoreMenu) {
         setShowControls(false);
       }
-    }, 1500);
-  }, [isManualHidden, showThumbnailStrip, showInfoModal, showMoreMenu]);
+    }, 1800);
+  }, [isManualHidden, showThumbnailStrip, showInfoModal, showMoreMenu, clearHideTimer]);
 
-  // 单击图片区域切换控制栏显示/隐藏
   const toggleControls = useCallback(() => {
     setIsManualHidden((prev) => {
       const nextManual = !prev;
@@ -258,54 +239,72 @@ export function ImageViewerView({ initialFile, initialTitle }: ImageViewerProps)
         setShowMoreMenu(false);
         setShowThumbnailStrip(false);
         setShowInfoModal(false);
-        if (hideTimerRef.current) clearTimeout(hideTimerRef.current);
+        clearHideTimer();
       } else {
         setShowControls(true);
-        if (hideTimerRef.current) clearTimeout(hideTimerRef.current);
+        clearHideTimer();
         hideTimerRef.current = setTimeout(() => {
           if (!showThumbnailStrip && !showInfoModal && !showMoreMenu) {
             setShowControls(false);
           }
-        }, 1500);
+        }, 1800);
       }
       return nextManual;
     });
-  }, [showThumbnailStrip, showInfoModal, showMoreMenu]);
+  }, [showThumbnailStrip, showInfoModal, showMoreMenu, clearHideTimer]);
 
-  // 滚轮缩放 (以指针为焦点)
-  const handleWheel = (e: ReactWheelEvent) => {
-    e.preventDefault();
-    const delta = e.deltaY < 0 ? 1.15 : 0.87;
-    setScale((prev) => {
-      const next = Math.min(10, Math.max(0.1, parseFloat((prev * delta).toFixed(2))));
-      return next;
-    });
-    resetHideControlsTimer();
-  };
+  useEffect(() => {
+    const stageEl = stageRef.current;
+    if (!stageEl) return;
 
-  // 抓手拖拽与单击检测
-  const handleMouseDown = (e: ReactMouseEvent) => {
+    const handleWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      const factor = e.deltaY < 0 ? 1.15 : 0.87;
+      const rect = stageEl.getBoundingClientRect();
+      const pointerX = e.clientX;
+      const pointerY = e.clientY;
+      setViewport((prev) =>
+        computeCursorAnchoredZoom({
+          scale: prev.scale,
+          position: prev.position,
+          factor,
+          pointerX,
+          pointerY,
+          stageRect: rect,
+        })
+      );
+      resetHideControlsTimer();
+    };
+
+    stageEl.addEventListener("wheel", handleWheel, { passive: false });
+    return () => stageEl.removeEventListener("wheel", handleWheel);
+  }, [resetHideControlsTimer]);
+
+  const handleMouseDown = (e: ReactMouseEvent<HTMLDivElement>) => {
     if (e.button !== 0) return;
     setIsDragging(true);
     dragStartRef.current = { x: e.clientX, y: e.clientY };
-    posStartRef.current = { ...position };
+    posStartRef.current = { ...viewport.position };
     clickStartRef.current = { time: Date.now(), x: e.clientX, y: e.clientY };
   };
 
-  const handleMouseMove = (e: ReactMouseEvent) => {
-    // 若用户主动处于纯图隐藏模式，仅当鼠标移到顶部或底部边缘时才恢复
+  const handleMouseMove = (e: ReactMouseEvent<HTMLDivElement>) => {
     if (isManualHidden) {
-      if (e.clientY < 36 || e.clientY > window.innerHeight - 42) {
+      if (e.clientY < 36 || e.clientY > window.innerHeight - 48) {
         setIsManualHidden(false);
         setShowControls(true);
-      } else {
-        if (!isDragging) return;
+      } else if (isDragging) {
         const dx = e.clientX - dragStartRef.current.x;
         const dy = e.clientY - dragStartRef.current.y;
-        setPosition({
-          x: posStartRef.current.x + dx,
-          y: posStartRef.current.y + dy,
-        });
+        setViewport((prev) => ({
+          ...prev,
+          position: {
+            x: posStartRef.current.x + dx,
+            y: posStartRef.current.y + dy,
+          },
+        }));
+        return;
+      } else {
         return;
       }
     }
@@ -314,25 +313,41 @@ export function ImageViewerView({ initialFile, initialTitle }: ImageViewerProps)
     if (!isDragging) return;
     const dx = e.clientX - dragStartRef.current.x;
     const dy = e.clientY - dragStartRef.current.y;
-    setPosition({
-      x: posStartRef.current.x + dx,
-      y: posStartRef.current.y + dy,
-    });
+    setViewport((prev) => ({
+      ...prev,
+      position: {
+        x: posStartRef.current.x + dx,
+        y: posStartRef.current.y + dy,
+      },
+    }));
   };
 
-  const handleMouseUp = (e: ReactMouseEvent) => {
+  const handleMouseUp = (e: ReactMouseEvent<HTMLDivElement>) => {
+    if (!isDragging) return;
     setIsDragging(false);
-    // 判断是否为纯单击（移动 < 5px 且持续 < 250ms）
     const duration = Date.now() - clickStartRef.current.time;
     const dx = Math.abs(e.clientX - clickStartRef.current.x);
     const dy = Math.abs(e.clientY - clickStartRef.current.y);
     if (duration < 250 && dx < 5 && dy < 5) {
-      toggleControls();
+      if (showMoreMenu) {
+        setShowMoreMenu(false);
+      } else {
+        toggleControls();
+      }
     }
   };
 
-  // 复制图片到剪贴板
-  const copyImage = async () => {
+  const copyPath = useCallback(async () => {
+    if (!currentPath) return;
+    try {
+      await navigator.clipboard.writeText(currentPath);
+      triggerToast("已复制文件路径");
+    } catch {
+      triggerToast("当前环境不支持剪贴板写入");
+    }
+  }, [currentPath, triggerToast]);
+
+  const copyImage = useCallback(async () => {
     if (!currentPath) return;
     try {
       if (imgRef.current) {
@@ -340,49 +355,61 @@ export function ImageViewerView({ initialFile, initialTitle }: ImageViewerProps)
         canvas.width = imgRef.current.naturalWidth;
         canvas.height = imgRef.current.naturalHeight;
         const ctx = canvas.getContext("2d");
-        if (ctx) {
+        if (ctx && canvas.width > 0 && canvas.height > 0) {
           ctx.drawImage(imgRef.current, 0, 0);
           canvas.toBlob(async (blob) => {
             if (blob) {
-              await navigator.clipboard.write([
-                new ClipboardItem({ "image/png": blob }),
-              ]);
-              triggerToast("已复制图片到剪贴板");
+              try {
+                await navigator.clipboard.write([
+                  new ClipboardItem({ "image/png": blob }),
+                ]);
+                triggerToast("已复制图片到剪贴板");
+                return;
+              } catch {
+                await copyPath();
+                return;
+              }
             }
+            await copyPath();
           }, "image/png");
           return;
         }
       }
-      await navigator.clipboard.writeText(currentPath);
-      triggerToast("已复制图片路径");
+      await copyPath();
     } catch {
-      await navigator.clipboard.writeText(currentPath);
-      triggerToast("已复制图片绝对路径");
+      await copyPath();
     }
-  };
+  }, [currentPath, copyPath, triggerToast]);
 
-  // 复制路径
-  const copyPath = async () => {
-    if (!currentPath) return;
-    await navigator.clipboard.writeText(currentPath);
-    triggerToast("已复制文件路径");
-  };
-
-  // 窗口控制
   const handleMinimize = () => void api.imageViewerWindowMinimize();
   const handleToggleMaximize = () => void api.imageViewerWindowToggleMaximize();
-  const handleClose = () => void api.imageViewerWindowClose();
-  const handleToggleFullscreen = async () => {
+  const handleClose = useCallback(() => void api.imageViewerWindowClose(), []);
+  const handleToggleFullscreen = useCallback(async () => {
     const fs = await api.imageViewerWindowToggleFullscreen();
     setIsFullscreen(fs);
-  };
-  const handleToggleAlwaysOnTop = async () => {
+  }, []);
+  const handleToggleAlwaysOnTop = useCallback(async () => {
     const top = await api.imageViewerWindowToggleAlwaysOnTop();
     setIsAlwaysOnTop(top);
-    triggerToast(top ? "已开启窗口置顶" : "已取消置顶");
-  };
+    triggerToast(top ? "已置顶窗口" : "已取消置顶");
+  }, [triggerToast]);
 
-  // 键盘快捷键监听
+  const handleToggleCheckerboard = useCallback(() => {
+    setIsCheckerboard((prev) => {
+      const next = !prev;
+      triggerToast(next ? "已开启透明棋盘格" : "已恢复中性暗底");
+      return next;
+    });
+  }, [triggerToast]);
+
+  const handleToggleSlideshow = useCallback(() => {
+    setIsPlayingSlideshow((prev) => {
+      const next = !prev;
+      triggerToast(next ? "开始幻灯片轮播" : "已暂停幻灯片");
+      return next;
+    });
+  }, [triggerToast]);
+
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
@@ -403,6 +430,16 @@ export function ImageViewerView({ initialFile, initialTitle }: ImageViewerProps)
           e.preventDefault();
           handleNext();
           break;
+        case "+":
+        case "=":
+          e.preventDefault();
+          stepScale(1.25);
+          break;
+        case "-":
+        case "_":
+          e.preventDefault();
+          stepScale(0.8);
+          break;
         case "p":
         case "P":
           e.preventDefault();
@@ -421,13 +458,11 @@ export function ImageViewerView({ initialFile, initialTitle }: ImageViewerProps)
         case "b":
         case "B":
           e.preventDefault();
-          setIsCheckerboard((prev) => !prev);
-          triggerToast(!isCheckerboard ? "已开启透明棋盘格" : "已恢复暗夜背景");
+          handleToggleCheckerboard();
           break;
         case "1":
           e.preventDefault();
-          setScale(1);
-          setPosition({ x: 0, y: 0 });
+          resetFit();
           triggerToast("100% 原始尺寸");
           break;
         case "0":
@@ -484,65 +519,56 @@ export function ImageViewerView({ initialFile, initialTitle }: ImageViewerProps)
   }, [
     handlePrev,
     handleNext,
+    stepScale,
     resetFit,
     showMoreMenu,
     showInfoModal,
     showThumbnailStrip,
     isFullscreen,
-    isCheckerboard,
     copyImage,
     copyPath,
     handleClose,
     handleToggleAlwaysOnTop,
+    handleToggleCheckerboard,
+    handleToggleFullscreen,
     triggerToast,
   ]);
 
-  // 计算图片 URL：优先使用 Tauri convertFileSrc，备用 stream 协议
-  const computeImageUrl = (path: string, fallback: boolean) => {
-    if (!path) return "";
-    if (fallback) {
-      return `stream://localhost?file=${encodeURIComponent(path)}`;
-    }
-    if (isDesktop()) {
-      try {
-        return convertFileSrc(path);
-      } catch {
-        return `stream://localhost?file=${encodeURIComponent(path)}`;
-      }
-    }
-    return `stream://localhost?file=${encodeURIComponent(path)}`;
-  };
+  const resolveImageUrl = useCallback(
+    (path: string, fallback = false) =>
+      computeViewerImageUrl(path, fallback, isDesktop(), convertFileSrc),
+    []
+  );
 
-  const imgUrl = computeImageUrl(currentPath, loadFallback);
+  const imgUrl = resolveImageUrl(currentPath, loadFallback);
+  const filterLabel = VIEWER_FILTER_LABELS[filterMode];
+  const hasGalleryStrip = showThumbnailStrip && gallery.length > 0;
 
   return (
     <div
       className={`maobu-viewer-root ${isCheckerboard ? "checkerboard-bg" : ""}`}
       onMouseMove={handleMouseMove}
       onMouseUp={handleMouseUp}
-      onMouseLeave={handleMouseUp}
+      onMouseLeave={() => setIsDragging(false)}
     >
-      {/* 顶部自定义旗舰微晶标题栏 */}
+      {/* 顶部标题栏 */}
       <div
         data-tauri-drag-region
         className={`maobu-viewer-titlebar ${!showControls ? "hidden" : ""}`}
-        onMouseEnter={() => {
-          if (hideTimerRef.current) clearTimeout(hideTimerRef.current);
-        }}
+        onMouseEnter={clearHideTimer}
         onMouseLeave={resetHideControlsTimer}
       >
         <div className="maobu-viewer-title-info" data-tauri-drag-region>
-          <div className="maobu-viewer-brand-badge" data-tauri-drag-region>
-            <ImageIcon className="maobu-viewer-title-icon" />
-            <span className="maobu-viewer-brand-name">猫步看图</span>
-          </div>
           <span className="maobu-viewer-title-text" data-tauri-drag-region>
-            {imageTitle || "Maobu Image Viewer"}
+            {imageTitle || "猫步看图"}
           </span>
           {gallery.length > 0 && (
             <span className="maobu-viewer-counter-badge">
               {currentIndex + 1} / {gallery.length}
             </span>
+          )}
+          {filterLabel && (
+            <span className="maobu-viewer-filter-badge">{filterLabel}</span>
           )}
         </div>
 
@@ -586,19 +612,18 @@ export function ImageViewerView({ initialFile, initialTitle }: ImageViewerProps)
         </div>
       </div>
 
-      {/* 核心视口与画布区域 (单击切换显隐，双击重置) */}
+      {/* 核心视口与画布 */}
       <div
         ref={stageRef}
         className={`maobu-viewer-stage ${isDragging ? "dragging" : ""}`}
         onMouseDown={handleMouseDown}
-        onWheel={handleWheel}
         onDoubleClick={resetFit}
       >
-        {/* 左右侧快速切图微晶翼卡 */}
         {gallery.length > 1 && (
           <>
             <button
               type="button"
+              onMouseDown={(e) => e.stopPropagation()}
               onClick={(e) => {
                 e.stopPropagation();
                 handlePrev();
@@ -606,10 +631,11 @@ export function ImageViewerView({ initialFile, initialTitle }: ImageViewerProps)
               title="上一张 (← / A)"
               className={`maobu-viewer-nav-btn left ${!showControls ? "hidden-controls" : ""}`}
             >
-              <ChevronLeft size={20} />
+              <ChevronLeft size={18} />
             </button>
             <button
               type="button"
+              onMouseDown={(e) => e.stopPropagation()}
               onClick={(e) => {
                 e.stopPropagation();
                 handleNext();
@@ -617,16 +643,15 @@ export function ImageViewerView({ initialFile, initialTitle }: ImageViewerProps)
               title="下一张 (→ / D / 空格)"
               className={`maobu-viewer-nav-btn right ${!showControls ? "hidden-controls" : ""}`}
             >
-              <ChevronRight size={20} />
+              <ChevronRight size={18} />
             </button>
           </>
         )}
 
-        {/* 画布缩放平移变换层 */}
         <div
           className="maobu-viewer-canvas-wrap"
           style={{
-            transform: `translate(${position.x}px, ${position.y}px) scale(${scale}) rotate(${rotation}deg) scaleX(${flipH ? -1 : 1})`,
+            transform: `translate(${viewport.position.x}px, ${viewport.position.y}px) scale(${viewport.scale}) rotate(${rotation}deg) scaleX(${flipH ? -1 : 1})`,
           }}
         >
           {imgUrl && (
@@ -641,21 +666,16 @@ export function ImageViewerView({ initialFile, initialTitle }: ImageViewerProps)
                 const naturalH = img.naturalHeight;
                 setNaturalSize({ width: naturalW, height: naturalH });
 
-                // 首次打开看图器时，后端已经在创建窗口时精准预探测图片分辨率并居中，
-                // 绝不在首次 onLoad 时再次调用 window.center() 导致窗口瞬跳闪烁！
                 if (isDesktop() && naturalW > 0 && naturalH > 0) {
                   if (isInitialLoadRef.current) {
                     isInitialLoadRef.current = false;
                   } else {
-                    // 后续在同窗口内切图 (Prev/Next) 时自适应新图尺寸，但严禁重新居中（保持用户摆放的位置）
                     const optimal = calculateOptimalViewerSize(naturalW, naturalH);
                     void api.imageViewerWindowSetSize(optimal.width, optimal.height, false);
                   }
                 }
 
-                // 初始化居中
-                setScale(1);
-                setPosition({ x: 0, y: 0 });
+                setViewport({ scale: 1, position: { x: 0, y: 0 } });
               }}
               onError={() => {
                 if (!loadFallback) {
@@ -669,115 +689,34 @@ export function ImageViewerView({ initialFile, initialTitle }: ImageViewerProps)
         </div>
       </div>
 
-      {/* 底部「更多工具」微晶浮岛弹出箱 (Toolbox Island) */}
+      {/* 底部更多工具浮层（胶卷开启时自动上抬避免重叠） */}
       {showControls && showMoreMenu && (
-        <div
-          className="maobu-viewer-more-menu"
-          onClick={(e) => e.stopPropagation()}
-          onMouseEnter={() => {
-            if (hideTimerRef.current) clearTimeout(hideTimerRef.current);
-          }}
-          onMouseLeave={resetHideControlsTimer}
-        >
-          {/* 水平翻转 */}
-          <button
-            type="button"
-            onClick={() => {
-              setFlipH((prev) => !prev);
-            }}
-            title="水平翻转 (H)"
-            className={`maobu-viewer-icon-btn ${flipH ? "active" : ""}`}
-          >
-            <FlipHorizontal size={13} />
-          </button>
-
-          {/* 色彩滤镜 */}
-          <button
-            type="button"
-            onClick={cycleFilter}
-            title="色彩滤镜 (对比度/黑白/反色)"
-            className={`maobu-viewer-icon-btn ${filterMode !== "none" ? "active" : ""}`}
-          >
-            <Sun size={13} />
-          </button>
-
-          {/* 透明棋盘格 */}
-          <button
-            type="button"
-            onClick={() => {
-              setIsCheckerboard((prev) => !prev);
-              triggerToast(!isCheckerboard ? "已开启透明棋盘格" : "已恢复暗夜背景");
-            }}
-            title="切换透明棋盘格背景 (B)"
-            className={`maobu-viewer-icon-btn ${isCheckerboard ? "active" : ""}`}
-          >
-            <Grid size={13} />
-          </button>
-
-          {/* 幻灯片轮播 */}
-          <button
-            type="button"
-            onClick={() => {
-              setIsPlayingSlideshow((prev) => !prev);
-              triggerToast(!isPlayingSlideshow ? "开始幻灯片播放" : "已暂停幻灯片");
-            }}
-            title={isPlayingSlideshow ? "暂停幻灯片" : "幻灯片播放"}
-            className={`maobu-viewer-icon-btn ${isPlayingSlideshow ? "active" : ""}`}
-          >
-            {isPlayingSlideshow ? <Pause size={13} /> : <Play size={13} />}
-          </button>
-
-          {/* 胶卷抽屉 */}
-          <button
-            type="button"
-            onClick={() => {
-              setShowThumbnailStrip((prev) => !prev);
-            }}
-            title="缩略图胶卷 (T)"
-            className={`maobu-viewer-icon-btn ${showThumbnailStrip ? "active" : ""}`}
-          >
-            <Sliders size={13} />
-          </button>
-
-          {/* 图片信息 */}
-          <button
-            type="button"
-            onClick={() => {
-              setShowInfoModal((prev) => !prev);
-            }}
-            title="图片信息 (I)"
-            className={`maobu-viewer-icon-btn ${showInfoModal ? "active" : ""}`}
-          >
-            <Info size={13} />
-          </button>
-
-          {/* 复制图片 */}
-          <button
-            type="button"
-            onClick={() => void copyImage()}
-            title="复制图片 (Ctrl+C)"
-            className="maobu-viewer-icon-btn"
-          >
-            <Copy size={13} />
-          </button>
-        </div>
+        <ViewerMoreMenu
+          flipH={flipH}
+          filterMode={filterMode}
+          isCheckerboard={isCheckerboard}
+          isPlayingSlideshow={isPlayingSlideshow}
+          hasThumbnailStrip={hasGalleryStrip}
+          onToggleFlip={() => setFlipH((prev) => !prev)}
+          onCycleFilter={cycleFilter}
+          onToggleCheckerboard={handleToggleCheckerboard}
+          onToggleSlideshow={handleToggleSlideshow}
+          onCopyImage={() => void copyImage()}
+          onPointerEnter={clearHideTimer}
+          onPointerLeave={resetHideControlsTimer}
+        />
       )}
 
-      {/* 底部微晶悬浮主控制岛台 (超紧凑 260px 宽度，任何窄窗口 100% 完整展示绝不截断) */}
+      {/* 底部精密控制浮岛 */}
       <div
         className={`maobu-viewer-bottom-bar ${!showControls ? "hidden" : ""}`}
-        onMouseEnter={() => {
-          if (hideTimerRef.current) clearTimeout(hideTimerRef.current);
-        }}
+        onClick={(e) => e.stopPropagation()}
+        onMouseEnter={clearHideTimer}
         onMouseLeave={resetHideControlsTimer}
       >
-        {/* 上一张 / 下一张 */}
         <button
           type="button"
-          onClick={(e) => {
-            e.stopPropagation();
-            handlePrev();
-          }}
+          onClick={handlePrev}
           disabled={gallery.length <= 1}
           title="上一张 (←)"
           className="maobu-viewer-icon-btn"
@@ -786,10 +725,7 @@ export function ImageViewerView({ initialFile, initialTitle }: ImageViewerProps)
         </button>
         <button
           type="button"
-          onClick={(e) => {
-            e.stopPropagation();
-            handleNext();
-          }}
+          onClick={handleNext}
           disabled={gallery.length <= 1}
           title="下一张 (→)"
           className="maobu-viewer-icon-btn"
@@ -799,191 +735,114 @@ export function ImageViewerView({ initialFile, initialTitle }: ImageViewerProps)
 
         <div className="maobu-viewer-bar-divider" />
 
-        {/* 缩放控制 */}
         <button
           type="button"
-          onClick={(e) => {
-            e.stopPropagation();
-            setScale((prev) => Math.max(0.1, parseFloat((prev * 0.8).toFixed(2))));
-          }}
-          title="缩小"
+          onClick={() => stepScale(0.8)}
+          title="缩小 (-)"
           className="maobu-viewer-icon-btn"
         >
           <Minus size={13} />
         </button>
-        <span
-          className="maobu-viewer-scale-text"
-          onClick={(e) => {
-            e.stopPropagation();
-            resetFit();
-          }}
-          title="点击重置为适应窗口 (0/F)"
-        >
-          {Math.round(scale * 100)}%
-        </span>
         <button
           type="button"
-          onClick={(e) => {
-            e.stopPropagation();
-            setScale((prev) => Math.min(10, parseFloat((prev * 1.25).toFixed(2))));
-          }}
-          title="放大"
+          onClick={resetFit}
+          title="点击重置为适应窗口 (0/F)"
+          className="maobu-viewer-scale-text"
+        >
+          {Math.round(viewport.scale * 100)}%
+        </button>
+        <button
+          type="button"
+          onClick={() => stepScale(1.25)}
+          title="放大 (+)"
           className="maobu-viewer-icon-btn"
         >
           <Plus size={13} />
         </button>
-
-        <div className="maobu-viewer-bar-divider" />
-
-        {/* 1:1 原图 */}
         <button
           type="button"
-          onClick={(e) => {
-            e.stopPropagation();
-            setScale(1);
-            setPosition({ x: 0, y: 0 });
+          onClick={() => {
+            resetFit();
             triggerToast("100% 原始尺寸");
           }}
           title="1:1 实际像素 (1)"
-          className={`maobu-viewer-icon-btn ${scale === 1 ? "active" : ""}`}
-          style={{ fontSize: "10px", fontFamily: "monospace", fontWeight: 600 }}
+          className={`maobu-viewer-icon-btn maobu-viewer-ratio-btn ${viewport.scale === 1 ? "active" : ""}`}
         >
           1:1
         </button>
 
-        {/* 旋转 90° */}
+        <div className="maobu-viewer-bar-divider" />
+
         <button
           type="button"
-          onClick={(e) => {
-            e.stopPropagation();
-            setRotation((prev) => (prev + 90) % 360);
-          }}
+          onClick={() => setRotation((prev) => (prev + 90) % 360)}
           title="顺时针旋转 90° (R)"
           className={`maobu-viewer-icon-btn ${rotation !== 0 ? "active" : ""}`}
         >
           <RotateCw size={13} />
         </button>
-
-        {/* 窗口置顶 */}
         <button
           type="button"
-          onClick={(e) => {
-            e.stopPropagation();
-            void handleToggleAlwaysOnTop();
-          }}
-          title={isAlwaysOnTop ? "取消置顶 (P)" : "置顶窗口 (P)"}
-          className={`maobu-viewer-icon-btn ${isAlwaysOnTop ? "active" : ""}`}
+          onClick={() => setShowThumbnailStrip((prev) => !prev)}
+          title="缩略图胶卷 (T)"
+          className={`maobu-viewer-icon-btn ${showThumbnailStrip ? "active" : ""}`}
         >
-          <Pin size={13} />
+          <Film size={13} />
         </button>
-
-        {/* 更多功能微晶抽屉 (滤镜/翻转/网格/幻灯片/胶卷/属性/复制) */}
         <button
           type="button"
-          onClick={(e) => {
-            e.stopPropagation();
-            setShowMoreMenu((prev) => !prev);
-          }}
-          title="更多工具 (滤镜/翻转/网格/幻灯片/胶卷/信息/复制)"
+          onClick={() => setShowInfoModal((prev) => !prev)}
+          title="图片属性 (I)"
+          className={`maobu-viewer-icon-btn ${showInfoModal ? "active" : ""}`}
+        >
+          <Info size={13} />
+        </button>
+        <button
+          type="button"
+          onClick={() => setShowMoreMenu((prev) => !prev)}
+          title="更多工具"
           className={`maobu-viewer-icon-btn ${showMoreMenu ? "active" : ""}`}
         >
           <MoreHorizontal size={14} />
         </button>
 
-        {/* 全屏切换 */}
+        <div className="maobu-viewer-bar-divider" />
+
         <button
           type="button"
-          onClick={(e) => {
-            e.stopPropagation();
-            void handleToggleFullscreen();
-          }}
+          onClick={() => void handleToggleFullscreen()}
           title="全屏 (F11)"
-          className="maobu-viewer-icon-btn"
+          className={`maobu-viewer-icon-btn ${isFullscreen ? "active" : ""}`}
         >
           {isFullscreen ? <Minimize2 size={13} /> : <Maximize2 size={13} />}
         </button>
       </div>
 
-      {/* 底部缩略图胶卷 Strip */}
-      {showThumbnailStrip && gallery.length > 0 && (
-        <div className="maobu-viewer-thumbnail-strip" onClick={(e) => e.stopPropagation()}>
-          {gallery.map((item, idx) => {
-            const isActive = idx === currentIndex;
-            const thumbUrl = computeImageUrl(item.path, false);
-            return (
-              <div
-                key={item.path}
-                onClick={() => loadImage(item.path, item.name)}
-                className={`maobu-viewer-thumbnail-item ${isActive ? "active" : ""}`}
-                title={`${item.name} (${formatBytes(item.size_bytes)})`}
-              >
-                <img src={thumbUrl} alt={item.name} loading="lazy" />
-              </div>
-            );
-          })}
-        </div>
+      {/* 底部缩略图胶卷 */}
+      {showThumbnailStrip && (
+        <ViewerThumbnailStrip
+          gallery={gallery}
+          currentIndex={currentIndex}
+          resolveUrl={(p) => resolveImageUrl(p, false)}
+          onSelect={(item) => void loadImage(item.path, item.name)}
+          onPointerEnter={clearHideTimer}
+          onPointerLeave={resetHideControlsTimer}
+        />
       )}
 
-      {/* 图片信息元数据浮窗 */}
+      {/* 右侧图片属性抽屉 */}
       {showInfoModal && (
-        <div className="maobu-viewer-info-modal" onClick={(e) => e.stopPropagation()}>
-          <div className="maobu-viewer-info-title">
-            <span>图片属性</span>
-            <button
-              type="button"
-              onClick={() => setShowInfoModal(false)}
-              className="maobu-viewer-icon-btn"
-              style={{ width: "20px", height: "20px", padding: 0 }}
-            >
-              <X size={12} />
-            </button>
-          </div>
-          <div className="maobu-viewer-info-row">
-            <span className="maobu-viewer-info-label">文件名</span>
-            <span className="maobu-viewer-info-val" title={imageInfo?.name || imageTitle}>
-              {imageInfo?.name || imageTitle}
-            </span>
-          </div>
-          {naturalSize && (
-            <div className="maobu-viewer-info-row">
-              <span className="maobu-viewer-info-label">分辨率</span>
-              <span className="maobu-viewer-info-val">
-                {naturalSize.width} × {naturalSize.height} px
-              </span>
-            </div>
-          )}
-          {imageInfo && imageInfo.size_bytes > 0 && (
-            <div className="maobu-viewer-info-row">
-              <span className="maobu-viewer-info-label">文件大小</span>
-              <span className="maobu-viewer-info-val">{formatBytes(imageInfo.size_bytes)}</span>
-            </div>
-          )}
-          {imageInfo?.ext && (
-            <div className="maobu-viewer-info-row">
-              <span className="maobu-viewer-info-label">图像格式</span>
-              <span className="maobu-viewer-info-val">{imageInfo.ext.toUpperCase()}</span>
-            </div>
-          )}
-          {imageInfo && imageInfo.modified_ms > 0 && (
-            <div className="maobu-viewer-info-row">
-              <span className="maobu-viewer-info-label">修改时间</span>
-              <span className="maobu-viewer-info-val">
-                {formatDate(imageInfo.modified_ms)}
-              </span>
-            </div>
-          )}
-          <div className="maobu-viewer-info-row" style={{ marginTop: "4px" }}>
-            <button
-              type="button"
-              onClick={copyPath}
-              className="maobu-viewer-icon-btn"
-              style={{ width: "100%", height: "24px", fontSize: "11px", gap: "4px" }}
-            >
-              <FolderOpen size={12} />
-              复制绝对路径
-            </button>
-          </div>
-        </div>
+        <ViewerInfoDrawer
+          imageInfo={imageInfo}
+          imageTitle={imageTitle}
+          naturalSize={naturalSize}
+          scale={viewport.scale}
+          onClose={() => setShowInfoModal(false)}
+          onCopyImage={() => void copyImage()}
+          onCopyPath={() => void copyPath()}
+          onPointerEnter={clearHideTimer}
+          onPointerLeave={resetHideControlsTimer}
+        />
       )}
 
       {/* 轻提示 Toast */}

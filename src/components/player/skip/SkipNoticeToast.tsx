@@ -34,7 +34,7 @@ export const SkipNoticeToast: React.FC<SkipNoticeToastProps> = ({
               type="button"
               onClick={onUndoIntro}
               className="maobu-player-skip-btn undo"
-              title="撤销跳过片头，返回开头播放 (按 Z)"
+              title="撤销跳过片头，返回开头 (Z)"
             >
               <RotateCcw size={12} />
               <span>撤销 (Z)</span>
@@ -51,7 +51,7 @@ export const SkipNoticeToast: React.FC<SkipNoticeToastProps> = ({
         <div className="maobu-player-skip-toast-content">
           <SkipForward size={14} className="maobu-player-skip-icon" />
           <span className="maobu-player-skip-text">
-            即将跳过片尾，播放下一集 ({countdown}s)
+            即将播下一集 ({countdown}s)
           </span>
           <div className="maobu-player-skip-actions">
             {onSkipOutroNow && (
@@ -69,7 +69,7 @@ export const SkipNoticeToast: React.FC<SkipNoticeToastProps> = ({
                 type="button"
                 onClick={onCancelOutroSkip}
                 className="maobu-player-skip-btn cancel"
-                title="取消跳过，继续播放完整片尾"
+                title="取消跳过，播完片尾"
               >
                 <X size={12} />
                 <span>取消</span>

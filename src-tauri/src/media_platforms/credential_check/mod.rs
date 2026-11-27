@@ -78,6 +78,25 @@ async fn check_target(
 ) -> Result<MediaCredentialCheckResult, String> {
     let platform = detect_platform(&format!("https://{domain}/"));
     let cookie = crate::media_cookies::header_for_url(cookie.unwrap_or(""), target, target);
+    if platform == MediaPlatform::BaiduPan {
+        if cookie.is_empty() {
+            return Ok(result(
+                domain,
+                false,
+                "凭证中没有可用于 pan.baidu.com 的有效 Cookie（可能已过期或格式不匹配），请在浏览器登录 pan.baidu.com 后重新同步".into(),
+            ));
+        }
+        let has_bduss = crate::media_cookies::parse_cookie_header(&cookie)
+            .into_iter()
+            .any(|(name, value)| name == "BDUSS" && !value.trim().is_empty());
+        if !has_bduss {
+            return Ok(result(
+                domain,
+                false,
+                "百度网盘凭证缺少有效 BDUSS，请在浏览器登录 pan.baidu.com 后点击扩展「登录态下载 → 同步到媒体凭证」".into(),
+            ));
+        }
+    }
     let ua=user_agent.filter(|value|!value.trim().is_empty()).unwrap_or("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36");
     if ua.chars().any(char::is_control)
         || referer.is_some_and(|value| value.chars().any(char::is_control))
@@ -100,6 +119,8 @@ async fn check_target(
             return Err("凭证Referer地址无效".into());
         }
         request = request.header(reqwest::header::REFERER, referer);
+    } else if platform == MediaPlatform::BaiduPan {
+        request = request.header(reqwest::header::REFERER, "https://pan.baidu.com/disk/home");
     }
     if platform == MediaPlatform::Twitter {
         // Public web-client bearer identifies the API application, never a user's secret.
@@ -116,10 +137,25 @@ async fn check_target(
     })?;
     let status = response.status();
     if !status.is_success() {
+        let mut custom_message = None;
+        if platform == MediaPlatform::BaiduPan && !status.is_redirection() {
+            if let Ok(bytes) = response.bytes().await {
+                if let Ok(val) = serde_json::from_slice::<serde_json::Value>(&bytes[..bytes.len().min(65536)]) {
+                    if val["errno"].as_i64() == Some(-6) {
+                        custom_message = Some(format!(
+                            "百度网盘认证已过期或未生效（HTTP {} / errno -6：用户未登录）；请在浏览器重新登录 pan.baidu.com，并在扩展弹窗「登录态下载 → 同步到媒体凭证」覆盖旧凭证",
+                            status.as_u16()
+                        ));
+                    }
+                }
+            }
+        }
         return Ok(result(
             domain,
             false,
-            if status.is_redirection() {
+            if let Some(msg) = custom_message {
+                msg
+            } else if status.is_redirection() {
                 "站点要求重定向，未转发凭证；请检查登录域名".into()
             } else {
                 format!(

@@ -1,6 +1,6 @@
 /* ==========================================================================
-   猫步看图器 · Maobu Image Viewer 旗舰极透微晶样式表
-   Ultra-Translucent Glass (极透液态玻璃 + 影院级沉浸视野)
+   猫步看图器 · Maobu Image Viewer（方案 A · 精密画廊浮岛）
+   中性暗石墨画布 + 高对比单层浮岛 + 无碰撞分层面板
    ========================================================================== */
 
 .maobu-viewer-root {
@@ -8,47 +8,45 @@
   inset: 0;
   width: 100vw;
   height: 100vh;
-  background-color: #05070a;
-  color: #ffffff;
+  background-color: #0d0f13;
+  color: #f1f5f9;
   overflow: hidden;
   display: flex;
   flex-direction: column;
   justify-content: space-between;
   user-select: none;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+  font-family: "Segoe UI Variable Text", "Segoe UI", -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
   z-index: 99999;
 }
 
-/* 透明棋盘格背景模式 */
+/* 中性棋盘格透明背景 */
 .maobu-viewer-root.checkerboard-bg .maobu-viewer-stage {
-  background: 
-    linear-gradient(45deg, rgba(255, 255, 255, 0.05) 25%, transparent 25%),
-    linear-gradient(-45deg, rgba(255, 255, 255, 0.05) 25%, transparent 25%),
-    linear-gradient(45deg, transparent 75%, rgba(255, 255, 255, 0.05) 75%),
-    linear-gradient(-45deg, transparent 75%, rgba(255, 255, 255, 0.05) 75%),
-    #0a0d14;
+  background-color: #14171d;
+  background-image:
+    linear-gradient(45deg, rgba(255, 255, 255, 0.06) 25%, transparent 25%),
+    linear-gradient(-45deg, rgba(255, 255, 255, 0.06) 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, rgba(255, 255, 255, 0.06) 75%),
+    linear-gradient(-45deg, transparent 75%, rgba(255, 255, 255, 0.06) 75%);
   background-size: 20px 20px;
-  background-position: 0 0, 0 10px, 10px -10px, -10px 0px;
+  background-position: 0 0, 0 10px, 10px -10px, -10px 0;
 }
 
 /* ==========================================================================
-   1. 顶部极透轻盈标题栏
+   1. 顶部精简标题栏（中性渐变遮罩，无重模糊与青色品牌噪声）
    ========================================================================== */
 .maobu-viewer-titlebar {
   position: absolute;
   top: 0;
   left: 0;
   right: 0;
-  height: 42px;
-  padding: 0 12px;
+  height: 38px;
+  padding: 0 10px 0 14px;
   display: flex;
   align-items: center;
   justify-content: space-between;
   z-index: 60;
-  background: linear-gradient(180deg, rgba(5, 7, 10, 0.55) 0%, rgba(5, 7, 10, 0.15) 70%, transparent 100%);
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
-  transition: opacity 0.3s cubic-bezier(0.16, 1, 0.3, 1), transform 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+  background: linear-gradient(180deg, rgba(13, 15, 19, 0.9) 0%, rgba(13, 15, 19, 0.54) 68%, transparent 100%);
+  transition: opacity 0.2s cubic-bezier(0.16, 1, 0.3, 1), transform 0.2s cubic-bezier(0.16, 1, 0.3, 1);
   pointer-events: auto;
   -webkit-app-region: drag;
 }
@@ -63,36 +61,10 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  max-width: calc(100vw - 160px);
+  min-width: 0;
+  max-width: calc(100vw - 148px);
   pointer-events: auto;
   -webkit-app-region: drag;
-}
-
-.maobu-viewer-brand-badge {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  background: rgba(56, 189, 248, 0.1);
-  border: 1px solid rgba(56, 189, 248, 0.22);
-  padding: 2px 7px;
-  border-radius: 6px;
-  flex-shrink: 0;
-  backdrop-filter: blur(10px);
-}
-
-.maobu-viewer-title-icon {
-  width: 13px;
-  height: 13px;
-  color: #38bdf8;
-  filter: drop-shadow(0 0 5px rgba(56, 189, 248, 0.5));
-  flex-shrink: 0;
-}
-
-.maobu-viewer-brand-name {
-  font-size: 11px;
-  font-weight: 500;
-  color: #38bdf8;
-  letter-spacing: 0.2px;
 }
 
 .maobu-viewer-title-text {
@@ -102,18 +74,30 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  letter-spacing: 0.2px;
-  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.85);
+  letter-spacing: 0.1px;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.75);
 }
 
 .maobu-viewer-counter-badge {
   font-size: 11px;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  background: rgba(255, 255, 255, 0.07);
+  font-variant-numeric: tabular-nums;
+  background: rgba(24, 27, 34, 0.92);
   border: 1px solid rgba(255, 255, 255, 0.12);
   color: #cbd5e1;
+  padding: 1px 7px;
+  border-radius: 5px;
+  flex-shrink: 0;
+}
+
+.maobu-viewer-filter-badge {
+  font-size: 10.5px;
+  font-weight: 500;
+  color: #93c5fd;
+  background: rgba(59, 130, 246, 0.18);
+  border: 1px solid rgba(59, 130, 246, 0.42);
   padding: 1px 6px;
-  border-radius: 9999px;
+  border-radius: 5px;
   flex-shrink: 0;
 }
 
@@ -126,7 +110,7 @@
   z-index: 70;
 }
 
-/* 通用极透微晶按钮 (无厚重底色，通透灵动) */
+/* 通用精密按钮（克制反馈，零悬停上跳） */
 .maobu-viewer-icon-btn {
   background: transparent;
   border: 1px solid transparent;
@@ -137,43 +121,62 @@
   padding: 0;
   border-radius: 6px;
   color: #cbd5e1;
-  display: flex;
+  display: inline-flex;
   align-items: center;
   justify-content: center;
-  transition: all 0.16s cubic-bezier(0.16, 1, 0.3, 1);
+  transition: background 0.14s ease, border-color 0.14s ease, color 0.14s ease;
   pointer-events: auto !important;
   -webkit-app-region: no-drag !important;
   flex-shrink: 0;
 }
 
-.maobu-viewer-icon-btn:hover {
-  background: rgba(255, 255, 255, 0.14);
-  border-color: rgba(255, 255, 255, 0.22);
+.maobu-viewer-icon-btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.11);
+  border-color: rgba(255, 255, 255, 0.14);
   color: #ffffff;
-  transform: translateY(-1px);
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
 }
 
-.maobu-viewer-icon-btn:active {
-  transform: translateY(0) scale(0.95);
+.maobu-viewer-icon-btn:active:not(:disabled) {
+  background: rgba(255, 255, 255, 0.16);
+}
+
+.maobu-viewer-icon-btn:focus-visible,
+.maobu-viewer-scale-text:focus-visible,
+.maobu-viewer-nav-btn:focus-visible,
+.maobu-viewer-thumbnail-item:focus-visible,
+.maobu-viewer-info-action-btn:focus-visible {
+  outline: 2px solid #3b82f6;
+  outline-offset: 1px;
+}
+
+.maobu-viewer-icon-btn:disabled {
+  opacity: 0.32;
+  cursor: not-allowed;
 }
 
 .maobu-viewer-icon-btn.active {
-  background: rgba(56, 189, 248, 0.22);
-  border-color: rgba(56, 189, 248, 0.55);
-  color: #38bdf8;
-  box-shadow: 0 0 10px rgba(56, 189, 248, 0.3);
+  background: rgba(59, 130, 246, 0.22);
+  border-color: rgba(59, 130, 246, 0.58);
+  color: #93c5fd;
 }
 
 .maobu-viewer-icon-btn.close:hover {
-  background: rgba(239, 68, 68, 0.85);
+  background: #dc2626;
   border-color: #ef4444;
   color: #ffffff;
-  box-shadow: 0 0 12px rgba(239, 68, 68, 0.4);
+}
+
+.maobu-viewer-ratio-btn {
+  width: auto;
+  min-width: 28px;
+  padding: 0 5px;
+  font-size: 10.5px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-weight: 600;
 }
 
 /* ==========================================================================
-   2. 核心视口与画布区域
+   2. 核心视口与画布区域（纯中性暗石墨，零色偏）
    ========================================================================== */
 .maobu-viewer-stage {
   flex: 1;
@@ -185,8 +188,7 @@
   align-items: center;
   justify-content: center;
   cursor: grab;
-  background: radial-gradient(circle at center, #0f1624 0%, #05070a 100%);
-  transition: background 0.3s ease;
+  background: #0d0f13;
 }
 
 .maobu-viewer-stage.dragging {
@@ -200,9 +202,13 @@
   align-items: center;
   justify-content: center;
   transform-origin: center center;
-  transition: transform 0.05s linear;
+  transition: transform 0.08s cubic-bezier(0.16, 1, 0.3, 1);
   will-change: transform;
   pointer-events: none;
+}
+
+.maobu-viewer-stage.dragging .maobu-viewer-canvas-wrap {
+  transition: none;
 }
 
 .maobu-viewer-image {
@@ -213,10 +219,14 @@
   object-fit: contain;
   user-select: none;
   -webkit-user-drag: none;
-  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.75);
+  box-shadow: 0 14px 40px rgba(0, 0, 0, 0.65);
   border-radius: 3px;
   pointer-events: auto;
-  transition: filter 0.2s ease;
+  transition: filter 0.18s ease;
+}
+
+.maobu-viewer-root.checkerboard-bg .maobu-viewer-image {
+  box-shadow: none;
 }
 
 /* 滤镜模式 */
@@ -231,53 +241,45 @@
 }
 
 /* ==========================================================================
-   3. 左右侧悬浮极透切图微晶翼卡 (Ultra-Translucent Side Wings)
+   3. 左右侧悬浮切图翼卡（克制高亮边框，无重模糊）
    ========================================================================== */
 .maobu-viewer-nav-btn {
   position: absolute;
   top: 50%;
   transform: translateY(-50%);
-  width: 32px;
-  height: 48px;
-  border-radius: 10px;
-  background: rgba(10, 14, 24, 0.22);
-  backdrop-filter: blur(20px) saturate(180%);
-  -webkit-backdrop-filter: blur(20px) saturate(180%);
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  color: #e2e8f0;
+  width: 28px;
+  height: 44px;
+  border-radius: 8px;
+  background: rgba(18, 20, 25, 0.88);
+  border: 1px solid rgba(255, 255, 255, 0.13);
+  color: #cbd5e1;
   display: flex;
   align-items: center;
   justify-content: center;
   cursor: pointer;
   z-index: 40;
   opacity: 0;
-  transition: opacity 0.3s cubic-bezier(0.16, 1, 0.3, 1), transform 0.2s cubic-bezier(0.16, 1, 0.3, 1), background 0.2s ease, border-color 0.2s ease;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  transition: opacity 0.18s ease, background 0.14s ease, border-color 0.14s ease, color 0.14s ease;
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.4);
 }
 
 .maobu-viewer-nav-btn.left {
-  left: 8px;
+  left: 10px;
 }
 
 .maobu-viewer-nav-btn.right {
-  right: 8px;
+  right: 10px;
 }
 
 .maobu-viewer-stage:hover .maobu-viewer-nav-btn {
-  opacity: 0.65;
+  opacity: 0.72;
 }
 
 .maobu-viewer-nav-btn:hover {
   opacity: 1 !important;
-  background: rgba(10, 14, 24, 0.48);
-  border-color: rgba(56, 189, 248, 0.65);
-  color: #38bdf8;
-  transform: translateY(-50%) scale(1.06);
-  box-shadow: 0 0 16px rgba(56, 189, 248, 0.35);
-}
-
-.maobu-viewer-nav-btn:active {
-  transform: translateY(-50%) scale(0.95);
+  background: rgba(28, 32, 40, 0.96);
+  border-color: rgba(59, 130, 246, 0.65);
+  color: #ffffff;
 }
 
 .maobu-viewer-nav-btn.hidden-controls {
@@ -286,7 +288,7 @@
 }
 
 /* ==========================================================================
-   4. 底部极致通透悬浮微晶控制岛台 (Ultra-Translucent Island Dock)
+   4. 底部精密控制浮岛（单层高对比 0.92 深色，亮图清晰可读）
    ========================================================================== */
 .maobu-viewer-bottom-bar {
   position: absolute;
@@ -297,76 +299,83 @@
   display: flex;
   align-items: center;
   gap: 2px;
-  padding: 3px 6px;
-  border-radius: 9999px;
-  background: rgba(10, 14, 24, 0.38);
-  backdrop-filter: blur(28px) saturate(200%);
-  -webkit-backdrop-filter: blur(28px) saturate(200%);
-  border: 1px solid rgba(255, 255, 255, 0.15);
-  box-shadow: 0 16px 36px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.22);
-  transition: opacity 0.3s cubic-bezier(0.16, 1, 0.3, 1), transform 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+  padding: 4px 8px;
+  border-radius: 10px;
+  background: rgba(18, 20, 25, 0.92);
+  border: 1px solid rgba(255, 255, 255, 0.13);
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.55);
+  transition: opacity 0.2s cubic-bezier(0.16, 1, 0.3, 1), transform 0.2s cubic-bezier(0.16, 1, 0.3, 1);
   white-space: nowrap;
 }
 
 .maobu-viewer-bottom-bar.hidden {
   opacity: 0;
-  transform: translateX(-50%) translateY(100%);
+  transform: translateX(-50%) translateY(115%);
   pointer-events: none !important;
 }
 
 .maobu-viewer-bar-divider {
   width: 1px;
   height: 14px;
-  background: rgba(255, 255, 255, 0.12);
-  margin: 0 2px;
+  background: rgba(255, 255, 255, 0.11);
+  margin: 0 3px;
   flex-shrink: 0;
 }
 
 .maobu-viewer-scale-text {
+  background: transparent;
+  border: 1px solid transparent;
   font-size: 11px;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   font-variant-numeric: tabular-nums;
   font-weight: 500;
-  color: #38bdf8;
-  min-width: 34px;
+  color: #e2e8f0;
+  min-width: 40px;
+  height: 24px;
   text-align: center;
   cursor: pointer;
-  padding: 2px 3px;
-  border-radius: 4px;
-  transition: background 0.15s ease, color 0.15s ease;
+  padding: 0 4px;
+  border-radius: 5px;
+  transition: background 0.14s ease, color 0.14s ease;
   flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .maobu-viewer-scale-text:hover {
-  background: rgba(56, 189, 248, 0.16);
-  color: #7dd3fc;
+  background: rgba(59, 130, 246, 0.18);
+  color: #93c5fd;
 }
 
-/* 底部更多工具微晶浮岛气泡菜单 (Toolbox Island) */
+/* 底部更多工具浮层（位于浮岛正上方 58px；开启胶卷时自动上抬至 126px 零碰撞） */
 .maobu-viewer-more-menu {
   position: absolute;
-  bottom: 48px;
+  bottom: 58px;
   left: 50%;
   transform: translateX(-50%);
-  z-index: 55;
+  z-index: 56;
   display: flex;
   align-items: center;
   gap: 3px;
-  padding: 4px 8px;
-  border-radius: 9999px;
-  background: rgba(10, 14, 24, 0.75);
-  backdrop-filter: blur(32px) saturate(200%);
-  -webkit-backdrop-filter: blur(32px) saturate(200%);
-  border: 1px solid rgba(255, 255, 255, 0.18);
-  box-shadow: 0 16px 36px rgba(0, 0, 0, 0.65), inset 0 1px 0 rgba(255, 255, 255, 0.2);
+  padding: 4px 7px;
+  border-radius: 9px;
+  background: rgba(18, 20, 25, 0.96);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.65);
   animation: maobuViewerMenuPop 0.16s cubic-bezier(0.16, 1, 0.3, 1);
+  transition: bottom 0.16s cubic-bezier(0.16, 1, 0.3, 1);
   white-space: nowrap;
+}
+
+.maobu-viewer-more-menu.with-strip {
+  bottom: 126px;
 }
 
 @keyframes maobuViewerMenuPop {
   from {
     opacity: 0;
-    transform: translateX(-50%) translateY(8px) scale(0.95);
+    transform: translateX(-50%) translateY(6px) scale(0.96);
   }
   to {
     opacity: 1;
@@ -375,40 +384,39 @@
 }
 
 /* ==========================================================================
-   5. 底部缩略图胶卷 Strip
+   5. 底部缩略图胶卷（无滚动重模糊，GPU 滚动丝滑）
    ========================================================================== */
 .maobu-viewer-thumbnail-strip {
   position: absolute;
-  bottom: 54px;
+  bottom: 58px;
   left: 50%;
   transform: translateX(-50%);
-  z-index: 45;
-  max-width: 90vw;
+  z-index: 48;
+  max-width: min(90vw, 680px);
   display: flex;
   align-items: center;
   gap: 6px;
   padding: 6px 8px;
-  border-radius: 12px;
-  background: rgba(10, 14, 24, 0.48);
-  backdrop-filter: blur(28px) saturate(200%);
-  -webkit-backdrop-filter: blur(28px) saturate(200%);
-  border: 1px solid rgba(255, 255, 255, 0.16);
-  box-shadow: 0 16px 36px rgba(0, 0, 0, 0.6), inset 0 1px 0 rgba(255, 255, 255, 0.18);
+  border-radius: 10px;
+  background: rgba(18, 20, 25, 0.94);
+  border: 1px solid rgba(255, 255, 255, 0.13);
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.6);
   overflow-x: auto;
   scrollbar-width: thin;
-  scrollbar-color: rgba(255, 255, 255, 0.2) transparent;
+  scrollbar-color: rgba(255, 255, 255, 0.22) transparent;
 }
 
 .maobu-viewer-thumbnail-item {
   width: 44px;
   height: 44px;
+  padding: 0;
   border-radius: 6px;
   overflow: hidden;
   border: 2px solid transparent;
-  background: rgba(0, 0, 0, 0.4);
+  background: #0d0f13;
   cursor: pointer;
   flex-shrink: 0;
-  transition: all 0.16s cubic-bezier(0.16, 1, 0.3, 1);
+  transition: border-color 0.14s ease, transform 0.14s ease;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -422,32 +430,29 @@
 }
 
 .maobu-viewer-thumbnail-item:hover {
-  border-color: rgba(56, 189, 248, 0.6);
-  transform: scale(1.08);
+  border-color: rgba(59, 130, 246, 0.6);
 }
 
 .maobu-viewer-thumbnail-item.active {
-  border-color: #38bdf8;
-  box-shadow: 0 0 12px rgba(56, 189, 248, 0.7);
-  transform: scale(1.08);
+  border-color: #3b82f6;
 }
 
 /* ==========================================================================
-   6. 旗舰图片属性面板 (EXIF & Metadata Drawer)
+   6. 右侧图片属性抽屉（固定留出底部安全距离，不与浮岛碰撞）
    ========================================================================== */
 .maobu-viewer-info-modal {
   position: absolute;
-  top: 48px;
-  right: 14px;
+  top: 46px;
+  right: 12px;
   z-index: 55;
-  width: 250px;
-  background: rgba(10, 14, 24, 0.58);
-  backdrop-filter: blur(32px) saturate(200%);
-  -webkit-backdrop-filter: blur(32px) saturate(200%);
-  border: 1px solid rgba(255, 255, 255, 0.18);
-  border-radius: 12px;
+  width: 268px;
+  max-height: calc(100vh - 116px);
+  overflow-y: auto;
+  background: rgba(18, 20, 25, 0.94);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 10px;
   padding: 12px 14px;
-  box-shadow: 0 16px 36px rgba(0, 0, 0, 0.6), inset 0 1px 0 rgba(255, 255, 255, 0.18);
+  box-shadow: 0 14px 32px rgba(0, 0, 0, 0.6);
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -459,61 +464,154 @@
   justify-content: space-between;
   font-size: 12px;
   font-weight: 600;
-  color: #f1f5f9;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  color: #f8fafc;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.09);
   padding-bottom: 6px;
+}
+
+.maobu-viewer-info-close {
+  width: 22px;
+  height: 22px;
+}
+
+.maobu-viewer-info-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
 }
 
 .maobu-viewer-info-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 8px;
   font-size: 11px;
 }
 
 .maobu-viewer-info-label {
   color: #94a3b8;
+  flex-shrink: 0;
 }
 
 .maobu-viewer-info-val {
   color: #e2e8f0;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  max-width: 150px;
+  max-width: 158px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  text-align: right;
+}
+
+.maobu-viewer-info-actions {
+  display: flex;
+  gap: 6px;
+  padding-top: 6px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.maobu-viewer-info-action-btn {
+  flex: 1;
+  height: 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.05);
+  color: #e2e8f0;
+  font-size: 11px;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background 0.14s ease, border-color 0.14s ease, color 0.14s ease;
+}
+
+.maobu-viewer-info-action-btn:hover {
+  background: rgba(59, 130, 246, 0.2);
+  border-color: rgba(59, 130, 246, 0.55);
+  color: #ffffff;
 }
 
 /* ==========================================================================
-   7. 浮动轻提示 Toast (Fluent Acrylic Toast)
+   7. 浮动轻提示 Toast（中性精密深色胶囊）
    ========================================================================== */
 .maobu-viewer-toast {
   position: absolute;
-  top: 50px;
+  top: 46px;
   left: 50%;
   transform: translateX(-50%);
   z-index: 65;
-  background: rgba(10, 14, 24, 0.75);
-  backdrop-filter: blur(24px) saturate(180%);
-  -webkit-backdrop-filter: blur(24px) saturate(180%);
-  border: 1px solid rgba(56, 189, 248, 0.45);
+  background: rgba(18, 20, 25, 0.94);
+  border: 1px solid rgba(255, 255, 255, 0.16);
   color: #f8fafc;
   padding: 5px 12px;
   border-radius: 8px;
-  font-size: 12px;
+  font-size: 11.5px;
   font-weight: 500;
-  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.5), 0 0 12px rgba(56, 189, 248, 0.25);
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.52);
   pointer-events: none;
-  animation: maobuViewerFadeIn 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  animation: maobuViewerFadeIn 0.18s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 @keyframes maobuViewerFadeIn {
   from {
     opacity: 0;
-    transform: translateX(-50%) translateY(-6px);
+    transform: translateX(-50%) translateY(-5px);
   }
   to {
     opacity: 1;
     transform: translateX(-50%) translateY(0);
+  }
+}
+
+/* ==========================================================================
+   8. 窄窗口紧凑适配（保证 380px~460px 下完整展示不截断）
+   ========================================================================== */
+@media (max-width: 460px) {
+  .maobu-viewer-bottom-bar {
+    max-width: calc(100vw - 16px);
+    padding: 3px 5px;
+    gap: 1px;
+  }
+
+  .maobu-viewer-icon-btn {
+    width: 24px;
+    height: 24px;
+  }
+
+  .maobu-viewer-scale-text {
+    min-width: 34px;
+    font-size: 10.5px;
+    padding: 0 2px;
+  }
+
+  .maobu-viewer-bar-divider {
+    margin: 0 2px;
+  }
+
+  .maobu-viewer-info-modal {
+    width: calc(100vw - 24px);
+    right: 12px;
+  }
+}
+
+/* ==========================================================================
+   9. 减弱动效无障碍适配
+   ========================================================================== */
+@media (prefers-reduced-motion: reduce) {
+  .maobu-viewer-titlebar,
+  .maobu-viewer-icon-btn,
+  .maobu-viewer-canvas-wrap,
+  .maobu-viewer-image,
+  .maobu-viewer-nav-btn,
+  .maobu-viewer-bottom-bar,
+  .maobu-viewer-scale-text,
+  .maobu-viewer-more-menu,
+  .maobu-viewer-thumbnail-item,
+  .maobu-viewer-info-action-btn,
+  .maobu-viewer-toast {
+    transition: none !important;
+    animation: none !important;
   }
 }

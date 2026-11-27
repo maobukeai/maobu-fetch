@@ -310,7 +310,7 @@ export function MediaCredentialsPanel({
   return (
     <SettingsGroup title="媒体凭证管理">
       <p className="settings-note">
-        按域名保存 Cookie 和 Referer 等凭证以在下载时自动附带。Cookie 使用 Windows DPAPI 加密存储。深度支持 Bilibili / 抖音 / Twitter(X) / YouTube 在线有效性检测。
+        按域名保存 Cookie 和 Referer 等凭证以在下载时自动附带。Cookie 使用 Windows DPAPI 加密存储。深度支持 Bilibili / 抖音 / Twitter(X) / YouTube / 百度网盘 在线有效性检测。
       </p>
       <div className="category-rules-toolbar">
         <button className="input-button" onClick={startAdd}>
@@ -508,6 +508,11 @@ export function MediaCredentialsPanel({
                 {editing.domain.includes("youtube") && (
                   <p style={{ margin: "4px 0 0", color: "var(--accent)" }}>
                     💡 <b>YouTube 关键 Key</b>：请确保包含 <code>LOGIN_INFO</code> 和 <code>SID</code>。
+                  </p>
+                )}
+                {editing.domain.includes("baidu") && (
+                  <p style={{ margin: "4px 0 0", color: "var(--accent)" }}>
+                    💡 <b>百度网盘关键 Key</b>：请确保包含 <code>BDUSS</code>、<code>STOKEN</code> 与 <code>BAIDUID</code>。若曾导入旧版 cookies.txt 导致被动同步未刷新，可在浏览器登录 pan.baidu.com 后点击扩展弹窗「登录态下载 → 同步到媒体凭证」强制更新。
                   </p>
                 )}
               </div>

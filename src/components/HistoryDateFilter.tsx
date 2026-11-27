@@ -1,3 +1,5 @@
+import { formatBytes } from "../formatters";
+import { t } from "../i18n";
 import { Select } from "./Select";
 
 export type HistoryDatePreset = "all" | "today" | "7-days" | "30-days" | "custom";
@@ -30,29 +32,90 @@ export function matchesHistoryDate(completedAt: number | undefined, range: Histo
     && (end === undefined || completedAt < end + 86_400_000);
 }
 
-const PRESET_OPTIONS: Array<{ value: HistoryDatePreset; label: string }> = [
-  { value: "all", label: "全部时间" },
-  { value: "today", label: "今天" },
-  { value: "7-days", label: "最近 7 天" },
-  { value: "30-days", label: "最近 30 天" },
-  { value: "custom", label: "自定义范围" },
-];
+export function HistoryDateFilter({
+  value,
+  onChange,
+  matchedCount,
+  totalCount,
+  totalBytes,
+}: {
+  value: HistoryDateRange;
+  onChange: (next: HistoryDateRange) => void;
+  matchedCount?: number;
+  totalCount?: number;
+  totalBytes?: number;
+}) {
+  const options: Array<{ value: HistoryDatePreset; label: string }> = [
+    { value: "all", label: t("historyFilter.allTime") },
+    { value: "today", label: t("historyFilter.today") },
+    { value: "7-days", label: t("historyFilter.last7Days") },
+    { value: "30-days", label: t("historyFilter.last30Days") },
+    { value: "custom", label: t("historyFilter.customRange") },
+  ];
 
-export function HistoryDateFilter({ value, onChange }: { value: HistoryDateRange; onChange: (next: HistoryDateRange) => void }) {
   return (
     <div className="history-filter-bar" aria-label="完成日期筛选">
-      <span>完成日期</span>
-      <Select
-        value={value.preset}
-        onChange={(nextPreset) => onChange({ ...value, preset: nextPreset as HistoryDatePreset })}
-        options={PRESET_OPTIONS}
-        ariaLabel="完成日期筛选"
-      />
-      {value.preset === "custom" && <>
-        <input type="date" aria-label="开始日期" value={value.start} onChange={(event) => onChange({ ...value, start: event.target.value })} />
-        <span>至</span>
-        <input type="date" aria-label="结束日期" value={value.end} min={value.start || undefined} onChange={(event) => onChange({ ...value, end: event.target.value })} />
-      </>}
+      <div className="history-filter-controls">
+        <span>{t("historyFilter.completionDate")}</span>
+        <Select
+          value={value.preset}
+          onChange={(nextPreset) =>
+            onChange({ ...value, preset: nextPreset as HistoryDatePreset })
+          }
+          options={options}
+          ariaLabel="完成日期筛选"
+        />
+        {value.preset === "custom" && (
+          <>
+            <input
+              type="date"
+              aria-label={t("historyFilter.startDate")}
+              value={value.start}
+              onChange={(event) =>
+                onChange({ ...value, start: event.target.value })
+              }
+            />
+            <span>{t("historyFilter.to")}</span>
+            <input
+              type="date"
+              aria-label={t("historyFilter.endDate")}
+              value={value.end}
+              min={value.start || undefined}
+              onChange={(event) =>
+                onChange({ ...value, end: event.target.value })
+              }
+            />
+          </>
+        )}
+      </div>
+
+      {(matchedCount != null || value.preset !== "all") && (
+        <div className="history-filter-telemetry">
+          {matchedCount != null && totalCount != null && totalBytes != null && (
+            <span className="history-filter-stats">
+              {matchedCount === totalCount
+                ? t("historyFilter.summaryAll", {
+                    count: matchedCount,
+                    size: formatBytes(totalBytes),
+                  })
+                : t("historyFilter.summary", {
+                    matched: matchedCount,
+                    total: totalCount,
+                    size: formatBytes(totalBytes),
+                  })}
+            </span>
+          )}
+          {value.preset !== "all" && (
+            <button
+              type="button"
+              className="history-filter-reset"
+              onClick={() => onChange(defaultHistoryDateRange)}
+            >
+              {t("historyFilter.reset")}
+            </button>
+          )}
+        </div>
+      )}
     </div>
   );
 }

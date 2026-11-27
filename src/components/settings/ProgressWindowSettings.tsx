@@ -5,9 +5,20 @@ import type { AppSettings } from "../../types";
 import { progressApi } from "../progress/progress-api";
 import { SettingsGroup, Toggle } from "../common/FormComponents";
 
-export function ProgressWindowSettings({ value, savedEnabled, onChange, notify }: {
+export function ProgressWindowSettings({
+  value,
+  savedEnabled,
+  anchorId,
+  badge,
+  flashing = false,
+  onChange,
+  notify,
+}: {
   value: AppSettings;
   savedEnabled: boolean;
+  anchorId?: string;
+  badge?: string;
+  flashing?: boolean;
   onChange: (patch: Partial<AppSettings>) => void;
   notify: (text: string, kind?: "ok" | "error") => void;
 }) {
@@ -32,7 +43,7 @@ export function ProgressWindowSettings({ value, savedEnabled, onChange, notify }
       setBusy(false);
     }
   };
-  return <SettingsGroup title={t("progressWindow.settingsTitle")}>
+  return <SettingsGroup title={t("progressWindow.settingsTitle")} anchorId={anchorId} badge={badge} flashing={flashing}>
     <div className="settings-group-content">
       <Toggle label={t("progressWindow.enabledLabel")} sub={t("progressWindow.enabledHint")}
         checked={value.progress_window_enabled ?? true}
@@ -47,6 +58,5 @@ export function ProgressWindowSettings({ value, savedEnabled, onChange, notify }
           onClick={() => { void restore(); }}><ExternalLink size={13} /> {t(busy ? "common.loading" : "progressWindow.restore")}</button>
       </div>
     </div>
-    <p className="settings-note">{t("progressWindow.settingsHint")}</p>
   </SettingsGroup>;
 }

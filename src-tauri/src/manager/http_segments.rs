@@ -23,6 +23,7 @@ pub(super) async fn download(
     temp: &Path,
     total: u64,
     connections: u8,
+    resolved_url: Option<&str>,
     token: CancellationToken,
     limiter: Arc<RateLimiter>,
 ) -> Result<DownloadTask, String> {
@@ -34,6 +35,7 @@ pub(super) async fn download(
             temp,
             total,
             connections,
+            resolved_url,
             token,
             limiter,
         )

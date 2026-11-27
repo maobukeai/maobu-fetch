@@ -1,4 +1,11 @@
-import { useMemo, type ReactNode } from "react";
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  type CSSProperties,
+  type KeyboardEvent,
+  type ReactNode,
+} from "react";
 import {
   AlertCircle,
   ChevronDown,
@@ -28,6 +35,11 @@ import {
   MAX_PRIORITY,
   PRIORITY_STEP,
 } from "../../formatters";
+import { FILTER_STATUS_TONES } from "../modals/advanced-filter-model";
+import {
+  clampMenuPosition,
+  formatSpeedLimitBadge,
+} from "../modals/light-modals-model";
 import { inferCategory } from "./EmptyState";
 import { isImageFile, isMediaTask, isVideoFile } from "./TaskRow";
 
@@ -57,6 +69,13 @@ export function ContextMenu({
   onRefreshUrl?: (task: DownloadTask) => void;
 }) {
   useLocale();
+  const menuRef = useRef<HTMLDivElement | null>(null);
+  const listRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    menuRef.current?.focus({ preventScroll: true });
+  }, []);
+
   const targetTaskIds = useMemo(() => {
     if (
       selectedTaskIds &&
@@ -159,11 +178,6 @@ export function ContextMenu({
     onDelete(targetTaskIds, deleteFile);
     close();
   };
-
-  const menuWidth = 220;
-  const itemHeight = 30;
-  const separatorHeight = 9;
-  const padding = 8;
 
   const sections: ReactNode[] = [];
   const pushSep = () =>
@@ -482,14 +496,22 @@ export function ContextMenu({
         </div>
       </div>
     );
+    const speedBadge = formatSpeedLimitBadge(
+      task.per_task_speed_limit,
+      t("details.noSpeedLimit")
+    );
     sections.push(
       <button key="speed-limit" onClick={() => void changeSpeedLimit()}>
         <Gauge size={13} />
-        {t("contextMenu.speedLimit", {
-          value: task.per_task_speed_limit
-            ? `${Math.round(task.per_task_speed_limit / 1024)} KB/s`
-            : t("details.noSpeedLimit"),
-        })}
+        <span className="context-menu-item-label">
+          {t("contextMenu.speedLimitLabel")}
+        </span>
+        <span
+          className="context-menu-badge"
+          data-active={task.per_task_speed_limit > 0 ? "true" : "false"}
+        >
+          {speedBadge}
+        </span>
       </button>
     );
     sections.push(
@@ -546,8 +568,11 @@ export function ContextMenu({
   sections.push(
     <button key="copy-url" onClick={() => void copyUrls()}>
       <Copy size={13} />
-      {t("contextMenu.copyLink")}
-      {countTag}
+      <span className="context-menu-item-label">
+        {t("contextMenu.copyLink")}
+        {countTag}
+      </span>
+      <kbd className="context-menu-kbd">Ctrl+C</kbd>
     </button>
   );
 
@@ -560,10 +585,13 @@ export function ContextMenu({
       onClick={() => void confirmDelete(false)}
     >
       <Trash2 size={13} />
-      {isHistoryOrCancelled
-        ? t("dialogs.deletePermanently") || "彻底删除记录"
-        : t("dialogs.deleteRecordOnly")}
-      {countTag}
+      <span className="context-menu-item-label">
+        {isHistoryOrCancelled
+          ? t("dialogs.deletePermanently") || "彻底删除记录"
+          : t("dialogs.deleteRecordOnly")}
+        {countTag}
+      </span>
+      <kbd className="context-menu-kbd">Del</kbd>
     </button>
   );
   sections.push(
@@ -573,31 +601,109 @@ export function ContextMenu({
       onClick={() => void confirmDelete(true)}
     >
       <Trash2 size={13} />
-      {isHistoryOrCancelled
-        ? t("dialogs.deletePermanentlyAndFile") || "彻底删除记录与本地文件"
-        : t("dialogs.deleteRecordAndFile")}
-      {countTag}
+      <span className="context-menu-item-label">
+        {isHistoryOrCancelled
+          ? t("dialogs.deletePermanentlyAndFile") || "彻底删除记录与本地文件"
+          : t("dialogs.deleteRecordAndFile")}
+        {countTag}
+      </span>
     </button>
   );
 
   let separatorCount = 0;
   for (const node of sections) {
-    if ((node as any)?.props?.className === "context-menu-separator")
+    if ((node as { props?: { className?: string } })?.props?.className === "context-menu-separator")
       separatorCount++;
   }
   const buttonCount = sections.length - separatorCount;
+  const menuWidth = 236;
+  const headerHeight = 32;
+  const itemHeight = 30;
+  const separatorHeight = 7;
+  const padding = 8;
   const menuHeight =
-    buttonCount * itemHeight + separatorCount * separatorHeight + padding;
-  const safeX = Math.max(8, Math.min(x, window.innerWidth - menuWidth - 8));
-  const safeY = Math.max(8, Math.min(y, window.innerHeight - menuHeight - 8));
+    headerHeight + buttonCount * itemHeight + separatorCount * separatorHeight + padding;
+  const pos = clampMenuPosition(
+    x,
+    y,
+    menuWidth,
+    menuHeight,
+    window.innerWidth,
+    window.innerHeight
+  );
+
+  const isMultiSelected = targetTaskIds.size > 1;
+  const headerLabel = isMultiSelected
+    ? t("dialogs.selectedItemsCount", { count: targetTaskIds.size })
+    : task.file_name;
+  const headerMeta = isMultiSelected
+    ? `${targetTaskIds.size}`
+    : t(`status.${task.status}`);
+  const headerTone = isMultiSelected
+    ? "accent"
+    : FILTER_STATUS_TONES[task.status];
+
+  const handleKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      e.stopPropagation();
+      close();
+      return;
+    }
+    if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
+    const buttons = Array.from(
+      listRef.current?.querySelectorAll<HTMLButtonElement>(
+        "button:not(:disabled)"
+      ) ?? []
+    );
+    if (buttons.length === 0) return;
+    e.preventDefault();
+    const activeIndex = buttons.indexOf(
+      document.activeElement as HTMLButtonElement
+    );
+    const delta = e.key === "ArrowDown" ? 1 : -1;
+    const nextIndex =
+      activeIndex === -1
+        ? e.key === "ArrowDown"
+          ? 0
+          : buttons.length - 1
+        : (activeIndex + delta + buttons.length) % buttons.length;
+    buttons[nextIndex]?.focus();
+  };
+
+  const menuStyle: CSSProperties & { "--ctx-origin": string } = {
+    left: pos.left,
+    top: pos.top,
+    minWidth: menuWidth,
+    "--ctx-origin": `${pos.originY} ${pos.originX}`,
+  };
 
   return (
     <div
+      ref={menuRef}
+      tabIndex={-1}
       className="context-menu"
-      style={{ left: safeX, top: safeY, minWidth: menuWidth }}
+      style={menuStyle}
       onClick={(e) => e.stopPropagation()}
+      onKeyDown={handleKeyDown}
     >
-      {sections}
+      <div className="context-menu-header">
+        <span
+          className="context-menu-status-dot"
+          data-tone={headerTone}
+          aria-hidden="true"
+        />
+        <span
+          className="context-menu-header-name"
+          title={isMultiSelected ? undefined : task.file_name}
+        >
+          {headerLabel}
+        </span>
+        <span className="context-menu-header-meta">{headerMeta}</span>
+      </div>
+      <div ref={listRef} className="context-menu-list" role="menu">
+        {sections}
+      </div>
     </div>
   );
 }

@@ -4,8 +4,9 @@ import { fileURLToPath } from "node:url";
 import { createServer } from "vite";
 import { uiHarness } from "./ui-harness.mjs";
 
-export async function createAuditServer(output) {
+export async function createAuditServer(output, extraRoutes = {}) {
   const root = fileURLToPath(new URL("../../", import.meta.url));
+  const fixtures = { "/__audit.html": uiHarness, ...extraRoutes };
 const reservation = net.createServer();
 await new Promise(resolve => reservation.listen(0, "127.0.0.1", resolve));
 const auditPort = reservation.address().port;
@@ -15,10 +16,12 @@ return await createServer({ root, cacheDir: path.join(root, "node_modules", ".ca
   name: "local-audit-harness",
   configureServer(vite) {
     vite.middlewares.use(async (req, res, next) => {
-      if (!req.url?.startsWith("/__audit.html") || req.url.includes("html-proxy")) return next();
+      const pathname = req.url?.split("?")[0];
+      const fixture = fixtures[pathname];
+      if (!fixture || req.url.includes("html-proxy")) return next();
       try {
         res.setHeader("Content-Type", "text/html; charset=utf-8");
-        res.end(await vite.transformIndexHtml("/__audit.html", uiHarness));
+        res.end(await vite.transformIndexHtml(pathname, fixture));
       } catch (error) { res.statusCode = 500; res.end(String(error)); }
     });
   },

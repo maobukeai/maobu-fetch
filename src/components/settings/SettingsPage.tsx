@@ -25,12 +25,14 @@ import {
   MessageCircle,
   Network,
   RefreshCw,
+  Search,
   Settings,
   ShieldCheck,
   SlidersHorizontal,
   Sparkles,
   Tag as TagIcon,
   Video,
+  X,
   Zap,
 } from "lucide-react";
 import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
@@ -67,7 +69,22 @@ import { CompletionActionEditor } from "../CompletionActionEditor";
 import { Select } from "../Select";
 import { CatDownloadMark } from "../common/EmptyState";
 import { Modal } from "../common/Modal";
-import { SettingRow, SettingsGroup, Toggle } from "../common/FormComponents";
+import {
+  SettingRow,
+  SettingsGroup,
+  SettingsSearchContext,
+  Toggle,
+} from "../common/FormComponents";
+import {
+  SETTINGS_NAV_GROUPS,
+  SETTINGS_SECTION_META,
+  countDirtySettings,
+  filterSettingsSections,
+} from "./settings-fusion";
+import {
+  SettingsFloatingFooter,
+  SettingsFusionHeader,
+} from "./SettingsFusionChrome";
 import {
   applyWindowAppearance,
   usesDarkTheme,
@@ -129,6 +146,13 @@ export function SettingsPage({
   const appWindow = useMemo(() => (isDesktop() ? getCurrentWindow() : null), []);
   const [draft, setDraft] = useState(value);
   const [section, setSection] = useState<SettingsSection>("general");
+  const [searchQuery, setSearchQuery] = useState("");
+  const [activeAnchor, setActiveAnchor] = useState<string | null>(
+    SETTINGS_SECTION_META.general.anchors[0]?.id ?? null
+  );
+  const [flashingAnchor, setFlashingAnchor] = useState<string | null>(null);
+  const scrollAreaRef = useRef<HTMLDivElement | null>(null);
+  const flashTimerRef = useRef<number | null>(null);
   const [pair, setPair] = useState<PairingInfo>();
   const [tools, setTools] = useState<ToolStatus>();
   const [ytUpdate, setYtUpdate] = useState<YtDlpUpdateInfo | null>(null);
@@ -210,9 +234,9 @@ export function SettingsPage({
     if (!trimmed) {
       setExtResult({
         compatible: false,
-        app_version: appInfo?.version || "0.10.15",
+        app_version: appInfo?.version || "0.10.16",
         extension_version: "未输入",
-        message: "请先在左侧输入框填写扩展版本号（如 0.10.15，可在浏览器扩展管理页查看）",
+        message: "请先在左侧输入框填写扩展版本号（如 0.10.16，可在浏览器扩展管理页查看）",
       });
       notify("请先填写扩展版本号", "error");
       return;
@@ -549,6 +573,55 @@ export function SettingsPage({
     }
   };
 
+  const handleRevertDraft = useCallback(() => {
+    setDraft(value);
+    notify(t("settings.changesReverted"));
+  }, [value, notify]);
+
+  const dirtyCount = useMemo(
+    () =>
+      countDirtySettings(
+        draft as unknown as Record<string, unknown>,
+        value as unknown as Record<string, unknown>
+      ),
+    [draft, value]
+  );
+
+  const selectSection = useCallback((key: SettingsSection) => {
+    setSection(key);
+    setFlashingAnchor(null);
+    setActiveAnchor(SETTINGS_SECTION_META[key].anchors[0]?.id ?? null);
+    if (scrollAreaRef.current) {
+      scrollAreaRef.current.scrollTo({ top: 0 });
+    }
+  }, []);
+
+  const handleSelectAnchor = useCallback((anchorId: string) => {
+    setActiveAnchor(anchorId);
+    setFlashingAnchor(null);
+    const target = scrollAreaRef.current?.querySelector<HTMLElement>(
+      `[data-settings-anchor="${anchorId}"]`
+    );
+    target?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    if (flashTimerRef.current !== null) {
+      window.clearTimeout(flashTimerRef.current);
+    }
+    requestAnimationFrame(() => {
+      setFlashingAnchor(anchorId);
+      flashTimerRef.current = window.setTimeout(() => {
+        setFlashingAnchor(null);
+      }, 680);
+    });
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (flashTimerRef.current !== null) {
+        window.clearTimeout(flashTimerRef.current);
+      }
+    };
+  }, []);
+
   const items: Array<[SettingsSection, string, typeof Settings]> = [
     ["general", t("settings.sectionGeneral"), Settings],
     ["download", t("settings.sectionDownload"), Download],
@@ -569,23 +642,120 @@ export function SettingsPage({
     ["about", t("settings.sectionAbout"), Info],
   ];
 
+  const navItems = items.map(([key, label, Icon]) => ({ key, label, Icon }));
+  const filteredNavItems = filterSettingsSections(navItems, searchQuery);
+  const sectionMeta = SETTINGS_SECTION_META[section];
+  const currentGroupDef = SETTINGS_NAV_GROUPS.find(
+    (g) => g.id === sectionMeta.group
+  );
+  const headerAnchors = sectionMeta.anchors.map((a) => ({
+    id: a.id,
+    label: t(a.labelKey),
+  }));
+  const currentTitle =
+    items.find(([key]) => key === section)?.[1] ?? t("settings.sectionGeneral");
+
+  const handleSearchChange = (nextQuery: string) => {
+    setSearchQuery(nextQuery);
+    const matches = filterSettingsSections(navItems, nextQuery);
+    if (matches.length > 0 && !matches.some((item) => item.key === section)) {
+      selectSection(matches[0].key);
+    }
+  };
+
+  const behaviorEnabledCount = [
+    draft.auto_start,
+    draft.start_minimized,
+    draft.minimize_to_tray,
+    draft.close_to_tray,
+    draft.notifications,
+    draft.clipboard_monitor,
+  ].filter(Boolean).length;
+  const collisionLabel =
+    draft.default_collision_policy === "overwrite"
+      ? t("settings.collisionOverwrite")
+      : draft.default_collision_policy === "skip"
+      ? t("settings.collisionSkip")
+      : t("settings.collisionRename");
+  const speedBadge =
+    draft.speed_limit_kbps > 0
+      ? `${draft.connections_per_download}x · ${draft.speed_limit_kbps} KB/s`
+      : `${draft.connections_per_download}x · ${t("settings.badgeUnlimited")}`;
+
   return (
     <div className="settings-page">
       <aside className="nav-pane">
-        <div className="brand" data-tauri-drag-region>
-          {t("settings.title")}
+        <div className="settings-brand-row" data-tauri-drag-region>
+          <div className="brand" data-tauri-drag-region>
+            {t("settings.title")}
+          </div>
+          <span className="settings-brand-count">
+            {t("settings.sectionCount", { count: items.length })}
+          </span>
         </div>
-        <div className="settings-nav-list">
-          {items.map(([key, label, Icon]) => (
+        <div className="settings-nav-search">
+          <Search size={12} className="settings-nav-search-icon" />
+          <input
+            type="text"
+            value={searchQuery}
+            onChange={(e) => handleSearchChange(e.target.value)}
+            placeholder={t("settings.searchPlaceholder")}
+            aria-label={t("settings.searchPlaceholder")}
+          />
+          {searchQuery && (
             <button
-              key={key}
-              className={section === key ? "nav-item active" : "nav-item"}
-              onClick={() => setSection(key)}
+              type="button"
+              className="settings-nav-search-clear"
+              onClick={() => handleSearchChange("")}
+              title={t("settings.clearSearch")}
+              aria-label={t("settings.clearSearch")}
             >
-              <Icon size={15} />
-              <span>{label}</span>
+              <X size={11} />
             </button>
-          ))}
+          )}
+        </div>
+        <div className="settings-nav-list" data-magnetic-group="rail">
+          {filteredNavItems.length === 0 ? (
+            <div className="settings-nav-empty">{t("settings.searchEmpty")}</div>
+          ) : (
+            SETTINGS_NAV_GROUPS.map((group) => {
+              const groupItems = filteredNavItems.filter(
+                (item) => SETTINGS_SECTION_META[item.key].group === group.id
+              );
+              if (groupItems.length === 0) return null;
+              return (
+                <div key={group.id}>
+                  <div className="settings-nav-group-label">
+                    {t(group.labelKey)}
+                  </div>
+                  {groupItems.map(({ key, label, Icon }) => (
+                    <button
+                      key={key}
+                      className={section === key ? "nav-item active" : "nav-item"}
+                      onClick={() => selectSection(key)}
+                    >
+                      <Icon size={15} />
+                      <span className="settings-nav-item-label">{label}</span>
+                      {key === "bt" && (
+                        <span
+                          className="settings-nav-dot"
+                          title={t("bt.ready")}
+                          aria-hidden="true"
+                        />
+                      )}
+                      {key === "appearance" && (
+                        <span className="settings-nav-chip">
+                          {draft.frosted_glass
+                            ? t("settings.badgeAcrylic")
+                            : t("settings.badgeSolid")}
+                        </span>
+                      )}
+                    </button>
+                  ))}
+                </div>
+              );
+            })
+          )}
         </div>
         <div className="nav-footer">
           <button
@@ -608,17 +778,43 @@ export function SettingsPage({
         </div>
       </aside>
       <main className="settings-body" data-tauri-drag-region>
-        <div className="settings-title" data-tauri-drag-region>
-          <h1 data-tauri-drag-region>
-            {items.find(([key]) => key === section)?.[1]}
-          </h1>
-        </div>
-        <div className="settings-content">
+        <SettingsFusionHeader
+          groupLabel={currentGroupDef ? t(currentGroupDef.labelKey) : ""}
+          section={section}
+          title={currentTitle}
+          subtitle={t(sectionMeta.descKey)}
+          anchors={headerAnchors}
+          activeAnchor={activeAnchor}
+          onSelectAnchor={handleSelectAnchor}
+        />
+        <div className="settings-scroll-area" ref={scrollAreaRef}>
+          <SettingsSearchContext.Provider value={searchQuery}>
+            <div
+              key={section}
+              className={
+                sectionMeta.bento
+                  ? "settings-content settings-bento-grid settings-content-anim"
+                  : "settings-content settings-content-anim"
+              }
+            >
           {section === "general" && (
             <>
-              <SettingsGroup title={t("settings.groupLanguage")}>
+              <SettingsGroup
+                title={t("settings.groupLanguage")}
+                anchorId="general-language"
+                span="full"
+                badge={
+                  draft.language === "en"
+                    ? t("settings.languageEn")
+                    : t("settings.languageZhCN")
+                }
+                flashing={flashingAnchor === "general-language"}
+              >
                 <div className="settings-group-content">
-                  <SettingRow label={t("settings.languageLabel")}>
+                  <SettingRow
+                    label={t("settings.languageLabel")}
+                    sub={t("settings.languageHint")}
+                  >
                     <Select
                       value={draft.language || "zh-CN"}
                       onChange={(nextVal) => {
@@ -634,9 +830,13 @@ export function SettingsPage({
                     />
                   </SettingRow>
                 </div>
-                <p className="settings-note">{t("settings.languageHint")}</p>
               </SettingsGroup>
-              <SettingsGroup title={t("settings.groupAppBehavior")}>
+              <SettingsGroup
+                title={t("settings.groupAppBehavior")}
+                anchorId="general-behavior"
+                badge={`${behaviorEnabledCount}/6`}
+                flashing={flashingAnchor === "general-behavior"}
+              >
                 <div className="settings-group-content">
                   <Toggle
                     label={t("settings.autoStart")}
@@ -670,23 +870,50 @@ export function SettingsPage({
                   />
                 </div>
               </SettingsGroup>
-              <SettingsGroup title={t("settings.groupNotifications")}>
+              <SettingsGroup
+                title={t("settings.groupNotifications")}
+                anchorId="general-notifications"
+                badge={
+                  draft.completion_notice_mode === "system"
+                    ? t("settings.completionNoticeSystem")
+                    : draft.completion_notice_seconds === 0
+                    ? t("settings.noticeManualClose")
+                    : t("format.seconds", {
+                        n: draft.completion_notice_seconds ?? 30,
+                      })
+                }
+                flashing={flashingAnchor === "general-notifications"}
+              >
                 <div className="settings-group-content">
-                  <SettingRow label={t("settings.completionNoticeDuration")} sub={t("settings.completionNoticeHint")}>
-                    <select
-                      aria-label={t("settings.completionNoticeDuration")}
-                      value={draft.completion_notice_seconds ?? 30}
-                      onChange={(event) => set("completion_notice_seconds", Number(event.target.value))}
-                    >
-                      {[15, 30, 60].map((seconds) => <option key={seconds} value={seconds}>{t("format.seconds", { n: seconds })}</option>)}
-                      <option value={0}>{t("settings.noticeManualClose")}</option>
-                    </select>
-                  </SettingRow>
                   <Toggle
                     label={t("settings.notifyOnComplete")}
                     checked={draft.notify_on_complete}
                     onChange={(v) => set("notify_on_complete", v)}
                   />
+                  <SettingRow label={t("settings.completionNoticeMode")}>
+                    <Select<"desktop" | "system">
+                      ariaLabel={t("settings.completionNoticeMode")}
+                      value={draft.completion_notice_mode ?? "desktop"}
+                      options={[
+                        { value: "desktop", label: t("settings.completionNoticeDesktop") },
+                        { value: "system", label: t("settings.completionNoticeSystem") },
+                      ]}
+                      onChange={(mode) => set("completion_notice_mode", mode)}
+                    />
+                  </SettingRow>
+                  {draft.completion_notice_mode !== "system" && (
+                    <SettingRow label={t("settings.completionNoticeDuration")}>
+                      <Select<number>
+                        ariaLabel={t("settings.completionNoticeDuration")}
+                        value={draft.completion_notice_seconds ?? 30}
+                        options={[
+                          ...[15, 30, 60].map((value) => ({ value, label: t("format.seconds", { n: value }) })),
+                          { value: 0, label: t("settings.noticeManualClose") },
+                        ]}
+                        onChange={(seconds) => set("completion_notice_seconds", seconds)}
+                      />
+                    </SettingRow>
+                  )}
                   <Toggle
                     label={t("settings.notifyOnFailure")}
                     checked={draft.notify_on_failure}
@@ -703,10 +930,29 @@ export function SettingsPage({
                     onChange={(v) => set("notify_failure_sound_enabled", v)}
                   />
                 </div>
-                <p className="settings-note">{t("settings.notifySoundDesc")}</p>
+                <p className="settings-note">{t(draft.completion_notice_mode === "system"
+                  ? "settings.completionNoticeSystemHint"
+                  : "settings.completionNoticeDesktopHint")}</p>
               </SettingsGroup>
-              <ProgressWindowSettings value={draft} savedEnabled={value.progress_window_enabled ?? true} onChange={(patch) => setDraft((current) => ({ ...current, ...patch }))} notify={notify} />
-              <SettingsGroup title={t("settings.groupHistoryArchive")}>
+              <ProgressWindowSettings
+                value={draft}
+                savedEnabled={value.progress_window_enabled ?? true}
+                anchorId="general-progress"
+                badge={
+                  draft.progress_window_enabled !== false
+                    ? t("settings.badgeOn")
+                    : t("settings.badgeOff")
+                }
+                flashing={flashingAnchor === "general-progress"}
+                onChange={(patch) => setDraft((current) => ({ ...current, ...patch }))}
+                notify={notify}
+              />
+              <SettingsGroup
+                title={t("settings.groupHistoryArchive")}
+                anchorId="general-archive"
+                badge={`${draft.archive_days}d · ${draft.archive_threshold}`}
+                flashing={flashingAnchor === "general-archive"}
+              >
                 <div className="settings-group-content">
                   <SettingRow label={t("settings.archiveDaysLabel")}>
                     <input
@@ -739,217 +985,245 @@ export function SettingsPage({
             </>
           )}
           {section === "download" && (
-            <SettingsGroup title={t("settings.groupSavePerformance")}>
-              <div className="settings-group-content">
-                <SettingRow label={t("settings.downloadDirLabel")}>
-                  <div className="download-dir-control">
+            <>
+              <SettingsGroup
+                title={t("settings.groupStoragePolicy")}
+                anchorId="download-storage"
+                badge={collisionLabel}
+                flashing={flashingAnchor === "download-storage"}
+              >
+                <div className="settings-group-content">
+                  <SettingRow label={t("settings.downloadDirLabel")}>
+                    <div className="download-dir-control">
+                      <input
+                        value={draft.download_dir}
+                        onChange={(e) => set("download_dir", e.target.value)}
+                        placeholder={t("settings.downloadDirLabel")}
+                      />
+                      <button
+                        type="button"
+                        className="download-dir-btn"
+                        onClick={handleSelectDownloadDir}
+                        title={t("settings.selectDownloadDirTitle") || "浏览并选择文件夹"}
+                      >
+                        <FolderOpen size={14} />
+                        <span>{t("settings.browseDir") || "浏览..."}</span>
+                      </button>
+                      <button
+                        type="button"
+                        className="download-dir-btn"
+                        onClick={handleUseSystemDownloadDir}
+                        title="自动读取操作系统真实设置的下载目录（支持 Win11 重定向路径）"
+                      >
+                        <RefreshCw size={13} />
+                        <span>{t("settings.useSystemDir") || "系统默认"}</span>
+                      </button>
+                    </div>
+                  </SettingRow>
+                  <SettingRow label={t("settings.collisionLabel")}>
+                    <div className="fluent-segmented-control settings-segmented">
+                      <button
+                        type="button"
+                        className={
+                          draft.default_collision_policy === "rename"
+                            ? "active"
+                            : ""
+                        }
+                        onClick={() => set("default_collision_policy", "rename")}
+                      >
+                        {t("settings.collisionRename")}
+                      </button>
+                      <button
+                        type="button"
+                        className={
+                          draft.default_collision_policy === "overwrite"
+                            ? "active"
+                            : ""
+                        }
+                        onClick={() =>
+                          set("default_collision_policy", "overwrite")
+                        }
+                      >
+                        {t("settings.collisionOverwrite")}
+                      </button>
+                      <button
+                        type="button"
+                        className={
+                          draft.default_collision_policy === "skip"
+                            ? "active"
+                            : ""
+                        }
+                        onClick={() => set("default_collision_policy", "skip")}
+                      >
+                        {t("settings.collisionSkip")}
+                      </button>
+                    </div>
+                  </SettingRow>
+                  <SettingRow label={t("settings.completionDefaultLabel")}>
+                    <div className="setting-completion-action">
+                      <CompletionActionEditor
+                        value={draft.default_completion_action}
+                        onChange={(a) => set("default_completion_action", a)}
+                      />
+                    </div>
+                  </SettingRow>
+                  <Toggle
+                    label={t("settings.lowMemoryLabel")}
+                    sub={t("settings.lowMemoryNote")}
+                    checked={draft.low_memory_mode}
+                    onChange={(v) => set("low_memory_mode", v)}
+                  />
+                  <Toggle
+                    label={t("settings.verifyShaLabel")}
+                    checked={draft.verify_after_download}
+                    onChange={(v) => set("verify_after_download", v)}
+                  />
+                </div>
+              </SettingsGroup>
+              <SettingsGroup
+                title={t("settings.groupConcurrencyLimits")}
+                anchorId="download-performance"
+                badge={speedBadge}
+                flashing={flashingAnchor === "download-performance"}
+              >
+                <div className="settings-group-content">
+                  <SettingRow label={t("settings.concurrentLabel")}>
                     <input
-                      value={draft.download_dir}
-                      onChange={(e) => set("download_dir", e.target.value)}
-                      placeholder={t("settings.downloadDirLabel")}
+                      type="number"
+                      min="1"
+                      max="16"
+                      value={draft.concurrent_downloads}
+                      onChange={(e) =>
+                        set("concurrent_downloads", +e.target.value)
+                      }
                     />
-                    <button
-                      type="button"
-                      className="download-dir-btn"
-                      onClick={handleSelectDownloadDir}
-                      title={t("settings.selectDownloadDirTitle") || "浏览并选择文件夹"}
-                    >
-                      <FolderOpen size={14} />
-                      <span>{t("settings.browseDir") || "浏览..."}</span>
-                    </button>
-                    <button
-                      type="button"
-                      className="download-dir-btn"
-                      onClick={handleUseSystemDownloadDir}
-                      title="自动读取操作系统真实设置的下载目录（支持 Win11 重定向路径）"
-                    >
-                      <RefreshCw size={13} />
-                      <span>{t("settings.useSystemDir") || "系统默认"}</span>
-                    </button>
-                  </div>
-                </SettingRow>
-                <SettingRow label={t("settings.collisionLabel")}>
-                  <div className="fluent-segmented-control settings-segmented">
-                    <button
-                      type="button"
-                      className={
-                        draft.default_collision_policy === "rename"
-                          ? "active"
-                          : ""
-                      }
-                      onClick={() => set("default_collision_policy", "rename")}
-                    >
-                      {t("settings.collisionRename")}
-                    </button>
-                    <button
-                      type="button"
-                      className={
-                        draft.default_collision_policy === "overwrite"
-                          ? "active"
-                          : ""
-                      }
-                      onClick={() =>
-                        set("default_collision_policy", "overwrite")
-                      }
-                    >
-                      {t("settings.collisionOverwrite")}
-                    </button>
-                    <button
-                      type="button"
-                      className={
-                        draft.default_collision_policy === "skip"
-                          ? "active"
-                          : ""
-                      }
-                      onClick={() => set("default_collision_policy", "skip")}
-                    >
-                      {t("settings.collisionSkip")}
-                    </button>
-                  </div>
-                </SettingRow>
-                <SettingRow label={t("settings.completionDefaultLabel")}>
-                  <div className="setting-completion-action">
-                    <CompletionActionEditor
-                      value={draft.default_completion_action}
-                      onChange={(a) => set("default_completion_action", a)}
+                  </SettingRow>
+                  <SettingRow
+                    label={t("settings.connectionsPerTaskLabel", {
+                      count: draft.connections_per_download,
+                    })}
+                  >
+                    <div className="settings-slider-wrapper">
+                      <input
+                        type="range"
+                        min="0"
+                        max="5"
+                        step="1"
+                        value={[1, 2, 4, 8, 16, 32].indexOf(
+                          draft.connections_per_download
+                        )}
+                        onChange={(e) => {
+                          const values = [1, 2, 4, 8, 16, 32];
+                          set("connections_per_download", values[+e.target.value]);
+                        }}
+                        className="fluent-slider"
+                      />
+                      <div className="slider-ticks">
+                        <span>1</span>
+                        <span>2</span>
+                        <span>4</span>
+                        <span>8</span>
+                        <span>16</span>
+                        <span>32</span>
+                      </div>
+                    </div>
+                  </SettingRow>
+                  <SettingRow label={t("settings.globalLimitLabel")}>
+                    <input
+                      type="number"
+                      min="0"
+                      value={draft.speed_limit_kbps}
+                      onChange={(e) => set("speed_limit_kbps", +e.target.value)}
                     />
-                  </div>
-                </SettingRow>
-                <Toggle
-                  label={t("settings.lowMemoryLabel")}
-                  checked={draft.low_memory_mode}
-                  onChange={(v) => set("low_memory_mode", v)}
-                />
-                <SettingRow label={t("settings.concurrentLabel")}>
-                  <input
-                    type="number"
-                    min="1"
-                    max="16"
-                    value={draft.concurrent_downloads}
-                    onChange={(e) =>
-                      set("concurrent_downloads", +e.target.value)
+                  </SettingRow>
+                  <Toggle
+                    label={t("settings.scheduledLimitLabel")}
+                    checked={draft.scheduled_limit?.enabled ?? false}
+                    onChange={(v) =>
+                      set("scheduled_limit", {
+                        enabled: v,
+                        start_minutes: draft.scheduled_limit?.start_minutes ?? 540,
+                        end_minutes: draft.scheduled_limit?.end_minutes ?? 1080,
+                        limit_kbps: draft.scheduled_limit?.limit_kbps ?? 2048,
+                      })
                     }
                   />
-                </SettingRow>
-                <SettingRow
-                  label={t("settings.connectionsPerTaskLabel", {
-                    count: draft.connections_per_download,
-                  })}
-                >
-                  <div className="settings-slider-wrapper">
-                    <input
-                      type="range"
-                      min="0"
-                      max="5"
-                      step="1"
-                      value={[1, 2, 4, 8, 16, 32].indexOf(
-                        draft.connections_per_download
-                      )}
-                      onChange={(e) => {
-                        const values = [1, 2, 4, 8, 16, 32];
-                        set("connections_per_download", values[+e.target.value]);
-                      }}
-                      className="fluent-slider"
-                    />
-                    <div className="slider-ticks">
-                      <span>1</span>
-                      <span>2</span>
-                      <span>4</span>
-                      <span>8</span>
-                      <span>16</span>
-                      <span>32</span>
-                    </div>
-                  </div>
-                </SettingRow>
-                <SettingRow label={t("settings.globalLimitLabel")}>
-                  <input
-                    type="number"
-                    min="0"
-                    value={draft.speed_limit_kbps}
-                    onChange={(e) => set("speed_limit_kbps", +e.target.value)}
-                  />
-                </SettingRow>
-                <Toggle
-                  label={t("settings.scheduledLimitLabel")}
-                  checked={draft.scheduled_limit?.enabled ?? false}
-                  onChange={(v) =>
-                    set("scheduled_limit", {
-                      enabled: v,
-                      start_minutes: draft.scheduled_limit?.start_minutes ?? 540,
-                      end_minutes: draft.scheduled_limit?.end_minutes ?? 1080,
-                      limit_kbps: draft.scheduled_limit?.limit_kbps ?? 2048,
-                    })
-                  }
-                />
-                {draft.scheduled_limit?.enabled && (
-                  <>
-                    <SettingRow label={t("settings.scheduledLimitRange")}>
-                      <div
-                        style={{
-                          display: "flex",
-                          alignItems: "center",
-                          gap: "8px",
-                        }}
-                      >
+                  {draft.scheduled_limit?.enabled && (
+                    <>
+                      <SettingRow label={t("settings.scheduledLimitRange")}>
+                        <div
+                          style={{
+                            display: "flex",
+                            alignItems: "center",
+                            gap: "8px",
+                          }}
+                        >
+                          <input
+                            type="time"
+                            aria-label={t("settings.scheduledLimitStartAria")}
+                            value={minutesToHHMM(
+                              draft.scheduled_limit.start_minutes
+                            )}
+                            onChange={(e) =>
+                              set("scheduled_limit", {
+                                ...draft.scheduled_limit!,
+                                enabled: true,
+                                start_minutes: hhmmToMinutes(e.target.value),
+                              })
+                            }
+                          />
+                          <span>{t("settings.scheduledLimitRangeTo")}</span>
+                          <input
+                            type="time"
+                            aria-label={t("settings.scheduledLimitEndAria")}
+                            value={minutesToHHMM(
+                              draft.scheduled_limit.end_minutes
+                            )}
+                            onChange={(e) =>
+                              set("scheduled_limit", {
+                                ...draft.scheduled_limit!,
+                                enabled: true,
+                                end_minutes: hhmmToMinutes(e.target.value),
+                              })
+                            }
+                          />
+                        </div>
+                      </SettingRow>
+                      <SettingRow label={t("settings.scheduledLimitValue")}>
                         <input
-                          type="time"
-                          aria-label={t("settings.scheduledLimitStartAria")}
-                          value={minutesToHHMM(
-                            draft.scheduled_limit.start_minutes
-                          )}
+                          type="number"
+                          min="0"
+                          value={draft.scheduled_limit.limit_kbps}
                           onChange={(e) =>
                             set("scheduled_limit", {
                               ...draft.scheduled_limit!,
                               enabled: true,
-                              start_minutes: hhmmToMinutes(e.target.value),
+                              limit_kbps: Math.max(0, +e.target.value || 0),
                             })
                           }
                         />
-                        <span>{t("settings.scheduledLimitRangeTo")}</span>
-                        <input
-                          type="time"
-                          aria-label={t("settings.scheduledLimitEndAria")}
-                          value={minutesToHHMM(
-                            draft.scheduled_limit.end_minutes
-                          )}
-                          onChange={(e) =>
-                            set("scheduled_limit", {
-                              ...draft.scheduled_limit!,
-                              enabled: true,
-                              end_minutes: hhmmToMinutes(e.target.value),
-                            })
-                          }
-                        />
-                      </div>
-                    </SettingRow>
-                    <SettingRow label={t("settings.scheduledLimitValue")}>
-                      <input
-                        type="number"
-                        min="0"
-                        value={draft.scheduled_limit.limit_kbps}
-                        onChange={(e) =>
-                          set("scheduled_limit", {
-                            ...draft.scheduled_limit!,
-                            enabled: true,
-                            limit_kbps: Math.max(0, +e.target.value || 0),
-                          })
-                        }
-                      />
-                    </SettingRow>
-                  </>
-                )}
-                <Toggle
-                  label={t("settings.verifyShaLabel")}
-                  checked={draft.verify_after_download}
-                  onChange={(v) => set("verify_after_download", v)}
-                />
-              </div>
-              <p className="settings-note">{t("settings.lowMemoryNote")}</p>
-            </SettingsGroup>
+                      </SettingRow>
+                    </>
+                  )}
+                </div>
+              </SettingsGroup>
+            </>
           )}
           {section === "network" && (
             <>
-              <SettingsGroup title={t("settings.netProxyGroup")}>
+              <SettingsGroup
+                title={t("settings.netProxyGroup")}
+                anchorId="network-proxy"
+                span={draft.proxy_mode === "manual" ? "full" : "auto"}
+                badge={
+                  draft.proxy_mode === "manual"
+                    ? t("settings.netProxyModeManual")
+                    : draft.proxy_mode === "none"
+                    ? t("settings.netProxyModeNone")
+                    : t("settings.netProxyModeSystem")
+                }
+                flashing={flashingAnchor === "network-proxy"}
+              >
                 <div className="settings-group-content">
                   <SettingRow label={t("settings.netProxyMode")}>
                     <Select
@@ -1030,17 +1304,16 @@ export function SettingsPage({
                   <p className="settings-note">{t("settings.netProxyNote")}</p>
                 )}
               </SettingsGroup>
-              <SettingsGroup title={t("settings.netRetryGroup")}>
-                <div className="retry-policy-grid">
-                  <RetryPolicyEditor
-                    value={draft.default_retry_policy}
-                    onChange={(p) => set("default_retry_policy", p)}
-                    compact
-                  />
-                </div>
-                <p className="settings-note">{t("settings.netRetryNote")}</p>
-              </SettingsGroup>
-              <SettingsGroup title={t("settings.netAwareGroup")}>
+              <SettingsGroup
+                title={t("settings.netAwareGroup")}
+                anchorId="network-aware"
+                badge={
+                  draft.metered_auto_pause
+                    ? t("settings.badgeOn")
+                    : t("settings.badgeOff")
+                }
+                flashing={flashingAnchor === "network-aware"}
+              >
                 <div className="settings-group-content">
                   <Toggle
                     label={t("settings.netMeteredToggle")}
@@ -1053,12 +1326,28 @@ export function SettingsPage({
                 </div>
                 <p className="settings-note">{t("settings.netMeteredNote")}</p>
               </SettingsGroup>
+              <SettingsGroup
+                title={t("settings.netRetryGroup")}
+                anchorId="network-retry"
+                span="full"
+                flashing={flashingAnchor === "network-retry"}
+              >
+                <div className="retry-policy-grid">
+                  <RetryPolicyEditor
+                    value={draft.default_retry_policy}
+                    onChange={(p) => set("default_retry_policy", p)}
+                    compact
+                  />
+                </div>
+                <p className="settings-note">{t("settings.netRetryNote")}</p>
+              </SettingsGroup>
             </>
           )}
           {section === "bt" && (
             <BtSettingsSection
               settings={draft}
               toolStatus={tools}
+              flashingAnchor={flashingAnchor}
               onUpdate={(patch) =>
                 setDraft((current) => ({ ...current, ...patch }))
               }
@@ -1067,7 +1356,16 @@ export function SettingsPage({
           )}
           {section === "browser" && (
             <>
-              <SettingsGroup title={t("settings.groupDownloadIntercept")}>
+              <SettingsGroup
+                title={t("settings.groupDownloadIntercept")}
+                anchorId="browser-intercept"
+                badge={
+                  draft.intercept_browser_downloads
+                    ? t("settings.badgeOn")
+                    : t("settings.badgeOff")
+                }
+                flashing={flashingAnchor === "browser-intercept"}
+              >
                 <div className="settings-group-content">
                   <Toggle
                     label={t("settings.browserInterceptToggle")}
@@ -1085,7 +1383,11 @@ export function SettingsPage({
                   </SettingRow>
                 </div>
               </SettingsGroup>
-              <SettingsGroup title={t("settings.groupSecurityPairing")}>
+              <SettingsGroup
+                title={t("settings.groupSecurityPairing")}
+                anchorId="browser-pairing"
+                flashing={flashingAnchor === "browser-pairing"}
+              >
                 {pair ? (
                   <div className="pair-card">
                     <p>{t("settings.browserPairHint")}</p>
@@ -1139,9 +1441,14 @@ export function SettingsPage({
           )}
           {section === "media" && (
             <>
-              <SettingsGroup title="媒体组件">
+              <SettingsGroup
+                title="媒体组件"
+                anchorId="media-tools"
+                span="full"
+                flashing={flashingAnchor === "media-tools"}
+              >
                 <p className="settings-note">
-                  按“自定义路径 → 应用安装 → Windows PATH”顺序查找组件。外部组件只会被引用，猫步下载器不会复制、更新或删除它们。
+                  按“自定义路径 → 应用内置 → 系统 PATH”查找，仅引用外部组件。
                 </p>
                 {tools ? (
                   <MediaToolsCard
@@ -1169,6 +1476,7 @@ export function SettingsPage({
                 draft={draft}
                 setDraft={setDraft}
                 notify={notify}
+                flashing={flashingAnchor === "media-assoc"}
               />
             </>
           )}
@@ -1187,7 +1495,16 @@ export function SettingsPage({
           )}
           {section === "appearance" && (
             <>
-              <SettingsGroup title="主题与紧凑度">
+              <SettingsGroup
+                title="主题与紧凑度"
+                anchorId="appearance-theme"
+                badge={
+                  draft.frosted_glass
+                    ? t("settings.badgeAcrylic")
+                    : t("settings.badgeSolid")
+                }
+                flashing={flashingAnchor === "appearance-theme"}
+              >
                 <div className="settings-group-content">
                   <SettingRow label="颜色方案">
                     <div className="fluent-segmented-control settings-segmented">
@@ -1239,7 +1556,7 @@ export function SettingsPage({
                     </div>
                   </SettingRow>
                   <Toggle
-                    label="详情栏默认折叠（切换任务时）"
+                    label="切换任务时折叠详情栏"
                     checked={draft.detail_default_collapsed}
                     onChange={(v) => set("detail_default_collapsed", v)}
                   />
@@ -1269,11 +1586,17 @@ export function SettingsPage({
                     onChange={(v) => set("frosted_glass", v)}
                   />
                 </div>
-                <p className="settings-note">
-                  在此设置颜色方案、行高大小、强调色以及详情栏折叠与磨砂玻璃等外观偏好。
-                </p>
               </SettingsGroup>
-              <SettingsGroup title="窗口大小">
+              <SettingsGroup
+                title="窗口大小"
+                anchorId="appearance-window"
+                badge={
+                  draft.window_width && draft.window_height
+                    ? `${draft.window_width}×${draft.window_height}`
+                    : undefined
+                }
+                flashing={flashingAnchor === "appearance-window"}
+              >
                 <div className="settings-group-content">
                   <SettingRow label="窗口大小">
                     <div className="window-size-setting-row">
@@ -1352,7 +1675,7 @@ export function SettingsPage({
                   />
                 </div>
                 <p className="settings-note">
-                  磨砂玻璃使用 Windows 10/11 原生 Acrylic 材质；自适应缩放根据窗口宽度自动放大 UI。
+                  自适应缩放按窗口宽度自动调整界面比例。
                 </p>
               </SettingsGroup>
             </>
@@ -1369,7 +1692,11 @@ export function SettingsPage({
           )}
           {section === "advanced" && (
             <>
-              <SettingsGroup title={t("settings.groupTaskMigration")}>
+              <SettingsGroup
+                title={t("settings.groupTaskMigration")}
+                anchorId="advanced-migration"
+                flashing={flashingAnchor === "advanced-migration"}
+              >
                 <div className="maintenance">
                   <button onClick={() => void exportTasks()}>
                     {t("settings.advExportTasks")}
@@ -1380,7 +1707,11 @@ export function SettingsPage({
                 </div>
                 <p className="settings-note">{t("settings.advMigrationNote")}</p>
               </SettingsGroup>
-              <SettingsGroup title={t("settings.groupBackupRestore")}>
+              <SettingsGroup
+                title={t("settings.groupBackupRestore")}
+                anchorId="advanced-backup"
+                flashing={flashingAnchor === "advanced-backup"}
+              >
                 <div className="maintenance">
                   <button onClick={() => setBackupOpen(true)}>
                     {t("settings.advCreateBackup")}
@@ -1391,7 +1722,12 @@ export function SettingsPage({
                 </div>
                 <p className="settings-note">{t("settings.advBackupNote")}</p>
               </SettingsGroup>
-              <SettingsGroup title={t("settings.groupLogs")}>
+              <SettingsGroup
+                title={t("settings.groupLogs")}
+                anchorId="advanced-logs"
+                span="full"
+                flashing={flashingAnchor === "advanced-logs"}
+              >
                 <div className="maintenance">
                   <button onClick={() => void openLogsDir()}>
                     {t("settings.advOpenLogs")}
@@ -1402,7 +1738,15 @@ export function SettingsPage({
                 </div>
                 <p className="settings-note">{t("settings.advLogsNote")}</p>
               </SettingsGroup>
-              <SettingsGroup title={t("settings.groupMaintenance")}>
+              <SettingsGroup
+                title={t("settings.groupMaintenance")}
+                anchorId="advanced-maintenance"
+                span="full"
+                badge={
+                  cacheSizeBytes !== null ? formatBytes(cacheSizeBytes) : undefined
+                }
+                flashing={flashingAnchor === "advanced-maintenance"}
+              >
                 <div
                   style={{
                     display: "flex",
@@ -2685,13 +3029,15 @@ export function SettingsPage({
               </div>
             </SettingsGroup>
           )}
-          <div className="dialog-actions settings-actions">
-            <button onClick={onClose}>{t("common.cancel")}</button>
-            <button className="primary" onClick={() => void save()}>
-              {t("settings.saveSettings")}
-            </button>
-          </div>
+            </div>
+          </SettingsSearchContext.Provider>
         </div>
+        <SettingsFloatingFooter
+          dirtyCount={dirtyCount}
+          onRevert={handleRevertDraft}
+          onCancel={onClose}
+          onSave={() => void save()}
+        />
       </main>
     </div>
   );
@@ -2701,10 +3047,12 @@ function FileAssociationSection({
   draft,
   setDraft,
   notify,
+  flashing = false,
 }: {
   draft: AppSettings;
   setDraft: React.Dispatch<React.SetStateAction<AppSettings>>;
   notify: (text: string, kind?: "ok" | "error") => void;
+  flashing?: boolean;
 }) {
   const [assocs, setAssocs] = useState<FileAssocInfo[]>([]);
   const [loading, setLoading] = useState(false);
@@ -2791,11 +3139,16 @@ function FileAssociationSection({
   };
 
   return (
-    <SettingsGroup title="内置播放器/看图器与 Windows 文件关联">
+    <SettingsGroup
+      title="内置播放器/看图器与 Windows 文件关联"
+      anchorId="media-assoc"
+      span="full"
+      flashing={flashing}
+    >
       <div className="settings-group-content mb-3">
         <SettingRow
           label="双击任务打开方式"
-          sub="设置在任务列表中双击已完成视频或图片时的默认动作。任务右键菜单依然支持随时切换。"
+          sub="双击已完成媒体时的默认打开方式。"
         >
           <Select
             value={draft.open_file_action || "builtin"}
@@ -2821,7 +3174,7 @@ function FileAssociationSection({
       </div>
 
       <p className="settings-note">
-        猫步下载器内置轻量、硬件加速视频播放器与极速看图器。注册关联后，您可在 Windows 右键菜单「打开方式」或「默认应用」设置中将其设为默认打开程序。支持点击单个格式单独开启或取消。
+        点击下方格式可单独注册或注销 Windows 打开方式关联。
       </p>
 
       <div className="file-assoc-card">

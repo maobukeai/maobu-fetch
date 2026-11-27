@@ -1,12 +1,22 @@
 // Chromium CookieStore.tabIds 是普通/无痕隔离的权威，不读取 Firefox-only Tab.cookieStoreId。
-export async function resolveCookieStore(cookiesApi, { tab, tabId, storeId } = {}) {
+export async function resolveCookieStore(cookiesApi, { tab, tabId, storeId, incognito } = {}) {
   if (typeof storeId === "string" && storeId) return storeId;
-  const id = tab?.id ?? tabId;
-  if (!Number.isInteger(id) || !cookiesApi?.getAllCookieStores) return null;
+  if (!cookiesApi?.getAllCookieStores) return null;
+  let stores;
   try {
-    const stores = await cookiesApi.getAllCookieStores();
-    return stores.find((store) => store.tabIds?.includes(id))?.id ?? null;
+    stores = await cookiesApi.getAllCookieStores();
   } catch { return null; }
+  const id = tab?.id ?? tabId;
+  if (Number.isInteger(id) && id >= 0) {
+    const matched = stores.find((store) => store.tabIds?.includes(id))?.id;
+    if (matched) return matched;
+  }
+  // 仅当浏览器明确标明是非无痕（incognito === false）且原标签页已关闭/无 tabId 时，
+  // 回退到默认普通 store（id === "0"）；无痕或身份不明场景绝不猜测普通存储。
+  if (incognito === false && tab?.incognito !== true) {
+    return stores.find((store) => store.id === "0")?.id ?? null;
+  }
+  return null;
 }
 
 function cookieMatchesUrl(cookie, target) {

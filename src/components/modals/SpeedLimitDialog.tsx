@@ -1,7 +1,12 @@
 import { useEffect, useRef, useState } from "react";
+import { AlertCircle, Gauge } from "lucide-react";
 import { t, useLocale } from "../../i18n";
 import type { DownloadTask } from "../../types";
 import { Modal } from "../common/Modal";
+import {
+  SPEED_LIMIT_PRESETS,
+  formatSpeedLimitBadge,
+} from "./light-modals-model";
 
 export function SpeedLimitDialog({
   task,
@@ -25,9 +30,10 @@ export function SpeedLimitDialog({
   }, []);
 
   const submit = async () => {
-    const limit = Number(value);
+    const trimmed = value.trim();
+    const limit = trimmed === "" ? Number.NaN : Number(trimmed);
     if (!Number.isFinite(limit) || limit < 0) {
-      setError("请输入不小于 0 的有效数字");
+      setError(t("dialogs.speedLimitInvalid"));
       return;
     }
     setBusy(true);
@@ -41,16 +47,60 @@ export function SpeedLimitDialog({
     }
   };
 
+  const parsedNumeric = value.trim() === "" ? Number.NaN : Number(value);
+  const liveBadge =
+    Number.isFinite(parsedNumeric) && parsedNumeric >= 0
+      ? formatSpeedLimitBadge(parsedNumeric * 1024, t("details.noSpeedLimit"))
+      : formatSpeedLimitBadge(
+          task.per_task_speed_limit,
+          t("details.noSpeedLimit")
+        );
+
   return (
-    <Modal title="任务限速" onClose={onClose} style={{ width: "420px" }}>
-      <div className="delete-task-dialog">
-        <p className="delete-task-message">
-          任务限速：<strong title={task.file_name}>{task.file_name}</strong>
-        </p>
-        <label className="form-field">
-          <span>限速值 (KB/s，0 表示不限速)</span>
+    <Modal
+      title={t("dialogs.speedLimitTitle")}
+      onClose={onClose}
+      dialogClassName="lm-dialog"
+      headerAction={<span className="lm-eyebrow">{liveBadge}</span>}
+    >
+      <div className="lm-body">
+        <div className="lm-file-pill">
+          <Gauge size={13} aria-hidden="true" />
+          <span className="lm-file-pill-name" title={task.file_name}>
+            {task.file_name}
+          </span>
+        </div>
+
+        <div className="lm-presets" role="group" aria-label={t("dialogs.speedLimitLabel")}>
+          {SPEED_LIMIT_PRESETS.map((preset) => {
+            const active =
+              Number.isFinite(parsedNumeric) && parsedNumeric === preset.kb;
+            const text = preset.labelKey ? t(preset.labelKey) : preset.label;
+            return (
+              <button
+                key={preset.kb}
+                type="button"
+                className="lm-preset-chip"
+                data-active={active ? "true" : "false"}
+                aria-pressed={active}
+                disabled={busy}
+                onClick={() => {
+                  setValue(String(preset.kb));
+                  setError(undefined);
+                  inputRef.current?.focus();
+                }}
+              >
+                {text}
+              </button>
+            );
+          })}
+        </div>
+
+        <div className="lm-input-unit-wrap">
           <input
             ref={inputRef}
+            className="lm-input tabular"
+            aria-label={t("dialogs.speedLimitLabel")}
             type="number"
             min="0"
             step="1"
@@ -72,20 +122,29 @@ export function SpeedLimitDialog({
             placeholder="0"
             disabled={busy}
           />
-        </label>
-        {error && <p className="inline-error">{error}</p>}
-        <div className="dialog-actions">
-          <button onClick={onClose} disabled={busy}>
-            {t("common.cancel")}
-          </button>
-          <button
-            className="primary"
-            onClick={() => void submit()}
-            disabled={busy}
-          >
-            {t("common.ok")}
-          </button>
+          <span className="lm-input-unit">KB/s</span>
         </div>
+
+        {error && (
+          <div className="lm-error" role="alert">
+            <AlertCircle size={13} />
+            <span>{error}</span>
+          </div>
+        )}
+      </div>
+
+      <div className="dialog-actions">
+        <button type="button" onClick={onClose} disabled={busy}>
+          {t("common.cancel")}
+        </button>
+        <button
+          type="button"
+          className="primary"
+          onClick={() => void submit()}
+          disabled={busy}
+        >
+          {t("dialogs.speedLimitApply")}
+        </button>
       </div>
     </Modal>
   );

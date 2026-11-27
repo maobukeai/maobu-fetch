@@ -11,6 +11,7 @@ import {exerciseTasks,downloadWhileOffline} from './bridge-task-checks.mjs';
 const config=JSON.parse(await readFile(process.argv[2],'utf8'));
 config.resume_probe_delay_ms=Math.min(5000,Math.max(0,Number(process.env.MAOBU_TEST_BRIDGE_PROBE_DELAY_MS)||0));
 const address=new URL(config.base_url);assert.equal(address.hostname,'127.0.0.1');assert.notEqual(address.port,'17433');
+assert.equal(new URL(config.baidu_probe_trap_url).origin, address.origin);
 const root=fileURLToPath(new URL('../../',import.meta.url));
 const extension=path.join(config.root,'extension');await mkdir(extension,{recursive:true});
 await cp(path.join(root,'extension','src'),path.join(extension,'src'),{recursive:true});
@@ -24,6 +25,24 @@ const browserPaths={Edge:'C:/Program Files (x86)/Microsoft/Edge/Application/msed
 let browser;
 async function wait(pathname){const deadline=Date.now()+20000;while(Date.now()<deadline){try{await stat(pathname);return;}catch{await delay(25);}}throw new Error('Fixture phase handshake timed out');}
 async function publish(pathname,value){await writeFile(pathname+'.tmp',JSON.stringify(value));await (await import('node:fs/promises')).rename(pathname+'.tmp',pathname);}
+async function verifyBaiduRejection(config) {
+  const { protocol } = window.bridgeFixture;
+  const endpoint = '/v1/tasks/verify-baidu-download';
+  const payload = { url: config.baidu_probe_trap_url, headers: {}, total_bytes: 42 };
+  const unsigned = await fetch(protocol.API + endpoint, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  if (unsigned.status !== 401) {
+    throw new Error(`Unsigned Baidu verification returned ${unsigned.status}`);
+  }
+  const unrelatedUrl = await protocol.signedFetch(endpoint, payload);
+  if (unrelatedUrl.status !== 400) {
+    throw new Error(`Unrelated URL in signed Baidu verification returned ${unrelatedUrl.status}`);
+  }
+  return { unsigned: unsigned.status, unrelated_url: unrelatedUrl.status };
+}
 try {
   browser=await puppeteer.launch({executablePath:browserPaths[config.browser],headless:true,pipe:true,enableExtensions:true,userDataDir:path.join(config.root,'profile'),args:['--enable-unsafe-extension-debugging','--disable-background-networking','--no-first-run']});
   const cdp=await browser.target().createCDPSession();await cdp.send('Browser.setDownloadBehavior',{behavior:'allow',downloadPath:downloads,eventsEnabled:true});
@@ -32,6 +51,7 @@ try {
   const page=await browser.newPage();await page.goto(`chrome-extension://${id}/src/options.html`);
   const source=await browser.newPage();await source.goto(new URL('/',config.source_url).href);
   const authentication=await page.evaluate(authenticateBridge,config);
+  const baiduVerification = await page.evaluate(verifyBaiduRejection, config);
   const tasks=await page.evaluate(exerciseTasks,config);
   await publish(config.phase_file,tasks);await wait(config.revoked_file);
   const revocation=await page.evaluate(verifyRevocation);
@@ -39,5 +59,5 @@ try {
   const fallback=await page.evaluate(downloadWhileOffline,config);
   assert.ok(path.resolve(fallback.filename).startsWith(path.resolve(downloads)+path.sep),'Browser fixture must not write outside TEMP download directory');
   const bytes=await readFile(fallback.filename);assert.equal(createHash('sha256').update(bytes).digest('hex'),config.expected_sha256);
-  console.log(JSON.stringify({browser:config.browser,version:await browser.version(),authentication,revocation,tasks:{pause:tasks.pause,resume:tasks.resume,cancel:tasks.cancel,completed:tasks.completed},desktop_download_sha256:config.expected_sha256,offline_browser_download:{state:fallback.state,bytes:bytes.length,sha256:config.expected_sha256}}));
+  console.log(JSON.stringify({browser:config.browser,version:await browser.version(),authentication,baidu_download_verification:baiduVerification,revocation,tasks:{pause:tasks.pause,resume:tasks.resume,cancel:tasks.cancel,completed:tasks.completed},desktop_download_sha256:config.expected_sha256,offline_browser_download:{state:fallback.state,bytes:bytes.length,sha256:config.expected_sha256}}));
 } finally {await browser?.close();}

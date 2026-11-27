@@ -256,6 +256,32 @@ async fn wrong_proxy_credentials_cannot_succeed_or_fall_back_to_another_exit() {
 }
 
 #[tokio::test]
+async fn cloud_request_explicit_user_agent_replaces_context_default_without_duplicates() {
+    let fixture = ProxyFixture::start(Mode::Normal).await;
+    let context = fixture
+        .app_network(CancellationToken::new())
+        .with_user_agent("DefaultUA/1.0");
+    let resp = context
+        .get("https://pan.baidu.com/s/1synthetic")
+        .header("User-Agent", "OverrideUA/2.0")
+        .send()
+        .await
+        .unwrap();
+    assert!(resp.status().is_success());
+    let recorded = fixture.state.headers.lock().unwrap();
+    let (_, headers) = recorded
+        .iter()
+        .find(|(path, _)| path == "/pan.baidu.com/s/1synthetic")
+        .unwrap();
+    let values: Vec<&str> = headers
+        .get_all("user-agent")
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .collect();
+    assert_eq!(values, vec!["OverrideUA/2.0"]);
+}
+
+#[tokio::test]
 async fn cancellation_interrupts_initial_headers_and_body_for_all_five_platforms() {
     for mode in [Mode::SilentHeaders, Mode::SilentBody] {
         for platform in 0..5 {

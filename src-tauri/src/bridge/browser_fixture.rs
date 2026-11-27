@@ -1,6 +1,11 @@
 //! Real browser -> unchanged Rust handlers, with an isolated Manager and an ephemeral port.
 use super::*;
-use std::path::PathBuf;
+use std::{
+    path::PathBuf,
+    sync::atomic::{AtomicBool, Ordering},
+};
+
+const BAIDU_PROBE_TRAP: &str = "/fixture/baidu-probe-trap";
 
 pub(crate) async fn run(
     app: &AppHandle,
@@ -54,7 +59,18 @@ async fn browser_case(
     if address.port() == 17433 {
         return Err("隔离桥不得使用正式端口".into());
     }
-    let app_router = router(manager.clone(), pairing, app.clone());
+    let probe_trap_contacted = Arc::new(AtomicBool::new(false));
+    let probe_trap_state = probe_trap_contacted.clone();
+    let app_router = router(manager.clone(), pairing, app.clone()).route(
+        BAIDU_PROBE_TRAP,
+        axum::routing::any(move || {
+            let probe_trap_state = probe_trap_state.clone();
+            async move {
+                probe_trap_state.store(true, Ordering::Relaxed);
+                StatusCode::BAD_REQUEST
+            }
+        }),
+    );
     let server = tokio::spawn(async move {
         axum::serve(listener, app_router)
             .await
@@ -66,7 +82,22 @@ async fn browser_case(
     let revoked = directory.join("revoked");
     let offline_ready = directory.join("offline-ready");
     let offline = directory.join("offline");
-    let value = serde_json::json!({"browser":browser,"base_url":format!("http://{address}"),"code":code,"source_url":source,"slow_url":slow_source,"destination":directory.join("downloads"),"expected_sha256":expected_sha,"phase_file":phase,"revoked_file":revoked,"offline_ready_file":offline_ready,"offline_file":offline,"root":directory});
+    let probe_trap_url = format!("http://{address}{BAIDU_PROBE_TRAP}");
+    let value = serde_json::json!({
+        "browser": browser,
+        "base_url": format!("http://{address}"),
+        "code": code,
+        "source_url": source,
+        "slow_url": slow_source,
+        "destination": directory.join("downloads"),
+        "expected_sha256": expected_sha,
+        "phase_file": phase,
+        "revoked_file": revoked,
+        "offline_ready_file": offline_ready,
+        "offline_file": offline,
+        "root": directory,
+        "baidu_probe_trap_url": probe_trap_url,
+    });
     tokio::fs::write(&config, value.to_string())
         .await
         .map_err(|error| error.to_string())?;
@@ -82,6 +113,18 @@ async fn browser_case(
         result=child.as_mut()=>{let _=result?;return Err("浏览器在提交桥接验证阶段之前退出".into())},
         result=wait_json(&phase)=>result?,
     };
+    if probe_trap_contacted.load(Ordering::Relaxed) {
+        return Err("百度下载验证访问了非百度测试地址".into());
+    }
+    if manager
+        .store
+        .list_tasks()
+        .await?
+        .iter()
+        .any(|task| task.url == probe_trap_url)
+    {
+        return Err("百度下载验证创建了下载任务".into());
+    }
     verify_tasks(manager, &phase_value, expected_sha).await?;
     manager.store.clear_pairing().await?;
     tokio::fs::write(&revoked, b"revoked")

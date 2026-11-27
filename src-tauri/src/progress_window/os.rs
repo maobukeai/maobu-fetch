@@ -12,7 +12,7 @@ fn hwnd(window: &WebviewWindow) -> Result<windows_sys::Win32::Foundation::HWND, 
 }
 
 #[cfg(windows)]
-pub(super) fn show(window: &WebviewWindow, visible: bool) -> Result<(), String> {
+pub(crate) fn show(window: &WebviewWindow, visible: bool) -> Result<(), String> {
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         IsWindowVisible, ShowWindow, SW_HIDE, SW_SHOWNOACTIVATE,
     };
@@ -31,7 +31,7 @@ pub(super) fn show(window: &WebviewWindow, visible: bool) -> Result<(), String> 
 }
 
 #[cfg(windows)]
-pub(super) fn pin(window: &WebviewWindow, pinned: bool) -> Result<(), String> {
+pub(crate) fn pin(window: &WebviewWindow, pinned: bool) -> Result<(), String> {
     use windows_sys::Win32::{
         Foundation::GetLastError,
         UI::WindowsAndMessaging::{
@@ -65,7 +65,7 @@ pub(super) fn pin(window: &WebviewWindow, pinned: bool) -> Result<(), String> {
 }
 
 #[cfg(windows)]
-pub(super) fn place(window: &WebviewWindow, placement: &Placement) -> Result<(), String> {
+pub(crate) fn place(window: &WebviewWindow, placement: &Placement) -> Result<(), String> {
     use windows_sys::Win32::{
         Foundation::{GetLastError, RECT},
         UI::WindowsAndMessaging::{GetWindowRect, SetWindowPos, SWP_NOACTIVATE, SWP_NOZORDER},
@@ -106,8 +106,31 @@ pub(super) fn place(window: &WebviewWindow, placement: &Placement) -> Result<(),
     }
 }
 
+/// Query native visibility: progress HWND visibility intentionally bypasses Tao's cache.
+#[cfg(windows)]
+pub(crate) fn visible_bounds(window: &WebviewWindow) -> Result<Option<Placement>, String> {
+    use windows_sys::Win32::{Foundation::RECT, UI::WindowsAndMessaging::{GetWindowRect, IsWindowVisible}};
+    let handle = hwnd(window)?;
+    if unsafe { IsWindowVisible(handle) } == 0 { return Ok(None); }
+    let mut rect = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+    if unsafe { GetWindowRect(handle, &mut rect) } == 0 {
+        return Err("无法读取悬浮窗位置，请在主窗口查看下载任务".into());
+    }
+    Ok(Some(Placement { x: rect.left, y: rect.top,
+        width: (i64::from(rect.right) - i64::from(rect.left)).clamp(1, i64::from(u32::MAX)) as u32,
+        height: (i64::from(rect.bottom) - i64::from(rect.top)).clamp(1, i64::from(u32::MAX)) as u32 }))
+}
+
 #[cfg(not(windows))]
-pub(super) fn show(window: &WebviewWindow, visible: bool) -> Result<(), String> {
+pub(crate) fn visible_bounds(window: &WebviewWindow) -> Result<Option<Placement>, String> {
+    if !window.is_visible().map_err(|error| error.to_string())? { return Ok(None); }
+    let position = window.outer_position().map_err(|error| error.to_string())?;
+    let size = window.outer_size().map_err(|error| error.to_string())?;
+    Ok(Some(Placement { x: position.x, y: position.y, width: size.width, height: size.height }))
+}
+
+#[cfg(not(windows))]
+pub(crate) fn show(window: &WebviewWindow, visible: bool) -> Result<(), String> {
     (if visible {
         window.show()
     } else {
@@ -116,13 +139,13 @@ pub(super) fn show(window: &WebviewWindow, visible: bool) -> Result<(), String> 
     .map_err(|error| error.to_string())
 }
 #[cfg(not(windows))]
-pub(super) fn pin(window: &WebviewWindow, pinned: bool) -> Result<(), String> {
+pub(crate) fn pin(window: &WebviewWindow, pinned: bool) -> Result<(), String> {
     window
         .set_always_on_top(pinned)
         .map_err(|error| error.to_string())
 }
 #[cfg(not(windows))]
-pub(super) fn place(window: &WebviewWindow, placement: &Placement) -> Result<(), String> {
+pub(crate) fn place(window: &WebviewWindow, placement: &Placement) -> Result<(), String> {
     window
         .set_position(tauri::PhysicalPosition::new(placement.x, placement.y))
         .map_err(|error| error.to_string())?;

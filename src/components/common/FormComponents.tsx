@@ -1,15 +1,40 @@
-import type { ReactNode } from "react";
+import { createContext, useContext, type ReactNode } from "react";
+import { matchesSearchQuery } from "../settings/settings-fusion";
+
+export const SettingsSearchContext = createContext("");
 
 export function SettingsGroup({
   title,
+  badge,
+  anchorId,
+  span = "auto",
+  flashing = false,
+  className,
   children,
 }: {
   title: string;
+  badge?: string;
+  anchorId?: string;
+  span?: "full" | "auto";
+  flashing?: boolean;
+  className?: string;
   children: ReactNode;
 }) {
+  const classes = [
+    "settings-group",
+    span === "full" ? "settings-group-full" : "",
+    flashing ? "settings-anchor-flash" : "",
+    className || "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+
   return (
-    <section className="settings-group">
-      <h2>{title}</h2>
+    <section className={classes} data-settings-anchor={anchorId}>
+      <div className="settings-group-header">
+        <h2>{title}</h2>
+        {badge && <span className="settings-group-badge">{badge}</span>}
+      </div>
       <div>{children}</div>
     </section>
   );
@@ -24,8 +49,10 @@ export function SettingRow({
   sub?: string;
   children: ReactNode;
 }) {
+  const query = useContext(SettingsSearchContext);
+  const hit = matchesSearchQuery(query, label, sub);
   return (
-    <label className="setting-row">
+    <label className={hit ? "setting-row setting-row-hit" : "setting-row"}>
       <div>
         <strong>{label}</strong>
         {sub && <small>{sub}</small>}
@@ -46,8 +73,10 @@ export function Toggle({
   checked: boolean;
   onChange: (value: boolean) => void;
 }) {
+  const query = useContext(SettingsSearchContext);
+  const hit = matchesSearchQuery(query, label, sub);
   return (
-    <label className="setting-row">
+    <label className={hit ? "setting-row setting-row-hit" : "setting-row"}>
       <div>
         <strong>{label}</strong>
         {sub && <small>{sub}</small>}

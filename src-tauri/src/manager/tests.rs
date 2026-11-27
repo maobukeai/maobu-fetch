@@ -3219,3 +3219,31 @@ async fn atomic_replace_publishes_overwrites_and_restores_original_on_failure() 
 
     let _ = std::fs::remove_dir_all(&base);
 }
+
+#[test]
+fn browser_direct_cloud_downloads_skip_media_probe() {
+    use crate::media_platforms::MediaPlatform;
+    let mut task = test_task(Path::new("C:\\downloads"), "archive.zip", CollisionPolicy::Rename);
+    task.source = "browser".into();
+    task.media = None;
+
+    for platform in [
+        MediaPlatform::BaiduPan,
+        MediaPlatform::Quark,
+        MediaPlatform::Lanzou,
+        MediaPlatform::Pan123,
+        MediaPlatform::PikPak,
+    ] {
+        assert!(should_skip_browser_media_probe(&task, platform));
+    }
+    assert!(!should_skip_browser_media_probe(&task, MediaPlatform::YouTube));
+    assert!(!should_skip_browser_media_probe(&task, MediaPlatform::Bilibili));
+
+    task.source = "desktop".into();
+    assert!(!should_skip_browser_media_probe(&task, MediaPlatform::Lanzou));
+
+    // 桌面端解析出的百度直链（d.pcs.baidu.com / baidupcs.com）同样不得进入 yt-dlp 探测
+    let dlink = "https://d.pcs.baidu.com/file/sample?sign=abc";
+    assert!(!cloud_shares::is_raw_share_url(dlink));
+    assert!(Url::parse(dlink).is_ok_and(|u| crate::baidupan::is_browser_download_target(&u)));
+}

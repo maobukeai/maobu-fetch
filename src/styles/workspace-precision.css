@@ -1,0 +1,428 @@
+/*
+ * 第 1 页：主工作区（方案 B · 瑞士工程仪表台）样式与微动效。
+ * 保持 184px 导航、约 42px 命令栏、36px/32px 行高与全宽 10 列表格结构，
+ * 不引入玻璃光斑、渐变背景或多余卡片。
+ */
+
+/* 1. 左侧 184px 工程导航栏 */
+.nav-pane {
+  padding: 10px 8px 8px;
+}
+
+.brand {
+  border-radius: 4px;
+}
+
+.app-icon {
+  border-radius: 6px;
+}
+
+.new-button {
+  border-radius: 4px;
+  font-weight: 600;
+  transition: background-color 140ms ease, transform 80ms ease;
+}
+
+.new-button:hover {
+  background: var(--accent-hover);
+}
+
+.new-button:active:not(:disabled) {
+  transform: scale(0.97);
+}
+
+.nav-label {
+  letter-spacing: 0.4px;
+}
+
+.nav-label-chevron {
+  transition: transform 180ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.nav-scroll {
+  position: relative;
+}
+
+.nav-item,
+.nav-settings {
+  border-radius: 4px;
+  transition: background-color 130ms ease, color 130ms ease;
+}
+
+.nav-item small {
+  font-variant-numeric: tabular-nums;
+}
+
+.nav-item:focus-visible,
+.nav-settings:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.nav-status {
+  padding: 2px 8px;
+  gap: 6px;
+}
+
+.nav-status-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.nav-speed-spark {
+  display: inline-flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 11px;
+  margin-left: auto;
+  flex: 0 0 auto;
+}
+
+.nav-speed-spark i {
+  display: block;
+  width: 2.5px;
+  border-radius: 1px;
+  background: var(--subtle);
+  opacity: 0.55;
+  transition: height 220ms ease, background-color 180ms ease, opacity 180ms ease;
+}
+
+.nav-speed-spark.active i {
+  background: var(--accent);
+  opacity: 1;
+}
+
+/* 2. 顶部命令栏：方案 3 主次分层线框工作台 */
+.titlebar {
+  padding: 0 14px;
+  padding-right: 154px;
+  height: 44px;
+  min-height: 44px;
+  gap: 10px;
+}
+
+.search-box {
+  width: min(220px, 24vw);
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: transparent;
+  transition: width 210ms cubic-bezier(0.16, 1, 0.3, 1),
+    border-color 140ms ease,
+    box-shadow 140ms ease,
+    background-color 140ms ease;
+}
+
+.search-box:focus-within {
+  width: min(270px, 29vw);
+  background: var(--control);
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-light);
+}
+
+:root[data-window-style="frosted"] .search-box {
+  background: transparent;
+}
+
+:root[data-window-style="frosted"] .search-box:focus-within {
+  background: var(--control);
+}
+
+.search-box .search-kbd {
+  font-size: 9px;
+  line-height: 1;
+  padding: 2px 4px;
+  border-radius: 3px;
+  border: 1px solid var(--border);
+  color: var(--subtle);
+  background: transparent;
+  white-space: nowrap;
+  flex-shrink: 0;
+  transition: opacity 120ms ease;
+}
+
+.search-box:focus-within .search-kbd {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.toolbar-actions {
+  gap: 4px;
+}
+
+.toolbar-sep {
+  display: inline-block;
+  width: 1px;
+  height: 14px;
+  margin: 0 3px;
+  background: var(--border);
+  flex-shrink: 0;
+}
+
+.action-group {
+  position: relative;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  padding: 0 7px 0 0;
+  gap: 2px;
+}
+
+.action-group::after {
+  content: "";
+  position: absolute;
+  right: 1px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 1px;
+  height: 14px;
+  background: var(--border);
+}
+
+.action-group button,
+.action-btn-standalone,
+.details-toggle {
+  width: 28px;
+  height: 26px;
+  border-radius: 4px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text);
+  transition: background-color 120ms ease,
+    border-color 120ms ease,
+    color 120ms ease,
+    box-shadow 140ms ease,
+    transform 80ms ease;
+}
+
+.action-group button:hover:not(:disabled),
+.action-btn-standalone:not(.action-btn-primary):hover:not(:disabled),
+.details-toggle:hover:not(:disabled) {
+  border-color: var(--border-strong);
+  background: var(--surface-hover);
+}
+
+.action-group button:disabled,
+.action-btn-standalone:disabled {
+  opacity: 0.36;
+}
+
+.action-group .danger-action:hover:not(:disabled),
+.action-btn-standalone.danger-action:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--danger) 40%, transparent);
+  background: color-mix(in srgb, var(--danger) 10%, transparent);
+  color: var(--danger);
+}
+
+/* 高频主入口「+ 新建」微描边高亮 */
+.action-btn-standalone.action-btn-primary {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+  background: var(--accent-light);
+}
+
+.action-btn-standalone.action-btn-primary > svg {
+  transition: transform 180ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.action-btn-standalone.action-btn-primary:hover:not(:disabled) {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #ffffff;
+}
+
+:root[data-theme="dark"] .action-btn-standalone.action-btn-primary:hover:not(:disabled) {
+  color: #0b1220;
+}
+
+.action-btn-standalone.action-btn-primary:hover:not(:disabled) > svg {
+  transform: rotate(90deg);
+}
+
+/* 激活态（高级筛选 / 电源动作 / 详情面板）：底部 2px 强调指示线 */
+.action-btn-standalone.active,
+.details-toggle.active {
+  background: transparent;
+  border-color: transparent;
+  color: var(--accent);
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+
+.action-btn-standalone.active:hover:not(:disabled),
+.details-toggle.active:hover:not(:disabled) {
+  background: var(--surface-hover);
+  border-color: var(--border-strong);
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+
+.action-group button:active:not(:disabled),
+.action-btn-standalone:active:not(:disabled),
+.details-toggle:active:not(:disabled) {
+  transform: scale(0.93);
+}
+
+.action-group button:focus-visible,
+.action-btn-standalone:focus-visible,
+.details-toggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+/* 3. 表头排序、全宽表格、左缘选中竖轨与连接微点矩阵 */
+.table-header {
+  background: var(--table-header-bg, var(--surface-solid));
+}
+
+:root[data-window-style="frosted"] .table-header {
+  background: transparent;
+}
+
+.table-sort-arrow {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  margin-left: 4px;
+  opacity: 0.85;
+  transition: transform 180ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.table-sort-arrow.asc {
+  transform: rotate(180deg);
+}
+
+.task-row {
+  position: relative;
+  font-variant-numeric: tabular-nums;
+  transition: background-color 120ms ease;
+}
+
+.task-row.selected {
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.task-row.selected.drop-target {
+  box-shadow: inset 2px 0 0 var(--accent), inset 0 2px 0 var(--accent);
+}
+
+.file-type {
+  border-radius: 4px;
+  border: 1px solid var(--border);
+}
+
+.connection-count {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  white-space: nowrap;
+}
+
+.conn-dots {
+  display: inline-flex;
+  align-items: center;
+  gap: 1.5px;
+  flex-shrink: 0;
+}
+
+.conn-dots i {
+  display: block;
+  width: 2.5px;
+  height: 7px;
+  border-radius: 1px;
+  background: var(--subtle);
+  opacity: 0.25;
+  transition: opacity 150ms ease, background-color 150ms ease;
+}
+
+.conn-dots i.on {
+  background: var(--accent);
+  opacity: 0.92;
+}
+
+.conn-dots.live i.on {
+  animation: conn-dot-pulse 1.8s ease-in-out infinite;
+}
+
+.conn-dots.live i.on:nth-child(2) { animation-delay: 150ms; }
+.conn-dots.live i.on:nth-child(3) { animation-delay: 300ms; }
+.conn-dots.live i.on:nth-child(4) { animation-delay: 450ms; }
+
+@keyframes conn-dot-pulse {
+  0%, 100% { opacity: 0.95; }
+  50% { opacity: 0.52; }
+}
+
+.progress-cell > div > div {
+  border-radius: 2px;
+}
+
+.progress-cell i {
+  border-radius: 2px;
+  transition: width 240ms linear;
+}
+
+.task-row .row-menu {
+  border-radius: 4px;
+  opacity: 0.58;
+  transition: opacity 120ms ease, background-color 120ms ease, transform 80ms ease;
+}
+
+.task-row:hover .row-menu,
+.task-row.selected .row-menu,
+.task-row .row-menu:focus-visible {
+  opacity: 1;
+}
+
+.task-row .row-menu:active {
+  transform: scale(0.9);
+}
+
+.task-row .row-menu:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+/* 4. 底部批量操作条 */
+.bulk-action-bar {
+  border-radius: 6px;
+  padding: 5px 10px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.16), 0 1px 4px rgba(0, 0, 0, 0.08);
+}
+
+.bulk-btn {
+  border-radius: 4px;
+}
+
+.bulk-btn:active {
+  transform: scale(0.96);
+}
+
+/* 5. 尊重系统减少动态效果设置 */
+@media (prefers-reduced-motion: reduce) {
+  .nav-label-chevron,
+  .nav-speed-spark i,
+  .search-box,
+  .search-box .search-kbd,
+  .action-btn-standalone.action-btn-primary > svg,
+  .table-sort-arrow,
+  .progress-cell i,
+  .task-row .row-menu,
+  .bulk-action-bar {
+    transition-duration: 0.01ms !important;
+  }
+
+  .action-btn-standalone.action-btn-primary:hover:not(:disabled) > svg {
+    transform: none;
+  }
+
+  .conn-dots.live i.on,
+  .progress-cell i.multi-thread,
+  .progress-cell i.multi-thread::after,
+  .speed-up-icon,
+  .bulk-action-bar {
+    animation: none !important;
+  }
+}

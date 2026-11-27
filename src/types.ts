@@ -441,9 +441,11 @@ export interface AppSettings {
   archive_days: number;
   /** Task 24：主列表已完成任务数量阈值，超过 M 条时最旧的归入历史视图。默认 100。 */
   archive_threshold: number;
-  /** Task 30.1：下载完成后发送系统通知。默认 true。 */
+  /** 按所选方式显示完成提醒，默认开启。 */
   notify_on_complete: boolean;
-  /** 应用内完成提醒停留秒数；0 表示手动关闭。旧设置默认 30。 */
+  /** 旧设置缺省时使用独立桌面提示窗。 */
+  completion_notice_mode?: "desktop" | "system";
+  /** 独立桌面提示窗的停留秒数，0 为手动关闭。 */
   completion_notice_seconds?: number;
   /** 有活动下载时显示右下角进度悬浮窗，旧设置默认 true。 */
   progress_window_enabled?: boolean;

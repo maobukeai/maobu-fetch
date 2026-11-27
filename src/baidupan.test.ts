@@ -56,4 +56,11 @@ if (res3) {
   assertEqual(res3.surl, "xyz789", "从文本中提取 surl");
   assertEqual(res3.passCode, "abcd", "从文本中提取 passCode");
 }
+
+const res4 = parseBaiduUrl("通过网盘分享的文件：sample.zip\n链接: https://pan.baidu.com/s/1multi99\n提取码: q9w8");
+assertTrue(res4 !== null, "res4 多行分享文本非空");
+if (res4) {
+  assertEqual(res4.surl, "multi99", "从多行文本中提取 surl");
+  assertEqual(res4.passCode, "q9w8", "从多行文本中提取 passCode");
+}
 console.log("✔ parseBaiduUrl 测试通过");

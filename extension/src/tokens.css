@@ -1,0 +1,70 @@
+/* ==========================================================================
+   猫步下载器 · 浏览器扩展统一 Win11 精密设计令牌（与桌面端第 1–9 页同源）
+   ========================================================================== */
+:root {
+  color-scheme: light dark;
+  --ext-font: "Segoe UI Variable Text", "Segoe UI", -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  --ext-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+
+  --ext-bg: #f4f6f9;
+  --ext-card: #ffffff;
+  --ext-control: #ffffff;
+  --ext-hover: rgba(15, 23, 42, 0.05);
+  --ext-selected: rgba(37, 99, 235, 0.12);
+
+  --ext-text: #1e293b;
+  --ext-muted: #515a66;
+  --ext-subtle: #64748b;
+
+  --ext-border: rgba(15, 23, 42, 0.11);
+  --ext-border-strong: rgba(15, 23, 42, 0.19);
+
+  --ext-accent: #2563eb;
+  --ext-accent-hover: #1d4ed8;
+  --ext-accent-soft: rgba(37, 99, 235, 0.11);
+
+  --ext-success: #16a34a;
+  --ext-success-soft: rgba(22, 163, 74, 0.13);
+
+  --ext-warning: #d97706;
+  --ext-warning-soft: rgba(217, 119, 6, 0.14);
+
+  --ext-danger: #dc2626;
+  --ext-danger-soft: rgba(220, 38, 38, 0.12);
+
+  --ext-shadow: 0 2px 6px rgba(15, 23, 42, 0.05), 0 1px 2px rgba(15, 23, 42, 0.03);
+  --ext-shadow-pop: 0 10px 26px rgba(15, 23, 42, 0.16), 0 2px 6px rgba(15, 23, 42, 0.06);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --ext-bg: #14171d;
+    --ext-card: #1b2028;
+    --ext-control: #232934;
+    --ext-hover: rgba(255, 255, 255, 0.07);
+    --ext-selected: rgba(59, 130, 246, 0.22);
+
+    --ext-text: #f1f5f9;
+    --ext-muted: #cbd5e1;
+    --ext-subtle: #94a3b8;
+
+    --ext-border: rgba(226, 232, 240, 0.11);
+    --ext-border-strong: rgba(226, 232, 240, 0.20);
+
+    --ext-accent: #3b82f6;
+    --ext-accent-hover: #60a5fa;
+    --ext-accent-soft: rgba(59, 130, 246, 0.18);
+
+    --ext-success: #22c55e;
+    --ext-success-soft: rgba(34, 197, 94, 0.18);
+
+    --ext-warning: #f59e0b;
+    --ext-warning-soft: rgba(245, 158, 11, 0.18);
+
+    --ext-danger: #f87171;
+    --ext-danger-soft: rgba(248, 113, 113, 0.18);
+
+    --ext-shadow: 0 4px 12px rgba(0, 0, 0, 0.22), 0 1px 2px rgba(0, 0, 0, 0.16);
+    --ext-shadow-pop: 0 12px 28px rgba(0, 0, 0, 0.45), 0 2px 6px rgba(0, 0, 0, 0.25);
+  }
+}

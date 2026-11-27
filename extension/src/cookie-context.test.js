@@ -69,3 +69,14 @@ test("Netscape export preserves host/path scope and never turns CHIPS into unpar
   assert.match(text, /\.youtube.com\tTRUE\t\/\tTRUE/);
   assert.equal(text.includes("MUST_NOT_EXPORT"), false);
 });
+
+test("Explicitly non-incognito closed-tab download falls back to store 0 without leaking private or unknown context", async () => {
+  const api = {
+    getAllCookieStores: async () => [{ id: "0", tabIds: [1] }, { id: "1", tabIds: [2] }],
+    getAll: async (params) => [{ name: "sid", value: params.storeId }],
+  };
+  const normalClosedTab = await readTargetCookies(api, "https://cdn.example/file", { tabId: -1, incognito: false });
+  assert.equal(normalClosedTab[0]?.value, "0");
+  assert.deepEqual(await readTargetCookies(api, "https://cdn.example/file", { tabId: -1, incognito: true }), []);
+  assert.deepEqual(await readTargetCookies(api, "https://cdn.example/file", { tabId: -1 }), []);
+});

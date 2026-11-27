@@ -1,0 +1,35 @@
+/*
+ * 全应用通用「方案 2 · 按钮溯源弹射」弹窗退出幽灵层样式。
+ * 与 .modal-layer 保持完全一致的视觉基底，但禁用指针交互且低于新弹窗层级，
+ * 确保弹窗在关闭收缩的 165ms 内底层可立即点击，且紧接着打开子弹窗不会遮挡。
+ */
+
+.modal-exit-ghost {
+  position: fixed;
+  inset: 0;
+  z-index: 29;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(15, 23, 42, 0.22);
+  pointer-events: none;
+  user-select: none;
+}
+
+:root[data-theme="dark"] .modal-exit-ghost {
+  background: rgba(0, 0, 0, 0.42);
+}
+
+:root[data-window-style="frosted"] .modal-exit-ghost {
+  background: rgba(15, 23, 42, 0.14);
+}
+
+:root[data-theme="dark"][data-window-style="frosted"] .modal-exit-ghost {
+  background: rgba(0, 0, 0, 0.28);
+}
+
+.modal-exit-ghost *,
+.modal-exit-ghost *::before,
+.modal-exit-ghost *::after {
+  pointer-events: none !important;
+}

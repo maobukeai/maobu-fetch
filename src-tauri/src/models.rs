@@ -852,11 +852,13 @@ pub struct AppSettings {
     /// 默认 100 条。旧 JSON 缺失此字段时通过 serde 默认值安全回填到 100。
     #[serde(default = "default_archive_threshold")]
     pub archive_threshold: u32,
-    /// Task 30.1：下载完成后发送系统通知。默认 true。
+    /// 下载完成后按所选方式显示提醒。默认 true。
     /// 旧 JSON 缺失此字段时通过 serde 默认值安全回填到 true。
     #[serde(default = "default_notify_on_complete")]
     pub notify_on_complete: bool,
-    /// 应用内完成提醒停留秒数；0 为手动关闭。旧设置安全回填 30 秒。
+    #[serde(default)]
+    pub completion_notice_mode: CompletionNoticeMode,
+    /// 独立桌面提示的停留秒数；0 为手动关闭。旧设置默认 30 秒。
     #[serde(default = "default_completion_notice_seconds")]
     pub completion_notice_seconds: u32,
     /// 下载进行时显示独立进度悬浮窗；旧设置默认开启，可由用户关闭。
@@ -1088,6 +1090,14 @@ fn default_completion_notice_seconds() -> u32 {
     30
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CompletionNoticeMode {
+    #[default]
+    Desktop,
+    System,
+}
+
 fn default_notify_on_failure() -> bool {
     true
 }
@@ -1174,6 +1184,7 @@ impl Default for AppSettings {
             archive_days: default_archive_days(),
             archive_threshold: default_archive_threshold(),
             notify_on_complete: default_notify_on_complete(),
+            completion_notice_mode: CompletionNoticeMode::default(),
             completion_notice_seconds: default_completion_notice_seconds(),
             progress_window_enabled: true,
             progress_window_always_on_top: true,

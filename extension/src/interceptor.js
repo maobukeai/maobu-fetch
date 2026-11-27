@@ -1,6 +1,7 @@
 import { IGNORED_HISTORY_MAX, pushIgnoredEntry } from "./ignored-history.js";
 import { buildCookieHeader } from "./auth-download.js";
 import { readTargetCookies } from "./cookie-context.js";
+import { baiduDownloadHeaders, baiduTakeoverBlockReason, isBaiduDownload, verifyBaiduDownload } from "./baidu-download.js";
 
 const HTTP_URL = /^https?:/i;
 
@@ -271,7 +272,7 @@ export async function recoverStuckTakeovers(deps = {}) {
 ///
 /// 同时写两处：`lastIgnored`（最近一条，向后兼容）与 `ignoredList`
 /// （环形缓冲，默认 20 条，popup 诊断区展示并支持一键改用猫步下载）。
-export async function recordIgnored(entry) {
+async function recordIgnored(entry) {
   try {
     const { ignoredList = [] } = await chrome.storage.local.get("ignoredList");
     await chrome.storage.local.set({
@@ -279,6 +280,22 @@ export async function recordIgnored(entry) {
       ignoredList: pushIgnoredEntry(ignoredList, entry),
     });
   } catch {}
+}
+
+export function takeoverRecordUrl(item, baidu = isBaiduDownload(item)) {
+  // The browser still owns these downloads. A signed URL is neither diagnostic text nor a retry link.
+  return baidu ? "" : item.finalUrl || item.url;
+}
+
+export function recordIgnoredDownload(item, reason, baidu = isBaiduDownload(item)) {
+  return recordIgnored({
+    url: baidu ? "" : item.url,
+    referrer: baidu ? "" : (HTTP_URL.test(item.referrer || "") ? item.referrer : ""),
+    filename: basename(item.filename) || "未知文件",
+    size: item.totalBytes,
+    reason,
+    timestamp: Date.now(),
+  });
 }
 
 // 通知节流：时间戳同时写入内存与 chrome.storage.session。
@@ -291,6 +308,7 @@ const NOTIFY_COOLDOWNS = {
   unpaired: 5 * 60_000,
   "cancel-error": 60_000,
   "added": 60_000,
+  "baidu-verification-failed": 60_000,
 };
 const memoryNotifyLast = {};
 
@@ -334,12 +352,16 @@ export async function getDownloadAuthHeaders(item, { cookies, tab, url } = {}) {
   const targetUrl = url || item?.finalUrl || item?.url;
 
   // 只把实际目标的凭据交给该目标，来源页/Referer 不能扩张 Cookie 作用域。
-  const matched = await readTargetCookies(cookiesApi, targetUrl, { tab, tabId: item?.tabId });
+  const matched = await readTargetCookies(cookiesApi, targetUrl, {
+    tab,
+    tabId: item?.tabId,
+    incognito: item?.incognito,
+  });
   const cookieHeader = buildCookieHeader(matched);
   if (cookieHeader) headers.Cookie = cookieHeader;
 
   // 2. Referer 补齐
-  const referer = item?.referrer || (tab?.url && /^https?:/i.test(tab.url) ? tab.url : undefined);
+  const referer = item?.referrer || (tab?.url && /^https?:/i.test(tab.url) ? tab.url.split("#")[0] : undefined);
   if (referer) {
     headers["Referer"] = referer;
   }
@@ -380,15 +402,10 @@ export async function getDownloadAuthHeaders(item, { cookies, tab, url } = {}) {
 
 export async function interceptBrowserDownload(initial, options) {
   const { downloads, settings, runtimeId, sendTask, notify, wait, isDesktopOfflineError, swStartTime, onTakenOver } = options;
+  let baidu = isBaiduDownload(initial, options.tab);
   const preflight = evaluateDownload(initial, settings, runtimeId, swStartTime, { reevaluation: true });
   if (!preflight.eligible) {
-    await recordIgnored({
-      url: initial.url,
-      filename: basename(initial.filename) || "未知文件",
-      size: initial.totalBytes,
-      reason: preflight.reason,
-      timestamp: Date.now()
-    });
+    await recordIgnoredDownload(initial, preflight.reason, baidu);
     try { await downloads.resume(initial.id); } catch {}
     return false;
   }
@@ -396,34 +413,54 @@ export async function interceptBrowserDownload(initial, options) {
   // P0-4 修复：恢复记录必须先于 pause() 落盘。写入失败（storage.session 不可用）
   // 时放弃暂停——接管流程照常进行，发送成功后仍会 cancel 浏览器下载；
   // 宁可让下载在接管期间继续，也不留下无法被看门狗恢复的暂停态。
-  const recorded = await markPendingTakeover(initial.id, { url: initial.finalUrl || initial.url, phase: "sending" });
+  const recorded = await markPendingTakeover(initial.id, { url: takeoverRecordUrl(initial, baidu), phase: "sending" });
+  let paused = false;
   if (recorded) {
     try {
       await downloads.pause(initial.id);
+      paused = true;
     } catch {}
   }
 
   let taskSent = false;
   try {
     const item = await refreshDownload(downloads, initial, wait);
+    if (!baidu && isBaiduDownload(item, options.tab)) {
+      baidu = true;
+      await markPendingTakeover(initial.id, { phase: "sending" });
+    }
     // 二次评估必须带 reevaluation 标记：此时下载已被本扩展 pause()，
     // paused/canResume/bytesReceived 不能再作为"历史任务"证据。
     const decision = evaluateDownload(item, settings, runtimeId, swStartTime, { reevaluation: true });
     if (!decision.eligible) {
-      await recordIgnored({
-        url: item.url,
-        filename: basename(item.filename) || "未知文件",
-        size: item.totalBytes,
-        reason: decision.reason,
-        timestamp: Date.now()
-      });
+      await recordIgnoredDownload(item, decision.reason, baidu);
       await downloads.resume(initial.id);
       await clearPendingTakeover(initial.id);
       return false;
     }
     let taskHeaders = { ...(options.headers || {}), ...(decision.headers || {}) };
     const cookiesApi = options.cookies !== undefined ? options.cookies : (typeof chrome !== "undefined" ? chrome.cookies : undefined);
-    if (cookiesApi?.getAll || options.tab || options.injectAuth) {
+    if (baidu) {
+      const blocked = baiduTakeoverBlockReason(item, initial);
+      if (blocked) {
+        try { await downloads.resume(initial.id); } catch {}
+        await clearPendingTakeover(initial.id);
+        await recordIgnoredDownload(item, blocked, true);
+        return false;
+      }
+      const authHeaders = await getDownloadAuthHeaders(item, { cookies: cookiesApi, tab: options.tab, url: decision.url });
+      taskHeaders = baiduDownloadHeaders(authHeaders, initial);
+      if (!recorded || (!paused && !item.paused) || (item.state && item.state !== "in_progress")
+        || decision.url !== item.finalUrl
+        || !await verifyBaiduDownload(decision.url, taskHeaders, item.totalBytes)) {
+        throw new Error("baidu-verification-failed");
+      }
+      const [current] = await downloads.search({ id: initial.id });
+      if (!current || (current.state && current.state !== "in_progress") || current.paused === false
+        || current.finalUrl !== decision.url || current.totalBytes !== item.totalBytes) {
+        throw new Error("baidu-verification-failed");
+      }
+    } else if (cookiesApi?.getAll || options.tab || options.injectAuth) {
       const authHeaders = await getDownloadAuthHeaders(item, { cookies: cookiesApi, tab: options.tab, url: decision.url });
       taskHeaders = { ...authHeaders, ...taskHeaders };
     }
@@ -431,7 +468,7 @@ export async function interceptBrowserDownload(initial, options) {
     taskSent = true;
     // 阶段推进为 task-sent：若 SW 在 cancel/erase 前死亡，看门狗按"取消浏览器
     // 下载"恢复（防重复文件），而不是 resume。
-    await markPendingTakeover(initial.id, { url: decision.url, phase: "task-sent" });
+    await markPendingTakeover(initial.id, { url: baidu ? "" : decision.url, phase: "task-sent" });
     await downloads.cancel(initial.id);
     await downloads.erase({ id: initial.id });
     await clearPendingTakeover(initial.id);
@@ -443,17 +480,14 @@ export async function interceptBrowserDownload(initial, options) {
       // SubTask 13.5：桌面端离线/无响应时明确通知用户，并确保浏览器原生下载继续。
       // 不静默失败；用户下载不丢失。
       const offline = isDesktopOfflineError ? isDesktopOfflineError(error) : isDefaultOfflineError(error);
-      await recordIgnored({
-        url: initial.url,
-        filename: basename(initial.filename) || "未知文件",
-        size: initial.totalBytes,
-        reason: offline ? "offline" : `error:${error.message || String(error)}`,
-        timestamp: Date.now()
-      });
       try { await downloads.resume(initial.id); } catch { /* 下载可能已由浏览器结束。 */ }
       await clearPendingTakeover(initial.id);
+      const reason = offline ? "offline" : baidu ? "baidu-verification-failed" : `error:${error.message || String(error)}`;
+      await recordIgnoredDownload(initial, reason, baidu);
       if (offline) {
         await notifyThrottled("offline", "桌面端离线，已回退浏览器下载", "点击此处打开猫步下载器", notify, "offline-warning");
+      } else if (baidu) {
+        await notifyThrottled(reason, "百度网盘下载已交还浏览器", "桌面端未能接管此次下载，请在浏览器中查看进度。", notify, "baidu-verification-failed");
       } else {
         await notifyThrottled("error", "接管失败，已回退浏览器下载", String(error?.message || error), notify, "takeover-error");
       }
@@ -487,13 +521,7 @@ export async function skipUnpairedDownload(item, notify) {
     return false; // 存储暂时不可读时不拦截下载，交由 sendTask 的错误路径兜底。
   }
   if (bridgeToken) return false;
-  await recordIgnored({
-    url: item.url,
-    filename: basename(item.filename) || "未知文件",
-    size: item.totalBytes,
-    reason: "unpaired",
-    timestamp: Date.now()
-  });
+  await recordIgnoredDownload(item, "unpaired");
   await notifyThrottled(
     "unpaired",
     "尚未与桌面端配对，本次由浏览器下载",

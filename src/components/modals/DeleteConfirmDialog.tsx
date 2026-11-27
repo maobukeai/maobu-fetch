@@ -4,6 +4,7 @@
  *
  * 复用 common/Modal 的焦点圈定、Escape 关闭与确认按钮样式（confirm-dialog-*）。
  */
+import { AlertTriangle } from "lucide-react";
 import { t } from "../../i18n";
 import type { DownloadTask } from "../../types";
 import {
@@ -13,44 +14,45 @@ import {
 } from "../../delete-summary";
 import { Modal } from "../common/Modal";
 
-/** 一次删除确认请求：目标任务集合、是否删除本地文件，以及当前视图（影响文案）。 */
 export interface DeleteConfirmRequest {
   taskIds: Set<string>;
   deleteFile: boolean;
-  historyView: boolean;
+  historyView?: boolean;
 }
 
-/** 根据请求组合对话框标题：文件删除与历史彻底删除均为危险操作。 */
 function resolveTitle(request: DeleteConfirmRequest): string {
-  if (request.deleteFile) {
-    return request.historyView
+  if (request.historyView) {
+    return request.deleteFile
       ? t("deleteConfirm.historyFilesTitle")
-      : t("deleteConfirm.filesTitle");
+      : t("deleteConfirm.historyRecordsTitle");
   }
-  return request.historyView
-    ? t("deleteConfirm.historyRecordsTitle")
+  return request.deleteFile
+    ? t("deleteConfirm.filesTitle")
     : t("deleteConfirm.recordsTitle");
 }
 
-/** 组装确认正文首段（不含未完成提示、文件清单与不可恢复声明）。 */
-function resolveBody(request: DeleteConfirmRequest, summary: DeleteSummary): string {
-  if (request.deleteFile) {
-    return request.historyView
+function resolveBody(
+  request: DeleteConfirmRequest,
+  summary: DeleteSummary
+): string {
+  if (request.historyView) {
+    return request.deleteFile
       ? t("deleteConfirm.historyFilesBody", {
           taskCount: summary.taskCount,
           fileCount: summary.fileCount,
         })
-      : t("deleteConfirm.filesBody", {
+      : t("deleteConfirm.recordsBodyHistory", {
           taskCount: summary.taskCount,
-          fileCount: summary.fileCount,
         });
   }
-  return request.historyView
-    ? t("deleteConfirm.recordsBodyHistory", { taskCount: summary.taskCount })
+  return request.deleteFile
+    ? t("deleteConfirm.filesBody", {
+        taskCount: summary.taskCount,
+        fileCount: summary.fileCount,
+      })
     : t("deleteConfirm.recordsBody", { taskCount: summary.taskCount });
 }
 
-/** 仅当涉及文件总数 ≤ 上限时列出文件名，避免长清单刷屏。 */
 function resolveFileNames(
   request: DeleteConfirmRequest,
   summary: DeleteSummary
@@ -75,48 +77,58 @@ export function DeleteConfirmDialog({
 }) {
   const summary = summarizeDeleteTargets(tasks, request.taskIds);
   const danger = request.deleteFile || request.historyView;
-
-  const bodyLines: string[] = [resolveBody(request, summary)];
-  if (summary.incompleteCount > 0) {
-    bodyLines.push(
-      t("deleteConfirm.incompleteNote", { count: summary.incompleteCount })
-    );
-  }
   const fileNames = resolveFileNames(request, summary);
-  if (fileNames.length > 0) {
-    bodyLines.push(t("deleteConfirm.fileListLabel"));
-    for (const name of fileNames) bodyLines.push(`· ${name}`);
-  }
-  if (danger) {
-    bodyLines.push(t("deleteConfirm.irreversible"));
-  }
 
   return (
     <Modal
       title={resolveTitle(request)}
       onClose={onCancel}
-      style={{ width: "440px" }}
+      dialogClassName="lm-dialog"
     >
-      <div className="confirm-dialog-body">
-        <p>{bodyLines.join("\n")}</p>
-        <div className="confirm-dialog-actions">
-          <button
-            className="confirm-btn-secondary"
-            onClick={onCancel}
-            autoFocus={danger}
-          >
-            {t("common.cancel")}
-          </button>
-          <button
-            className={danger ? "confirm-btn-danger" : "confirm-btn-primary"}
-            onClick={onConfirm}
-            autoFocus={!danger}
-          >
-            {request.deleteFile
-              ? t("deleteConfirm.confirmDeleteFiles")
-              : t("deleteConfirm.confirmDelete")}
-          </button>
-        </div>
+      <div className="confirm-dialog-body lm-body">
+        <p className="lm-lead">{resolveBody(request, summary)}</p>
+
+        {summary.incompleteCount > 0 && (
+          <p className="lm-sub-note">
+            {t("deleteConfirm.incompleteNote", {
+              count: summary.incompleteCount,
+            })}
+          </p>
+        )}
+
+        {fileNames.length > 0 && (
+          <ul className="lm-file-list">
+            {fileNames.map((name) => (
+              <li key={name}>{name}</li>
+            ))}
+          </ul>
+        )}
+
+        {danger && (
+          <div className="lm-warning-strip" role="note">
+            <AlertTriangle size={14} />
+            <span>{t("deleteConfirm.irreversible")}</span>
+          </div>
+        )}
+      </div>
+
+      <div className="confirm-dialog-actions">
+        <button
+          className="confirm-btn-secondary"
+          onClick={onCancel}
+          autoFocus={danger}
+        >
+          {t("common.cancel")}
+        </button>
+        <button
+          className={danger ? "confirm-btn-danger" : "confirm-btn-primary"}
+          onClick={onConfirm}
+          autoFocus={!danger}
+        >
+          {request.deleteFile
+            ? t("deleteConfirm.confirmDeleteFiles")
+            : t("deleteConfirm.confirmDelete")}
+        </button>
       </div>
     </Modal>
   );

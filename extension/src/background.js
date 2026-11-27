@@ -1,5 +1,5 @@
 import { signedFetch, signedGet, compatFetch, focusDesktop, PROBE_TIMEOUT_MS } from "./protocol.js";
-import { interceptBrowserDownload, evaluateDownload, skipUnpairedDownload, notifyThrottled, recoverStuckTakeovers, recordIgnored, markPendingTakeover, clearPendingTakeover } from "./interceptor.js";
+import { interceptBrowserDownload, evaluateDownload, skipUnpairedDownload, notifyThrottled, recoverStuckTakeovers, recordIgnoredDownload, takeoverRecordUrl, markPendingTakeover, clearPendingTakeover } from "./interceptor.js";
 import { bridgeMediaTask, selectBridgeMediaFormat } from "./media-selection.js";
 import { requestPageWithTrackingFallback } from "./rules.js";
 import { buildCookieHeader } from "./auth-download.js";
@@ -410,13 +410,7 @@ chrome.downloads.onCreated.addListener(async (item) => {
   const evalResult = evaluateDownload(item, settings, chrome.runtime.id, swStartTime);
   if (!evalResult.eligible) {
     resolveDetermining(item.id);
-    await recordIgnored({
-      url: item.url,
-      filename: item.filename ? item.filename.split(/[\\/]/).pop() : "未知文件",
-      size: item.totalBytes,
-      reason: evalResult.reason,
-      timestamp: Date.now(),
-    });
+    await recordIgnoredDownload(item, evalResult.reason);
     try { await chrome.downloads.resume(item.id); } catch {}
     return;
   }
@@ -432,7 +426,7 @@ chrome.downloads.onCreated.addListener(async (item) => {
   // 发生，若 MV3 SW 在浮层确认期（ask 最长 20 秒）被回收或扩展重载，下载会
   // 永久停留在暂停态且无恢复记录，看门狗无从恢复。记录失败时放弃暂停——
   // 宁可让下载在浮层期间继续跑，也不留下无法恢复的暂停态。
-  const recorded = await markPendingTakeover(item.id, { url: item.finalUrl || item.url, phase: "confirming" });
+  const recorded = await markPendingTakeover(item.id, { url: takeoverRecordUrl(item), phase: "confirming" });
   if (recorded) {
     try { await chrome.downloads.pause(item.id); } catch {}
   }
@@ -562,16 +556,98 @@ const originOf = (url) => {
 /// 浮层与成功徽章）→ 当前活动标签 → 任意活动标签。
 export async function findSourceTab(item, deps = {}) {
   const queryTabs = deps.queryTabs || ((q) => chrome.tabs.query(q));
+  const getTab = deps.getTab || ((id) => chrome.tabs?.get?.(id));
+  const matchesIncognito = (tab) =>
+    typeof item?.incognito !== "boolean" || Boolean(tab.incognito) === item.incognito;
+  if (Number.isInteger(item?.tabId) && item.tabId >= 0) {
+    try {
+      const direct = await getTab(item.tabId);
+      if (direct && /^https?:/i.test(direct.url || "") && matchesIncognito(direct)) {
+        return direct;
+      }
+    } catch {}
+  }
   const sourceOrigin = originOf(item?.referrer) || originOf(item?.url) || originOf(item?.finalUrl);
   const matches = (tab) => /^https?:/i.test(tab?.url || "")
     && originOf(tab.url) === sourceOrigin
-    && (typeof item?.incognito !== "boolean" || Boolean(tab.incognito) === item.incognito);
+    && matchesIncognito(tab);
   try {
     const active = (await queryTabs({ active: true, currentWindow: true }))?.find(matches);
     if (active) return active;
     const all = (await queryTabs({})) || [];
     return all.find((tab) => matches(tab) && tab.active) || all.find(matches) || null;
   } catch { return null; }
+}
+
+function hasHeaderIgnoreCase(headers, name) {
+  const target = name.toLowerCase();
+  return Object.keys(headers || {}).some((key) => key.toLowerCase() === target);
+}
+
+function sameSiteOrHost(urlA, urlB) {
+  try {
+    const a = new URL(urlA).hostname.toLowerCase();
+    const b = new URL(urlB).hostname.toLowerCase();
+    if (!a || !b) return false;
+    if (a === b || a.endsWith(`.${b}`) || b.endsWith(`.${a}`)) return true;
+    const partsA = a.split(".");
+    const partsB = b.split(".");
+    if (partsA.length >= 2 && partsB.length >= 2) {
+      return partsA.slice(-2).join(".") === partsB.slice(-2).join(".");
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+export async function prepareSendTaskExtra(message, sender = {}, deps = {}) {
+  const extra = { ...(message?.extra || {}) };
+  const callerHeaders = { ...(extra.headers || {}) };
+  const cookiesApi = deps.cookies ?? (typeof chrome !== "undefined" ? chrome?.cookies : undefined);
+  const getTab = deps.getTab ?? ((id) => chrome.tabs?.get?.(id));
+  let targetTab = sender?.tab || null;
+  if (!targetTab && Number.isInteger(message?.tabId) && message.tabId >= 0) {
+    try { targetTab = await getTab(message.tabId); } catch {}
+  }
+
+  const baseHeaders = {};
+  if (targetTab && /^https?:/i.test(message?.url || "")) {
+    const cookies = await readTargetCookies(cookiesApi, message.url, {
+      tab: targetTab,
+      incognito: typeof targetTab.incognito === "boolean" ? targetTab.incognito : undefined,
+    });
+    const cookieHeader = buildCookieHeader(cookies);
+    if (cookieHeader && !hasHeaderIgnoreCase(callerHeaders, "cookie")) {
+      baseHeaders.Cookie = cookieHeader;
+    }
+    if (
+      targetTab.url
+      && /^https?:/i.test(targetTab.url)
+      && !hasHeaderIgnoreCase(callerHeaders, "referer")
+      && (sender?.tab || message?.includeReferer || sameSiteOrHost(targetTab.url, message.url))
+    ) {
+      baseHeaders.Referer = targetTab.url.split("#")[0];
+    }
+  }
+  if (!hasHeaderIgnoreCase(callerHeaders, "user-agent") && typeof navigator !== "undefined" && navigator.userAgent) {
+    baseHeaders["User-Agent"] = navigator.userAgent;
+  }
+  if (!hasHeaderIgnoreCase(callerHeaders, "accept")) {
+    baseHeaders.Accept = "*/*";
+  }
+  if (!hasHeaderIgnoreCase(callerHeaders, "accept-language") && typeof navigator !== "undefined") {
+    const lang = Array.isArray(navigator.languages) && navigator.languages.length > 0
+      ? navigator.languages.join(",")
+      : (navigator.language || "zh-CN,zh;q=0.9,en;q=0.8");
+    if (lang) baseHeaders["Accept-Language"] = lang;
+  }
+
+  const mergedHeaders = { ...baseHeaders, ...callerHeaders };
+  if (Object.keys(mergedHeaders).length > 0) {
+    extra.headers = mergedHeaders;
+  }
+  return extra;
 }
 
 // 桥接错误转用户可读文案：剥离桌面端内部前缀，补上可操作指引。
@@ -627,11 +703,7 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
     }
     if (message.type === "send") {
       const fileName = message.fileName || inferMediaFilename(message.url);
-      let headers = message.extra?.headers;
-      if (!headers && sender.tab) {
-        headers = await getTabDownloadHeaders(sender.tab, message.url);
-      }
-      const extra = { ...(message.extra || {}), ...(headers ? { headers } : {}) };
+      const extra = await prepareSendTaskExtra(message, sender);
       return { ok: true, item: await sendTask(message.url, fileName, extra) };
     }
     if (message.type === "send-pikpak-task") {
@@ -766,7 +838,9 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
     if (message.type === "sync-cookies") {
       const response = await signedFetch("/v1/media/credentials/sync", {
         domain: message.domain,
-        cookie: message.cookie
+        cookie: message.cookie,
+        force: Boolean(message.force),
+        user_agent: typeof message.userAgent === "string" && message.userAgent ? message.userAgent : undefined,
       });
       if (!response.ok) throw new Error(await response.text() || `HTTP ${response.status}`);
       return { ok: true };
@@ -861,24 +935,61 @@ chrome.commands?.onCommand?.addListener?.((command) => {
 });
 
 // ---- 媒体平台 Cookie 同步（P1-7）----
-// 节流时间戳持久化到 storage.session：SW 被回收后仍生效，
-// 避免每次 SW 重启都对所有打开标签页重复同步。
+// 节流时间戳持久化到 storage.session，同时在内存中记录上次成功同步的 Cookie 指纹：
+// 同一平台 Cookie 内容发生变化（例如用户在网盘页完成登录后刷新）会立即同步，
+// 未变化时才按 5 分钟节流，避免先开未登录页导致后续登录态被跳过 5 分钟。
 // 域名表统一来自 domains.js（此前 background 与 popup 各复制一份）。
 const SYNC_INTERVAL_MS = 5 * 60_000;
+const lastSyncFingerprints = new Map();
 
-async function shouldSyncNow(baseDomain) {
+function fingerprintCookieHeader(cookieHeader) {
+  let hash = 2166136261;
+  for (let i = 0; i < cookieHeader.length; i += 1) {
+    hash ^= cookieHeader.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return `${cookieHeader.length}:${hash >>> 0}`;
+}
+
+function credentialSyncTargetUrl(baseDomain, pageUrl) {
+  if (baseDomain === "pan.baidu.com") return "https://pan.baidu.com/";
+  if (baseDomain === "pan.quark.cn") return "https://pan.quark.cn/";
+  if (baseDomain === "123pan.com") return "https://www.123pan.com/";
+  return pageUrl;
+}
+
+function isUsableSyncedCookies(baseDomain, cookieHeader) {
+  if (!cookieHeader) return false;
+  // 访问 www.baidu.com 等非网盘页时仅在已存在 BDUSS 登录态的情况下同步，避免未登录搜索页写入残缺 Cookie。
+  if (baseDomain === "pan.baidu.com") {
+    return /(?:^|;\s*)BDUSS=[^;\s]+/.test(cookieHeader);
+  }
+  return true;
+}
+
+async function shouldSyncNow(baseDomain, fingerprint) {
+  if (fingerprint && lastSyncFingerprints.get(baseDomain) !== fingerprint) {
+    return true;
+  }
   try {
     const session = chrome.storage?.session;
-    if (!session?.get || !session?.set) return true;
+    if (!session?.get) return true;
     const { mediaSyncLast = {} } = await session.get("mediaSyncLast");
-    const now = Date.now();
-    if (now - Number(mediaSyncLast[baseDomain] || 0) <= SYNC_INTERVAL_MS) return false;
-    mediaSyncLast[baseDomain] = now;
-    await session.set({ mediaSyncLast });
-    return true;
+    return Date.now() - Number(mediaSyncLast[baseDomain] || 0) > SYNC_INTERVAL_MS;
   } catch {
     return true; // storage 暂不可用时宁可多同步一次，不丢凭证。
   }
+}
+
+async function recordSyncedDomain(baseDomain, fingerprint) {
+  if (fingerprint) lastSyncFingerprints.set(baseDomain, fingerprint);
+  try {
+    const session = chrome.storage?.session;
+    if (!session?.get || !session?.set) return;
+    const { mediaSyncLast = {} } = await session.get("mediaSyncLast");
+    mediaSyncLast[baseDomain] = Date.now();
+    await session.set({ mediaSyncLast });
+  } catch {}
 }
 
 async function syncCookiesForDomain(domain, url, tab) {
@@ -886,8 +997,15 @@ async function syncCookiesForDomain(domain, url, tab) {
   try {
     const { bridgeToken } = await chrome.storage.local.get("bridgeToken");
     if (!bridgeToken) return;
-    const cookieHeader = buildCookieHeader(await readTargetCookies(chrome.cookies, url, { tab }));
-    if (cookieHeader) await signedFetch("/v1/media/credentials/sync", { domain, cookie: cookieHeader });
+    const targetUrl = credentialSyncTargetUrl(domain, url);
+    const cookieHeader = buildCookieHeader(await readTargetCookies(chrome.cookies, targetUrl, { tab }));
+    if (!isUsableSyncedCookies(domain, cookieHeader)) return;
+    const fingerprint = fingerprintCookieHeader(cookieHeader);
+    if (!await shouldSyncNow(domain, fingerprint)) return;
+    const response = await signedFetch("/v1/media/credentials/sync", { domain, cookie: cookieHeader });
+    if (response?.ok) {
+      await recordSyncedDomain(domain, fingerprint);
+    }
   } catch { /* 认证失败不输出 Cookie 或包含认证信息的上游错误。 */ }
 }
 
@@ -897,7 +1015,7 @@ async function maybeSyncTabCookies(tab) {
     const hostname = new URL(tab.url).hostname.toLowerCase();
     const { customMediaDomains = [] } = await chrome.storage.local.get("customMediaDomains");
     const baseDomain = matchMediaDomain(hostname, customMediaDomains);
-    if (baseDomain && await shouldSyncNow(baseDomain)) {
+    if (baseDomain) {
       await syncCookiesForDomain(baseDomain, tab.url, tab);
     }
   } catch {}

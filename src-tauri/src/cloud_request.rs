@@ -101,11 +101,7 @@ impl CloudRequestContext {
         original.to_owned()
     }
     fn request(&self, method: Method, url: &str) -> CloudRequest {
-        let mut request = CloudRequest::new(self.clone(), method, url);
-        if let Some(agent) = self.user_agent {
-            request = request.header(reqwest::header::USER_AGENT, agent);
-        }
-        request
+        CloudRequest::new(self.clone(), method, url)
     }
     pub fn get(&self, url: impl AsRef<str>) -> CloudRequest {
         self.request(Method::GET, url.as_ref())

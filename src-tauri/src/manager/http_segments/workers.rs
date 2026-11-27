@@ -28,6 +28,7 @@ pub(super) async fn run(session: Arc<Session>, children: &TaskTracker) -> Option
 async fn stagger(index: u8, session: &Session) {
     let delay = if session.config.url.contains("baidupcs.com")
         || session.config.url.contains("pan.baidu.com")
+        || session.config.url.contains("pcs.baidu.com")
     {
         60
     } else if session.config.url.contains("mypikpak.com") {

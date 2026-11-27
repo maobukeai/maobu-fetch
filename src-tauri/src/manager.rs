@@ -74,6 +74,9 @@ mod file_integrity;
 mod file_publication;
 mod live_recording;
 mod progress_settings;
+mod notifications;
+#[cfg(test)]
+use notifications::{completion_notification, failure_notification};
 mod part_cleanup;
 pub(crate) use file_publication::{publish_file_atomically, replace_file_atomically};
 pub(crate) use part_cleanup::{clear_task_parts, remove_task_temp_dir_safely};
@@ -97,7 +100,7 @@ pub type SharedManager = Arc<DownloadManager>;
 ///
 /// 后端在任务进入 Completed / Failed 终态时 emit 此结构，
 /// 前端依据 `kind` 决定播放哪种提示音、是否展示"一键重试"按钮。
-/// `title` / `body` 与系统通知保持一致，便于在前端 toast 中复用。
+/// `title` / `body` 与系统通知保持一致；完成提醒仅显示系统通知，失败仍可一键重试。
 #[derive(Clone, serde::Serialize)]
 struct TaskNotificationPayload {
     task_id: String,
@@ -2080,7 +2083,20 @@ impl DownloadManager {
         self.resolve_cloud_share_task(&mut task, &token).await?;
 
         let automatic_name = self.store.get_task_name_intent(&task.id).await? == Some(false);
-        let platform = crate::media_platforms::detect_platform(&task.url);
+        let baidu_browser_file = cloud_content::is_baidu_browser_download(&task);
+        let baidu_direct_file = task.media.is_none()
+            && !cloud_shares::is_raw_share_url(&task.url)
+            && Url::parse(&task.url)
+                .is_ok_and(|url| crate::baidupan::is_browser_download_target(&url));
+        let detected_platform = crate::media_platforms::detect_platform(&task.url);
+        let platform = if baidu_browser_file
+            || baidu_direct_file
+            || should_skip_browser_media_probe(&task, detected_platform)
+        {
+            crate::media_platforms::MediaPlatform::Unknown
+        } else {
+            detected_platform
+        };
         let has_media_ext = std::path::Path::new(&task.file_name)
             .extension()
             .and_then(|e| e.to_str())
@@ -2558,6 +2574,7 @@ impl DownloadManager {
             }
         }
 
+        let probe_resolved_url = probe.url().as_str().to_string();
         let probe_url = diagnostic_url(probe.url());
         let probe_status = probe.status();
         let probe_is_partial = probe_status == reqwest::StatusCode::PARTIAL_CONTENT;
@@ -2589,13 +2606,12 @@ impl DownloadManager {
         }
         cloud_content::validate_response(&task, &probe)?;
 
-        let is_m3u8_stream = task.url.contains(".m3u8")
-            || task.url.contains("pull-hls-")
-            || task
-                .content_type
-                .as_deref()
-                .map(|ct| ct.contains("mpegurl") || ct.contains("m3u8"))
-                .unwrap_or(false);
+        let is_m3u8_stream = !baidu_browser_file
+            && (task.url.contains(".m3u8")
+                || task.url.contains("pull-hls-")
+                || task.content_type.as_deref().is_some_and(|content_type| {
+                    content_type.contains("mpegurl") || content_type.contains("m3u8")
+                }));
 
         if is_m3u8_stream {
             if task.file_name.ends_with(".m3u8")
@@ -2765,6 +2781,7 @@ impl DownloadManager {
             task.downloaded_bytes = total;
             task.active_connections = 0;
         } else if supports_range && total >= 4 * 1024 * 1024 && connections > 1 {
+            let resolved_url = (probe_resolved_url != task.url).then_some(probe_resolved_url.as_str());
             task = self
                 .download_segments(
                     task.clone(),
@@ -2772,6 +2789,7 @@ impl DownloadManager {
                     &temp,
                     total,
                     connections,
+                    resolved_url,
                     token.clone(),
                     task_limiter,
                 )
@@ -2908,6 +2926,7 @@ impl DownloadManager {
         temp: &Path,
         total: u64,
         connections: u8,
+        resolved_url: Option<&str>,
         token: CancellationToken,
         task_limiter: Arc<RateLimiter>,
     ) -> Result<DownloadTask, String> {
@@ -2918,6 +2937,7 @@ impl DownloadManager {
             temp,
             total,
             connections,
+            resolved_url,
             token,
             task_limiter,
         )
@@ -3351,106 +3371,6 @@ impl DownloadManager {
         Ok(stats)
     }
 
-    async fn notify_download_completed(&self, task: &DownloadTask) {
-        let settings = self.settings().await;
-        let Some((title, body)) = completion_notification(&settings, task) else {
-            return;
-        };
-        // Task 30.2：Windows 上用 tauri-winrt-notification 发原生 Toast，
-        // 注册 on_activated 回调，点击通知时在同进程内 emit 定位事件。
-        // 非 Windows 平台回退到 tauri-plugin-notification 原有实现。
-        #[cfg(windows)]
-        {
-            let app = self.app.clone();
-            let task_id = task.id.clone();
-            let app_id = self.app.config().identifier.clone();
-            let title_c = title.clone();
-            let body_c = body.clone();
-            let toast_result = notify_win_toast(&app_id, &title_c, &body_c, task_id.clone(), app);
-            if let Err(error) = toast_result {
-                let _ = self.app.emit(
-                    "notification-error",
-                    format!("下载已完成，但 Windows 通知发送失败：{error}"),
-                );
-            }
-        }
-        #[cfg(not(windows))]
-        {
-            if let Err(error) = self
-                .app
-                .notification()
-                .builder()
-                .title(&title)
-                .body(&body)
-                .show()
-            {
-                let _ = self.app.emit(
-                    "notification-error",
-                    format!("下载已完成，但通知发送失败：{error}"),
-                );
-            }
-        }
-        let _ = self.app.emit(
-            "task-notification",
-            TaskNotificationPayload {
-                task_id: task.id.clone(),
-                kind: "completed",
-                title,
-                body,
-            },
-        );
-    }
-
-    /// Task 30.2：下载失败时发送系统通知与 `task-notification` 事件。
-    ///
-    /// 与 `notify_download_completed` 对称。失败通知的 `task-notification`
-    /// 事件 kind = "failed"，前端可据此显示带"一键重试"按钮的 toast。
-    async fn notify_download_failed(&self, task: &DownloadTask) {
-        let settings = self.settings().await;
-        let Some((title, body)) = failure_notification(&settings, task) else {
-            return;
-        };
-        #[cfg(windows)]
-        {
-            let app = self.app.clone();
-            let task_id = task.id.clone();
-            let app_id = self.app.config().identifier.clone();
-            let title_c = title.clone();
-            let body_c = body.clone();
-            let toast_result = notify_win_toast(&app_id, &title_c, &body_c, task_id.clone(), app);
-            if let Err(error) = toast_result {
-                let _ = self.app.emit(
-                    "notification-error",
-                    format!("下载已失败，但 Windows 通知发送失败：{error}"),
-                );
-            }
-        }
-        #[cfg(not(windows))]
-        {
-            if let Err(error) = self
-                .app
-                .notification()
-                .builder()
-                .title(&title)
-                .body(&body)
-                .show()
-            {
-                let _ = self.app.emit(
-                    "notification-error",
-                    format!("下载失败，但通知发送失败：{error}"),
-                );
-            }
-        }
-        let _ = self.app.emit(
-            "task-notification",
-            TaskNotificationPayload {
-                task_id: task.id.clone(),
-                kind: "failed",
-                title,
-                body,
-            },
-        );
-    }
     pub(crate) fn emit_task(&self, event: &str, task: &DownloadTask) {
         let mut task = task.clone();
         task.error = task.error.as_deref().map(redact_sensitive);
@@ -4736,7 +4656,7 @@ fn build_client(s: &AppSettings) -> Result<reqwest::Client, String> {
     build_client_with_redirect_policy(s, reqwest::redirect::Policy::limited(10))
 }
 
-fn build_client_with_redirect_policy(
+pub(crate) fn build_client_with_redirect_policy(
     s: &AppSettings,
     redirect: reqwest::redirect::Policy,
 ) -> Result<reqwest::Client, String> {
@@ -4766,16 +4686,14 @@ fn build_client_with_redirect_policy(
         builder = builder.no_proxy()
     } else if s.proxy_mode == "system" {
         let eff = crate::proxy::get_effective_system_proxy();
-        tracing::info!(effective_proxy = ?eff, "build_client 探测系统代理");
         if let Some(sys_proxy) = eff {
             let normalized = crate::proxy::normalize_proxy_scheme(&sys_proxy);
             match reqwest::Proxy::all(&normalized) {
                 Ok(proxy) => {
-                    tracing::info!(proxy = %normalized, "build_client 成功附加系统代理");
                     builder = builder.proxy(proxy);
                 }
-                Err(e) => {
-                    tracing::error!(error = ?e, "build_client 附加系统代理失败");
+                Err(_) => {
+                    tracing::error!("build_client 附加系统代理失败");
                 }
             }
         } else {
@@ -4979,45 +4897,10 @@ fn diagnostic_url(url: &Url) -> String {
 fn truncate_text(value: String, maximum_chars: usize) -> String {
     value.chars().take(maximum_chars).collect()
 }
-fn completion_notification(
-    settings: &AppSettings,
-    task: &DownloadTask,
-) -> Option<(String, String)> {
-    if !settings.notifications
-        || !settings.notify_on_complete
-        || task.status != TaskStatus::Completed
-    {
-        return None;
-    }
-    Some((
-        format!("下载完成：{}", truncate_text(task.file_name.clone(), 80)),
-        format!("已保存到 {}", truncate_text(task.destination.clone(), 160)),
-    ))
-}
-
-/// Task 30.2：下载失败通知文案。
-///
-/// 与 `completion_notification` 对称：仅当用户启用 `notifications` 且
-/// `notify_on_failure` 同时为 true、任务状态为 Failed 时返回标题与正文。
-/// `body` 取自 `task.error`（已脱敏），缺失时回退为"未知错误"。
-fn failure_notification(settings: &AppSettings, task: &DownloadTask) -> Option<(String, String)> {
-    if !settings.notifications || !settings.notify_on_failure || task.status != TaskStatus::Failed {
-        return None;
-    }
-    let body = task
-        .error
-        .as_deref()
-        .map(|e| truncate_text(redact_sensitive(e), 160))
-        .unwrap_or_else(|| "未知错误".to_string());
-    Some((
-        format!("下载失败：{}", truncate_text(task.file_name.clone(), 80)),
-        body,
-    ))
-}
 fn parse_content_range(response: &reqwest::Response) -> Option<(u64, u64, u64)> {
     parse_content_range_value(response.headers().get(CONTENT_RANGE)?.to_str().ok()?)
 }
-fn parse_content_range_value(value: &str) -> Option<(u64, u64, u64)> {
+pub(crate) fn parse_content_range_value(value: &str) -> Option<(u64, u64, u64)> {
     let value = value.strip_prefix("bytes ")?;
     let (range, total) = value.split_once('/')?;
     let (start, end) = range.split_once('-')?;
@@ -5205,12 +5088,17 @@ fn media_task_tool_requirements(task: &DownloadTask) -> (bool, bool) {
 /// "无凭证"，不阻塞下载流程。
 ///
 async fn inject_media_credentials(task: &mut DownloadTask, store: &Arc<Store>) {
+    // A browser takeover uses only the request context captured for the actual file URL.
+    if cloud_content::is_baidu_browser_download(task) {
+        return;
+    }
     let platform = crate::media_platforms::detect_platform(&task.url);
     let is_douyin = platform == crate::media_platforms::MediaPlatform::Douyin
         || task.url.contains("douyin.com")
         || task.url.contains("douyinvod.com")
         || task.url.contains("amemv.com");
-    let is_baidu = task.url.contains("baidupcs.com") || task.url.contains("pan.baidu.com");
+    let is_baidu = Url::parse(&task.url)
+        .is_ok_and(|url| crate::baidupan::is_browser_download_target(&url));
 
     let mut has_cookie = task
         .headers
@@ -5234,9 +5122,15 @@ async fn inject_media_credentials(task: &mut DownloadTask, store: &Arc<Store>) {
         for d in lookup_domains {
             if let Ok(Some(stored)) = store.media_credential_get_matching(&d).await {
                 if !has_cookie && !stored.cookie.is_empty() {
-                    task.headers
-                        .insert("Cookie".to_string(), stored.cookie.clone());
-                    has_cookie = true;
+                    let cookie_header = if crate::media_cookies::is_netscape_format(&stored.cookie) {
+                        crate::media_cookies::header_for_url(&stored.cookie, &task.url, &task.url)
+                    } else {
+                        stored.cookie.clone()
+                    };
+                    if !cookie_header.is_empty() {
+                        task.headers.insert("Cookie".to_string(), cookie_header);
+                        has_cookie = true;
+                    }
                 }
                 if !has_referer {
                     if let Some(referer) = stored.referer.filter(|v| !v.trim().is_empty()) {
@@ -5265,18 +5159,10 @@ async fn inject_media_credentials(task: &mut DownloadTask, store: &Arc<Store>) {
             .unwrap_or("");
         if current_ua.is_empty() {
             // 根据直链 URL 中的端点 app_id 智能选择最匹配的 User-Agent 避免 403 签名冲突
-            let ua = if task.url.contains("-250528-") || task.url.contains("app_id=250528") {
-                "pan.baidu.com"
-            } else if task.url.contains("-266719-")
-                || task.url.contains("-498065-")
-                || task.url.contains("-309847-")
-            {
-                crate::baidupan::BAIDU_DLINK_USER_AGENT
-            } else {
-                "pan.baidu.com"
-            };
-            task.headers
-                .insert("User-Agent".to_string(), ua.to_string());
+            task.headers.insert(
+                "User-Agent".to_string(),
+                crate::baidupan::dlink_user_agent(&task.url).to_string(),
+            );
             has_user_agent = true;
         }
     }
@@ -5448,51 +5334,23 @@ async fn sha256_file(path: &Path) -> Result<String, String> {
     digest_file(path, ChecksumAlgorithm::Sha256).await
 }
 
+/// 浏览器自动接管或直接发送的网盘直链（未携带媒体选型，且已在前置阶段排除原始分享页），
+/// 不得按域名误送入 yt-dlp 探测。
+fn should_skip_browser_media_probe(
+    task: &DownloadTask,
+    platform: crate::media_platforms::MediaPlatform,
+) -> bool {
+    task.source == "browser"
+        && task.media.is_none()
+        && matches!(
+            platform,
+            crate::media_platforms::MediaPlatform::BaiduPan
+                | crate::media_platforms::MediaPlatform::Quark
+                | crate::media_platforms::MediaPlatform::Lanzou
+                | crate::media_platforms::MediaPlatform::Pan123
+                | crate::media_platforms::MediaPlatform::PikPak
+        )
+}
+
 #[cfg(test)]
 mod tests;
-
-/// Task 30.2 Windows 原生 Toast 通知辅助函数。
-///
-/// 使用 `tauri-winrt-notification` 直接调用 WinRT API 发送带 `on_activated`
-/// 回调的 Toast。回调在当前运行进程的线程中同步触发，无需 COM Activator
-/// 注册，解决了 `tauri-plugin-notification` 在 Windows 上无法触发点击回调的问题。
-///
-/// 点击通知时 emit `notification-focus-task` 事件，payload 为 `task_id`，
-/// 前端监听该事件后激活主窗口并高亮对应任务。
-#[cfg(windows)]
-fn notify_win_toast<R: tauri::Runtime>(
-    app_id: &str,
-    title: &str,
-    body: &str,
-    task_id: String,
-    app: tauri::AppHandle<R>,
-) -> Result<(), String> {
-    use tauri::Manager;
-    use tauri_winrt_notification::{Duration as ToastDuration, Toast};
-    // 开发构建（debug_assertions，如 `pnpm tauri dev`）没有注册 AUMID，
-    // 回退到 PowerShell AUMID 保证 Toast 能弹出（图标显示为 PowerShell）；
-    // 正式构建——无论从安装目录运行还是直接运行 target\release 产物——一律用应用标识。
-    // 不再用 exe 路径判断：`pnpm tauri build` 的产物同样位于 target\release，会被误判。
-    let effective_app_id = if cfg!(debug_assertions) {
-        Toast::POWERSHELL_APP_ID.to_string()
-    } else {
-        app_id.to_string()
-    };
-
-    Toast::new(&effective_app_id)
-        .duration(ToastDuration::Long)
-        .title(title)
-        .text1(body)
-        .on_activated(move |_action_arg| {
-            // 在同一进程内直接触发：show 窗口 + 定位任务
-            if let Some(window) = app.get_webview_window("main") {
-                let _ = window.show();
-                let _ = window.unminimize();
-                let _ = window.set_focus();
-            }
-            let _ = app.emit("notification-focus-task", task_id.clone());
-            Ok(())
-        })
-        .show()
-        .map_err(|e| e.to_string())
-}

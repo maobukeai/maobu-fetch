@@ -1,34 +1,35 @@
 :root {
   color-scheme: light;
   font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
-  color: #1d1d1f;
-  background: #f5f5f7;
+  color: #111827;
+  background: #eceef2;
   font-synthesis: none;
-  --surface: rgba(255, 255, 255, 0.95);
-  --surface-solid: #ffffff;
-  --surface-alt: #f5f5f7;
-  --sidebar-bg: #f6f6f6;
-  --surface-hover: rgba(0, 0, 0, 0.04);
-  --surface-selected: rgba(0, 113, 227, 0.12);
-  --border: #e5e5e7;
-  --border-strong: #d1d1d6;
-  --text: #1d1d1f;
-  --muted: #515154;
-  --subtle: #86868b;
-  --accent: #0071e3;
-  --accent-hover: #0077ed;
-  --accent-light: rgba(0, 113, 227, 0.15);
-  --danger: #ff3b30;
-  --success: #34c759;
-  --warning: #ff9500;
+  --surface: rgba(250, 250, 251, 0.96);
+  --surface-solid: #fafafb;
+  --surface-alt: #eceef2;
+  --sidebar-bg: #f1f2f4;
+  --table-header-bg: #f4f5f7;
+  --surface-hover: rgba(29, 91, 214, 0.045);
+  --surface-selected: rgba(29, 91, 214, 0.085);
+  --border: #e2e5ec;
+  --border-strong: #c9cfd9;
+  --text: #111827;
+  --muted: #4b5563;
+  --subtle: #6b7280;
+  --accent: #1d5bd6;
+  --accent-hover: #1749b0;
+  --accent-light: rgba(29, 91, 214, 0.13);
+  --danger: #dc2626;
+  --success: #15803d;
+  --warning: #b45309;
   --control: #ffffff;
   --shadow: 0 4px 16px rgba(0, 0, 0, 0.06), 0 1px 3px rgba(0, 0, 0, 0.02);
-  --toggle-bg: #e3e3e6;
-  --progress-track: rgba(0, 0, 0, 0.05);
-  --line: #e5e5e7;
+  --toggle-bg: #e8eaee;
+  --progress-track: #e5e7eb;
+  --line: #e2e5ec;
   --bg: #ffffff;
   --bg-alt: rgba(0, 0, 0, 0.04);
-  --success-bg: rgba(52, 199, 89, 0.12);
+  --success-bg: rgba(21, 128, 61, 0.12);
   /* Task 22.2：行高变量。标准 36px / 紧凑 32px，由 body.row-compact 覆盖。
      只影响 .task-row 行高、padding 和字号，不破坏整体布局。 */
   --task-row-height: 36px;
@@ -53,33 +54,34 @@
 
 :root[data-theme="dark"] {
   color-scheme: dark;
-  color: #f5f5f7;
-  background: #161617;
-  --surface: rgba(29, 29, 31, 0.96);
-  --surface-solid: #1d1d1f;
-  --surface-alt: #161617;
-  --sidebar-bg: #28282b;
-  --surface-hover: rgba(255, 255, 255, 0.06);
-  --surface-selected: rgba(10, 132, 255, 0.18);
-  --border: #323236;
-  --border-strong: #48484a;
-  --text: #f5f5f7;
-  --muted: #a1a1a6;
-  --subtle: #86868b;
-  --accent: #0a84ff;
-  --accent-hover: #359aff;
-  --accent-light: rgba(10, 132, 255, 0.25);
-  --danger: #ff453a;
-  --success: #30d158;
-  --warning: #ff9f0a;
-  --control: #2c2c2e;
+  color: #f3f4f6;
+  background: #18191d;
+  --surface: rgba(24, 25, 30, 0.96);
+  --surface-solid: #131417;
+  --surface-alt: #18191d;
+  --sidebar-bg: #1a1b1f;
+  --table-header-bg: #18191e;
+  --surface-hover: rgba(255, 255, 255, 0.05);
+  --surface-selected: rgba(91, 155, 255, 0.14);
+  --border: #2a2c33;
+  --border-strong: #3b3f4a;
+  --text: #f3f4f6;
+  --muted: #9ca3af;
+  --subtle: #6b7280;
+  --accent: #5b9bff;
+  --accent-hover: #7bb0ff;
+  --accent-light: rgba(91, 155, 255, 0.18);
+  --danger: #f87171;
+  --success: #34d399;
+  --warning: #fbbf24;
+  --control: #22242b;
   --shadow: 0 12px 36px rgba(0, 0, 0, 0.28), 0 2px 6px rgba(0, 0, 0, 0.08);
-  --toggle-bg: #3a3a3c;
-  --progress-track: rgba(255, 255, 255, 0.12);
-  --line: #323236;
-  --bg: #2c2c2e;
+  --toggle-bg: #22242b;
+  --progress-track: rgba(255, 255, 255, 0.11);
+  --line: #2a2c33;
+  --bg: #22242b;
   --bg-alt: rgba(255, 255, 255, 0.06);
-  --success-bg: rgba(48, 209, 88, 0.15);
+  --success-bg: rgba(52, 211, 153, 0.15);
 }
 
 :root[data-accent="system"] { --accent: AccentColor; --accent-hover: color-mix(in srgb, AccentColor 82%, black); --accent-light: color-mix(in srgb, AccentColor 16%, transparent); }
@@ -133,6 +135,17 @@ body.row-compact {
 
 * { box-sizing: border-box; }
 html, body, #root { width: 100%; height: 100%; }
+#root {
+  transition: filter 160ms ease;
+}
+body:has(> .modal-layer) > #root {
+  filter: blur(8px);
+}
+@media (prefers-reduced-motion: reduce) {
+  #root {
+    transition: none;
+  }
+}
 body { margin: 0; min-width: 0; overflow: hidden; background: var(--surface-alt); }
 :root[data-window-style="frosted"] body { background: transparent; }
 :root[data-window-style="frosted"] .workspace,
@@ -153,14 +166,7 @@ body { margin: 0; min-width: 0; overflow: hidden; background: var(--surface-alt)
   box-shadow: inset 0 1px 0 var(--frost-highlight), var(--shadow);
 }
 
-/* 磨砂玻璃：右键菜单与弹窗
-   主窗口的磨砂感来自 OS Mica 效果，弹窗/菜单只需匹配色调 + 高不透明度
-   0.94 不透明度 = 不透字、不透内容，但允许极微量 Mica 折射 */
-:root[data-window-style="frosted"] .context-menu {
-  background: rgba(245, 246, 250, 0.94) !important;
-  -webkit-backdrop-filter: blur(20px) saturate(160%) !important;
-  backdrop-filter: blur(20px) saturate(160%) !important;
-}
+/* 磨砂玻璃：右键菜单交由 modals-context-precision.css 统一按浅/深色渲染 */
 /* 磨砂玻璃：最近 URL 历史下拉框
    采用与右键菜单一致的背景与饱和度，防止底层提示文字/输入框重叠透光 */
 :root[data-window-style="frosted"] .url-history-dropdown {
@@ -951,9 +957,19 @@ svg { flex: 0 0 auto; }
   display: grid;
   place-items: center;
   padding: 24px;
+  background: rgba(15, 23, 42, 0.22);
+}
+
+:root[data-theme="dark"] .modal-layer {
+  background: rgba(0, 0, 0, 0.42);
+}
+
+:root[data-window-style="frosted"] .modal-layer {
+  background: rgba(15, 23, 42, 0.14);
+}
+
+:root[data-theme="dark"][data-window-style="frosted"] .modal-layer {
   background: rgba(0, 0, 0, 0.28);
-  -webkit-backdrop-filter: blur(6px);
-  backdrop-filter: blur(6px);
 }
 
 /* 窗口拖放遮罩：拖入文件/链接时全屏提示（pointer-events 关闭，drop 落到 window） */
@@ -1002,36 +1018,77 @@ svg { flex: 0 0 auto; }
 .confirm-btn-danger { border: none; background: var(--danger, #c0392b); color: #fff; }
 .confirm-dialog-actions button:focus-visible { outline: 2px solid var(--accent, #0078d4); outline-offset: 1px; }
 .dialog-material {
+  position: relative;
+  z-index: 0;
   width: max-content;
   max-width: calc(100vw - 48px);
   max-height: calc(100vh - 48px);
   border-radius: 12px;
-  overflow: hidden;
-  background: rgba(255, 255, 255, 0.82);
-  -webkit-backdrop-filter: blur(24px) saturate(180%);
-  backdrop-filter: blur(24px) saturate(180%);
-  border: 1px solid rgba(0, 0, 0, 0.10);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.8), 0 20px 48px rgba(0, 0, 0, 0.14), 0 4px 12px rgba(0, 0, 0, 0.04);
+  background: transparent;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  border: 1px solid rgba(255, 255, 255, 0.68);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.92), 0 22px 54px rgba(15, 23, 42, 0.16), 0 4px 12px rgba(15, 23, 42, 0.05);
 }
 .power-action-dialog {
+  position: relative;
+  z-index: 0;
   width: min(460px, calc(100vw - 48px));
   padding: 16px;
   border-radius: 10px;
   color: var(--text);
-  background: rgba(255, 255, 255, 0.82);
-  -webkit-backdrop-filter: blur(24px) saturate(180%);
-  backdrop-filter: blur(24px) saturate(180%);
-  border: 1px solid rgba(0, 0, 0, 0.10);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.8), 0 20px 48px rgba(0, 0, 0, 0.14), 0 4px 12px rgba(0, 0, 0, 0.04);
+  background: transparent;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  border: 1px solid rgba(255, 255, 255, 0.68);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.92), 0 22px 54px rgba(15, 23, 42, 0.16), 0 4px 12px rgba(15, 23, 42, 0.05);
 }
-/* 暗色模式：弹窗磨砂玻璃 */
+.dialog-material::before,
+.power-action-dialog::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
+  pointer-events: none;
+  background: rgba(255, 255, 255, 0.80);
+  -webkit-backdrop-filter: blur(24px) saturate(165%);
+  backdrop-filter: blur(24px) saturate(165%);
+}
+/* 暗色模式：弹窗单层磨砂玻璃 */
 :root[data-theme="dark"] .dialog-material,
 :root[data-theme="dark"] .power-action-dialog {
-  background: rgba(28, 30, 38, 0.82);
-  -webkit-backdrop-filter: blur(24px) saturate(160%);
-  backdrop-filter: blur(24px) saturate(160%);
-  border-color: rgba(255, 255, 255, 0.10);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12), 0 24px 56px rgba(0, 0, 0, 0.48);
+  border-color: rgba(255, 255, 255, 0.13);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.14), 0 24px 58px rgba(0, 0, 0, 0.52);
+}
+:root[data-theme="dark"] .dialog-material::before,
+:root[data-theme="dark"] .power-action-dialog::before {
+  background: rgba(26, 28, 36, 0.82);
+  -webkit-backdrop-filter: blur(24px) saturate(155%);
+  backdrop-filter: blur(24px) saturate(155%);
+}
+/* 磨砂窗口模式：高透单层亚克力（浅色 / 深色） */
+:root[data-window-style="frosted"] .dialog-material,
+:root[data-window-style="frosted"] .power-action-dialog {
+  border-color: rgba(255, 255, 255, 0.72);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.95), 0 24px 56px rgba(15, 23, 42, 0.16), 0 4px 14px rgba(15, 23, 42, 0.06);
+}
+:root[data-window-style="frosted"] .dialog-material::before,
+:root[data-window-style="frosted"] .power-action-dialog::before {
+  background: rgba(248, 250, 255, 0.72);
+  -webkit-backdrop-filter: blur(24px) saturate(175%);
+  backdrop-filter: blur(24px) saturate(175%);
+}
+:root[data-theme="dark"][data-window-style="frosted"] .dialog-material,
+:root[data-theme="dark"][data-window-style="frosted"] .power-action-dialog {
+  border-color: rgba(255, 255, 255, 0.16);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.16), 0 26px 60px rgba(0, 0, 0, 0.54);
+}
+:root[data-theme="dark"][data-window-style="frosted"] .dialog-material::before,
+:root[data-theme="dark"][data-window-style="frosted"] .power-action-dialog::before {
+  background: rgba(28, 30, 38, 0.72);
+  -webkit-backdrop-filter: blur(24px) saturate(165%);
+  backdrop-filter: blur(24px) saturate(165%);
 }
 .power-action-dialog > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
 .power-action-dialog h2 { margin: 0; font-size: 16px; }
@@ -1046,11 +1103,11 @@ svg { flex: 0 0 auto; }
 .power-action-options small { color: var(--muted); font-size: 10px; line-height: 1.35; }
 .power-action-dialog > footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 14px; color: var(--muted); font-size: 10px; }
 .power-action-dialog .secondary-button { flex: none; min-height: 28px; padding: 0 10px; border: 1px solid var(--border-strong); border-radius: 5px; color: var(--text); background: var(--control); font-size: 11px; }
-.dialog { width: 480px; max-width: 100%; box-sizing: border-box; max-height: calc(100vh - 48px); overflow: auto; padding: 18px; border: 1px solid rgba(0, 0, 0, 0.10); border-radius: 12px; background: rgba(255, 255, 255, 0.82); -webkit-backdrop-filter: blur(24px) saturate(180%); backdrop-filter: blur(24px) saturate(180%); box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.8), 0 20px 48px rgba(0, 0, 0, 0.14), 0 4px 12px rgba(0, 0, 0, 0.04); }
-:root[data-theme="dark"] .dialog { background: rgba(28, 30, 38, 0.82); -webkit-backdrop-filter: blur(24px) saturate(160%); backdrop-filter: blur(24px) saturate(160%); border-color: rgba(255, 255, 255, 0.10); box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12), 0 24px 56px rgba(0, 0, 0, 0.48); }
-/* 嵌套在 dialog-material 中时，内层 dialog 不提供自己的磨砂（由外层 dialog-material 统一提供） */
+.dialog { width: 480px; max-width: 100%; box-sizing: border-box; max-height: calc(100vh - 48px); overflow: auto; padding: 18px; border: 1px solid rgba(255, 255, 255, 0.65); border-radius: 12px; background: rgba(255, 255, 255, 0.72); -webkit-backdrop-filter: blur(28px) saturate(185%); backdrop-filter: blur(28px) saturate(185%); box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.92), 0 22px 54px rgba(15, 23, 42, 0.16), 0 4px 12px rgba(15, 23, 42, 0.05); }
+:root[data-theme="dark"] .dialog { background: rgba(24, 26, 34, 0.74); -webkit-backdrop-filter: blur(28px) saturate(165%); backdrop-filter: blur(28px) saturate(165%); border-color: rgba(255, 255, 255, 0.13); box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.14), 0 24px 58px rgba(0, 0, 0, 0.52); }
+/* 嵌套在 dialog-material 中时，内层 dialog 不提供自己的磨砂（由外层 ::before 统一提供） */
 .dialog-material .dialog,
-:root[data-theme="dark"] .dialog-material .dialog { background: transparent; box-shadow: none; border: 0; -webkit-backdrop-filter: none; backdrop-filter: none; }
+:root[data-theme="dark"] .dialog-material .dialog { position: relative; z-index: 1; border-radius: 11px; background: transparent; box-shadow: none; border: 0; -webkit-backdrop-filter: none; backdrop-filter: none; }
 .dialog.wide { width: 660px; max-width: 100%; }
 .dialog > h2 { margin: 0 0 18px; font-size: 18px; font-weight: 600; }
 .new-task-form { display: flex; flex-direction: column; gap: 11px; }
@@ -1440,12 +1497,6 @@ svg { flex: 0 0 auto; }
 .toast { position: fixed; right: 18px; bottom: 38px; z-index: 60; max-width: 360px; padding: 10px 14px; border: 1px solid var(--border); border-radius: 8px; color: var(--text); background: var(--surface-solid); box-shadow: var(--shadow); font-size: 11px; }
 .toast-stack { position: fixed; right: 18px; bottom: 38px; z-index: 60; display: flex; flex-direction: column; align-items: flex-end; gap: 8px; max-width: calc(100vw - 36px); max-height: calc(100vh - 76px); overflow-y: auto; pointer-events: none; }
 .toast-stack > .toast { position: static; flex-shrink: 0; pointer-events: auto; }
-.toast.completion-toast .toast-body { flex-direction: column; align-items: flex-start; gap: 4px; min-width: 0; }
-.completion-toast .completion-toast-title { overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
-.toast.completion-toast .toast-icon { color: var(--accent); }
-.completion-toast .toast-actions { flex-wrap: wrap; }
-.completion-toast button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.completion-toast button:disabled { opacity: 0.55; cursor: default; }
 .spin { animation: spin 1s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
@@ -1588,7 +1639,7 @@ svg { flex: 0 0 auto; }
   top: 0;
   right: 0;
   width: 154px;
-  height: 56px;
+  height: 43px;
   display: flex;
   justify-content: flex-end;
   align-items: center;
@@ -1613,7 +1664,7 @@ svg { flex: 0 0 auto; }
   align-items: center;
   justify-content: center;
   width: 46px;
-  height: 56px;
+  height: 43px;
   background: transparent;
   color: var(--text);
   border: none;

@@ -8,6 +8,7 @@ pub mod cli;
 mod cloud_pagination;
 pub(crate) mod cloud_request;
 mod deep_link;
+mod desktop_completion;
 pub mod file_assoc;
 mod logging;
 pub mod m3u8;
@@ -4170,6 +4171,7 @@ fn run_with_presentation(presentation: startup_failure::Presentation) -> i32 {
             // 初始化日志系统（Task 23.1）：按天滚动 + 脱敏 writer
             // debug 模式（dev build）启用 DEBUG 级别；release 启用 INFO
             logging::init(data_dir.join("logs"), cfg!(debug_assertions));
+            desktop_completion::register(app.handle());
             let manager = tauri::async_runtime::block_on(
                 startup_failure::initialize_manager(data_dir, app.handle().clone()),
             )?;
@@ -4522,6 +4524,9 @@ fn run_with_presentation(presentation: startup_failure::Presentation) -> i32 {
             player_get_folder_videos,
             player_get_matched_subtitles,
             player_read_subtitle_content,
+            desktop_completion::commands::desktop_completion_snapshot,
+            desktop_completion::commands::desktop_completion_present,
+            desktop_completion::commands::desktop_completion_act,
             progress_window::commands::progress_window_snapshot,
             progress_window::commands::progress_window_set_pinned,
             progress_window::commands::progress_window_set_expanded,

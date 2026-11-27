@@ -1,8 +1,20 @@
 import { useEffect, useRef, useState } from "react";
+import { AlertCircle, FileEdit } from "lucide-react";
 import { api } from "../../api";
 import { t, useLocale } from "../../i18n";
 import type { DownloadTask } from "../../types";
 import { Modal } from "../common/Modal";
+import {
+  validateRenameFilename,
+  type RenameValidationError,
+} from "./light-modals-model";
+
+const RENAME_ERROR_KEY: Record<RenameValidationError, string> = {
+  empty: "dialogs.renamePlaceholder",
+  "invalid-chars": "dialogs.renameInvalidChars",
+  "path-traversal": "dialogs.renamePathTraversal",
+  "too-long": "dialogs.renameTooLong",
+};
 
 export function RenameDialog({
   task,
@@ -30,28 +42,13 @@ export function RenameDialog({
 
   const submit = async () => {
     const trimmed = value.trim();
-    if (!trimmed) {
-      setError(t("dialogs.renamePlaceholder"));
-      return;
-    }
     if (trimmed === task.file_name) {
       onClose();
       return;
     }
-    if (/[<>:"/\\|?*]/.test(trimmed) || /[\x00-\x1f]/.test(trimmed)) {
-      setError(`${trimmed}`);
-      return;
-    }
-    if (
-      trimmed.includes("..") ||
-      trimmed.startsWith("/") ||
-      trimmed.startsWith("\\")
-    ) {
-      setError(`${trimmed}`);
-      return;
-    }
-    if (trimmed.length > 255) {
-      setError(`${trimmed}`);
+    const validationError = validateRenameFilename(value);
+    if (validationError) {
+      setError(t(RENAME_ERROR_KEY[validationError]));
       return;
     }
     setBusy(true);
@@ -70,46 +67,62 @@ export function RenameDialog({
     <Modal
       title={t("dialogs.renameTitle")}
       onClose={onClose}
-      style={{ width: "420px" }}
+      dialogClassName="lm-dialog"
     >
-      <div className="delete-task-dialog">
-        <p className="delete-task-message">
-          {t("dialogs.renameTitle")}：
-          <strong title={task.file_name}>{task.file_name}</strong>
-        </p>
-        <label className="form-field">
-          <span>{t("dialogs.renamePlaceholder")}</span>
-          <input
-            ref={inputRef}
-            value={value}
-            onChange={(e) => setValue(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.shiftKey) {
-                e.preventDefault();
-                void submit();
-              }
-              if (e.key === "Escape") {
-                e.preventDefault();
-                onClose();
-              }
-            }}
-            disabled={busy}
-            placeholder={t("dialogs.renamePlaceholder")}
-          />
-        </label>
-        {error && <p className="inline-error">{error}</p>}
-        <div className="dialog-actions">
-          <button onClick={onClose} disabled={busy}>
-            {t("common.cancel")}
-          </button>
-          <button
-            className="primary"
-            onClick={() => void submit()}
-            disabled={busy || !value.trim()}
-          >
-            {t("common.rename")}
-          </button>
+      <div className="lm-body">
+        <div className="lm-file-pill">
+          <FileEdit size={13} aria-hidden="true" />
+          <span className="lm-file-pill-prefix">
+            {t("dialogs.renameOriginal")}：
+          </span>
+          <span className="lm-file-pill-name" title={task.file_name}>
+            {task.file_name}
+          </span>
         </div>
+
+        <input
+          ref={inputRef}
+          className="lm-input"
+          aria-label={t("dialogs.renamePlaceholder")}
+          value={value}
+          onChange={(e) => {
+            setValue(e.target.value);
+            setError(undefined);
+          }}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !e.shiftKey) {
+              e.preventDefault();
+              void submit();
+            }
+            if (e.key === "Escape") {
+              e.preventDefault();
+              onClose();
+            }
+          }}
+          disabled={busy}
+          placeholder={t("dialogs.renamePlaceholder")}
+        />
+
+        {error && (
+          <div className="lm-error" role="alert">
+            <AlertCircle size={13} />
+            <span>{error}</span>
+          </div>
+        )}
+      </div>
+
+      <div className="dialog-actions">
+        <button type="button" onClick={onClose} disabled={busy}>
+          {t("common.cancel")}
+        </button>
+        <button
+          type="button"
+          className="primary"
+          onClick={() => void submit()}
+          disabled={busy || !value.trim()}
+        >
+          {t("common.rename")}
+        </button>
       </div>
     </Modal>
   );

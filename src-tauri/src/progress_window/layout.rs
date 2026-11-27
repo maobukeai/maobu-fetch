@@ -1,6 +1,6 @@
 //! Work-area geometry is physical pixels; only desired dimensions use logical pixels.
 #[derive(Debug, PartialEq, Eq)]
-pub(super) struct Placement {
+pub(crate) struct Placement {
     pub x: i32,
     pub y: i32,
     pub width: u32,

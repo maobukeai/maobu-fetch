@@ -16,6 +16,7 @@ export function Modal({
   title,
   onClose,
   wide,
+  dialogClassName,
   children,
   style,
   headerAction,
@@ -24,6 +25,7 @@ export function Modal({
   title: string;
   onClose: () => void;
   wide?: boolean;
+  dialogClassName?: string;
   children: ReactNode;
   style?: CSSProperties;
   headerAction?: ReactNode;
@@ -84,7 +86,7 @@ export function Modal({
     };
   }, []);
 
-  return (
+  const content = (
     <div className="modal-layer" onMouseDown={onClose}>
       <div
         className="dialog-material"
@@ -92,7 +94,12 @@ export function Modal({
         tabIndex={-1}
         onMouseDown={(e) => e.stopPropagation()}
       >
-        <section className={wide ? "dialog wide" : "dialog"} style={style}>
+        <section
+          className={[wide ? "dialog wide" : "dialog", dialogClassName]
+            .filter(Boolean)
+            .join(" ")}
+          style={style}
+        >
           <div className="settings-title">
             <h2>{title}</h2>
             {headerAction}
@@ -102,6 +109,10 @@ export function Modal({
       </div>
     </div>
   );
+
+  return typeof document !== "undefined"
+    ? createPortal(content, document.body)
+    : content;
 }
 
 export function ConfirmDialog({
@@ -121,8 +132,8 @@ export function ConfirmDialog({
   onConfirm: () => void;
   onCancel: () => void;
 }) {
-  return createPortal(
-    <Modal title={title} onClose={onCancel} style={{ width: "400px" }}>
+  return (
+    <Modal title={title} onClose={onCancel} dialogClassName="lm-dialog">
       <div className="confirm-dialog-body">
         <p>{message}</p>
         <div className="confirm-dialog-actions">
@@ -142,7 +153,6 @@ export function ConfirmDialog({
           </button>
         </div>
       </div>
-    </Modal>,
-    document.body
+    </Modal>
   );
 }

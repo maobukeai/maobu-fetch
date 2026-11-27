@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { createPortal } from "react-dom";
 import { Moon, Power, X } from "lucide-react";
 import type { PowerAction, PowerActionState } from "../types";
 
@@ -28,17 +29,21 @@ export function PowerActionButton({ state, onArm, onCancel }: Props) {
     <button className={state.phase === "idle" ? "action-btn-standalone" : "action-btn-standalone active"} onClick={() => setOpen(true)} title="队列完成后的系统操作">
       <Power size={14} />
     </button>
-    {open && <div className="modal-layer" onMouseDown={(event) => event.target === event.currentTarget && setOpen(false)}>
-      <section className="power-action-dialog" role="dialog" aria-modal="true" aria-labelledby="power-action-title">
-        <header><div><h2 id="power-action-title">完成后系统操作</h2><p>一次性设置，重启后不保留。</p></div><button onClick={() => setOpen(false)} aria-label="关闭"><X size={16} /></button></header>
-        {state.phase !== "idle" && <div className="power-action-current"><b>当前：{actionText[state.action]}</b><span>{state.message}</span></div>}
-        <div className="power-action-options">
-          <button onClick={() => void arm("shutdown")}><Power size={18} /><span><b>完成后关机</b><small>任务完成倒计时后关机</small></span></button>
-          <button onClick={() => void arm("hibernate")}><Moon size={18} /><span><b>完成后休眠</b><small>保留会话，可快速恢复</small></span></button>
-        </div>
-        <footer><span>失败、暂停或取消任务将阻止执行。</span>{state.phase !== "idle" && <button className="secondary-button" onClick={() => void onCancel().then(() => setOpen(false))}>取消</button>}</footer>
-      </section>
-    </div>}
+    {open &&
+      createPortal(
+        <div className="modal-layer" onMouseDown={(event) => event.target === event.currentTarget && setOpen(false)}>
+          <section className="power-action-dialog" role="dialog" aria-modal="true" aria-labelledby="power-action-title">
+            <header><div><h2 id="power-action-title">完成后系统操作</h2><p>一次性设置，重启后不保留。</p></div><button onClick={() => setOpen(false)} aria-label="关闭"><X size={16} /></button></header>
+            {state.phase !== "idle" && <div className="power-action-current"><b>当前：{actionText[state.action]}</b><span>{state.message}</span></div>}
+            <div className="power-action-options">
+              <button onClick={() => void arm("shutdown")}><Power size={18} /><span><b>完成后关机</b><small>任务完成倒计时后关机</small></span></button>
+              <button onClick={() => void arm("hibernate")}><Moon size={18} /><span><b>完成后休眠</b><small>保留会话，可快速恢复</small></span></button>
+            </div>
+            <footer><span>失败、暂停或取消任务将阻止执行。</span>{state.phase !== "idle" && <button className="secondary-button" onClick={() => void onCancel().then(() => setOpen(false))}>取消</button>}</footer>
+          </section>
+        </div>,
+        document.body
+      )}
   </>;
 }
 

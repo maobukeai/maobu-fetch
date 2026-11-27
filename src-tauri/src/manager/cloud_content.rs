@@ -1,11 +1,19 @@
-//! A declared HTML response cannot complete a selected Lanzou binary file.
+//! Keep cloud login and verification pages out of published downloads.
 use super::DownloadTask;
 use reqwest::{header::CONTENT_TYPE, Response};
 use std::path::Path;
 
 const HTML_FILE_ERROR: &str = "MEDIA_PROBE_ERROR:蓝奏云将响应标记为 HTML 网页，与所选文件类型不符，可能是中间页或验证页。已停止下载，未发布完成文件；已有文件和分片已保留。请在浏览器打开分享，再通过猫步下载器扩展接管真正的文件下载。";
+const BAIDU_FILE_ERROR: &str = "MEDIA_PROBE_ERROR:百度网盘返回的响应无法确认是文件。已保留临时文件，请回到分享页重新下载。";
 
-pub(super) fn requires_binary(task: &DownloadTask) -> bool {
+pub(super) fn is_baidu_browser_download(task: &DownloadTask) -> bool {
+    task.source == "browser"
+        && task.media.is_none()
+        && url::Url::parse(&task.url)
+            .is_ok_and(|url| crate::baidupan::is_browser_download_target(&url))
+}
+
+fn requires_binary(task: &DownloadTask) -> bool {
     if !task.source.eq_ignore_ascii_case("lanzou") {
         return false;
     }
@@ -80,11 +88,43 @@ pub(super) fn requires_binary(task: &DownloadTask) -> bool {
 }
 
 pub(super) fn validate_response(task: &DownloadTask, response: &Response) -> Result<(), String> {
-    validate_binary_response(requires_binary(task), response)
+    ResponsePolicy::for_task(task).validate(response)
 }
 
-/// Range sessions retain only this boolean, not another copy of task credentials.
-pub(super) fn validate_binary_response(
+#[derive(Clone, Copy)]
+pub(super) enum ResponsePolicy {
+    Default,
+    LanzouBinary,
+    BaiduBrowser,
+}
+
+impl ResponsePolicy {
+    pub(super) fn for_task(task: &DownloadTask) -> Self {
+        if is_baidu_browser_download(task) {
+            Self::BaiduBrowser
+        } else if requires_binary(task) {
+            Self::LanzouBinary
+        } else {
+            Self::Default
+        }
+    }
+
+    pub(super) fn validate(self, response: &Response) -> Result<(), String> {
+        match self {
+            Self::LanzouBinary => validate_binary_response(true, response),
+            Self::BaiduBrowser if response.status().is_success() => {
+                let mime = response.headers().get(CONTENT_TYPE).and_then(|value| value.to_str().ok());
+                if mime.is_some_and(crate::baidupan::is_browser_download_content_type) {
+                    return Ok(());
+                }
+                Err(BAIDU_FILE_ERROR.into())
+            }
+            _ => Ok(()),
+        }
+    }
+}
+
+fn validate_binary_response(
     expected_binary: bool,
     response: &Response,
 ) -> Result<(), String> {
@@ -212,5 +252,21 @@ mod tests {
             .insert("Cookie".into(), "synthetic-cookie".into());
         let error = validate_response(&task, &response(200, Some("text/html"))).unwrap_err();
         assert!(!error.contains("synthetic") && !error.contains("private.invalid"));
+    }
+
+    #[test]
+    fn baidu_browser_tasks_reject_interstitial_responses_before_writing() {
+        let mut task = task("browser", "sample.txt");
+        task.url = "https://d.pcs.baidu.com/file?token=synthetic-private".into();
+        for status in [200, 206] {
+            for mime in [None, Some("Text/HTML; charset=UTF-8"), Some("application/problem+json")] {
+                let error = validate_response(&task, &response(status, mime)).unwrap_err();
+                assert!(error.contains("百度网盘") && !error.contains("synthetic-private"));
+            }
+            assert!(validate_response(&task, &response(status, Some("text/plain"))).is_ok());
+        }
+        assert!(validate_response(&task, &response(403, Some("text/html"))).is_ok());
+        task.url = "https://example.invalid/?next=pan.baidu.com".into();
+        assert!(validate_response(&task, &response(200, Some("text/html"))).is_ok());
     }
 }

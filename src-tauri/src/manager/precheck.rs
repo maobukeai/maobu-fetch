@@ -136,9 +136,15 @@ impl DownloadManager {
             .filter(|dir| !dir.trim().is_empty())
             .unwrap_or_else(|| settings.download_dir.clone());
 
-        let is_media_url = crate::media_platforms::detect_platform(&request.url)
-            != crate::media_platforms::MediaPlatform::Unknown
-            || request.url.contains("douyin.com")
+        let is_media_url = !matches!(
+            crate::media_platforms::detect_platform(&request.url),
+            crate::media_platforms::MediaPlatform::Unknown
+                | crate::media_platforms::MediaPlatform::BaiduPan
+                | crate::media_platforms::MediaPlatform::Quark
+                | crate::media_platforms::MediaPlatform::PikPak
+                | crate::media_platforms::MediaPlatform::Lanzou
+                | crate::media_platforms::MediaPlatform::Pan123
+        ) || request.url.contains("douyin.com")
             || request.url.contains("iesdouyin.com");
 
         // 媒体平台 URL（YouTube / 抖音 / TikTok / Twitter / B 站 / 微博）不是直链，
@@ -759,9 +765,15 @@ fn determine_filename(
         }
     }
 
-    let is_media = crate::media_platforms::detect_platform(final_url)
-        != crate::media_platforms::MediaPlatform::Unknown
-        || final_url.contains("douyinvod.com")
+    let is_media = !matches!(
+        crate::media_platforms::detect_platform(final_url),
+        crate::media_platforms::MediaPlatform::Unknown
+            | crate::media_platforms::MediaPlatform::BaiduPan
+            | crate::media_platforms::MediaPlatform::Quark
+            | crate::media_platforms::MediaPlatform::PikPak
+            | crate::media_platforms::MediaPlatform::Lanzou
+            | crate::media_platforms::MediaPlatform::Pan123
+    ) || final_url.contains("douyinvod.com")
         || final_url.contains("douyin.com")
         || final_url.contains("iesdouyin.com");
 

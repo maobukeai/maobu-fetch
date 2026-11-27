@@ -1,0 +1,339 @@
+/*
+ * 第 5 页：历史记录与高级筛选（方案 A · 精密网格筛选台）样式与微动效。
+ * 保持极细 hairline 边框、tabular-nums 实时计数、浅/深色/磨砂玻璃适配。
+ */
+
+/* ---------------- 顶部停靠高级筛选面板 ---------------- */
+.advanced-filter-panel {
+  padding: 0;
+  margin: 0;
+  gap: 0;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  border-radius: 0;
+  background: var(--surface-alt);
+  animation: afPanelEnter 150ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@keyframes afPanelEnter {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.af-top-strip {
+  min-height: 32px;
+  padding: 5px 12px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-solid);
+}
+
+.af-quickviews-wrap {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+}
+
+.af-empty-qv {
+  font-size: 10.5px;
+  color: var(--subtle);
+}
+
+.af-strip-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-left: auto;
+}
+
+.af-save-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.af-save-inline input[type="text"] {
+  width: 132px;
+  height: 23px;
+  padding: 0 7px;
+  border-radius: 5px;
+  border: 1px solid var(--border-strong);
+  background: var(--control);
+  color: var(--text);
+  font-size: 11px;
+  outline: none;
+}
+
+.af-save-inline input[type="text"]:focus {
+  border-color: var(--accent);
+}
+
+.af-inline-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  height: 23px;
+  padding: 0 8px;
+  border-radius: 5px;
+  border: 1px solid var(--border-strong);
+  background: var(--control);
+  color: var(--text);
+  font-size: 10.5px;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: border-color 120ms ease, background-color 120ms ease;
+}
+
+.af-inline-btn:hover:not(:disabled) {
+  border-color: var(--accent);
+  background: var(--surface-hover);
+}
+
+.af-inline-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.af-inline-btn.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.af-inline-btn.primary:hover:not(:disabled) {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
+}
+
+.af-match-count {
+  font-size: 10.5px;
+  font-weight: 500;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.af-match-count.active {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+/* ---------------- 双栏精密矩阵 ---------------- */
+.af-matrix {
+  display: grid;
+  grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr);
+  gap: 8px 16px;
+  padding: 8px 12px;
+  align-items: start;
+}
+
+.af-col {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.af-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+}
+
+.af-eyebrow {
+  min-width: 48px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--subtle);
+  flex-shrink: 0;
+}
+
+.af-inputs-pair {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px;
+  flex: 1;
+  min-width: 0;
+}
+
+.af-row input[type="text"],
+.af-row input[type="date"],
+.af-row input[type="number"] {
+  height: 24px;
+  padding: 0 7px;
+  font-size: 11px;
+  border: 1px solid var(--border-strong);
+  border-radius: 5px;
+  background: var(--control);
+  color: var(--text);
+  outline: none;
+  font-variant-numeric: tabular-nums;
+  transition: border-color 140ms ease, box-shadow 140ms ease;
+}
+
+.af-row input[type="text"]:focus,
+.af-row input[type="date"]:focus,
+.af-row input[type="number"]:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-light);
+}
+
+.af-row input.af-domain-input {
+  flex: 1;
+  min-width: 140px;
+  max-width: 280px;
+}
+
+.af-row input[type="date"] {
+  width: 118px;
+}
+
+.af-row input[type="number"] {
+  width: 78px;
+}
+
+.af-range-sep {
+  font-size: 10.5px;
+  color: var(--muted);
+}
+
+/* 状态语义圆点 */
+.filter-chip {
+  gap: 5px;
+}
+
+.af-dot {
+  width: 5.5px;
+  height: 5.5px;
+  border-radius: 50%;
+  background: var(--subtle);
+  flex-shrink: 0;
+}
+
+.af-dot[data-tone="accent"] { background: var(--accent); }
+.af-dot[data-tone="success"] { background: var(--success); }
+.af-dot[data-tone="warning"] { background: var(--warning); }
+.af-dot[data-tone="danger"] { background: var(--danger); }
+.af-dot[data-tone="muted"] { background: var(--subtle); }
+
+.af-more-toggle {
+  border-style: dashed;
+  color: var(--muted);
+}
+
+/* ---------------- 折叠后已生效条件摘要条 ---------------- */
+.active-filter-strip {
+  min-height: 30px;
+  padding: 4px 12px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-solid);
+  animation: afPanelEnter 140ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.active-filter-strip .af-eyebrow {
+  min-width: auto;
+}
+
+/* ---------------- 历史归档 / 已完成筛选栏升级 ---------------- */
+.history-filter-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  min-height: 36px;
+  padding: 5px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-solid);
+}
+
+.history-filter-controls {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+}
+
+.history-filter-telemetry {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.history-filter-stats {
+  font-size: 11px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.history-filter-reset {
+  height: 24px;
+  padding: 0 9px;
+  border-radius: 5px;
+  border: 1px solid var(--border-strong);
+  background: var(--control);
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: border-color 120ms ease, background-color 120ms ease;
+}
+
+.history-filter-reset:hover {
+  border-color: var(--accent);
+  background: var(--surface-hover);
+}
+
+/* ---------------- 磨砂玻璃通透适配 ---------------- */
+:root[data-window-style="frosted"] .advanced-filter-panel {
+  background: transparent;
+}
+
+:root[data-window-style="frosted"] .af-top-strip,
+:root[data-window-style="frosted"] .active-filter-strip,
+:root[data-window-style="frosted"] .history-filter-bar {
+  background: var(--surface-alt);
+}
+
+/* ---------------- 响应式断点：960px 以下单栏折叠 ---------------- */
+@media (max-width: 960px) {
+  .af-matrix {
+    grid-template-columns: 1fr;
+    gap: 6px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .advanced-filter-panel,
+  .active-filter-strip {
+    animation: none;
+  }
+}

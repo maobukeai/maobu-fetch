@@ -377,7 +377,7 @@ export function NewTaskDialog({
         setPikpakInspecting(false);
       }
     },
-    [lines, connections, notify]
+    [lines, urls, connections, notify]
   );
 
   const inspectQuarkContent = useCallback(
@@ -411,17 +411,18 @@ export function NewTaskDialog({
         setQuarkInspecting(false);
       }
     },
-    [lines, connections, notify]
+    [lines, urls, connections, notify]
   );
 
   const inspectBaiduContent = useCallback(
     async (targetUrl?: string, passCode?: string) => {
       const single = targetUrl || (lines.length === 1 ? lines[0].trim() : "");
       if (!isBaiduUrl(single)) return;
+      const effectivePassCode = passCode ?? parseBaiduUrl(urls)?.passCode;
       setBaiduInspecting(true);
       setBaiduPassCodeError(undefined);
       try {
-        const info = await inspectBaiduShare(single, passCode);
+        const info = await inspectBaiduShare(single, effectivePassCode);
         setBaiduShareInfo(info);
         setBaiduOpen(true);
         if (info.pass_code_required) {
@@ -445,7 +446,7 @@ export function NewTaskDialog({
         setBaiduInspecting(false);
       }
     },
-    [lines, connections, notify]
+    [lines, urls, connections, notify]
   );
 
   const inspectLanzouContent = useCallback(
@@ -478,7 +479,7 @@ export function NewTaskDialog({
         setLanzouInspecting(false);
       }
     },
-    [lines, connections, notify]
+    [lines, urls, connections, notify]
   );
 
   const inspectPan123Content = useCallback(
@@ -512,7 +513,7 @@ export function NewTaskDialog({
         setPan123Inspecting(false);
       }
     },
-    [lines, connections, notify]
+    [lines, urls, connections, notify]
   );
 
   useEffect(() => {
@@ -1798,36 +1799,13 @@ export function NewTaskDialog({
     <Modal
       title="新建下载任务"
       onClose={onClose}
+      dialogClassName="new-task-dialog"
       escapeClosable={urls.trim() === ""}
-      style={{
-        display: "flex",
-        flexDirection: "column",
-        height: "560px",
-        maxHeight: "calc(100vh - 80px)",
-        overflow: "hidden",
-      }}
     >
-      <div
-        className="new-task-form"
-        style={{
-          display: "flex",
-          flexDirection: "column",
-          flex: 1,
-          overflow: "hidden",
-        }}
-      >
-        <div
-          className="new-task-scrollable"
-          style={{
-            flex: 1,
-            overflowY: "auto",
-            overflowX: "hidden",
-            paddingRight: "6px",
-            display: "flex",
-            flexDirection: "column",
-            gap: "11px",
-          }}
-        >
+      <div className="new-task-form">
+        <div className="new-task-scrollable">
+          <div className="new-task-split">
+            <div className="new-task-col-main">
           {presets.length > 0 && (
             <div className="form-group-row">
               <label className="form-field grow">
@@ -1948,95 +1926,84 @@ export function NewTaskDialog({
                   )}
                 </div>
               </div>
-              <div className="url-input-wrap">
-                <textarea
-                  autoFocus
-                  value={urls}
-                  onFocus={() => setHistoryOpen(true)}
-                  onBlur={() => {
-                    window.setTimeout(() => setHistoryOpen(false), 180);
-                  }}
-                  onChange={(e) => {
-                    const val = e.target.value;
-                    setUrls(val);
-                    setMedia(undefined);
-                    setSelectedImageIds(new Set());
-                    userEditedFileName.current = false;
-                    setTorrentData((current) =>
-                      current && val.trim() === current.name ? current : null
-                    );
-                    const parsed = parseMultilineUrls(val);
-                    if (parsed.lines.length === 1) {
-                      const singleUrl = parsed.lines[0];
-                      if (isPikPakShareUrl(singleUrl)) {
-                        void inspectPikPakContent(singleUrl);
-                      } else {
-                        setPikpakShareInfo(null);
-                        setPikpakSelectedIds(new Set());
-                      }
-                      if (isQuarkUrl(singleUrl)) {
-                        void inspectQuarkContent(singleUrl);
-                      } else {
-                        setQuarkShareInfo(null);
-                        setQuarkSelectedIds(new Set());
-                      }
-                      if (isBaiduUrl(singleUrl)) {
-                        void inspectBaiduContent(singleUrl);
-                      } else {
-                        setBaiduShareInfo(null);
-                        setBaiduSelectedIds(new Set());
-                      }
-                      if (isLanzouUrl(singleUrl)) {
-                        void inspectLanzouContent(singleUrl);
-                      } else {
-                        setLanzouShareInfo(null);
-                        setLanzouSelectedIds(new Set());
-                      }
-                      if (isPan123Url(singleUrl)) {
-                        void inspectPan123Content(singleUrl);
-                      } else {
-                        setPan123ShareInfo(null);
-                        setPan123SelectedIds(new Set());
-                      }
-                      const name = extractFileNameFromUrl(singleUrl);
-                      if (name) {
-                        setFileName(name);
-                      }
-                    } else {
-                      setPikpakShareInfo(null);
-                      setPikpakSelectedIds(new Set());
-                      setQuarkShareInfo(null);
-                      setQuarkSelectedIds(new Set());
-                      setBaiduShareInfo(null);
-                      setBaiduSelectedIds(new Set());
-                      setLanzouShareInfo(null);
-                      setLanzouSelectedIds(new Set());
-                      setPan123ShareInfo(null);
-                      setPan123SelectedIds(new Set());
-                      if (parsed.lines.length === 0) {
-                        setFileName("");
-                      }
-                    }
-                  }}
-                  placeholder={t("newTask.urlPlaceholder")}
-                  aria-label={t("newTask.urlAriaLabel")}
-                />
-              </div>
-              {isPikPakDirect && (
-                <div style={{
-                  padding: "8px 12px",
-                  background: "var(--warning-bg, #fff3cd)",
-                  border: "1px solid var(--warning-border, #ffc107)",
-                  borderRadius: 6,
-                  fontSize: 12,
-                  color: "var(--warning-text, #856404)",
-                  marginTop: 8
-                }}>
-                  ⚠️ PikPak 裸直链存在单链接流量配额限制（约 330MB），大文件可能无法一次下载完成。
-                  建议使用 PikPak 分享链接（mypikpak.com/s/xxx）以获得直链自动刷新续传能力。
-                </div>
-              )}
-              <div className="url-input-tools-bar">
+              <div className="new-task-url-shell">
+                <div className="new-task-cmd-box">
+                  <div className="url-input-wrap">
+                    <textarea
+                      autoFocus
+                      value={urls}
+                      onFocus={() => setHistoryOpen(true)}
+                      onBlur={() => {
+                        window.setTimeout(() => setHistoryOpen(false), 180);
+                      }}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        setUrls(val);
+                        setMedia(undefined);
+                        setSelectedImageIds(new Set());
+                        userEditedFileName.current = false;
+                        setTorrentData((current) =>
+                          current && val.trim() === current.name ? current : null
+                        );
+                        const parsed = parseMultilineUrls(val);
+                        if (parsed.lines.length === 1) {
+                          const singleUrl = parsed.lines[0];
+                          if (isPikPakShareUrl(singleUrl)) {
+                            void inspectPikPakContent(singleUrl);
+                          } else {
+                            setPikpakShareInfo(null);
+                            setPikpakSelectedIds(new Set());
+                          }
+                          if (isQuarkUrl(singleUrl)) {
+                            void inspectQuarkContent(singleUrl);
+                          } else {
+                            setQuarkShareInfo(null);
+                            setQuarkSelectedIds(new Set());
+                          }
+                          if (isBaiduUrl(singleUrl)) {
+                            const extractedPassCode = parseBaiduUrl(val)?.passCode;
+                            void inspectBaiduContent(singleUrl, extractedPassCode);
+                          } else {
+                            setBaiduShareInfo(null);
+                            setBaiduSelectedIds(new Set());
+                          }
+                          if (isLanzouUrl(singleUrl)) {
+                            void inspectLanzouContent(singleUrl);
+                          } else {
+                            setLanzouShareInfo(null);
+                            setLanzouSelectedIds(new Set());
+                          }
+                          if (isPan123Url(singleUrl)) {
+                            void inspectPan123Content(singleUrl);
+                          } else {
+                            setPan123ShareInfo(null);
+                            setPan123SelectedIds(new Set());
+                          }
+                          const name = extractFileNameFromUrl(singleUrl);
+                          if (name) {
+                            setFileName(name);
+                          }
+                        } else {
+                          setPikpakShareInfo(null);
+                          setPikpakSelectedIds(new Set());
+                          setQuarkShareInfo(null);
+                          setQuarkSelectedIds(new Set());
+                          setBaiduShareInfo(null);
+                          setBaiduSelectedIds(new Set());
+                          setLanzouShareInfo(null);
+                          setLanzouSelectedIds(new Set());
+                          setPan123ShareInfo(null);
+                          setPan123SelectedIds(new Set());
+                          if (parsed.lines.length === 0) {
+                            setFileName("");
+                          }
+                        }
+                      }}
+                      placeholder={t("newTask.urlPlaceholder")}
+                      aria-label={t("newTask.urlAriaLabel")}
+                    />
+                  </div>
+                  <div className="url-input-tools-bar">
                 <div className="url-input-tools-left">
                   {(() => {
                     const single = lines.length === 1 ? lines[0].trim() : "";
@@ -2398,6 +2365,75 @@ export function NewTaskDialog({
                   </button>
                 </div>
               </div>
+              </div>
+              {historyOpen && urlHistory.length > 0 && (
+                <div
+                  className="url-history-dropdown"
+                  role="listbox"
+                  aria-label="最近 URL 历史"
+                >
+                  <div className="url-history-header">
+                    <span>最近 URL</span>
+                    <button
+                      type="button"
+                      className="url-history-clear"
+                      onMouseDown={(e) => {
+                        e.preventDefault();
+                        void api
+                          .urlHistoryClear()
+                          .then(() => {
+                            setUrlHistory([]);
+                          })
+                          .catch(() => {});
+                      }}
+                      title="清空全部历史"
+                    >
+                      <Trash2 size={11} />
+                      <span>清空</span>
+                    </button>
+                  </div>
+                  <ul className="url-history-list">
+                    {urlHistory.map((entry) => (
+                      <li key={entry.url}>
+                        <button
+                          type="button"
+                          className="url-history-item"
+                          onMouseDown={(e) => {
+                            e.preventDefault();
+                            setUrls(entry.url);
+                            setHistoryOpen(false);
+                            setMedia(undefined);
+                            userEditedFileName.current = false;
+                            const name = extractFileNameFromUrl(entry.url);
+                            if (name) setFileName(name);
+                          }}
+                          title={entry.url}
+                        >
+                          <Globe2 size={11} />
+                          <span className="url-history-text">
+                            {entry.url}
+                          </span>
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              </div>
+              {isPikPakDirect && (
+                <div style={{
+                  padding: "8px 12px",
+                  background: "var(--warning-bg, #fff3cd)",
+                  border: "1px solid var(--warning-border, #ffc107)",
+                  borderRadius: 6,
+                  fontSize: 12,
+                  color: "var(--warning-text, #856404)",
+                  marginTop: 8
+                }}>
+                  ⚠️ PikPak 裸直链存在单链接流量配额限制（约 330MB），大文件可能无法一次下载完成。
+                  建议使用 PikPak 分享链接（mypikpak.com/s/xxx）以获得直链自动刷新续传能力。
+                </div>
+              )}
               {(() => {
                 const single = lines.length === 1 ? lines[0].trim() : "";
                 if (!isPikPakShareUrl(single) || !pikpakShareInfo || !pikpakOpen) return null;
@@ -2604,59 +2640,6 @@ export function NewTaskDialog({
                   </div>
                 </div>
               )}
-              {historyOpen && urlHistory.length > 0 && (
-                <div
-                  className="url-history-dropdown"
-                  role="listbox"
-                  aria-label="最近 URL 历史"
-                >
-                  <div className="url-history-header">
-                    <span>最近 URL</span>
-                    <button
-                      type="button"
-                      className="url-history-clear"
-                      onMouseDown={(e) => {
-                        e.preventDefault();
-                        void api
-                          .urlHistoryClear()
-                          .then(() => {
-                            setUrlHistory([]);
-                          })
-                          .catch(() => {});
-                      }}
-                      title="清空全部历史"
-                    >
-                      <Trash2 size={11} />
-                      <span>清空</span>
-                    </button>
-                  </div>
-                  <ul className="url-history-list">
-                    {urlHistory.map((entry) => (
-                      <li key={entry.url}>
-                        <button
-                          type="button"
-                          className="url-history-item"
-                          onMouseDown={(e) => {
-                            e.preventDefault();
-                            setUrls(entry.url);
-                            setHistoryOpen(false);
-                            setMedia(undefined);
-                            userEditedFileName.current = false;
-                            const name = extractFileNameFromUrl(entry.url);
-                            if (name) setFileName(name);
-                          }}
-                          title={entry.url}
-                        >
-                          <Globe2 size={11} />
-                          <span className="url-history-text">
-                            {entry.url}
-                          </span>
-                        </button>
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              )}
               {(skippedCount > 0 || duplicateCount > 0 || sequenceError) && (
                 <div
                   className="url-parse-hint"
@@ -2804,78 +2787,6 @@ export function NewTaskDialog({
             </label>
           </div>
 
-          <div className="form-grid-2">
-            <div className="form-field">
-              <div className="field-label-row">
-                <span>分段连接数</span>
-                <span className="field-label-value">
-                  <span className="field-label-num">{connections}</span>
-                  <span className="field-label-text">路并发</span>
-                </span>
-              </div>
-              <div className="slider-container">
-                <input
-                  type="range"
-                  min="0"
-                  max="5"
-                  step="1"
-                  value={[1, 2, 4, 8, 16, 32].indexOf(connections)}
-                  onChange={(e) => {
-                    const values = [1, 2, 4, 8, 16, 32];
-                    userEditedConnections.current = true;
-                    setConnections(values[+e.target.value]);
-                  }}
-                  className="fluent-slider"
-                />
-                <div className="slider-ticks">
-                  <span>1</span>
-                  <span>2</span>
-                  <span>4</span>
-                  <span>8</span>
-                  <span>16</span>
-                  <span>32</span>
-                </div>
-              </div>
-            </div>
-
-            <div className="form-field">
-              <div className="field-label-row">
-                <span>重名处理</span>
-              </div>
-              <div className="fluent-segmented-control">
-                <button
-                  type="button"
-                  className={policy === "rename" ? "active" : ""}
-                  onClick={() => setPolicy("rename")}
-                >
-                  重命名
-                </button>
-                <button
-                  type="button"
-                  className={policy === "overwrite" ? "active" : ""}
-                  onClick={() => setPolicy("overwrite")}
-                >
-                  覆盖
-                </button>
-                <button
-                  type="button"
-                  className={policy === "skip" ? "active" : ""}
-                  onClick={() => setPolicy("skip")}
-                >
-                  跳过
-                </button>
-              </div>
-              <div className="field-helper-text">
-                {policy === "rename" &&
-                  "当文件名存在冲突时自动追加数字后缀"}
-                {policy === "overwrite" &&
-                  "直接覆盖同名文件，旧文件将被完全替换"}
-                {policy === "skip" &&
-                  "跳过该任务的下载，直接保留本地文件"}
-              </div>
-            </div>
-          </div>
-
           {lines.length === 1 && (
             <div className="form-group-row">
               <label className="form-field grow">
@@ -2902,6 +2813,101 @@ export function NewTaskDialog({
               </label>
             </div>
           )}
+            </div>
+
+            <div className="new-task-col-side">
+              <div className="new-task-side-card">
+                <div className="form-field">
+                  <div className="field-label-row">
+                    <span>分段连接数</span>
+                    <span className="field-label-value">
+                      <span className="field-label-num">{connections}</span>
+                      <span className="field-label-text">路并发</span>
+                    </span>
+                  </div>
+                  <div className="slider-container">
+                    <input
+                      type="range"
+                      min="0"
+                      max="5"
+                      step="1"
+                      value={[1, 2, 4, 8, 16, 32].indexOf(connections)}
+                      onChange={(e) => {
+                        const values = [1, 2, 4, 8, 16, 32];
+                        userEditedConnections.current = true;
+                        setConnections(values[+e.target.value]);
+                      }}
+                      className="fluent-slider"
+                    />
+                    <div className="slider-ticks">
+                      <span>1</span>
+                      <span>2</span>
+                      <span>4</span>
+                      <span>8</span>
+                      <span>16</span>
+                      <span>32</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="new-task-side-card">
+                <div className="form-field">
+                  <div className="field-label-row">
+                    <span>重名处理</span>
+                  </div>
+                  <div className="fluent-segmented-control">
+                    <button
+                      type="button"
+                      className={policy === "rename" ? "active" : ""}
+                      onClick={() => setPolicy("rename")}
+                    >
+                      重命名
+                    </button>
+                    <button
+                      type="button"
+                      className={policy === "overwrite" ? "active" : ""}
+                      onClick={() => setPolicy("overwrite")}
+                    >
+                      覆盖
+                    </button>
+                    <button
+                      type="button"
+                      className={policy === "skip" ? "active" : ""}
+                      onClick={() => setPolicy("skip")}
+                    >
+                      跳过
+                    </button>
+                  </div>
+                  <div className="field-helper-text">
+                    {policy === "rename" &&
+                      "当文件名存在冲突时自动追加数字后缀"}
+                    {policy === "overwrite" &&
+                      "直接覆盖同名文件，旧文件将被完全替换"}
+                    {policy === "skip" &&
+                      "跳过该任务的下载，直接保留本地文件"}
+                  </div>
+                </div>
+              </div>
+
+              {lines.length === 1 &&
+                isDownloadableUrlForDialog(lines[0]) && (
+                  <PrecheckPanel
+                    result={precheck}
+                    loading={precheckLoading}
+                    error={precheckError}
+                    queueDiskTotal={queueDiskTotal}
+                    queueUnknownCount={queueUnknownCount}
+                    onLocateConflict={(conflict) =>
+                      onLocateTask?.(conflict.existing_task_id)
+                    }
+                    onRefresh={runPrecheckNow}
+                  />
+                )}
+            </div>
+          </div>
+
+          <div className="new-task-full-span">
 
           {toolStatus &&
             (!toolStatus.yt_dlp_available ||
@@ -3199,36 +3205,11 @@ export function NewTaskDialog({
             </div>
           )}
 
-          {lines.length === 1 &&
-            isDownloadableUrlForDialog(lines[0]) && (
-              <PrecheckPanel
-                result={precheck}
-                loading={precheckLoading}
-                error={precheckError}
-                queueDiskTotal={queueDiskTotal}
-                queueUnknownCount={queueUnknownCount}
-                onLocateConflict={(conflict) =>
-                  onLocateTask?.(conflict.existing_task_id)
-                }
-                onRefresh={runPrecheckNow}
-              />
-            )}
-
           {error && <div className="inline-error">{error}</div>}
+          </div>
         </div>
 
-        <div
-          className="new-task-sticky-footer"
-          style={{
-            flexShrink: 0,
-            marginTop: "12px",
-            borderTop: "1px solid var(--border-strong)",
-            paddingTop: "12px",
-            display: "flex",
-            flexDirection: "column",
-            gap: "10px",
-          }}
-        >
+        <div className="new-task-sticky-footer">
           {showConflictOptions && (
             <div
               className="conflict-options"
@@ -3371,41 +3352,54 @@ export function NewTaskDialog({
           )}
 
           <div className="dialog-actions new-task-actions">
-            <button className="cancel-btn" onClick={onClose}>
-              取消
-            </button>
-            <button
-              className="primary confirm-btn"
-              disabled={
-                busy ||
-                !lines.length ||
-                hasConflicts ||
-                hasDuplicates ||
-                isGalleryWithoutSelection ||
-                isPikPakWithoutSelection ||
-                isQuarkWithoutSelection ||
-                isBaiduWithoutSelection ||
-                platformCompat?.level === "unsupported"
-              }
-              title={
-                platformCompat?.level === "unsupported"
-                  ? "该平台暂不支持下载，请使用浏览器原生下载"
-                  : isPikPakWithoutSelection
-                  ? "请至少勾选一个需要下载的 PikPak 文件"
-                  : isQuarkWithoutSelection
-                  ? "请至少勾选一个需要下载的夸克文件"
-                  : isBaiduWithoutSelection
-                  ? "请至少勾选一个需要下载的百度网盘文件"
-                  : hasConflicts || hasDuplicates
-                  ? "存在冲突或重复，请先选择处理方式"
-                  : isGalleryWithoutSelection
-                  ? "请至少选择一张图片"
-                  : undefined
-              }
-              onClick={() => void submit()}
-            >
-              {busy ? "正在创建任务..." : "开始下载"}
-            </button>
+            <span className="new-task-footer-summary">
+              {connections} 路并发 ·{" "}
+              {policy === "rename"
+                ? "重命名"
+                : policy === "overwrite"
+                ? "覆盖"
+                : "跳过"}
+              {precheck?.available_disk_bytes != null
+                ? ` · 可用 ${formatBytes(precheck.available_disk_bytes)}`
+                : ""}
+            </span>
+            <div className="new-task-footer-buttons">
+              <button className="cancel-btn" onClick={onClose}>
+                取消
+              </button>
+              <button
+                className="primary confirm-btn"
+                disabled={
+                  busy ||
+                  !lines.length ||
+                  hasConflicts ||
+                  hasDuplicates ||
+                  isGalleryWithoutSelection ||
+                  isPikPakWithoutSelection ||
+                  isQuarkWithoutSelection ||
+                  isBaiduWithoutSelection ||
+                  platformCompat?.level === "unsupported"
+                }
+                title={
+                  platformCompat?.level === "unsupported"
+                    ? "该平台暂不支持下载，请使用浏览器原生下载"
+                    : isPikPakWithoutSelection
+                    ? "请至少勾选一个需要下载的 PikPak 文件"
+                    : isQuarkWithoutSelection
+                    ? "请至少勾选一个需要下载的夸克文件"
+                    : isBaiduWithoutSelection
+                    ? "请至少勾选一个需要下载的百度网盘文件"
+                    : hasConflicts || hasDuplicates
+                    ? "存在冲突或重复，请先选择处理方式"
+                    : isGalleryWithoutSelection
+                    ? "请至少选择一张图片"
+                    : undefined
+                }
+                onClick={() => void submit()}
+              >
+                {busy ? "正在创建任务..." : "开始下载"}
+              </button>
+            </div>
           </div>
         </div>
       </div>

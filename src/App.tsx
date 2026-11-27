@@ -12,7 +12,6 @@ import { LogicalSize } from "@tauri-apps/api/dpi";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { onAction } from "@tauri-apps/plugin-notification";
-import { CompletionToast } from "./components/CompletionToast";
 import { readText } from "@tauri-apps/plugin-clipboard-manager";
 import { open as openUrl } from "@tauri-apps/plugin-shell";
 import {
@@ -89,6 +88,7 @@ import {
 import { Modal } from "./components/common/Modal";
 import { TaskRow, isVideoFile, isImageFile } from "./components/common/TaskRow";
 import { BulkActionBar } from "./components/common/BulkActionBar";
+import { NavSpeedSpark } from "./components/common/NavSpeedSpark";
 import {
   applyWindowAppearance,
   Titlebar,
@@ -97,7 +97,13 @@ import {
 } from "./components/common/Titlebar";
 import { ContextMenu } from "./components/common/ContextMenu";
 import { Details } from "./components/details/Details";
+import { useDetailsDrawer } from "./components/details/useDetailsDrawer";
 import { AdvancedFilterPanel } from "./components/modals/AdvancedFilterPanel";
+import { ActiveFilterSummaryBar } from "./components/modals/ActiveFilterSummaryBar";
+import {
+  removeFilterChip,
+  summarizeHistoryTasks,
+} from "./components/modals/advanced-filter-model";
 import { CloseConfirmDialog } from "./components/modals/CloseConfirmDialog";
 import {
   DeleteConfirmDialog,
@@ -170,6 +176,7 @@ const defaults: AppSettings = {
   archive_days: 30,
   archive_threshold: 100,
   notify_on_complete: true,
+  completion_notice_mode: "desktop",
   completion_notice_seconds: 30,
   progress_window_enabled: true,
   progress_window_always_on_top: true,
@@ -263,6 +270,8 @@ export default function App() {
   const appWindow = useMemo(() => (isDesktop() ? getCurrentWindow() : null), []);
   const [tasks, setTasks] = useState<DownloadTask[]>([]);
   const tasksRef = useRef<DownloadTask[]>([]);
+  const historyTaskIdsRef = useRef(new Set<string>());
+  const pendingNotificationTaskRef = useRef<string | undefined>(undefined);
   useEffect(() => {
     tasksRef.current = tasks;
   }, [tasks]);
@@ -292,6 +301,7 @@ export default function App() {
     undefined
   );
   const [showDetails, setShowDetails] = useState(false);
+  const detailsDrawer = useDetailsDrawer(showDetails);
   const [newOpen, setNewOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [categoriesExpanded, setCategoriesExpanded] = useState(true);
@@ -301,10 +311,6 @@ export default function App() {
   const [splash, setSplash] = useState(true);
   const [initialUrlFromClipboard, setInitialUrlFromClipboard] = useState("");
   const [toast, setToast] = useState<{ kind: "ok" | "error"; text: string }>();
-  const [completionNotices, setCompletionNotices] = useState<TaskNotificationPayload[]>([]);
-  const dismissCompletionNotice = useCallback((taskId: string) => {
-    setCompletionNotices((items) => items.filter((item) => item.task_id !== taskId));
-  }, []);
   const [context, setContext] = useState<{
     x: number;
     y: number;
@@ -336,6 +342,7 @@ export default function App() {
     () => {}
   );
   const refreshRef = useRef<() => Promise<void>>(() => Promise.resolve());
+  const searchInputRef = useRef<HTMLInputElement>(null);
 
   const [renameTarget, setRenameTarget] = useState<DownloadTask | null>(null);
   const [speedLimitTarget, setSpeedLimitTarget] = useState<DownloadTask | null>(
@@ -564,7 +571,6 @@ export default function App() {
       .subscribe((event) => {
         taskEventSeq.current += 1;
         if ("removed" in event) {
-          setCompletionNotices((items) => items.filter((item) => item.task_id !== event.removed));
           setTasks((items) =>
             items.filter((task) => task.id !== event.removed)
           );
@@ -658,6 +664,19 @@ export default function App() {
         keep(item);
       });
     if (isDesktop()) {
+      const focusTaskFromNotification = (taskId: string) => {
+        pendingNotificationTaskRef.current = taskId;
+        setSelected(new Set([taskId]));
+        setPrimaryTaskId(taskId);
+        requestShowDetails(true);
+        setView(historyTaskIdsRef.current.has(taskId) ? "history" : "main");
+        setFilter("all");
+        setHistoryStatusFilter("all");
+        setHistoryDate(defaultHistoryDateRange);
+        setSettingsOpen(false);
+        setSearch("");
+        setAdvancedFilter({ ...EMPTY_ADVANCED_FILTER });
+      };
       void onAction((notification) => {
         if (appWindow) {
           void appWindow.show();
@@ -667,12 +686,7 @@ export default function App() {
         const taskId = (
           notification as { extra?: { task_id?: string } }
         )?.extra?.task_id;
-        if (taskId) {
-          setSelected(new Set([taskId]));
-          requestShowDetails(true);
-          setView("main");
-          setFilter("all");
-        }
+        if (taskId) focusTaskFromNotification(taskId);
       }).then((item) => {
         if (item && !disposed)
           unlisten.push(() => {
@@ -681,14 +695,7 @@ export default function App() {
         else if (item) void item.unregister();
       });
       void listen<string>("notification-focus-task", (event) => {
-        setSelected(new Set([event.payload]));
-        setPrimaryTaskId(event.payload);
-        requestShowDetails(true);
-        setView("main");
-        setFilter("all");
-        setSettingsOpen(false);
-        setSearch("");
-        setAdvancedFilter({ ...EMPTY_ADVANCED_FILTER });
+        focusTaskFromNotification(event.payload);
       }).then((item) => {
         keep(item);
       });
@@ -728,8 +735,6 @@ export default function App() {
       .subscribeTaskNotification((payload: TaskNotificationPayload) => {
         if (disposed) return;
         if (payload.kind === "completed") {
-          setCompletionNotices((items) => items.some((item) => item.task_id === payload.task_id)
-            ? items : [...items, payload]);
           if (settings.notify_sound_enabled) {
             void playNotificationSound("completed");
           }
@@ -1071,6 +1076,9 @@ export default function App() {
     }
     return { mainTasks, historyTasks };
   }, [tasks, settings.archive_days, settings.archive_threshold]);
+  useEffect(() => {
+    historyTaskIdsRef.current = new Set(partitioned.historyTasks.map((task) => task.id));
+  }, [partitioned]);
 
   const visible = useMemo(() => {
     const source =
@@ -1133,6 +1141,27 @@ export default function App() {
     advancedFilter,
     taskTags,
   ]);
+
+  const listTelemetry = useMemo(
+    () =>
+      summarizeHistoryTasks(
+        visible,
+        view === "history"
+          ? partitioned.historyTasks.length
+          : filter === "completed"
+          ? partitioned.mainTasks.filter((item) => item.status === "completed")
+              .length
+          : partitioned.mainTasks.length
+      ),
+    [visible, view, filter, partitioned]
+  );
+  useEffect(() => {
+    const taskId = pendingNotificationTaskRef.current;
+    if (!taskId || !visible.some((task) => task.id === taskId)) return;
+    document.querySelector(`.task-row[data-task-id="${CSS.escape(taskId)}"]`)
+      ?.scrollIntoView({ block: "nearest" });
+    pendingNotificationTaskRef.current = undefined;
+  }, [visible, selected]);
 
   // 批量操作只作用于"当前可见列表中被选中"的任务：选择集可以跨过滤保留，
   // 但暂停/恢复/删除/复制链接等操作范围必须收敛到可见项，避免误操作被隐藏的任务。
@@ -1467,6 +1496,19 @@ export default function App() {
         context
       )
         return;
+
+      if (
+        (event.ctrlKey || event.metaKey) &&
+        !event.altKey &&
+        !event.shiftKey &&
+        event.key.toLowerCase() === "f"
+      ) {
+        event.preventDefault();
+        searchInputRef.current?.focus();
+        searchInputRef.current?.select();
+        return;
+      }
+
       if (isEditing()) return;
 
       const keys = settings.shortcut_keys || DEFAULT_SHORTCUTS;
@@ -1599,22 +1641,6 @@ export default function App() {
 
   const globalToastLayer = (
     <div className="toast-stack">
-      <CompletionToast
-        notices={completionNotices}
-        durationSeconds={settings.completion_notice_seconds ?? 30}
-        onDismiss={dismissCompletionNotice}
-        onView={(taskId) => {
-          setSelected(new Set([taskId]));
-          setPrimaryTaskId(taskId);
-          requestShowDetails(true);
-          setView("main");
-          setFilter("all");
-          setSettingsOpen(false);
-          setSearch("");
-          setAdvancedFilter({ ...EMPTY_ADVANCED_FILTER });
-        }}
-        onError={(message) => notify(message, "error")}
-      />
       {toast && (
         <div className="toast">
           <span>
@@ -1793,7 +1819,7 @@ export default function App() {
             <Plus size={15} />
             {t("nav.newTask")}
           </button>
-          <div className="nav-scroll">
+          <div className="nav-scroll" data-magnetic-group="rail">
             <p className="nav-label">{t("nav.tasks")}</p>
             {getNav().map(([key, label, Icon]) => (
               <button
@@ -1896,12 +1922,16 @@ export default function App() {
                   isDesktop() ? "status-dot online" : "status-dot offline"
                 }
               />
-              <span>
+              <span className="nav-status-text">
                 {t("nav.speedFormat", {
                   speed: `${formatBytes(totalSpeed)}/s`,
                   count: active.length,
                 })}
               </span>
+              <NavSpeedSpark
+                totalSpeed={totalSpeed}
+                activeCount={active.length}
+              />
             </div>
           </div>
         </aside>
@@ -1911,20 +1941,29 @@ export default function App() {
             <label className="search-box">
               <Search size={14} />
               <input
+                ref={searchInputRef}
                 aria-label={t("toolbar.searchAria")}
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
                 placeholder={t("toolbar.searchPlaceholder")}
               />
-              {search && (
-                <button onClick={() => setSearch("")}>
+              {search ? (
+                <button
+                  type="button"
+                  onClick={() => setSearch("")}
+                  aria-label={t("common.clear") || "清空"}
+                >
                   <X size={13} />
                 </button>
+              ) : (
+                <kbd className="search-kbd" aria-hidden="true">
+                  Ctrl+F
+                </kbd>
               )}
             </label>
             <div className="toolbar-actions">
               <button
-                className="action-btn-standalone"
+                className="action-btn-standalone action-btn-primary"
                 onClick={() => setNewOpen(true)}
                 title={t("toolbar.newTask")}
               >
@@ -1949,6 +1988,8 @@ export default function App() {
                   )}
                 </button>
               )}
+
+              <span className="toolbar-sep" aria-hidden="true" />
 
               <div className="action-group">
                 <button
@@ -2022,7 +2063,26 @@ export default function App() {
 
               <button
                 className="action-btn-standalone"
-                onClick={() => void refresh()}
+                onClick={(event) => {
+                  if (
+                    typeof window !== "undefined" &&
+                    !window.matchMedia?.("(prefers-reduced-motion: reduce)")
+                      .matches
+                  ) {
+                    const svg = event.currentTarget.querySelector("svg");
+                    svg?.animate?.(
+                      [
+                        { transform: "rotate(0deg)" },
+                        { transform: "rotate(360deg)" },
+                      ],
+                      {
+                        duration: 420,
+                        easing: "cubic-bezier(0.22, 1, 0.36, 1)",
+                      }
+                    );
+                  }
+                  void refresh();
+                }}
                 title={t("toolbar.refreshList")}
               >
                 <RefreshCw size={14} />
@@ -2034,9 +2094,12 @@ export default function App() {
               />
             </div>
             <button
-              className="details-toggle"
+              className={
+                showDetails ? "details-toggle active" : "details-toggle"
+              }
               onClick={() => setShowDetails((value) => !value)}
               title={t("toolbar.detailsPanel")}
+              aria-pressed={showDetails}
             >
               {showDetails ? (
                 <PanelRightClose size={15} />
@@ -2058,76 +2121,108 @@ export default function App() {
               className="history-filter-bar"
               aria-label={t("historyFilter.status")}
             >
-              <span>{t("historyFilter.status")}</span>
-              <Select
-                value={historyStatusFilter}
-                onChange={(val: any) =>
-                  setHistoryStatusFilter(val as TaskStatus | "all")
-                }
-                options={[
-                  { value: "all", label: t("historyFilter.allStatuses") },
-                  { value: "completed", label: t("status.completed") },
-                  { value: "failed", label: t("status.failed") },
-                  { value: "cancelled", label: t("status.cancelled") },
-                  { value: "interrupted", label: t("status.interrupted") },
-                ]}
-                ariaLabel={t("historyFilter.status")}
-              />
-              <span className="history-filter-separator" aria-hidden="true">
-                ·
-              </span>
-              <span>{t("historyFilter.completionDate")}</span>
-              <Select
-                value={historyDate.preset}
-                onChange={(val: any) =>
-                  setHistoryDate({
-                    ...historyDate,
-                    preset: val as typeof historyDate.preset,
-                  })
-                }
-                options={[
-                  { value: "all", label: t("historyFilter.allTime") },
-                  { value: "today", label: t("historyFilter.today") },
-                  { value: "7-days", label: t("historyFilter.last7Days") },
-                  { value: "30-days", label: t("historyFilter.last30Days") },
-                  { value: "custom", label: t("historyFilter.customRange") },
-                ]}
-                ariaLabel={t("historyFilter.completionDate")}
-              />
-              {historyDate.preset === "custom" && (
-                <>
-                  <input
-                    type="date"
-                    aria-label={t("historyFilter.startDate")}
-                    value={historyDate.start}
-                    onChange={(event) =>
-                      setHistoryDate({
-                        ...historyDate,
-                        start: event.target.value,
+              <div className="history-filter-controls">
+                <span>{t("historyFilter.status")}</span>
+                <Select
+                  value={historyStatusFilter}
+                  onChange={(val: any) =>
+                    setHistoryStatusFilter(val as TaskStatus | "all")
+                  }
+                  options={[
+                    { value: "all", label: t("historyFilter.allStatuses") },
+                    { value: "completed", label: t("status.completed") },
+                    { value: "failed", label: t("status.failed") },
+                    { value: "cancelled", label: t("status.cancelled") },
+                    { value: "interrupted", label: t("status.interrupted") },
+                  ]}
+                  ariaLabel={t("historyFilter.status")}
+                />
+                <span className="history-filter-separator" aria-hidden="true">
+                  ·
+                </span>
+                <span>{t("historyFilter.completionDate")}</span>
+                <Select
+                  value={historyDate.preset}
+                  onChange={(val: any) =>
+                    setHistoryDate({
+                      ...historyDate,
+                      preset: val as typeof historyDate.preset,
+                    })
+                  }
+                  options={[
+                    { value: "all", label: t("historyFilter.allTime") },
+                    { value: "today", label: t("historyFilter.today") },
+                    { value: "7-days", label: t("historyFilter.last7Days") },
+                    { value: "30-days", label: t("historyFilter.last30Days") },
+                    { value: "custom", label: t("historyFilter.customRange") },
+                  ]}
+                  ariaLabel={t("historyFilter.completionDate")}
+                />
+                {historyDate.preset === "custom" && (
+                  <>
+                    <input
+                      type="date"
+                      aria-label={t("historyFilter.startDate")}
+                      value={historyDate.start}
+                      onChange={(event) =>
+                        setHistoryDate({
+                          ...historyDate,
+                          start: event.target.value,
+                        })
+                      }
+                    />
+                    <span>{t("historyFilter.to")}</span>
+                    <input
+                      type="date"
+                      aria-label={t("historyFilter.endDate")}
+                      value={historyDate.end}
+                      min={historyDate.start || undefined}
+                      onChange={(event) =>
+                        setHistoryDate({
+                          ...historyDate,
+                          end: event.target.value,
+                        })
+                      }
+                    />
+                  </>
+                )}
+              </div>
+              <div className="history-filter-telemetry">
+                <span className="history-filter-stats">
+                  {listTelemetry.matchedCount === listTelemetry.totalCount
+                    ? t("historyFilter.summaryAll", {
+                        count: listTelemetry.matchedCount,
+                        size: formatBytes(listTelemetry.totalBytes),
                       })
-                    }
-                  />
-                  <span>{t("historyFilter.to")}</span>
-                  <input
-                    type="date"
-                    aria-label={t("historyFilter.endDate")}
-                    value={historyDate.end}
-                    min={historyDate.start || undefined}
-                    onChange={(event) =>
-                      setHistoryDate({
-                        ...historyDate,
-                        end: event.target.value,
-                      })
-                    }
-                  />
-                </>
-              )}
+                    : t("historyFilter.summary", {
+                        matched: listTelemetry.matchedCount,
+                        total: listTelemetry.totalCount,
+                        size: formatBytes(listTelemetry.totalBytes),
+                      })}
+                </span>
+                {(historyStatusFilter !== "all" ||
+                  historyDate.preset !== "all") && (
+                  <button
+                    type="button"
+                    className="history-filter-reset"
+                    onClick={() => {
+                      setHistoryStatusFilter("all");
+                      setHistoryDate(defaultHistoryDateRange);
+                    }}
+                  >
+                    {t("historyFilter.reset")}
+                  </button>
+                )}
+              </div>
             </div>
           ) : (
             filter === "completed" && (
               <HistoryDateFilter
                 value={historyDate}
                 onChange={setHistoryDate}
+                matchedCount={listTelemetry.matchedCount}
+                totalCount={listTelemetry.totalCount}
+                totalBytes={listTelemetry.totalBytes}
               />
             )
           )}
@@ -2137,6 +2232,8 @@ export default function App() {
               onChange={setAdvancedFilter}
               tags={tags}
               quickViews={quickViews}
+              matchedCount={visible.length}
+              totalCount={partitioned.mainTasks.length}
               onApplyQuickView={(qv) =>
                 setAdvancedFilter({ ...qv.filter })
               }
@@ -2182,11 +2279,24 @@ export default function App() {
               onClear={() => setAdvancedFilter({ ...EMPTY_ADVANCED_FILTER })}
             />
           )}
-          <section
-            className={
-              showDetails ? "content-grid details-on" : "content-grid"
-            }
-          >
+          {view === "main" &&
+            !advancedFilterOpen &&
+            !isAdvancedFilterEmpty(advancedFilter) && (
+              <ActiveFilterSummaryBar
+                value={advancedFilter}
+                tags={tags}
+                matchedCount={visible.length}
+                totalCount={partitioned.mainTasks.length}
+                onRemoveChip={(kind, chipValue) =>
+                  setAdvancedFilter((current) =>
+                    removeFilterChip(current, kind, chipValue)
+                  )
+                }
+                onExpand={() => setAdvancedFilterOpen(true)}
+                onClear={() => setAdvancedFilter({ ...EMPTY_ADVANCED_FILTER })}
+              />
+            )}
+          <section className="content-grid">
             <div
               className="task-list-panel"
               style={
@@ -2245,8 +2355,15 @@ export default function App() {
                     >
                       {label}
                       {sort.key === key && (
-                        <span style={{ fontSize: "10px", marginLeft: "4px", opacity: 0.85 }}>
-                          {sort.desc ? "↓" : "↑"}
+                        <span
+                          className={
+                            sort.desc
+                              ? "table-sort-arrow desc"
+                              : "table-sort-arrow asc"
+                          }
+                          aria-hidden="true"
+                        >
+                          ↓
                         </span>
                       )}
                       {widthKey && (
@@ -2356,22 +2473,31 @@ export default function App() {
                 </div>
               </div>
             </div>
-            {showDetails && (
-              <Details
-                task={activeTask}
-                onClose={() => setShowDetails(false)}
-                notify={notify}
-                selectedCount={selected.size}
-                onOpenProxySettings={() => {
-                  setSettingsOpen(true);
-                }}
-                onOpenYouTubeModal={() =>
-                  setYoutubeModalTaskId(activeTask?.id || "")
-                }
-                onOpenRefreshUrl={setRefreshUrlTarget}
-                onTagsChanged={refreshTags}
-              />
-            )}
+            <div
+              className={
+                detailsDrawer.expanded
+                  ? "details-drawer-slot is-open"
+                  : "details-drawer-slot"
+              }
+              aria-hidden={!showDetails}
+            >
+              {detailsDrawer.mounted && (
+                <Details
+                  task={activeTask}
+                  onClose={() => setShowDetails(false)}
+                  notify={notify}
+                  selectedCount={selected.size}
+                  onOpenProxySettings={() => {
+                    setSettingsOpen(true);
+                  }}
+                  onOpenYouTubeModal={() =>
+                    setYoutubeModalTaskId(activeTask?.id || "")
+                  }
+                  onOpenRefreshUrl={setRefreshUrlTarget}
+                  onTagsChanged={refreshTags}
+                />
+              )}
+            </div>
           </section>
           <BulkActionBar
             selectedCount={visibleSelection.ids.size}

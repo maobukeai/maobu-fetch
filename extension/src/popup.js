@@ -188,7 +188,13 @@ if (items.length) {
 async function send(url, fileName, extra) {
   if (!url) return;
   message("正在发送…");
-  const response = await call({ type: "send", url, fileName, extra });
+  const response = await call({
+    type: "send",
+    url,
+    fileName,
+    tabId: Number.isInteger(tab?.id) ? tab.id : undefined,
+    extra,
+  });
   message(response?.ok ? "已发送到桌面端" : `发送失败：${response?.error || "请检查配对状态"}`, !response?.ok);
 }
 
@@ -232,6 +238,13 @@ if (authDownloadSection && isHttpTab) {
   authDownloadSection.classList.remove("hidden");
 }
 
+function credentialSyncUrl(baseDomain, pageUrl) {
+  if (baseDomain === "pan.baidu.com") return "https://pan.baidu.com/";
+  if (baseDomain === "pan.quark.cn") return "https://pan.quark.cn/";
+  if (baseDomain === "123pan.com") return "https://www.123pan.com/";
+  return pageUrl;
+}
+
 // 打开弹窗时同步当前媒体平台 Cookie（域名表统一来自 domains.js，
 // 含用户在选项页配置的自定义同步域名，与 background 的逻辑保持一致）。
 if (isHttpTab && !tab?.incognito) {
@@ -241,9 +254,10 @@ if (isHttpTab && !tab?.incognito) {
       const { customMediaDomains = [] } = await chrome.storage.local.get("customMediaDomains").catch(() => ({}));
       const baseDomain = matchMediaDomain(urlObj.hostname, customMediaDomains);
       if (!baseDomain) return;
-      const cookies = await readTargetCookies(chrome.cookies, currentTabUrl, { tab });
+      const cookies = await readTargetCookies(chrome.cookies, credentialSyncUrl(baseDomain, currentTabUrl), { tab });
 
       const cookieHeader = buildCookieHeader(cookies);
+      if (baseDomain === "pan.baidu.com" && !/(?:^|;\s*)BDUSS=[^;\s]+/.test(cookieHeader)) return;
       if (cookieHeader) {
         await call({ type: "sync-cookies", domain: baseDomain, cookie: cookieHeader }).catch(() => {});
       }
@@ -253,6 +267,7 @@ if (isHttpTab && !tab?.incognito) {
 if (useAuthDownloadEl) {
   const authMenuEl = $("authMenu");
   const authOneShotEl = $("authOneShot");
+  const authSyncCredentialEl = $("authSyncCredential");
   const authExportCookiesEl = $("authExportCookies");
 
   const closeAuthMenu = () => {
@@ -314,6 +329,59 @@ if (useAuthDownloadEl) {
         message(`登录态发送失败：${error?.message || error}`, true);
       } finally {
         useAuthDownloadEl.disabled = false;
+      }
+    };
+  }
+
+  if (authSyncCredentialEl) {
+    authSyncCredentialEl.onclick = async () => {
+      closeAuthMenu();
+      if (!isHttpTab) {
+        message("当前页面不是 HTTP/HTTPS 页面，无法获取登录态", true);
+        return;
+      }
+      if (!authSyncCredentialEl.disabled) authSyncCredentialEl.disabled = true;
+      try {
+        const urlObj = new URL(currentTabUrl);
+        const { customMediaDomains = [] } = await chrome.storage.local.get("customMediaDomains").catch(() => ({}));
+        const baseDomain = matchMediaDomain(urlObj.hostname, customMediaDomains);
+        const targetDomain = baseDomain || urlObj.hostname.toLowerCase().replace(/^www\./, "");
+        const targetUrl = credentialSyncUrl(baseDomain, currentTabUrl);
+        message("正在读取并同步当前站点 Cookie…");
+        const cookies = await readTargetCookies(chrome.cookies, targetUrl, { tab });
+        const cookieHeader = buildCookieHeader(cookies);
+        if (!cookieHeader) {
+          message("未读取到当前站点的可用 Cookie，请确认已登录（无痕模式需使用导出 cookies.txt）", true);
+          return;
+        }
+        if (targetDomain === "pan.baidu.com") {
+          const hasBduss = /(?:^|;\s*)BDUSS=[^;\s]+/.test(cookieHeader);
+          if (!hasBduss) {
+            message("未检测到百度网盘登录 Cookie（缺少 BDUSS），请先登录 pan.baidu.com", true);
+            return;
+          }
+          const hasStoken = /(?:^|;\s*)STOKEN=[^;\s]+/.test(cookieHeader);
+          if (!hasStoken && urlObj.hostname !== "pan.baidu.com" && urlObj.hostname !== "yun.baidu.com") {
+            message("请先切换到 pan.baidu.com 网盘页面后再同步，以获取完整 STOKEN", true);
+            return;
+          }
+        }
+        const response = await call({
+          type: "sync-cookies",
+          domain: targetDomain,
+          cookie: cookieHeader,
+          force: true,
+          userAgent: navigator.userAgent,
+        });
+        if (response?.ok) {
+          message(`已将 ${targetDomain} 凭证同步到桌面端（可在设置页点击检测确认）`);
+        } else {
+          message(`同步失败：${response?.error || "请检查桌面端是否已连接并配对"}`, true);
+        }
+      } catch (error) {
+        message(`同步失败：${error?.message || error}`, true);
+      } finally {
+        authSyncCredentialEl.disabled = false;
       }
     };
   }
@@ -666,7 +734,11 @@ async function renderDiag() {
       const resend = document.createElement("button");
       resend.textContent = "猫步下载";
       resend.title = "把这条下载改用猫步下载器重新下载";
-      resend.onclick = () => send(entry.url, entry.filename);
+      resend.onclick = () => send(
+        entry.url,
+        entry.filename,
+        entry.referrer ? { headers: { Referer: entry.referrer } } : undefined,
+      );
       row.append(resend);
     }
     listEl.append(row);

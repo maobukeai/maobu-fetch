@@ -9,6 +9,11 @@ import { PrecheckPanel } from "../PrecheckPanel";
 import { DetailsConnectionsTab } from "./DetailsConnectionsTab";
 import { DetailsInfoTab } from "./DetailsInfoTab";
 import { SpeedHistoryCard } from "./SpeedHistoryCard";
+import {
+  type DetailsTabKey,
+  type DetailsTabSlideDirection,
+  getTabSlideDirection,
+} from "./details-motion";
 
 const DIAGNOSIS_TAB_STATUSES: TaskStatus[] = [
   "failed",
@@ -40,7 +45,9 @@ export function Details({
 }) {
   useLocale();
   const [showMore, setShowMore] = useState(false);
-  const [tab, setTab] = useState<"info" | "diagnosis" | "precheck" | "connections">("info");
+  const [tab, setTab] = useState<DetailsTabKey>("info");
+  const [slideDir, setSlideDir] = useState<DetailsTabSlideDirection>("none");
+  const prevTabRef = useRef<DetailsTabKey>("info");
   const [precheck, setPrecheck] = useState<{
     loading: boolean;
     result?: PrecheckResult;
@@ -52,14 +59,22 @@ export function Details({
 
   const activeRequestRef = useRef<string | null>(null);
 
+  const selectTab = (nextTab: DetailsTabKey) => {
+    setSlideDir(getTabSlideDirection(prevTabRef.current, nextTab));
+    prevTabRef.current = nextTab;
+    setTab(nextTab);
+  };
+
   useEffect(() => {
     activeRequestRef.current = null;
     setPrecheck({ loading: false });
-    if (taskStatus && DIAGNOSIS_TAB_STATUSES.includes(taskStatus)) {
-      setTab("diagnosis");
-    } else {
-      setTab("info");
-    }
+    const initialTab: DetailsTabKey =
+      taskStatus && DIAGNOSIS_TAB_STATUSES.includes(taskStatus)
+        ? "diagnosis"
+        : "info";
+    setSlideDir("none");
+    prevTabRef.current = initialTab;
+    setTab(initialTab);
   }, [taskId]);
 
   useEffect(() => {
@@ -67,7 +82,7 @@ export function Details({
     activeRequestRef.current = null;
     setPrecheck({ loading: false });
     if (taskStatus && DIAGNOSIS_TAB_STATUSES.includes(taskStatus)) {
-      setTab("diagnosis");
+      selectTab("diagnosis");
     }
   }, [taskStatus]);
 
@@ -152,53 +167,17 @@ export function Details({
             <X size={14} />
           </button>
         </div>
-        <div
-          className="details-scroll"
-          style={{
-            justifyContent: "center",
-            alignItems: "center",
-            color: "var(--muted)",
-            textAlign: "center",
-            padding: "24px 16px",
-            gap: "12px",
-          }}
-        >
-          <Info
-            size={32}
-            strokeWidth={1.5}
-            style={{ opacity: 0.4, marginBottom: "4px" }}
-          />
+        <div className="details-scroll details-empty-state">
+          <Info size={32} strokeWidth={1.5} className="details-empty-icon" />
           {selectedCount > 1 ? (
             <>
-              <h3
-                style={{
-                  fontSize: "12px",
-                  fontWeight: 600,
-                  color: "var(--text)",
-                  margin: 0,
-                }}
-              >
-                {t("details.selectedCount", { count: selectedCount })}
-              </h3>
-              <p style={{ fontSize: "10px", margin: 0, lineHeight: 1.4 }}>
-                {t("details.selectedCountDesc")}
-              </p>
+              <h3>{t("details.selectedCount", { count: selectedCount })}</h3>
+              <p>{t("details.selectedCountDesc")}</p>
             </>
           ) : (
             <>
-              <h3
-                style={{
-                  fontSize: "12px",
-                  fontWeight: 600,
-                  color: "var(--text)",
-                  margin: 0,
-                }}
-              >
-                {t("details.notSelected")}
-              </h3>
-              <p style={{ fontSize: "10px", margin: 0, lineHeight: 1.4 }}>
-                {t("details.notSelectedDesc")}
-              </p>
+              <h3>{t("details.notSelected")}</h3>
+              <p>{t("details.notSelectedDesc")}</p>
             </>
           )}
         </div>
@@ -241,7 +220,7 @@ export function Details({
           role="tab"
           aria-selected={tab === "info"}
           className={tab === "info" ? "active" : ""}
-          onClick={() => setTab("info")}
+          onClick={() => selectTab("info")}
         >
           {t("details.tabInfo")}
         </button>
@@ -249,7 +228,7 @@ export function Details({
           role="tab"
           aria-selected={tab === "diagnosis"}
           className={tab === "diagnosis" ? "active" : ""}
-          onClick={() => setTab("diagnosis")}
+          onClick={() => selectTab("diagnosis")}
         >
           {t("details.tabDiagnosis")}
         </button>
@@ -257,7 +236,7 @@ export function Details({
           role="tab"
           aria-selected={tab === "precheck"}
           className={tab === "precheck" ? "active" : ""}
-          onClick={() => setTab("precheck")}
+          onClick={() => selectTab("precheck")}
         >
           {t("details.tabPrecheck")}
         </button>
@@ -265,51 +244,60 @@ export function Details({
           role="tab"
           aria-selected={tab === "connections"}
           className={tab === "connections" ? "active" : ""}
-          onClick={() => setTab("connections")}
+          onClick={() => selectTab("connections")}
         >
           {t("details.tabConnections")}
         </button>
       </div>
       <div className="details-scroll">
-        {tab === "info" && (
-          <>
-            <SpeedHistoryCard samples={speedHistory} />
-            <DetailsInfoTab
-              task={task}
-              showMore={showMore}
-              onToggleMore={() => setShowMore((v) => !v)}
+        <div
+          key={`${task.id}-${tab}`}
+          className="details-tab-panel"
+          data-slide-dir={slideDir}
+        >
+          {tab === "info" && (
+            <>
+              <section className="details-section-group">
+                <div className="details-eyebrow">{t("details.sectionTelemetry")}</div>
+                <SpeedHistoryCard samples={speedHistory} />
+              </section>
+              <DetailsInfoTab
+                task={task}
+                showMore={showMore}
+                onToggleMore={() => setShowMore((v) => !v)}
+                notify={notify}
+                action={action}
+                onTagsChanged={onTagsChanged}
+              />
+            </>
+          )}
+          {tab === "diagnosis" && (
+            <DiagnosisPanel
+              taskId={task.id}
+              status={task.status}
               notify={notify}
-              action={action}
-              onTagsChanged={onTagsChanged}
+              onOpenProxySettings={onOpenProxySettings}
+              onOpenYouTubeModal={onOpenYouTubeModal}
+              onOpenRefreshUrl={() => onOpenRefreshUrl?.(task)}
+              onTaskChanged={() => {}}
             />
-          </>
-        )}
-        {tab === "diagnosis" && (
-          <DiagnosisPanel
-            taskId={task.id}
-            status={task.status}
-            notify={notify}
-            onOpenProxySettings={onOpenProxySettings}
-            onOpenYouTubeModal={onOpenYouTubeModal}
-            onOpenRefreshUrl={() => onOpenRefreshUrl?.(task)}
-            onTaskChanged={() => {}}
-          />
-        )}
-        {tab === "precheck" && (
-          <PrecheckPanel
-            result={precheck.result}
-            loading={precheck.loading}
-            error={precheck.error}
-            onRefresh={() => void runPrecheck()}
-            compact
-          />
-        )}
-        {tab === "connections" &&
-          (task.task_kind === "bt" ? (
-            <BtDetailsPanel task={task} notify={notify} />
-          ) : (
-            <DetailsConnectionsTab task={task} />
-          ))}
+          )}
+          {tab === "precheck" && (
+            <PrecheckPanel
+              result={precheck.result}
+              loading={precheck.loading}
+              error={precheck.error}
+              onRefresh={() => void runPrecheck()}
+              compact
+            />
+          )}
+          {tab === "connections" &&
+            (task.task_kind === "bt" ? (
+              <BtDetailsPanel task={task} notify={notify} />
+            ) : (
+              <DetailsConnectionsTab task={task} />
+            ))}
+        </div>
       </div>
     </aside>
   );

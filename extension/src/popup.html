@@ -8,6 +8,7 @@
       <button id="useAuthDownload" class="auth-toggle" title="点击展开登录态下载选项" aria-expanded="false" aria-haspopup="true">登录态下载 <i class="caret">▾</i></button>
       <div id="authMenu" class="auth-menu hidden" role="menu">
         <button id="authOneShot" class="auth-item" role="menuitem" title="将当前页 Cookie 一次性传递给桌面端"><span>一次性登录态下载</span><small>仅传当前页 Cookie，不持久化</small></button>
+        <button id="authSyncCredential" class="auth-item" role="menuitem" title="将当前站点 Cookie 强制同步到桌面端「媒体凭证管理」"><span>同步到媒体凭证</span><small>用于网盘/视频站持久化鉴权（覆盖旧凭证）</small></button>
         <button id="authExportCookies" class="auth-item" role="menuitem" title="导出当前页 Cookie 为 cookies.txt 文件"><span>导出 cookies.txt</span><small>用于导入「媒体凭证」持久化保存</small></button>
       </div>
     </div>
@@ -17,7 +18,7 @@
     <div class="site-actions">
       <button id="siteAlwaysTake" title="此站点的下载总是交给猫步下载器（跳过大小/类型规则）">总是接管</button>
       <button id="siteAlwaysBypass" title="此站点的下载总是由浏览器处理">总是放行</button>
-      <button id="grabPageResources" title="提取当前页面中的全部音视频、图片、压缩包与下载链接">📦 抓取资源</button>
+      <button id="grabPageResources" title="提取当前页面中的全部音视频、图片、压缩包与下载链接">抓取资源</button>
       <button id="sniffToggle" title="为此站点开启流嗅探：记录页面播放器发出的媒体直链（仅内存，不上传）">流嗅探：关</button>
       <button id="siteClearChoice" class="hidden" title="清除记住的站点选择">清除记忆</button>
       <button id="restoreFab" class="hidden" title="重新在此站点显示页内悬浮下载按钮">恢复悬浮按钮</button>

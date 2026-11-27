@@ -1,0 +1,283 @@
+/*
+ * 第 3 页：新建任务弹窗（方案 C · 双栏宽幅效率台 Compact Split Composer）。
+ * 桌面上呈 656px 宽幅双栏（左栏输入源/目录/文件名，右栏并发/重名/实时预检），
+ * 窄窗（<= 680px）自动回退单栏，确保常规新建免滚动且在 1280×720@1.25× 下不越界。
+ * 弹出与收缩退场动效由全局 modal-motion 引擎统一接管。
+ */
+
+.dialog.new-task-dialog {
+  width: min(656px, calc(100vw - 40px));
+  height: min(548px, calc(100vh - 56px));
+  max-height: calc(100vh - 56px);
+  padding: 16px 18px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.dialog.new-task-dialog .settings-title {
+  margin-bottom: 10px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.dialog.new-task-dialog .settings-title h2 {
+  font-size: 15px;
+  font-weight: 600;
+  margin: 0;
+}
+
+.dialog.new-task-dialog .new-task-form {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  gap: 0;
+}
+
+.dialog.new-task-dialog .new-task-scrollable {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding-right: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  scrollbar-width: thin;
+}
+
+.dialog.new-task-dialog .new-task-scrollable::-webkit-scrollbar {
+  width: 5px;
+}
+
+.dialog.new-task-dialog .new-task-scrollable::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: 99px;
+}
+
+/* 宽幅双栏容器（<= 680px 回退单栏） */
+.new-task-split {
+  display: grid;
+  grid-template-columns: minmax(0, 1.18fr) minmax(0, 0.82fr);
+  gap: 12px;
+  align-items: start;
+}
+
+@media (max-width: 680px) {
+  .new-task-split {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 10px;
+  }
+}
+
+.new-task-col-main,
+.new-task-col-side {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+
+/* 一体式 URL 命令框（history dropdown 挂载在外层 .new-task-url-shell，不被 overflow 裁切） */
+.new-task-url-shell {
+  position: relative;
+}
+
+.new-task-cmd-box {
+  border: 1px solid var(--border-strong);
+  border-radius: 7px;
+  background: var(--control);
+  overflow: hidden;
+  transition: border-color 140ms ease, box-shadow 140ms ease;
+}
+
+.new-task-cmd-box:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-light);
+}
+
+.new-task-cmd-box .url-input-wrap textarea {
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  min-height: 62px;
+  padding: 7px 10px;
+  resize: vertical;
+}
+
+.new-task-cmd-box .url-input-wrap textarea:focus {
+  border: none;
+  background: transparent;
+  box-shadow: none;
+}
+
+.new-task-cmd-box .url-input-tools-bar {
+  margin-top: 0;
+  padding: 5px 8px;
+  border-top: 1px solid var(--border);
+  background: var(--surface-alt);
+  gap: 6px 8px;
+  flex-wrap: wrap;
+}
+
+:root[data-window-style="frosted"] .new-task-cmd-box .url-input-tools-bar {
+  background: rgba(15, 23, 42, 0.045);
+}
+
+:root[data-theme="dark"][data-window-style="frosted"] .new-task-cmd-box .url-input-tools-bar {
+  background: rgba(255, 255, 255, 0.045);
+}
+
+.new-task-cmd-box .url-input-tools-left,
+.new-task-cmd-box .url-input-tools-right {
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.new-task-cmd-box .torrent-pick-button {
+  background: var(--control);
+  color: var(--text);
+  border-color: var(--border-strong);
+}
+
+.new-task-cmd-box .torrent-pick-button:hover:not(:disabled) {
+  background: var(--surface-hover);
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.new-task-url-shell .url-history-dropdown {
+  margin-top: 4px;
+  z-index: 25;
+}
+
+/* 保存位置与文件名输入组合紧凑精修 */
+.dialog.new-task-dialog .input-group {
+  display: flex;
+  gap: 6px;
+  align-items: stretch;
+}
+
+.dialog.new-task-dialog .input-group > input {
+  flex: 1;
+  min-width: 0;
+  background: var(--control);
+  color: var(--text);
+}
+
+.dialog.new-task-dialog .input-button {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+/* 右栏常驻参数卡（连接数、重名处理、实时预检） */
+.new-task-side-card {
+  padding: 9px 10px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--surface-solid);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+:root[data-window-style="frosted"] .new-task-side-card {
+  background: rgba(255, 255, 255, 0.56);
+}
+
+:root[data-theme="dark"][data-window-style="frosted"] .new-task-side-card {
+  background: rgba(34, 36, 43, 0.58);
+}
+
+.new-task-side-card .form-field {
+  gap: 5px;
+}
+
+.new-task-side-card .field-helper-text {
+  white-space: normal;
+  line-height: 1.35;
+  min-height: 0;
+}
+
+.new-task-col-side .precheck-panel {
+  margin: 0;
+  border-radius: 7px;
+  transition: opacity 150ms ease;
+}
+
+/* 跨栏区（媒体探测结果 / 高级选项 / 行内报错） */
+.new-task-full-span {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.new-task-full-span .advanced-options-panel {
+  animation: nt-adv-enter 160ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@keyframes nt-adv-enter {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* 粘性底栏精修：去掉旧负边距，左摘要 + 右操作按钮 */
+.dialog.new-task-dialog .new-task-sticky-footer {
+  flex-shrink: 0;
+  margin-top: 8px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.dialog.new-task-dialog .dialog-actions.new-task-actions {
+  position: static;
+  margin: 0;
+  padding: 0;
+  border-top: none;
+  background: transparent;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.new-task-footer-summary {
+  font-size: 10.5px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.new-task-footer-buttons {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .new-task-full-span .advanced-options-panel {
+    animation: none !important;
+  }
+  .new-task-cmd-box,
+  .new-task-col-side .precheck-panel {
+    transition: none !important;
+  }
+}

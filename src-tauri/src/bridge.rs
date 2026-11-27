@@ -5,7 +5,7 @@ use crate::{
 };
 use axum::{
     body::Bytes,
-    extract::{Path, State},
+    extract::{DefaultBodyLimit, Path, State},
     http::{HeaderMap, StatusCode},
     response::IntoResponse,
     routing::{get, post},
@@ -119,6 +119,10 @@ struct ProbeRequest {
 struct MediaCredentialSyncRequest {
     domain: String,
     cookie: String,
+    #[serde(default)]
+    force: bool,
+    #[serde(default)]
+    user_agent: Option<String>,
 }
 
 /// `/v1/tasks/recent` 单条任务摘要（SubTask 13.1）。
@@ -174,6 +178,7 @@ pub async fn run(manager: SharedManager, pairing: PairingService, app: AppHandle
         let _ = axum::serve(listener, router).await;
     }
 }
+mod baidu_download;
 mod smoke_guard;
 
 fn router(manager: SharedManager, pairing: PairingService, app: AppHandle) -> Router {
@@ -189,6 +194,10 @@ fn router(manager: SharedManager, pairing: PairingService, app: AppHandle) -> Ro
         .route("/v1/health", get(health))
         .route("/v1/pair", post(pair))
         .route("/v1/tasks", post(add_task))
+        .route(
+            "/v1/tasks/verify-baidu-download",
+            post(baidu_download::verify).layer(DefaultBodyLimit::max(32 * 1024)),
+        )
         .route("/v1/tasks/recent", get(recent_tasks))
         .route("/v1/tasks/{id}/action", post(task_action))
         .route("/v1/media/probe", post(probe_media))
@@ -518,11 +527,16 @@ async fn sync_media_credentials(
         return Err((StatusCode::BAD_REQUEST, "不支持的媒体域名".into()));
     }
 
+    let sanitized_ua = req
+        .user_agent
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty() && !s.chars().any(char::is_control));
+
     let mut cred = crate::models::MediaCredential {
         domain: domain.clone(),
         cookie: req.cookie,
         referer: None,
-        user_agent: None,
+        user_agent: sanitized_ua.clone(),
         updated_at: crate::now_iso8601_utc(),
     };
 
@@ -532,17 +546,17 @@ async fn sync_media_credentials(
         .media_credential_get_matching(&domain)
         .await
     {
-        // 保护用户手动配置：如果已存在的 Cookie 是 Netscape cookies.txt 格式
-        // （只能由用户从「导出 cookies.txt」按钮导出后手动导入，扩展自动同步
-        // 永远只发 HTTP 头格式），则不允许被自动同步覆盖。这避免了
-        // "用户导出无痕窗口 cookies.txt 导入 → 打开 youtube.com 网页 →
-        //   扩展自动同步把普通窗口 Cookie 覆盖掉手动配置" 的数据丢失场景。
+        // 保护用户手动配置：当已存在凭证为 Netscape cookies.txt 格式时，
+        // 被动后台自动同步（force == false）不得覆盖；但用户通过扩展弹窗点击
+        // 「同步到媒体凭证」（force == true）属于显式用户触发，允许刷新覆盖。
         // 参见 AGENTS.md §7：不得改变用户设置，除非操作由用户明确触发。
-        if crate::media_cookies::should_skip_auto_sync(&existing.cookie, &cred.cookie) {
+        if !req.force
+            && crate::media_cookies::should_skip_auto_sync(&existing.cookie, &cred.cookie)
+        {
             return Ok(StatusCode::OK);
         }
         cred.referer = existing.referer;
-        cred.user_agent = existing.user_agent;
+        cred.user_agent = existing.user_agent.or(sanitized_ua);
     }
 
     state
@@ -961,5 +975,26 @@ mod tests {
         headers.clear();
         headers.insert("USER-AGENT".to_string(), "TestBrowser/1.0".to_string());
         assert!(has_auth_headers(&headers));
+    }
+
+    #[test]
+    fn media_credential_sync_request_defaults_force_and_user_agent() {
+        let legacy: MediaCredentialSyncRequest = serde_json::from_value(serde_json::json!({
+            "domain": "pan.baidu.com",
+            "cookie": "BDUSS=abc"
+        }))
+        .unwrap();
+        assert!(!legacy.force);
+        assert!(legacy.user_agent.is_none());
+
+        let forced: MediaCredentialSyncRequest = serde_json::from_value(serde_json::json!({
+            "domain": "pan.baidu.com",
+            "cookie": "BDUSS=abc; STOKEN=def",
+            "force": true,
+            "user_agent": "CustomUA/1.0"
+        }))
+        .unwrap();
+        assert!(forced.force);
+        assert_eq!(forced.user_agent.as_deref(), Some("CustomUA/1.0"));
     }
 }

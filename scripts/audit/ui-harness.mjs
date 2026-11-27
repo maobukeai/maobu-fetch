@@ -5,11 +5,24 @@ import React from 'react';
 import { createRoot } from 'react-dom/client';
 import App from '/src/App.tsx';
 import { Select } from '/src/components/Select.tsx';
-import { CompletionToast } from '/src/components/CompletionToast.tsx';
 import { api } from '/src/api.ts';
+import { installNativeAudit } from '/scripts/audit/ui-native-fixture.mjs';
 import '/src/styles.css';
+import '/src/styles/workspace-precision.css';
+import '/src/styles/magnetic-switch.css';
+import '/src/styles/details-structured.css';
+import '/src/styles/new-task-composer.css';
+import '/src/styles/modal-motion.css';
+import '/src/styles/settings-fusion.css';
+import '/src/styles/filter-precision.css';
+import '/src/styles/modals-context-precision.css';
+import { installGlobalMagneticSwitch } from '/src/components/common/magnetic-switch/engine.ts';
+import { installGlobalModalMotion } from '/src/components/common/modal-motion/engine.ts';
+installGlobalMagneticSwitch();
+installGlobalModalMotion();
 const params = new URLSearchParams(location.search);
 const calls = [];
+if (params.get('native') === '1') await installNativeAudit(api, calls);
 const listeners = new Set();
 let taskListener;
 let settingListener;
@@ -52,20 +65,11 @@ api.saveSettings = async (settings) => { window.audit.saved = settings; };
 api.getWaitReason = async () => ({ reason: 'unknown' });
 api.getSpeedHistory = async () => [];
 api.diagnose = async () => null;
-window.audit = { calls, tasks, failOpen: false,
+window.audit = { calls, tasks, failOpen: false, get notificationListenerCount() { return listeners.size; },
   emit: (id = 'audit-0') => listeners.forEach(fn => fn({ task_id: id, kind: 'completed', title: '下载完成：' + tasks[0]?.file_name, body: '已保存到测试目录' })),
   updateTask: (task) => taskListener?.({task}),
   updateSettings: (settings) => settingListener?.(settings),
 };
-function NoticeHarness() {
-  const [notices, setNotices] = React.useState([]);
-  const dismiss = React.useCallback(id => setNotices(items => items.filter(x => x.task_id !== id)), []);
-  window.audit.emit = (id = 'audit-0') => setNotices(items => [...items, {task_id:id, kind:'completed', title:'下载完成：' + '很长的文件名'.repeat(22) + '.mp4', body:'已保存到测试目录'}]);
-  return React.createElement('div', {className:'toast-stack'}, React.createElement(CompletionToast, {
-    notices, durationSeconds:Number(params.get('duration') ?? 30), onDismiss:dismiss,
-    onView:id => calls.push(['view', id]), onError:message => calls.push(['error', message]),
-  }));
-}
 function SelectHarness() {
   const [value,setValue] = React.useState('first');
   return React.createElement('div', null,
@@ -73,5 +77,5 @@ function SelectHarness() {
       {value:'first',label:'第一个'}, {value:'blocked',label:'禁用选项',disabled:true}, {value:'third',label:'第三个'},
     ]}), React.createElement('button',{id:'after-select'},'下一个控件'));
 }
-createRoot(document.getElementById('root')).render(React.createElement(params.get('mode') === 'notice' ? NoticeHarness : params.get('mode') === 'select' ? SelectHarness : App));
+createRoot(document.getElementById('root')).render(React.createElement(params.get('mode') === 'select' ? SelectHarness : App));
 </script></body></html>`;

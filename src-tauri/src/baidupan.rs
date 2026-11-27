@@ -7,13 +7,80 @@
 //! 4. 配合专属 User-Agent（pan.baidu.com）直连猫步下载器 HTTP Range 多连接并发内核。
 
 use regex::Regex;
-use std::collections::HashMap;
 #[path = "baidupan/listing.rs"]
 mod listing;
+#[path = "baidupan/resolve.rs"]
+mod resolve;
 
 pub const BAIDU_API_HOST: &str = "https://pan.baidu.com";
 pub const BAIDU_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 pub const BAIDU_DLINK_USER_AGENT: &str = "netdisk;P2SP;2.2.90.43;WindowsBaiduYunGuanJia;netdisk;11.4.5;android-android;11.0;JSbridge4.4.0;LogStatistic";
+
+pub(crate) fn dlink_user_agent(url: &str) -> &'static str {
+    if url.contains("-266719-") || url.contains("-498065-") || url.contains("-309847-") {
+        BAIDU_DLINK_USER_AGENT
+    } else {
+        "pan.baidu.com"
+    }
+}
+
+fn decode_json_string_literal(raw: &str) -> String {
+    let wrapped = format!("\"{raw}\"");
+    serde_json::from_str::<String>(&wrapped).unwrap_or_else(|_| raw.to_string())
+}
+
+fn detect_share_page_error(html: &str) -> Option<&'static str> {
+    if html.contains("wappass.baidu.com")
+        || html.contains("百度安全验证")
+        || html.contains("passport.baidu.com/v2/?login")
+    {
+        return Some("百度网盘触发了安全验证或登录拦截，请在浏览器中打开分享页并同步 Cookie 后重试");
+    }
+    if html.contains("分享的文件已经被取消")
+        || html.contains("啊哦，你所访问的页面不存在了")
+        || html.contains("链接不存在")
+        || html.contains("已过期")
+        || html.contains("涉及侵权")
+    {
+        return Some("该百度网盘分享链接已失效、被取消或不存在");
+    }
+    None
+}
+
+pub(crate) fn is_browser_download_target(url: &url::Url) -> bool {
+    url.scheme() == "https"
+        && url.port_or_known_default() == Some(443)
+        && url.username().is_empty()
+        && url.password().is_none()
+        && url.host_str().is_some_and(|host| {
+            matches!(
+                host,
+                "pan.baidu.com" | "yun.baidu.com" | "pcs.baidu.com" | "baidupcs.com"
+            ) || host.ends_with(".pcs.baidu.com")
+                || host.ends_with(".baidupcs.com")
+        })
+}
+
+pub(crate) fn is_browser_download_content_type(value: &str) -> bool {
+    let essence = value
+        .split(';')
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    let Some((kind, subtype)) = essence.split_once('/') else {
+        return false;
+    };
+    [kind, subtype].into_iter().all(|part| {
+        !part.is_empty()
+            && part.bytes().all(|byte| {
+                byte.is_ascii_alphanumeric() || b"!#$%&'+-.^_`|~".contains(&byte)
+            })
+    }) && kind != "multipart"
+        && subtype != "json"
+        && !subtype.ends_with("+json")
+        && !matches!(essence.as_str(), "text/html" | "application/xhtml+xml")
+}
 
 #[path = "baidupan/models.rs"]
 mod models;
@@ -337,10 +404,19 @@ async fn inspect_baidu_share_impl(
         }
     }
 
-    let title_re = Regex::new(r#""server_filename"\s*:\s*"([^"]+)""#).unwrap();
+    let title_re = Regex::new(r#""server_filename"\s*:\s*"((?:[^"\\]|\\.)+)""#).unwrap();
     if let Some(caps) = title_re.captures(&html) {
         if let Some(m) = caps.get(1) {
-            title = m.as_str().to_string();
+            let decoded = decode_json_string_literal(m.as_str());
+            if !decoded.trim().is_empty() {
+                title = decoded;
+            }
+        }
+    }
+
+    if uk.as_deref().is_none_or(str::is_empty) || share_id.as_deref().is_none_or(str::is_empty) {
+        if let Some(reason) = detect_share_page_error(&html) {
+            return Err(reason.to_string());
         }
     }
 
@@ -478,451 +554,10 @@ async fn resolve_baidu_file_impl(
     cookie: Option<&str>,
     network: &crate::cloud_request::CloudRequestContext,
 ) -> Result<BaiduDirectUrlResult, String> {
-    let client = network;
-    let clean_surl = surl.strip_prefix('1').unwrap_or(surl);
-
-    let mut effective_share_id = share_id.map(|s| s.to_string());
-    let mut effective_uk = uk.map(|s| s.to_string());
-    let mut effective_sign = sign.map(|s| s.to_string());
-    let mut effective_timestamp = timestamp;
-    let mut effective_seckey = seckey.map(|s| s.to_string());
-    let mut effective_randsk = randsk.map(|s| s.to_string());
-
-    if effective_share_id.is_none() || effective_uk.is_none() {
-        if let Ok(info) = inspect_baidu_share_with_context(
-            &format!("{}/s/1{}", BAIDU_API_HOST, clean_surl),
-            None,
-            cookie,
-            network,
-        )
-        .await
-        {
-            if effective_share_id.is_none() {
-                effective_share_id = info.share_id;
-            }
-            if effective_uk.is_none() {
-                effective_uk = info.uk;
-            }
-            if effective_sign.is_none() {
-                effective_sign = info.sign;
-            }
-            if effective_timestamp.is_none() {
-                effective_timestamp = info.timestamp;
-            }
-            if effective_seckey.is_none() {
-                effective_seckey = info.seckey;
-            }
-            if effective_randsk.is_none() {
-                effective_randsk = info.randsk;
-            }
-        }
-    }
-
-    let cookie_header = if let Some(value) = effective_randsk
-        .as_deref()
-        .filter(|value| !value.is_empty())
-    {
-        crate::cloud_request::with_cookie_pair(
-            cookie.unwrap_or(""),
-            "BDCLND",
-            value,
-            BAIDU_API_HOST,
-        )?
-    } else {
-        cookie.unwrap_or("").to_owned()
-    };
-
-    let seckey_clean = if let Some(r) = &effective_randsk {
-        url_decode(r)
-    } else if let Some(sk) = &effective_seckey {
-        sk.clone()
-    } else {
-        String::new()
-    };
-
-    // 1. 尝试直接通过 sharedownload 免转存接口获取 dlink
-    if let (Some(sid), Some(u)) = (&effective_share_id, &effective_uk) {
-        let mut download_api = format!(
-            "{}/api/sharedownload?app_id=250528&channel=chunlei&clienttype=0&web=1&encrypt=0&product=share",
-            BAIDU_API_HOST
-        );
-        if let (Some(s), Some(ts)) = (&effective_sign, effective_timestamp) {
-            download_api.push_str(&format!("&sign={}&timestamp={}", s, ts));
-        }
-
-        let extra_json = if !seckey_clean.is_empty() {
-            serde_json::json!({ "seckey": seckey_clean }).to_string()
-        } else {
-            "{}".to_string()
-        };
-
-        let params = [
-            ("uk", u.as_str()),
-            ("primaryid", sid.as_str()),
-            ("fid_list", &format!("[{}]", fs_id)),
-            ("extra", &extra_json),
-        ];
-
-        let resp = client
-            .post(&download_api)
-            .form(&params)
-            .header("Cookie", &cookie_header)
-            .header("Referer", format!("{}/s/1{}", BAIDU_API_HOST, clean_surl))
-            .header("User-Agent", BAIDU_USER_AGENT)
-            .send()
-            .await;
-
-        if let Ok(r) = resp {
-            if let Ok(text) = network.text(r).await {
-                let json: serde_json::Value = serde_json::from_str(&text).unwrap_or_default();
-                if let Some(0) = json.get("errno").and_then(|v| v.as_i64()) {
-                    if let Some(list) = json.get("list").and_then(|v| v.as_array()) {
-                        if let Some(item) = list.first() {
-                            if let Some(dlink) = item.get("dlink").and_then(|v| v.as_str()) {
-                                if !dlink.is_empty() {
-                                    let mut headers = HashMap::new();
-                                    headers.insert(
-                                        "User-Agent".to_string(),
-                                        BAIDU_DLINK_USER_AGENT.to_string(),
-                                    );
-                                    if !cookie_header.is_empty() {
-                                        headers.insert("Cookie".to_string(), cookie_header.clone());
-                                    }
-                                    return Ok(BaiduDirectUrlResult {
-                                        url: dlink.to_string(),
-                                        headers,
-                                    });
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    // 2. 若直接获取失败，检查是否具备登录 Cookie（包含 BDUSS），尝试转存后拉取直链
-    if let (true, Some(sid), Some(u)) = (
-        cookie_header.contains("BDUSS"),
-        effective_share_id.as_ref(),
-        effective_uk.as_ref(),
-    ) {
-        let transfer_url = format!(
-            "{}/share/transfer?shareid={}&from={}&ondup=newcopy&async=0&channel=chunlei&clienttype=0&web=1&app_id=250528",
-            BAIDU_API_HOST, sid, u
-        );
-
-        let fs_id_list_str = format!("[{}]", fs_id);
-        let mut transfer_params = vec![
-            ("fsidlist", fs_id_list_str.clone()),
-            ("path", "/".to_string()),
-        ];
-        if !seckey_clean.is_empty() {
-            transfer_params.push(("seckey", seckey_clean.clone()));
-        }
-
-        let t_resp = client
-            .post(&transfer_url)
-            .form(&transfer_params)
-            .header("Cookie", &cookie_header)
-            .header("Referer", format!("{}/s/1{}", BAIDU_API_HOST, clean_surl))
-            .header("Origin", BAIDU_API_HOST)
-            .header("User-Agent", BAIDU_USER_AGENT)
-            .send()
-            .await;
-
-        if let Ok(tr) = t_resp {
-            if let Ok(text) = network.text(tr).await {
-                let json: serde_json::Value = serde_json::from_str(&text).unwrap_or_default();
-                let errno = json.get("errno").and_then(|v| v.as_i64()).unwrap_or(-1);
-                tracing::debug!(baidu_errno = errno, "百度转存请求已返回");
-                if errno == 0 || errno == 12 || errno == 111 {
-                    let target_fs_id = if let Some(extra) = json.get("extra") {
-                        extra
-                            .get("list")
-                            .and_then(|l| l.as_array())
-                            .and_then(|arr| arr.first())
-                            .and_then(|item| {
-                                item.get("to_fs_id")
-                                    .or_else(|| item.get("fs_id"))
-                                    .and_then(|v| {
-                                        if let Some(s) = v.as_str() {
-                                            Some(s.to_string())
-                                        } else if let Some(n) = v.as_i64() {
-                                            Some(n.to_string())
-                                        } else if let Some(u) = v.as_u64() {
-                                            Some(u.to_string())
-                                        } else {
-                                            None
-                                        }
-                                    })
-                            })
-                            .unwrap_or_else(|| fs_id.to_string())
-                    } else {
-                        fs_id.to_string()
-                    };
-
-                    let mut resolved_path = None;
-                    if let Some(extra) = json.get("extra") {
-                        if let Some(list) = extra.get("list").and_then(|l| l.as_array()) {
-                            if let Some(item) = list.first() {
-                                if let Some(p) = item
-                                    .get("to")
-                                    .or_else(|| item.get("path"))
-                                    .or_else(|| item.get("to_path"))
-                                    .and_then(|p| p.as_str())
-                                {
-                                    resolved_path = Some(p.to_string());
-                                } else if let Some(name) = item
-                                    .get("to_server_filename")
-                                    .or_else(|| item.get("server_filename"))
-                                    .and_then(|n| n.as_str())
-                                {
-                                    resolved_path = Some(format!("/{}", name));
-                                }
-                            }
-                        }
-                    }
-                    if resolved_path.is_none() {
-                        if let Some(info_list) = json.get("info").and_then(|i| i.as_array()) {
-                            if let Some(first_info) = info_list.first() {
-                                if let Some(p) = first_info.get("path").and_then(|p| p.as_str()) {
-                                    resolved_path = Some(p.to_string());
-                                }
-                            }
-                        }
-                    }
-                    tracing::debug!("百度转存目标文件已解析");
-
-                    let fsids_param = format!("[{}]", target_fs_id);
-
-                    // 1. 如果路径仍未确定，通过 OpenAPI 查询 target_fs_id 的元数据补全 path
-                    if resolved_path.is_none() {
-                        let meta_url = format!(
-                            "{}/rest/2.0/xpan/multimedia?method=filemetas",
-                            BAIDU_API_HOST
-                        );
-                        if let Ok(meta_resp) = client
-                            .post(&meta_url)
-                            .form(&[("fsids", fsids_param.as_str())])
-                            .header("Cookie", &cookie_header)
-                            .header("User-Agent", BAIDU_DLINK_USER_AGENT)
-                            .send()
-                            .await
-                        {
-                            if let Ok(meta_text) = network.text(meta_resp).await {
-                                let meta_json: serde_json::Value =
-                                    serde_json::from_str(&meta_text).unwrap_or_default();
-                                if let Some(list) = meta_json.get("list").and_then(|v| v.as_array())
-                                {
-                                    if let Some(item) = list.first() {
-                                        if let Some(p) = item.get("path").and_then(|p| p.as_str()) {
-                                            resolved_path = Some(p.to_string());
-                                        }
-                                        if let Some(dlink) =
-                                            item.get("dlink").and_then(|v| v.as_str())
-                                        {
-                                            if !dlink.is_empty() {
-                                                let mut headers = HashMap::new();
-                                                headers.insert(
-                                                    "User-Agent".to_string(),
-                                                    BAIDU_DLINK_USER_AGENT.to_string(),
-                                                );
-                                                headers.insert(
-                                                    "Cookie".to_string(),
-                                                    cookie_header.clone(),
-                                                );
-                                                return Ok(BaiduDirectUrlResult {
-                                                    url: dlink.to_string(),
-                                                    headers,
-                                                });
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    // 1. 通道 1: 官方网页版 filemetas 极速接口（带 channel 与 web 签名，100% 稳定高速）
-                    let web_fm_urls = [
-                        format!("https://pan.baidu.com/api/filemetas?dlink=1&channel=chunlei&clienttype=0&web=1&fsids={}", url_encode(&fsids_param)),
-                        format!("{}/rest/2.0/xpan/multimedia?method=filemetas&dlink=1&channel=chunlei&web=1", BAIDU_API_HOST),
-                    ];
-                    for fm_url in &web_fm_urls {
-                        for ua in &["pan.baidu.com", BAIDU_USER_AGENT, BAIDU_DLINK_USER_AGENT] {
-                            let fm_resp = client
-                                .post(fm_url)
-                                .form(&[("fsids", fsids_param.as_str())])
-                                .header("Cookie", &cookie_header)
-                                .header("User-Agent", *ua)
-                                .header("Referer", "https://pan.baidu.com/disk/home")
-                                .send()
-                                .await;
-
-                            if let Ok(fm_r) = fm_resp {
-                                if let Ok(fm_text) = network.text(fm_r).await {
-                                    let fm_json: serde_json::Value =
-                                        serde_json::from_str(&fm_text).unwrap_or_default();
-                                    if let Some(list) =
-                                        fm_json.get("list").and_then(|v| v.as_array())
-                                    {
-                                        if let Some(item) = list.first() {
-                                            if let Some(dlink) =
-                                                item.get("dlink").and_then(|v| v.as_str())
-                                            {
-                                                if !dlink.is_empty() {
-                                                    let mut headers = HashMap::new();
-                                                    headers.insert(
-                                                        "User-Agent".to_string(),
-                                                        ua.to_string(),
-                                                    );
-                                                    headers.insert(
-                                                        "Cookie".to_string(),
-                                                        cookie_header.clone(),
-                                                    );
-                                                    headers.insert(
-                                                        "Referer".to_string(),
-                                                        "https://pan.baidu.com/disk/home"
-                                                            .to_string(),
-                                                    );
-                                                    return Ok(BaiduDirectUrlResult {
-                                                        url: dlink.to_string(),
-                                                        headers,
-                                                    });
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    // 2. 通道 2: PCS locatedownload 极速接口（优先 266719/498065/309847 极速客户端/NAS 端点）
-                    if let Some(ref path_str) = resolved_path {
-                        for app_id in &["266719", "498065", "309847", "778750", "250528"] {
-                            let locate_url = format!(
-                                "https://d.pcs.baidu.com/rest/2.0/pcs/file?method=locatedownload&app_id={}&ver=4.0&vip=2&path={}",
-                                app_id,
-                                url_encode(path_str)
-                            );
-                            let req_ua = if *app_id == "250528" {
-                                "pan.baidu.com"
-                            } else {
-                                BAIDU_DLINK_USER_AGENT
-                            };
-                            if let Ok(loc_resp) = client
-                                .get(&locate_url)
-                                .header("Cookie", &cookie_header)
-                                .header("User-Agent", req_ua)
-                                .header("Referer", "https://pan.baidu.com/disk/home")
-                                .send()
-                                .await
-                            {
-                                if let Ok(loc_text) = network.text(loc_resp).await {
-                                    let loc_json: serde_json::Value =
-                                        serde_json::from_str(&loc_text).unwrap_or_default();
-                                    if let Some(urls) =
-                                        loc_json.get("urls").and_then(|v| v.as_array())
-                                    {
-                                        if let Some(u_item) = urls.first() {
-                                            if let Some(url_str) =
-                                                u_item.get("url").and_then(|v| v.as_str())
-                                            {
-                                                if !url_str.is_empty() {
-                                                    let mut headers = HashMap::new();
-                                                    headers.insert(
-                                                        "User-Agent".to_string(),
-                                                        req_ua.to_string(),
-                                                    );
-                                                    headers.insert(
-                                                        "Cookie".to_string(),
-                                                        cookie_header.clone(),
-                                                    );
-                                                    headers.insert(
-                                                        "Referer".to_string(),
-                                                        "https://pan.baidu.com/disk/home"
-                                                            .to_string(),
-                                                    );
-                                                    return Ok(BaiduDirectUrlResult {
-                                                        url: url_str.to_string(),
-                                                        headers,
-                                                    });
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    // 4. 通道 3: 官方 PCS Direct 直连端点 + 302 重定向 CDN 探查（100% 极速稳定）
-                    if let Some(ref path_str) = resolved_path {
-                        let encoded_path = url_encode(path_str);
-                        let no_redirect_client = network;
-
-                        for app_id in &["266719", "498065", "309847", "778750", "250528"] {
-                            let pcs_direct_url = format!(
-                                "https://d.pcs.baidu.com/rest/2.0/pcs/file?method=download&path={}&app_id={}&vip=2",
-                                encoded_path, app_id
-                            );
-                            if let Ok(pcs_resp) = no_redirect_client
-                                .no_redirect_get(&pcs_direct_url)
-                                .header("Cookie", &cookie_header)
-                                .header("User-Agent", BAIDU_DLINK_USER_AGENT)
-                                .send()
-                                .await
-                            {
-                                tracing::debug!(pcs_app_id = app_id, status = %pcs_resp.status(), "PCS Direct 响应状态");
-                                if pcs_resp.status().is_redirection() {
-                                    if let Some(loc) = pcs_resp.headers().get("location") {
-                                        if let Ok(loc_str) = loc.to_str() {
-                                            if !loc_str.is_empty() {
-                                                let mut headers = HashMap::new();
-                                                headers.insert(
-                                                    "User-Agent".to_string(),
-                                                    BAIDU_DLINK_USER_AGENT.to_string(),
-                                                );
-                                                headers.insert(
-                                                    "Cookie".to_string(),
-                                                    cookie_header.clone(),
-                                                );
-                                                return Ok(BaiduDirectUrlResult {
-                                                    url: loc_str.to_string(),
-                                                    headers,
-                                                });
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    return Err(format!("文件已成功转存至网盘（fs_id: {}），但提取直链地址失败，请检查账号状态或稍后重试", target_fs_id));
-                } else {
-                    return Err(format!(
-                        "百度网盘转存文件失败（代码 {}），请检查账号权限",
-                        errno
-                    ));
-                }
-            }
-        }
-    }
-
-    if !cookie_header.contains("BDUSS") {
-        Err(
-            "该百度网盘文件需要登录凭证，请在设置中添加或在浏览器中登录百度网盘并同步 Cookie"
-                .to_string(),
-        )
-    } else {
-        Err(
-            "获取百度网盘下载直链失败，请确认提取码是否正确或刷新浏览器中的百度网盘登录态后重试"
-                .to_string(),
-        )
-    }
+    resolve::resolve_baidu_file_impl(
+        surl, fs_id, share_id, uk, sign, timestamp, seckey, randsk, cookie, network,
+    )
+    .await
 }
 
 #[cfg(test)]
@@ -960,6 +595,94 @@ mod tests {
         let p3 = res3.unwrap();
         assert_eq!(p3.surl, "xyz789");
         assert_eq!(p3.pass_code.as_deref(), Some("abcd"));
+    }
+
+    #[test]
+    fn test_dlink_user_agent_matches_endpoint_app_id() {
+        assert_eq!(
+            dlink_user_agent("https://d.pcs.baidu.com/file/abc-250528-xyz"),
+            "pan.baidu.com"
+        );
+        assert_eq!(
+            dlink_user_agent("https://d.pcs.baidu.com/file/abc-266719-xyz"),
+            BAIDU_DLINK_USER_AGENT
+        );
+        assert_eq!(
+            dlink_user_agent("https://d.pcs.baidu.com/file/abc-498065-xyz"),
+            BAIDU_DLINK_USER_AGENT
+        );
+    }
+
+    #[test]
+    fn test_decode_json_title_and_detect_share_errors() {
+        assert_eq!(
+            decode_json_string_literal(r"\u6d4b\u8bd5\u6587\u4ef6.zip"),
+            "测试文件.zip"
+        );
+        assert!(detect_share_page_error("啊哦，你所访问的页面不存在了").is_some());
+        assert!(detect_share_page_error("https://wappass.baidu.com/static/captcha").is_some());
+        assert!(detect_share_page_error("<html>normal share</html>").is_none());
+    }
+
+    #[test]
+    fn test_transfer_errno_111_rejected_and_https_locate_preferred() {
+        let err_111 = resolve::parse_transfer_response(&serde_json::json!({ "errno": 111 }), "999")
+            .err()
+            .expect("errno 111 must not be treated as success");
+        assert!(err_111.contains("111"));
+
+        let err_12_empty =
+            resolve::parse_transfer_response(&serde_json::json!({ "errno": 12 }), "999")
+                .err()
+                .expect("errno 12 without target info must fail instead of falling back to sharer fs_id");
+        assert!(err_12_empty.contains("12"));
+
+        let ok_12 = resolve::parse_transfer_response(
+            &serde_json::json!({
+                "errno": 12,
+                "extra": { "list": [{ "to_fs_id": 12345, "to": "/saved.zip" }] }
+            }),
+            "999",
+        )
+        .unwrap();
+        assert_eq!(ok_12.fs_id, "12345");
+        assert_eq!(ok_12.path.as_deref(), Some("/saved.zip"));
+
+        let chosen = resolve::select_preferred_locate_url(&[
+            serde_json::json!({ "url": "http://cdn.baidupcs.com/a" }),
+            serde_json::json!({ "url": "https://cdn.baidupcs.com/b" }),
+        ]);
+        assert_eq!(chosen.as_deref(), Some("https://cdn.baidupcs.com/b"));
+    }
+
+    #[test]
+    fn test_netscape_cookie_flattened_for_dlink_and_bduss_validated() {
+        let netscape = "# Netscape HTTP Cookie File\n.baidu.com\tTRUE\t/\tTRUE\t0\tBDUSS\tsynth\n.pan.baidu.com\tTRUE\t/\tTRUE\t0\tSTOKEN\tstok\n";
+        let built = resolve::build_dlink_result(
+            "https://d.pcs.baidu.com/file/123?app_id=250528",
+            "pan.baidu.com",
+            netscape,
+            Some("https://pan.baidu.com/disk/home"),
+        );
+        let cookie_val = built.headers.get("Cookie").unwrap();
+        assert!(!cookie_val.contains('\n') && !cookie_val.contains('\t'));
+        assert!(cookie_val.contains("BDUSS=synth"));
+        assert!(resolve::has_valid_bduss(netscape));
+        assert!(!resolve::has_valid_bduss("BDUSS=; STOKEN=only"));
+        assert!(!resolve::has_valid_bduss(
+            ".baidu.com\tTRUE\t/\tTRUE\t1\tBDUSS\texpired\n"
+        ));
+
+        let info_json = serde_json::json!({
+            "errno": 0,
+            "info": [{ "dlink": "https://d.pcs.baidu.com/file/sample", "fs_id": 1 }]
+        });
+        assert_eq!(
+            resolve::extract_filemetas_item(&info_json)
+                .and_then(|v| v.get("dlink"))
+                .and_then(|v| v.as_str()),
+            Some("https://d.pcs.baidu.com/file/sample")
+        );
     }
 
     #[tokio::test]

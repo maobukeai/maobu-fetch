@@ -98,7 +98,7 @@ async fn send(session: &Session, start: u64, end: u64) -> Result<reqwest::Respon
 }
 
 fn validate_resource(session: &Session, response: &reqwest::Response) -> Result<(), String> {
-    cloud_content::validate_binary_response(session.config.cloud_binary_expected, response)?;
+    session.config.content_policy.validate(response)?;
     if response.status().is_success()
         && remote_resource_changed(
             session.config.etag.as_deref(),

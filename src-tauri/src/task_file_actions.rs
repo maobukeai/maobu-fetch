@@ -1,5 +1,5 @@
 //! 文件动作只指向当前任务的真实归属，不扫描全局下载目录猜测目标。
-use crate::{manager::{is_safe_path_component, SharedManager}, models::{DownloadTask, TaskKind}};
+use crate::{manager::{is_safe_path_component, SharedManager}, models::{DownloadTask, TaskKind, TaskStatus}};
 use std::path::{Path, PathBuf};
 
 pub(crate) async fn resolved_task(manager: &SharedManager, id: &str) -> Result<DownloadTask, String> {
@@ -34,6 +34,34 @@ pub(crate) async fn folder_path(task: &DownloadTask) -> Result<PathBuf, String> 
         .map_err(|e| format!("下载目录不可访问：{e}"))?;
     if !path.is_dir() { return Err("保存位置不是文件夹".into()); }
     Ok(path)
+}
+
+pub(crate) async fn completed_path(task: &DownloadTask, folder: bool) -> Result<PathBuf, String> {
+    if task.status != TaskStatus::Completed {
+        return Err("该任务已不处于完成状态，请在主窗口查看后重试".into());
+    }
+    if folder { folder_path(task).await } else { content_path(task, None).await }
+}
+
+/// 两种完成提醒共用安全路径与删除/重试检查；额外校验由调用方在打开前执行。
+pub(crate) async fn open_completed_task(
+    manager: &SharedManager,
+    id: &str,
+    folder: bool,
+    validate: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
+    let task = resolved_task(manager, id).await?;
+    let path = completed_path(&task, folder).await?;
+    let latest = manager.store.get_task(id).await?
+        .ok_or("该通知对应的任务已被删除，请在主窗口查看现有任务")?;
+    if latest.status != TaskStatus::Completed || latest.file_name != task.file_name
+        || latest.destination != task.destination || latest.completed_at != task.completed_at {
+        return Err("任务保存位置或完成状态已变化，请在主窗口重新打开".into());
+    }
+    validate()?;
+    tokio::task::spawn_blocking(move || open::that(path)).await
+        .map_err(|_| "打开文件的后台操作未完成，请重试".to_string())?
+        .map_err(|error| format!("无法打开，请确认文件仍在原保存位置并重试：{error}"))
 }
 
 #[cfg(test)]

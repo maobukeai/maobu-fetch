@@ -11,19 +11,24 @@ pub struct CloudRequest {
     context: CloudRequestContext,
     builder: RequestBuilder,
     cookie: Option<String>,
+    user_agent: Option<String>,
 }
 impl CloudRequest {
     pub(super) fn new(context: CloudRequestContext, method: Method, url: &str) -> Self {
         let builder = context.no_redirect.request(method, url);
+        let user_agent = context.user_agent.map(str::to_owned);
         Self {
             context,
             builder,
             cookie: None,
+            user_agent,
         }
     }
     pub fn header(mut self, name: impl AsRef<str>, value: impl ToString) -> Self {
         if name.as_ref().eq_ignore_ascii_case("cookie") {
             self.cookie = Some(value.to_string());
+        } else if name.as_ref().eq_ignore_ascii_case("user-agent") {
+            self.user_agent = Some(value.to_string());
         } else {
             self.builder = self.builder.header(name.as_ref(), value.to_string());
         }
@@ -51,10 +56,17 @@ impl CloudRequest {
     }
 
     pub async fn send(self) -> Result<Response, String> {
-        let template = self
+        let mut template = self
             .builder
             .build()
             .map_err(|error| format!("构建网盘请求失败：{}", error.without_url()))?;
+        if let Some(ua) = &self.user_agent {
+            let value = reqwest::header::HeaderValue::from_str(ua)
+                .map_err(|_| "网盘请求 User-Agent 无效")?;
+            template
+                .headers_mut()
+                .insert(reqwest::header::USER_AGENT, value);
+        }
         if template.try_clone().is_none() {
             return Err("网盘请求正文不能安全重放，已停止请求".into());
         }
